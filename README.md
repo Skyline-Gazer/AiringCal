@@ -137,6 +137,29 @@ Cloudflare Dashboard -> My Profile -> API Tokens -> Create custom token。
 
 不用在 `airing-cal-media` 配 `BANGUMI_TOKEN`；media-worker 只下载图片和读取可选 subject detail，不需要 access token。
 
+`BANGUMI_TOKEN` 获取方式：
+
+1. 登录需要同步收藏的 Bangumi 账号。
+2. 打开 `https://next.bgm.tv/demo/access-token`。
+3. 生成并复制页面显示的 Access Token。
+4. 到 Cloudflare Dashboard 打开 `airing-cal-sync` Worker，在 Variables and Secrets 中新增 Secret：
+   - 名称：`BANGUMI_TOKEN`
+   - 值：刚复制的 Access Token
+
+`BANGUMI_USERS` 获取方式：
+
+1. 打开需要同步的 Bangumi 用户主页。
+2. 从主页 URL 里取 `/user/` 后面的用户名。例如 `https://bgm.tv/user/sai` 对应 `sai`。
+3. 到 Cloudflare Dashboard 打开 `airing-cal-sync` Worker，在 Variables and Secrets 中新增 Variable：
+   - 名称：`BANGUMI_USERS`
+   - 值：用户名；多个用户用英文逗号分隔，例如 `sai,another_user`
+
+注意：
+
+- `BANGUMI_TOKEN` 要有权限读取这些用户的收藏；私有收藏需要对应授权。
+- 如果只同步自己的账号，`BANGUMI_USERS` 填自己的 Bangumi 用户名即可。
+- 这两个值都只配置在 `airing-cal-sync`，不要在 GitHub Actions secrets 或其他 3 个 Worker 里重复配置。
+
 其余配置已经写在 repo：
 
 - `PUBLIC_REPOSITORY_URL` 在 `apps/frontend-worker/wrangler.toml`
