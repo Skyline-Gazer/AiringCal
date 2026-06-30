@@ -91,7 +91,7 @@ id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 
 CI 不会把这个 ID 写回仓库。部署时会临时生成 `apps/*/wrangler.deploy.toml`，只在临时 config 里替换成真实 KV ID，然后用临时 config 部署。这样本地文件保持干净，也不用你在 3 个 Worker 里重复手填。
 
-CI 仍然不会上传运行时 secret，也不会调用 Cloudflare REST API 修改 cron schedule。Cron schedule 只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers]`。
+CI 仍然不会上传运行时 secret，也不会手写 `curl` 去改 cron schedule。Cron schedule 只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers]`；部署 `airing-cal-sync` 时，Wrangler 会自动把这个配置同步到 Cloudflare Cron Triggers。
 
 ## 最小配置
 
@@ -118,12 +118,27 @@ Cloudflare Dashboard -> My Profile -> API Tokens -> Create custom token。
 
 | 范围 | 权限组 | 级别 | 用途 |
 |------|--------|------|------|
-| Account | `Workers Scripts` | `Edit` | 部署 4 个 Worker script |
+| Account | `Workers Scripts` | `Edit` | 部署 4 个 Worker script，并更新 `airing-cal-sync` 的 Cron Trigger |
 | Account | `Workers KV Storage` | `Edit` | 检查/创建 `airing-cal-kv`，并部署 KV binding |
 | Account | `Workers R2 Storage` | `Edit` | 检查/创建 `airing-cal-images`，并部署 R2 binding |
 | Account | `Queues` | `Edit` | 检查/创建 `airing-cal-media`，并部署 Queue binding |
 | Account | `Account Settings` | `Read` | 让 Wrangler 解析账户信息 |
 | User | `User Details` | `Read` | 让 Wrangler 识别 API token 用户 |
+
+如果 `airing-cal-sync` 部署时报：
+
+```text
+Some triggers failed to deploy for airing-cal-sync
+/workers/scripts/airing-cal-sync/schedules
+```
+
+说明 Worker 代码已经上传，但这个 token 不能更新 Cron Trigger。请重新创建或更新 `CF_API_TOKEN`，确认：
+
+- token 的 Account Resources 包含 `CF_ACCOUNT_ID` 对应的 Cloudflare account。
+- Account 权限组 `Workers Scripts` 是 `Edit`，不是 `Read`。
+- 更新 GitHub Repository secret `CF_API_TOKEN` 后重新跑 workflow。
+
+Wrangler 本地权限映射把 `workers_scripts:write` 描述为可修改 Workers scripts、subdomains、triggers 等；Cron schedule 部署走的就是 triggers/schedules 这一类权限。GitHub Actions 里的 Node 20 deprecation 提示不是这次失败原因。
 
 如果要让 CI 同时部署自定义域名或 route，再额外加这个可选权限：
 

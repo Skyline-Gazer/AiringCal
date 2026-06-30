@@ -64,7 +64,6 @@ test('deploy workflow pre-checks resources, resolves KV id, and avoids secret or
     'wrangler secret put',
     'CRON_SECRET',
     'python3 -',
-    '/schedules',
     '/__cron/sync',
   ]
   for (const fragment of forbidden) {
@@ -82,6 +81,9 @@ test('README documents the multi-worker deployment without legacy cron instructi
   }
   for (const fragment of ['Repository secrets', 'New repository secret', '当前 workflow 没有设置 GitHub Actions `environment:`', '不是 Environment secrets']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should explain which GitHub secrets scope to use: ${fragment}`)
+  }
+  for (const fragment of ['Some triggers failed to deploy for airing-cal-sync', '/workers/scripts/airing-cal-sync/schedules', 'Workers Scripts` 是 `Edit`', 'Node 20 deprecation 提示不是这次失败原因']) {
+    assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document sync-worker cron trigger permission troubleshooting: ${fragment}`)
   }
   for (const fragment of ['pre-check Cloudflare 资源', 'wrangler.deploy.toml', '找不到就创建']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document CI resource provisioning: ${fragment}`)
