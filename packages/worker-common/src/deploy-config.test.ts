@@ -71,6 +71,9 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/cache', 'images.common', 'images.large']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document ${fragment}`)
   }
+  for (const fragment of ['Workers Scripts: Edit', 'Workers KV Storage: Edit', 'Workers R2 Storage: Edit', 'Workers Queues: Edit', 'Account Settings: Read', 'User Details: Read']) {
+    assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document CF_API_TOKEN permission ${fragment}`)
+  }
   for (const fragment of ['CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', 'wrangler kv namespace create', 'wrangler r2 bucket create']) {
     assert.doesNotMatch(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should not mention ${fragment}`)
   }

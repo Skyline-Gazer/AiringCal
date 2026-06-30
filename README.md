@@ -114,6 +114,27 @@ GitHub only needs Cloudflare deploy credentials:
 | `CF_API_TOKEN` | workflow | Cloudflare deploy token |
 | `CF_ACCOUNT_ID` | workflow | Cloudflare account id |
 
+Create `CF_API_TOKEN` from Cloudflare Dashboard -> My Profile -> API Tokens -> Create custom token.
+Use these token permissions for the current workflow:
+
+| Scope | Permission | Why |
+|-------|------------|-----|
+| Account | Workers Scripts: Edit | Deploy the four Worker scripts |
+| Account | Workers KV Storage: Edit | Attach the existing `airing-cal-kv` namespace to Workers |
+| Account | Workers R2 Storage: Edit | Attach the existing `airing-cal-images` bucket to Workers |
+| Account | Workers Queues: Edit | Attach the `airing-cal-media` producer/consumer queue bindings |
+| Account | Account Settings: Read | Let Wrangler resolve account metadata |
+| User | User Details: Read | Let Wrangler identify the API token user |
+
+The current workflow does not create resources, upload runtime secrets, or manage routes. Do not add broader permissions unless you also change the workflow:
+
+| Permission | Needed now? |
+|------------|-------------|
+| Zone - Workers Routes: Edit | No, unless you add route/custom-domain deployment to `wrangler.toml` |
+| Account - Workers KV Storage: Create-only provisioning scripts | No, resources are provisioned outside routine deploy |
+| Account - Workers R2 Storage bucket creation | No, resources are provisioned outside routine deploy |
+| Secret upload permissions through CI | No, bgm.tv runtime secrets are set in Cloudflare Dashboard |
+
 Set bgm.tv runtime values only on `airing-cal-sync` in the Cloudflare dashboard:
 
 | Name | Config | Purpose |
