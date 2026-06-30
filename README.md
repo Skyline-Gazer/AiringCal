@@ -114,13 +114,13 @@ GitHub only needs Cloudflare deploy credentials:
 | `CF_API_TOKEN` | workflow | Cloudflare deploy token |
 | `CF_ACCOUNT_ID` | workflow | Cloudflare account id |
 
-Set bgm.tv runtime values in the Cloudflare dashboard, not in GitHub Actions:
+Set bgm.tv runtime values only on `airing-cal-sync` in the Cloudflare dashboard:
 
 | Name | Config | Purpose |
 |------|--------|---------|
-| `BANGUMI_TOKEN` | `airing-cal-sync` secret, `airing-cal-media` secret | bgm.tv access token |
-| `BANGUMI_USERS` | `airing-cal-sync` variable | Comma-separated bgm usernames |
-| `BANGUMI_PRIMARY_USER` | `airing-cal-sync` variable | Optional primary user for primary-mode sync |
+| `BANGUMI_TOKEN` | Secret | bgm.tv access token |
+| `BANGUMI_USERS` | Variable | Comma-separated bgm usernames |
+| `BANGUMI_PRIMARY_USER` | Variable | Optional primary user for primary-mode sync |
 
 Everything else is checked in:
 

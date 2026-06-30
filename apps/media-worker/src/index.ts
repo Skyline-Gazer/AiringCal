@@ -21,7 +21,6 @@ interface MediaEnv {
     delete(key: string): Promise<void>
   }
   AIRING_CAL_R2: ConstructorParameters<typeof R2ImageStore>[0]
-  BANGUMI_TOKEN: string
 }
 
 interface QueueBatch {
@@ -105,7 +104,7 @@ async function processSubjectMeta(job: MediaJob, client: BgmClient, storage: KVS
 async function processJob(job: MediaJob, env: MediaEnv): Promise<void> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const imageStore = new R2ImageStore(env.AIRING_CAL_R2)
-  const client = new BgmClient(env.BANGUMI_TOKEN)
+  const client = new BgmClient()
   const now = Math.floor(Date.now() / 1000)
 
   const [common, large] = await Promise.all([

@@ -57,7 +57,6 @@ test('media-worker downloads common and large images, writes R2 and cache status
     }) as any, {
       AIRING_CAL_KV: kv,
       AIRING_CAL_R2: r2,
-      BANGUMI_TOKEN: 'token-a',
     } as any)
 
     assert.equal(r2.writes.length, 2)
@@ -99,7 +98,6 @@ test('media-worker treats subject detail 404 as restricted NSFW', async () => {
     }) as any, {
       AIRING_CAL_KV: kv,
       AIRING_CAL_R2: r2,
-      BANGUMI_TOKEN: 'token-a',
     } as any)
 
     const meta = kv.values.get('subject:meta:23080') as any
