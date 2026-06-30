@@ -59,6 +59,14 @@ crons = ["0 * * * *"]
 
 Cloudflare 免费计划对 Cron Trigger 数量有限制，所以这里只配置 1 个每小时触发器；`sync-worker` 会在代码里只允许 UTC 0/4/8/12/16/20 点真正同步，其余小时直接跳过。
 
+查看当前 Cloudflare account 里哪些 Worker 占用了 Cron Trigger：
+
+```bash
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... node scripts/list-cloudflare-crons.mjs
+```
+
+CI 也会在部署前自动运行这个检查；如果账号 cron trigger 数量已经达到限制，会先打印占用列表再停止部署。
+
 ## Cloudflare 资源
 
 当前约定的 Cloudflare 资源名：
