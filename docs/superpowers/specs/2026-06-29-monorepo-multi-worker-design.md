@@ -613,7 +613,7 @@ SYNC_MODE
 Cron config:
 
 ```text
-triggers.crons = ["0 */4 * * *"]
+triggers.crons = ["0 0,4,8,12,16,20 * * *"]
 ```
 
 The exact syntax must be written in the target Worker config only after validating against the local Wrangler schema and `wrangler --help` / config docs for the chosen config format.

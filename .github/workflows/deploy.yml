@@ -171,6 +171,7 @@ jobs:
       - name: Deploy ${{ matrix.app }}
         env:
           WRANGLER_LOG: debug
+          WRANGLER_LOG_SANITIZE: "false"
           WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-${{ matrix.app }}.log
         run: pnpm exec wrangler deploy --config ${{ matrix.deploy_config }}
 
@@ -180,7 +181,10 @@ jobs:
           WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-${{ matrix.app }}.log
         run: |
           if [ -f "$WRANGLER_LOG_PATH" ]; then
-            sed -E 's/(Authorization: Bearer )[A-Za-z0-9._-]+/\1[redacted]/g' "$WRANGLER_LOG_PATH"
+            sed -E \
+              -e 's/(Authorization: Bearer )[A-Za-z0-9._-]+/\1[redacted]/g' \
+              -e 's/("authorization": ?"Bearer )[A-Za-z0-9._-]+/\1[redacted]/gi' \
+              "$WRANGLER_LOG_PATH"
           else
             echo "Wrangler log not found: $WRANGLER_LOG_PATH"
           fi
@@ -216,6 +220,7 @@ jobs:
       - name: Deploy Frontend Worker
         env:
           WRANGLER_LOG: debug
+          WRANGLER_LOG_SANITIZE: "false"
           WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-frontend-worker.log
         run: pnpm exec wrangler deploy --config apps/frontend-worker/wrangler.toml
 
@@ -225,7 +230,10 @@ jobs:
           WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-frontend-worker.log
         run: |
           if [ -f "$WRANGLER_LOG_PATH" ]; then
-            sed -E 's/(Authorization: Bearer )[A-Za-z0-9._-]+/\1[redacted]/g' "$WRANGLER_LOG_PATH"
+            sed -E \
+              -e 's/(Authorization: Bearer )[A-Za-z0-9._-]+/\1[redacted]/g' \
+              -e 's/("authorization": ?"Bearer )[A-Za-z0-9._-]+/\1[redacted]/gi' \
+              "$WRANGLER_LOG_PATH"
           else
             echo "Wrangler log not found: $WRANGLER_LOG_PATH"
           fi

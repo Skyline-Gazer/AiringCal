@@ -7,7 +7,7 @@ keep_vars = true
 SYNC_MODE = "merge"
 
 [triggers]
-crons = ["0 */4 * * *"]
+crons = ["0 0,4,8,12,16,20 * * *"]
 
 [[kv_namespaces]]
 binding = "AIRING_CAL_KV"

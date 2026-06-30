@@ -9,7 +9,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const appConfigs = [
   ['frontend-worker', ['[[services]]', 'READ_WORKER']],
   ['read-worker', ['[[kv_namespaces]]', '[[r2_buckets]]']],
-  ['sync-worker', ['[[queues.producers]]', '[triggers]', '0 */4 * * *']],
+  ['sync-worker', ['[[queues.producers]]', '[triggers]', '0 0,4,8,12,16,20 * * *']],
   ['media-worker', ['[[queues.consumers]]', '[[kv_namespaces]]', '[[r2_buckets]]']],
 ] as const
 
@@ -61,7 +61,9 @@ test('deploy workflow pre-checks resources, resolves KV id, and avoids secret or
   assert.match(workflow, /deploy_frontend_worker:/, 'workflow should deploy the public frontend after internal workers')
   assert.match(workflow, /pnpm exec wrangler deploy --config \$\{\{ matrix\.deploy_config \}\}/, 'workflow should deploy internal workers with the Wrangler CLI')
   assert.match(workflow, /WRANGLER_LOG_PATH:\s*\$\{\{ runner\.temp \}\}\/wrangler-\$\{\{ matrix\.app \}\}\.log/, 'workflow should save Wrangler debug logs for matrix deploys')
-  assert.match(workflow, /sed -E 's\/\(Authorization: Bearer \)\[A-Za-z0-9\._-\]\+\/\\1\[redacted\]\/g'/, 'workflow should redact bearer tokens when printing Wrangler logs')
+  assert.match(workflow, /WRANGLER_LOG_SANITIZE:\s*"false"/, 'workflow should include unsanitized Wrangler response bodies for failed deploy diagnosis')
+  assert.match(workflow, /s\/\(Authorization: Bearer \)\[A-Za-z0-9\._-\]\+\/\\1\[redacted\]\/g/, 'workflow should redact bearer tokens in header-like Wrangler logs')
+  assert.match(workflow, /s\/\("authorization": \?"Bearer \)\[A-Za-z0-9\._-\]\+\/\\1\[redacted\]\/gi/, 'workflow should redact bearer tokens in JSON-like Wrangler logs')
 
   const forbidden = [
     'cloudflare/wrangler-action',
