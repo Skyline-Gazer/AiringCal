@@ -59,6 +59,24 @@ test('read-worker returns collection snapshot by type from KV', async () => {
   assert.deepEqual(body.types, { watching: 1, _total: 1 })
 })
 
+test('read-worker paginates collection snapshots by page and limit', async () => {
+  const kv = new MockKV()
+  kv.values.set('snapshot:collections:watching', Array.from({ length: 5 }, (_, index) => ({
+    subject_id: index + 1,
+    title: `Subject ${index + 1}`,
+  })))
+  kv.values.set('snapshot:summary', { watching: 5, _total: 5 })
+
+  const response = await worker.fetch(new Request('https://read.local/collections?type=watching&page=2&limit=2'), env(kv) as any)
+  const body = await response.json() as any
+
+  assert.equal(response.status, 200)
+  assert.equal(body.total, 5)
+  assert.equal(body.page, 2)
+  assert.equal(body.limit, 2)
+  assert.deepEqual(body.data.map((entry: any) => entry.subject_id), [3, 4])
+})
+
 test('read-worker cache stats expose sanitized image cache data only', async () => {
   const kv = new MockKV()
   kv.values.set('image:status:23080', {

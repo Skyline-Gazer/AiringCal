@@ -9,6 +9,7 @@ import {
   renderIndexPage,
   renderWebmasterMeta,
   widgetJs,
+  widgetCss,
 } from './index.ts'
 
 const widgetRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -64,6 +65,11 @@ test('widgetJs uses eps as the collection total episode fallback', () => {
 test('widgetJs renders text when image cache is unavailable instead of a data URI placeholder', () => {
   assert.match(widgetJs, /image cache failed/)
   assert.equal(widgetJs.includes('data:image'), false)
+})
+
+test('widgetCss styles the shared footer', () => {
+  assert.match(widgetCss, /\.bgm-footer\s*\{/)
+  assert.match(widgetCss, /\.bgm-footer a\s*\{/)
 })
 
 test('packaged widget assets do not read legacy image hash fields', () => {

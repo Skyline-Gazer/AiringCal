@@ -183,6 +183,29 @@ body {
   box-shadow: 0 0 0 0 var(--nb-ink);
 }
 
+/* ---------- 页脚 ---------- */
+.bgm-footer {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 28px;
+  padding: 8px 12px;
+  background: var(--nb-surface);
+  border: var(--nb-border);
+  box-shadow: var(--nb-shadow-sm);
+  color: var(--nb-ink);
+  font-size: 13px;
+  font-weight: 800;
+}
+.bgm-footer a {
+  color: var(--nb-ink);
+  text-decoration: none;
+  border-bottom: 2px solid var(--nb-ink);
+}
+.bgm-footer a:hover {
+  background: var(--nb-bg);
+}
+
 /* ---------- NSFW 模糊遮罩 ---------- */
 .bgm-card.bgm-nsfw .bgm-card-cover img {
   filter: blur(20px);

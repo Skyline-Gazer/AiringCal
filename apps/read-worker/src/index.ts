@@ -36,6 +36,15 @@ function validCollectionType(value: string | null): (typeof COLLECTION_TYPES)[nu
   return COLLECTION_TYPES.includes(value as any) ? value as (typeof COLLECTION_TYPES)[number] : 'watching'
 }
 
+function positiveInteger(value: string | null, fallback: number): number {
+  const parsed = Number.parseInt(value ?? '', 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+function collectionLimit(value: string | null): number {
+  return Math.min(100, positiveInteger(value, 24))
+}
+
 function sanitizeStatus(value: any): any {
   if (Array.isArray(value)) return value.map(sanitizeStatus)
   if (!value || typeof value !== 'object') return value
@@ -71,9 +80,13 @@ async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const type = validCollectionType(url.searchParams.get('type'))
   const data = await storage.get<unknown[]>(snapshotCollectionsKey(type)) ?? []
+  const page = positiveInteger(url.searchParams.get('page'), 1)
+  const limit = collectionLimit(url.searchParams.get('limit'))
+  const start = (page - 1) * limit
+  const pageData = data.slice(start, start + limit)
   const types = await storage.get<Record<string, number>>(snapshotSummaryKey()) ?? {}
-  const hydrated = await hydrateCollectionImages(data, env)
-  return json({ data: hydrated, total: hydrated.length, page: 1, limit: hydrated.length, types })
+  const hydrated = await hydrateCollectionImages(pageData, env)
+  return json({ data: hydrated, total: data.length, page, limit, types })
 }
 
 async function handleCalendar(env: ReadEnv): Promise<Response> {
