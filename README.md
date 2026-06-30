@@ -65,7 +65,7 @@ Cloudflare 免费计划对 Cron Trigger 数量有限制，所以这里只配置 
 CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... node scripts/list-cloudflare-crons.mjs
 ```
 
-CI 也会在部署前自动运行这个检查；如果账号 cron trigger 数量已经达到限制，会先打印占用列表再停止部署。
+CI 也会在部署前自动运行这个检查。这个检查会把 `airing-cal-sync` 已经占用的 Cron Trigger 当成可复用额度：如果账号里已经有 `airing-cal-sync` 的 trigger，即使总数已经到 5，部署仍会继续，因为 Wrangler 只是更新同一个 Worker 的 schedule；只有账号已满且 `airing-cal-sync` 还没有 trigger、需要新增第 6 条时，CI 才会先打印占用列表再停止部署。
 
 ## Cloudflare 资源
 
