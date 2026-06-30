@@ -70,3 +70,10 @@ test('collection and calendar cards share the same renderer pipeline', () => {
   assert.equal(source.match(/return renderSubjectCard\(\{/g)?.length, 2, 'collection and calendar adapters use shared renderer')
   assert.equal(source.includes('function renderCalendarCard(entry) {\n    const hasHash'), false, 'calendar does not duplicate image URL logic')
 })
+
+test('public cards use R2 image refs and text cache failure state', () => {
+  assert.ok(source.includes('images?.common?.uri'), 'uses hydrated R2 image refs from read-worker')
+  assert.ok(source.includes('image cache failed'), 'renders a text state when cache is unavailable')
+  assert.equal(source.includes('data:image'), false)
+  assert.equal(source.includes('images.hash'), false)
+})

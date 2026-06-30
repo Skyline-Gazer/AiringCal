@@ -36,20 +36,22 @@
     window.location.href = 'https://www.google.com'
   }
 
-  // ---------------------------------------------------------------
-  const COVER_PLACEHOLDER = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400" fill="#333"><rect width="300" height="400"/></svg>')
-
   function subjectImageUrl(images) {
     return images?.common?.uri
       ? API + images.common.uri
-      : COVER_PLACEHOLDER
+      : null
+  }
+
+  function renderCover(images, alt, attrs) {
+    const imgUrl = subjectImageUrl(images)
+    return imgUrl
+      ? '<img src="' + imgUrl + '" alt="' + alt + '" ' + attrs + '>'
+      : '<span class="bgm-image-cache-failed">image cache failed</span>'
   }
 
   // 收藏卡片：用 images.common.uri 走 worker 图片代理 + 观看进度
   // ---------------------------------------------------------------
   function renderCard(entry) {
-    const imgUrl = subjectImageUrl(entry.images)
-
     const progress = entry.total_episodes > 0
       ? Math.round((entry.ep_status / entry.total_episodes) * 100)
       : 0
@@ -58,7 +60,7 @@
     if (entry.nsfw) html += ' bgm-nsfw';
     html += '">' +
       '<div class="bgm-card-cover">' +
-        '<img src="' + imgUrl + '" alt="' + (entry.name_cn || entry.name) + '" loading="lazy">';
+        renderCover(entry.images, entry.name_cn || entry.name, 'loading="lazy"');
     if (entry.nsfw) html += '<div class="bgm-nsfw-overlay" onclick="event.preventDefault();this.parentElement.parentElement.classList.toggle(\'bgm-nsfw-reveal\')">R18</div>';
     html += '</div>' +
       '<div class="bgm-card-info">' +
@@ -75,7 +77,6 @@
   // 字段与收藏不同：用 id、images.common（bgm.tv 原图）、rating.score
   // ---------------------------------------------------------------
   function renderCalendarCard(entry) {
-    const imgUrl = subjectImageUrl(entry.images)
     const name = entry.name_cn || entry.name || ''
     const score = entry.rating && entry.rating.score
 
@@ -83,7 +84,7 @@
     if (entry.nsfw) html += ' bgm-nsfw';
     html += '">' +
       '<div class="bgm-card-cover">' +
-        '<img src="' + imgUrl + '" alt="' + name + '" loading="lazy" referrerpolicy="no-referrer">';
+        renderCover(entry.images, name, 'loading="lazy" referrerpolicy="no-referrer"');
     if (entry.nsfw) html += '<div class="bgm-nsfw-overlay" onclick="event.preventDefault();this.parentElement.parentElement.classList.toggle(\'bgm-nsfw-reveal\')">R18</div>';
     html += '</div>' +
       '<div class="bgm-card-info">' +

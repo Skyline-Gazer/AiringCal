@@ -1,6 +1,6 @@
 export const appBoundary = 'read-worker'
 
-import { imageOriginalKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey } from '@airing-cal/storage'
+import { imageOriginalKey, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 interface ReadEnv {
@@ -46,12 +46,34 @@ function sanitizeStatus(value: any): any {
   return sanitized
 }
 
+function cachedImageRef(status: any) {
+  return status?.status === 'cached' && status.hash && status.uri && status.r2_key
+    ? { hash: status.hash, uri: status.uri, r2_key: status.r2_key }
+    : null
+}
+
+async function hydrateCollectionImages(data: unknown[], env: ReadEnv): Promise<unknown[]> {
+  return Promise.all(data.map(async (entry: any) => {
+    if (!entry || typeof entry !== 'object' || typeof entry.subject_id !== 'number') return entry
+    const status = await env.AIRING_CAL_KV.get(imageStatusKey(entry.subject_id), 'json')
+    if (!status) return entry
+    return {
+      ...entry,
+      images: {
+        common: cachedImageRef((status as any).common),
+        large: cachedImageRef((status as any).large),
+      },
+    }
+  }))
+}
+
 async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const type = validCollectionType(url.searchParams.get('type'))
   const data = await storage.get<unknown[]>(snapshotCollectionsKey(type)) ?? []
   const types = await storage.get<Record<string, number>>(snapshotSummaryKey()) ?? {}
-  return json({ data, total: data.length, page: 1, limit: data.length, types })
+  const hydrated = await hydrateCollectionImages(data, env)
+  return json({ data: hydrated, total: hydrated.length, page: 1, limit: hydrated.length, types })
 }
 
 async function handleCalendar(env: ReadEnv): Promise<Response> {

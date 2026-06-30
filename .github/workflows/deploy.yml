@@ -200,11 +200,12 @@ jobs:
           fi
 
   trigger_deploy_sync:
-    needs: [validate, deploy_internal_workers]
+    needs: [validate, provision_cloudflare, deploy_internal_workers]
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      AIRING_CAL_KV_NAMESPACE_ID: ${{ needs.provision_cloudflare.outputs.kv_id }}
       SYNC_TRIGGER_QUEUE_NAME: airing-cal-sync-trigger
     steps:
       - uses: actions/checkout@v4

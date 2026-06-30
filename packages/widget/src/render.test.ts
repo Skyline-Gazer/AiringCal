@@ -57,10 +57,16 @@ test('widgetJs consumes new images.common.uri shape', () => {
   assert.equal(widgetJs.includes('hash_large'), false)
 })
 
+test('widgetJs renders text when image cache is unavailable instead of a data URI placeholder', () => {
+  assert.match(widgetJs, /image cache failed/)
+  assert.equal(widgetJs.includes('data:image'), false)
+})
+
 test('packaged widget assets do not read legacy image hash fields', () => {
   for (const asset of ['assets/public/src/bangumi.js', 'assets/theme/bangumi.js', 'assets/theme/v1/bangumi.js']) {
     const source = readFileSync(resolve(widgetRoot, asset), 'utf8')
     assert.equal(source.includes('images.hash'), false, `${asset} should not read images.hash`)
     assert.equal(source.includes('hash_large'), false, `${asset} should not read hash_large`)
+    assert.equal(source.includes('data:image'), false, `${asset} should not embed a base64/data URI cover fallback`)
   }
 })

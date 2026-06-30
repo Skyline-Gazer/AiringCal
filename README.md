@@ -104,7 +104,7 @@ CI 不会把这个 ID 写回仓库。部署时会临时生成 `apps/*/wrangler.d
 
 CI 仍然不会上传运行时 secret，也不会手写 `curl` 去改 cron schedule。Cron schedule 只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers]`；部署 `airing-cal-sync` 时，Wrangler 会自动把这个配置同步到 Cloudflare Cron Triggers。
 
-为了避免首次部署后页面长时间停在“KV 无数据”，CI 会在 read/media/sync 这三个内部 Worker 部署完成后，向 `airing-cal-sync-trigger` 投递一条 `deploy-sync` 消息。`airing-cal-sync` 消费这条消息后会立即执行一次完整同步；这个触发不占 Cron Trigger 额度，也不暴露公开同步 URL。
+为了避免首次部署后页面长时间停在“KV 无数据”，CI 会在 read/media/sync 这三个内部 Worker 部署完成后，向 `airing-cal-sync-trigger` 投递一条 `deploy-sync` 消息。`airing-cal-sync` 消费这条消息后会立即执行一次完整同步；CI 随后轮询 KV 里的 `snapshot:summary`，确认 `_total > 0` 后才继续部署 frontend。这个触发不占 Cron Trigger 额度，也不暴露公开同步 URL。
 
 ## 最小配置
 
@@ -292,7 +292,7 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 5. pre-check Cloudflare 资源：KV/R2/Queue 存在就复用，不存在就按固定名称创建
 6. 读取真实 KV namespace ID，生成临时 `wrangler.deploy.toml`
 7. 用 matrix 部署 `airing-cal-read`、`airing-cal-media`、`airing-cal-sync`
-8. 向 `airing-cal-sync-trigger` 部署完成后自动投递一次同步消息
+8. 向 `airing-cal-sync-trigger` 部署完成后自动投递一次同步消息，并等待 KV `snapshot:summary` 出现非空数据
 9. 最后部署 `airing-cal-frontend`
 
 部署步骤直接运行 `pnpm exec wrangler deploy`，不再通过 `cloudflare/wrangler-action` 包装。CI 会设置 `WRANGLER_LOG=debug` 和 `WRANGLER_LOG_PATH`；如果部署失败，会打印脱敏后的 Wrangler debug log，便于看到 Cloudflare API 返回的真实错误。
@@ -311,7 +311,7 @@ Widget 的唯一来源是 `packages/widget`。公开 HTML 页面复用同一个 
 
 如果部署环境提供 `BANGUMI_GIT_COMMIT_SHA` 和 `BANGUMI_GIT_REPOSITORY_URL`，footer 会链接到对应 commit；否则显示 `Build unknown`。这只是页面追踪构建来源的可选信息，不影响部署和访问。
 
-浏览器 widget 使用 `images.common.uri` 渲染封面。没有缓存图片时，使用内联 placeholder。
+浏览器 widget 使用 `images.common.uri` 渲染封面。没有缓存图片时直接显示 `image cache failed` 文字状态，不内嵌 `data:image` placeholder。
 
 ## 致谢
 

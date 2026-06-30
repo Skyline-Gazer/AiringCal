@@ -60,6 +60,7 @@ test('deploy workflow pre-checks resources, resolves KV id, and avoids secret or
   assert.match(workflow, /wrangler queues create "\$SYNC_TRIGGER_QUEUE_NAME"/, 'workflow should create the sync trigger Queue when missing')
   assert.match(workflow, /node scripts\/list-cloudflare-crons\.mjs/, 'workflow should list Cloudflare cron triggers before deploying')
   assert.match(workflow, /node scripts\/push-sync-trigger\.mjs/, 'workflow should trigger sync-worker once after internal worker deployment')
+  assert.match(workflow, /AIRING_CAL_KV_NAMESPACE_ID:\s*\$\{\{ needs\.provision_cloudflare\.outputs\.kv_id \}\}/, 'workflow should pass the resolved KV namespace id to the deploy sync trigger')
   assert.match(workflow, /replaceAll\('<AIRING_CAL_KV_NAMESPACE_ID>', kvId\)/, 'workflow should resolve the KV namespace id in temporary deploy configs')
   assert.match(workflow, /deploy_internal_workers:/, 'workflow should deploy internal workers through a matrix job')
   assert.match(workflow, /deploy_frontend_worker:/, 'workflow should deploy the public frontend after internal workers')
@@ -108,7 +109,7 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['BANGUMI_GIT_COMMIT_SHA', 'BANGUMI_GIT_REPOSITORY_URL', '绑定自定义域名不需要改任何 repository URL 变量']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document optional frontend build metadata: ${fragment}`)
   }
-  for (const fragment of ['secrets.CF_API_TOKEN', 'secrets.CF_ACCOUNT_ID', 'CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets', 'PUBLIC_REPOSITORY_URL']) {
+  for (const fragment of ['secrets.CF_API_TOKEN', 'secrets.CF_ACCOUNT_ID', 'CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', '内联 placeholder', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets', 'PUBLIC_REPOSITORY_URL']) {
     assert.doesNotMatch(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should not mention ${fragment}`)
   }
 })

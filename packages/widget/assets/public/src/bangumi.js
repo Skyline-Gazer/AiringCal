@@ -37,12 +37,17 @@
     window.location.href = 'https://www.google.com'
   }
 
-  const COVER_PLACEHOLDER = 'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400" fill="#333"><rect width="300" height="400"/></svg>')
-
   function subjectImageUrl(images) {
     return images?.common?.uri
       ? API + images.common.uri
-      : COVER_PLACEHOLDER
+      : null
+  }
+
+  function renderCover(images, alt, attrs) {
+    const imgUrl = subjectImageUrl(images)
+    return imgUrl
+      ? '<img src="' + imgUrl + '" alt="' + alt + '" ' + attrs + '>'
+      : '<span class="bgm-image-cache-failed">image cache failed</span>'
   }
 
   function renderSubjectCard(card) {
@@ -50,7 +55,7 @@
     if (card.nsfw) html += ' bgm-nsfw'
     html += '">' +
       '<div class="bgm-card-cover">' +
-        '<img src="' + subjectImageUrl(card.images) + '" alt="' + card.name + '" width="300" height="400" loading="lazy">'
+        renderCover(card.images, card.name, 'width="300" height="400" loading="lazy"')
     if (card.nsfw) html += '<div class="bgm-nsfw-overlay" onclick="event.preventDefault();this.parentElement.parentElement.classList.toggle(\'bgm-nsfw-reveal\')">R18</div>'
     html += '</div>' +
       '<div class="bgm-card-info">' +
