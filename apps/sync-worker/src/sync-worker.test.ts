@@ -72,7 +72,7 @@ test('scheduled sync writes new snapshot keys and enqueues media work without im
   globalThis.fetch = upstream.fetch as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({} as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -94,6 +94,33 @@ test('scheduled sync writes new snapshot keys and enqueues media work without im
       },
     })
     assert.equal(upstream.calls.some((url) => url.includes('img.example')), false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled sync skips non-four-hour cron ticks without upstream work', async () => {
+  const kv = new MockKV()
+  const queueMessages: unknown[] = []
+  const originalFetch = globalThis.fetch
+  let fetchCount = 0
+  globalThis.fetch = (async () => {
+    fetchCount += 1
+    throw new Error('unexpected fetch')
+  }) as typeof globalThis.fetch
+
+  try {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 5, 0, 0) } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
+      BANGUMI_TOKEN: 'token-a',
+      BANGUMI_USERS: 'alice',
+      SYNC_MODE: 'merge',
+    } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+
+    assert.equal(fetchCount, 0)
+    assert.equal(kv.values.size, 0)
+    assert.equal(queueMessages.length, 0)
   } finally {
     globalThis.fetch = originalFetch
   }

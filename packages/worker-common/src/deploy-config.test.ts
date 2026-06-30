@@ -9,7 +9,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const appConfigs = [
   ['frontend-worker', ['[[services]]', 'READ_WORKER']],
   ['read-worker', ['[[kv_namespaces]]', '[[r2_buckets]]']],
-  ['sync-worker', ['[[queues.producers]]', '[triggers]', '0 0,4,8,12,16,20 * * *']],
+  ['sync-worker', ['[[queues.producers]]', '[triggers]', '0 * * * *']],
   ['media-worker', ['[[queues.consumers]]', '[[kv_namespaces]]', '[[r2_buckets]]']],
 ] as const
 
@@ -83,7 +83,7 @@ test('deploy workflow pre-checks resources, resolves KV id, and avoids secret or
 
 test('README documents the multi-worker deployment without legacy cron instructions', () => {
   const readme = readFileSync(resolve(root, 'README.md'), 'utf8')
-  for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/cache', 'images.common', 'images.large']) {
+  for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/cache', 'images.common', 'images.large', 'Cloudflare 免费计划对 Cron Trigger 数量有限制', 'UTC 0/4/8/12/16/20 点真正同步']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document ${fragment}`)
   }
   for (const fragment of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', '不要再创建 `CF_API_TOKEN` / `CF_ACCOUNT_ID`', 'Workers Scripts', 'Workers KV Storage', 'Workers R2 Storage', 'Queues', 'Account Settings', 'User Details', 'Workers Routes']) {

@@ -73,11 +73,17 @@ async function fetch(_request?: Request, _env?: unknown): Promise<Response> {
   return new Response('Not found', { status: 404 })
 }
 
-async function scheduled(_event: unknown, env: SyncEnv, ctx: { waitUntil(promise: Promise<unknown>): unknown }): Promise<void> {
+function shouldRunSync(scheduledTime: number): boolean {
+  const hour = new Date(scheduledTime).getUTCHours()
+  return hour % 4 === 0
+}
+
+async function scheduled(event: { scheduledTime?: number }, env: SyncEnv, ctx: { waitUntil(promise: Promise<unknown>): unknown }): Promise<void> {
+  if (!shouldRunSync(event.scheduledTime ?? Date.now())) return
   const promise = runScheduledSync(env)
   ctx.waitUntil(promise)
   await promise
 }
 
-export { runScheduledSync }
+export { runScheduledSync, shouldRunSync }
 export default { fetch, scheduled }

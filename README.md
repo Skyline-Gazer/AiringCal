@@ -54,8 +54,10 @@ https://airing-cal-frontend.<你的 workers.dev 子域>.workers.dev
 
 ```toml
 [triggers]
-crons = ["0 0,4,8,12,16,20 * * *"]
+crons = ["0 * * * *"]
 ```
+
+Cloudflare 免费计划对 Cron Trigger 数量有限制，所以这里只配置 1 个每小时触发器；`sync-worker` 会在代码里只允许 UTC 0/4/8/12/16/20 点真正同步，其余小时直接跳过。
 
 ## Cloudflare 资源
 
