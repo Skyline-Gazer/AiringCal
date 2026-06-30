@@ -97,7 +97,13 @@ CI 仍然不会上传运行时 secret，也不会调用 Cloudflare REST API 修�
 
 ### GitHub Actions Secrets
 
-GitHub 只需要两个 secret，用于部署 Cloudflare：
+GitHub 只需要两个 **Repository secrets**，用于部署 Cloudflare。
+
+配置位置：
+
+GitHub repo -> Settings -> Secrets and variables -> Actions -> Repository secrets -> New repository secret。
+
+当前 workflow 没有设置 GitHub Actions `environment:`，所以这里不是 Environment secrets。只有以后给 deploy job 增加 `environment: production` 这类环境保护时，才需要改用或补充 Environment secrets。
 
 | 名称 | 说明 |
 |------|------|
