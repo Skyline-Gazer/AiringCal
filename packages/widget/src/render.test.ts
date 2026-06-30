@@ -57,6 +57,10 @@ test('widgetJs consumes new images.common.uri shape', () => {
   assert.equal(widgetJs.includes('hash_large'), false)
 })
 
+test('widgetJs uses eps as the collection total episode fallback', () => {
+  assert.match(widgetJs, /entry\.eps \|\| entry\.total_episodes/)
+})
+
 test('widgetJs renders text when image cache is unavailable instead of a data URI placeholder', () => {
   assert.match(widgetJs, /image cache failed/)
   assert.equal(widgetJs.includes('data:image'), false)

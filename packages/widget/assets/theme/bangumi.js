@@ -52,8 +52,9 @@
   // 收藏卡片：用 images.common.uri 走 worker 图片代理 + 观看进度
   // ---------------------------------------------------------------
   function renderCard(entry) {
-    const progress = entry.total_episodes > 0
-      ? Math.round((entry.ep_status / entry.total_episodes) * 100)
+    const total = entry.eps || entry.total_episodes || 0
+    const progress = total > 0
+      ? Math.round((entry.ep_status / total) * 100)
       : 0
 
     var html = '<a href="https://bgm.tv/subject/' + entry.subject_id + '" target="_blank" class="bgm-card';
@@ -66,7 +67,7 @@
       '<div class="bgm-card-info">' +
         '<h3>' + (entry.name_cn || entry.name) + '</h3>';
     if (progress > 0) html += '<div class="bgm-progress"><span style="width:' + progress + '%"></span></div>';
-    html += '<span class="bgm-ep">' + entry.ep_status + '/' + (entry.total_episodes || '??') + '</span>' +
+    html += '<span class="bgm-ep">' + entry.ep_status + '/' + (entry.eps || entry.total_episodes || '??') + '</span>' +
       '</div>' +
     '</a>';
     return html;

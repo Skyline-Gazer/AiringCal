@@ -85,6 +85,20 @@ test('read-worker serves images from R2 by hash', async () => {
   assert.equal(await response.text(), 'image')
 })
 
+test('read-worker health reports collection snapshot status when KV has data', async () => {
+  const kv = new MockKV()
+  kv.values.set('snapshot:summary', { watching: 20, _total: 42 })
+  kv.values.set('sync:meta', { synced_at: 1782650300, mode: 'merge', users: ['alice'] })
+
+  const response = await worker.fetch(new Request('https://read.local/health'), env(kv) as any)
+  const body = await response.json() as any
+
+  assert.equal(response.status, 200)
+  assert.equal(body.ok, true)
+  assert.equal(body.data.collections.types._total, 42)
+  assert.equal(body.data.collections.updated_at, '2026-06-28T12:38:20.000Z')
+})
+
 test('read-worker does not call upstream fetch for read requests', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = async () => {

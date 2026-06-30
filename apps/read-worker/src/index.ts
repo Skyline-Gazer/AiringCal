@@ -1,6 +1,6 @@
 export const appBoundary = 'read-worker'
 
-import { imageOriginalKey, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey } from '@airing-cal/storage'
+import { imageOriginalKey, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, syncMetaKey } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 interface ReadEnv {
@@ -109,6 +109,25 @@ async function handleCache(env: ReadEnv): Promise<Response> {
   })
 }
 
+async function handleHealth(env: ReadEnv): Promise<Response> {
+  const storage = new KVStorage(env.AIRING_CAL_KV)
+  const types = await storage.get<Record<string, number>>(snapshotSummaryKey())
+  const meta = await storage.get<{ synced_at?: number; users?: string[] }>(syncMetaKey())
+  return json({
+    ok: true,
+    worker: 'read-worker',
+    data: types && typeof types._total === 'number' && types._total > 0
+      ? {
+          collections: {
+            types,
+            updated_at: meta?.synced_at ? new Date(meta.synced_at * 1000).toISOString() : null,
+            users: meta?.users ?? [],
+          },
+        }
+      : null,
+  })
+}
+
 async function handleImage(pathname: string, env: ReadEnv): Promise<Response> {
   const hash = pathname.split('/').pop() ?? ''
   if (!/^[0-9a-f]{64}$/i.test(hash)) return new Response('Invalid hash', { status: 400 })
@@ -128,7 +147,7 @@ async function fetch(request: Request, env: ReadEnv): Promise<Response> {
   if (url.pathname === '/collections') return handleCollections(url, env)
   if (url.pathname === '/calendar') return handleCalendar(env)
   if (url.pathname === '/config') return json({ nsfw: env.NSFW_SHOW !== 'false' })
-  if (url.pathname === '/health') return json({ ok: true, worker: 'read-worker' })
+  if (url.pathname === '/health') return handleHealth(env)
   if (url.pathname === '/cache') return handleCache(env)
   if (url.pathname.startsWith('/image/')) return handleImage(url.pathname, env)
   return new Response('Not found', { status: 404 })

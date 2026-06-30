@@ -77,3 +77,7 @@ test('public cards use R2 image refs and text cache failure state', () => {
   assert.equal(source.includes('data:image'), false)
   assert.equal(source.includes('images.hash'), false)
 })
+
+test('public cards use eps as the collection total episode fallback', () => {
+  assert.ok(source.includes('entry.eps || entry.total_episodes'), 'uses eps before falling back to total_episodes')
+})
