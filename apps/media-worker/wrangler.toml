@@ -5,7 +5,7 @@ keep_vars = true
 
 [[kv_namespaces]]
 binding = "AIRING_CAL_KV"
-id = "airing-cal-kv"
+id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 
 [[r2_buckets]]
 binding = "AIRING_CAL_R2"

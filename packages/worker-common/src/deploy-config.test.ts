@@ -27,9 +27,9 @@ test('each target worker has a checked-in Wrangler config with required bindings
 test('Cloudflare resource names use the AiringCal prefix', () => {
   const expected = new Map([
     ['frontend-worker', ['name = "airing-cal-frontend"', 'service = "airing-cal-read"', 'PUBLIC_REPOSITORY_URL = "https://github.com/markd3ng/AiringCal"']],
-    ['read-worker', ['name = "airing-cal-read"', 'id = "airing-cal-kv"', 'bucket_name = "airing-cal-images"']],
-    ['sync-worker', ['name = "airing-cal-sync"', 'id = "airing-cal-kv"', 'queue = "airing-cal-media"']],
-    ['media-worker', ['name = "airing-cal-media"', 'id = "airing-cal-kv"', 'bucket_name = "airing-cal-images"', 'queue = "airing-cal-media"']],
+    ['read-worker', ['name = "airing-cal-read"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-images"']],
+    ['sync-worker', ['name = "airing-cal-sync"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'queue = "airing-cal-media"']],
+    ['media-worker', ['name = "airing-cal-media"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-images"', 'queue = "airing-cal-media"']],
   ])
 
   for (const [app, expectedFragments] of expected) {

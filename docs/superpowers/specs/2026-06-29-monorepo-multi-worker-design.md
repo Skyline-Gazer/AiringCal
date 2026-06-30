@@ -600,18 +600,13 @@ Bindings:
 ```text
 AIRING_CAL_KV KV
 MEDIA_QUEUE queue producer
-SYNCLOCK Durable Object
 ```
 
 Secrets and vars:
 
 ```text
 BANGUMI_TOKEN
-BANGUMI_REFRESH_TOKEN
-BANGUMI_CLIENT_ID
-BANGUMI_CLIENT_SECRET
 BANGUMI_USERS
-BANGUMI_PRIMARY_USER
 SYNC_MODE
 ```
 
@@ -633,13 +628,7 @@ AIRING_CAL_R2 R2
 MEDIA_QUEUE queue consumer
 ```
 
-Secrets:
-
-```text
-BANGUMI_TOKEN
-```
-
-If media-worker needs refreshed OAuth tokens, token refresh remains owned by `sync-worker`; media-worker should read a current token from KV or receive a short-lived internal instruction without exposing it publicly.
+`media-worker` does not require bgm.tv credentials. It downloads image URLs supplied by `sync-worker` and calls optional subject-detail endpoints with `OptionalHTTPBearer` omitted.
 
 ## CI/CD and Cron Deployment
 
@@ -660,10 +649,10 @@ The current workflow performs too many deployment-time infrastructure mutations:
 Cloudflare resources are provisioned once outside normal deploy runs:
 
 ```text
-KV namespace
-R2 bucket
-Queue
-Durable Object migration
+KV namespace title: airing-cal-kv
+KV namespace id: copied into each Worker config as kv_namespaces.id
+R2 bucket: airing-cal-images
+Queue: airing-cal-media
 Service bindings
 Worker secrets
 Cron schedule in sync-worker config
@@ -781,7 +770,7 @@ README must be rewritten for the new architecture. It must document:
 - Monorepo package layout.
 - Four Worker deployment units.
 - `packages/widget` as the single home for frontend assets, templates, shared footer, and theme CSS.
-- Cloudflare KV, R2, Queue, Durable Object, and service binding setup.
+- Cloudflare KV, R2, Queue, and service binding setup.
 - Initial provisioning versus routine deploy permissions.
 - Native Worker cron schedule through `scheduled()` and `triggers.crons`.
 - Queue-based media processing.
@@ -791,7 +780,7 @@ README must be rewritten for the new architecture. It must document:
 - Footer build commit link.
 - Analytics env vars.
 - Webmaster verification env vars.
-- NSFW behavior and `NSFW_SHOW`.
+- NSFW behavior.
 
 README must not describe removed legacy fields, old single Worker deployment, old image field names, or unimplemented endpoints.
 

@@ -13,8 +13,7 @@ interface SyncEnv {
   MEDIA_QUEUE: { send(message: unknown): Promise<void> }
   BANGUMI_TOKEN: string
   BANGUMI_USERS: string
-  BANGUMI_PRIMARY_USER?: string
-  SYNC_MODE?: 'merge' | 'primary'
+  SYNC_MODE?: 'merge'
 }
 
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
@@ -52,7 +51,7 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
   await storage.put(snapshotCalendarKey(), calendar)
   await storage.put(syncMetaKey(), {
     synced_at: Math.floor(Date.now() / 1000),
-    mode: env.SYNC_MODE === 'primary' ? 'primary' : 'merge',
+    mode: 'merge',
     users,
   })
 

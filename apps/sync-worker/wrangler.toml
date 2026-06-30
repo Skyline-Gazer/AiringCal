@@ -11,7 +11,7 @@ crons = ["0 */4 * * *"]
 
 [[kv_namespaces]]
 binding = "AIRING_CAL_KV"
-id = "airing-cal-kv"
+id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 
 [[queues.producers]]
 binding = "MEDIA_QUEUE"
