@@ -74,6 +74,7 @@ jobs:
           KV_TITLE="airing-cal-kv"
           R2_BUCKET="airing-cal-images"
           QUEUE_NAME="airing-cal-media"
+          SYNC_TRIGGER_QUEUE_NAME="airing-cal-sync-trigger"
 
           pnpm exec wrangler kv namespace list > "$RUNNER_TEMP/kv-namespaces.json"
           KV_ID="$(jq -r --arg title "$KV_TITLE" '.[] | select(.title == $title) | .id' "$RUNNER_TEMP/kv-namespaces.json" | head -n 1)"
@@ -99,6 +100,12 @@ jobs:
             echo "Queue exists: $QUEUE_NAME"
           else
             pnpm exec wrangler queues create "$QUEUE_NAME"
+          fi
+
+          if pnpm exec wrangler queues info "$SYNC_TRIGGER_QUEUE_NAME" > /dev/null 2>&1; then
+            echo "Queue exists: $SYNC_TRIGGER_QUEUE_NAME"
+          else
+            pnpm exec wrangler queues create "$SYNC_TRIGGER_QUEUE_NAME"
           fi
 
           echo "kv_id=$KV_ID" >> "$GITHUB_OUTPUT"
@@ -192,8 +199,27 @@ jobs:
             echo "Wrangler log not found: $WRANGLER_LOG_PATH"
           fi
 
-  deploy_frontend_worker:
+  trigger_deploy_sync:
     needs: [validate, deploy_internal_workers]
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      SYNC_TRIGGER_QUEUE_NAME: airing-cal-sync-trigger
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Trigger sync-worker once after deployment
+        run: node scripts/push-sync-trigger.mjs
+
+  deploy_frontend_worker:
+    needs: [validate, deploy_internal_workers, trigger_deploy_sync]
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

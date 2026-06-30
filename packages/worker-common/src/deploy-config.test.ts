@@ -9,7 +9,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const appConfigs = [
   ['frontend-worker', ['[[services]]', 'READ_WORKER']],
   ['read-worker', ['[[kv_namespaces]]', '[[r2_buckets]]']],
-  ['sync-worker', ['[[queues.producers]]', '[triggers]', '0 * * * *']],
+  ['sync-worker', ['[[queues.producers]]', '[[queues.consumers]]', '[triggers]', '0 * * * *']],
   ['media-worker', ['[[queues.consumers]]', '[[kv_namespaces]]', '[[r2_buckets]]']],
 ] as const
 
@@ -28,7 +28,7 @@ test('Cloudflare resource names use the AiringCal prefix', () => {
   const expected = new Map([
     ['frontend-worker', ['name = "airing-cal-frontend"', 'service = "airing-cal-read"']],
     ['read-worker', ['name = "airing-cal-read"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-images"']],
-    ['sync-worker', ['name = "airing-cal-sync"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'queue = "airing-cal-media"']],
+    ['sync-worker', ['name = "airing-cal-sync"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'queue = "airing-cal-media"', 'queue = "airing-cal-sync-trigger"']],
     ['media-worker', ['name = "airing-cal-media"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-images"', 'queue = "airing-cal-media"']],
   ])
 
@@ -56,7 +56,10 @@ test('deploy workflow pre-checks resources, resolves KV id, and avoids secret or
   assert.match(workflow, /wrangler r2 bucket create "\$R2_BUCKET"/, 'workflow should create the R2 bucket when missing')
   assert.match(workflow, /wrangler queues info "\$QUEUE_NAME"/, 'workflow should pre-check the Queue')
   assert.match(workflow, /wrangler queues create "\$QUEUE_NAME"/, 'workflow should create the Queue when missing')
+  assert.match(workflow, /wrangler queues info "\$SYNC_TRIGGER_QUEUE_NAME"/, 'workflow should pre-check the sync trigger Queue')
+  assert.match(workflow, /wrangler queues create "\$SYNC_TRIGGER_QUEUE_NAME"/, 'workflow should create the sync trigger Queue when missing')
   assert.match(workflow, /node scripts\/list-cloudflare-crons\.mjs/, 'workflow should list Cloudflare cron triggers before deploying')
+  assert.match(workflow, /node scripts\/push-sync-trigger\.mjs/, 'workflow should trigger sync-worker once after internal worker deployment')
   assert.match(workflow, /replaceAll\('<AIRING_CAL_KV_NAMESPACE_ID>', kvId\)/, 'workflow should resolve the KV namespace id in temporary deploy configs')
   assert.match(workflow, /deploy_internal_workers:/, 'workflow should deploy internal workers through a matrix job')
   assert.match(workflow, /deploy_frontend_worker:/, 'workflow should deploy the public frontend after internal workers')
@@ -96,7 +99,7 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['Some triggers failed to deploy for airing-cal-sync', '/workers/scripts/airing-cal-sync/schedules', 'Workers Scripts` 是 `Edit`', 'Node 20 deprecation 提示不是这次失败原因']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document sync-worker cron trigger permission troubleshooting: ${fragment}`)
   }
-  for (const fragment of ['pre-check Cloudflare 资源', 'wrangler.deploy.toml', '找不到就创建']) {
+  for (const fragment of ['pre-check Cloudflare 资源', 'wrangler.deploy.toml', '找不到就创建', 'airing-cal-sync-trigger', '部署完成后自动投递一次']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document CI resource provisioning: ${fragment}`)
   }
   for (const fragment of ['https://next.bgm.tv/demo/access-token', 'https://bgm.tv/user/sai', 'sai,another_user', '只配置在 `airing-cal-sync`']) {

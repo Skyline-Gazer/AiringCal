@@ -125,3 +125,31 @@ test('scheduled sync skips non-four-hour cron ticks without upstream work', asyn
     globalThis.fetch = originalFetch
   }
 })
+
+test('queue trigger runs sync immediately without cron hour gating', async () => {
+  const kv = new MockKV()
+  const queueMessages: unknown[] = []
+  const originalFetch = globalThis.fetch
+  const upstream = mockFetch()
+  globalThis.fetch = upstream.fetch as typeof globalThis.fetch
+
+  try {
+    await worker.queue?.({
+      messages: [{ body: { type: 'deploy-sync' }, ack: () => {} }],
+    } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
+      BANGUMI_TOKEN: 'token-a',
+      BANGUMI_USERS: 'alice',
+      SYNC_MODE: 'merge',
+    } as any)
+
+    assert.ok(kv.values.has('snapshot:collections:watching'))
+    assert.ok(kv.values.has('snapshot:calendar'))
+    assert.ok(kv.values.has('sync:meta'))
+    assert.equal(queueMessages.length, 1)
+    assert.equal(upstream.calls.some((url) => url.includes('/collections?')), true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

@@ -16,3 +16,9 @@ id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 [[queues.producers]]
 binding = "MEDIA_QUEUE"
 queue = "airing-cal-media"
+
+[[queues.consumers]]
+queue = "airing-cal-sync-trigger"
+max_batch_size = 1
+max_batch_timeout = 5
+max_retries = 3

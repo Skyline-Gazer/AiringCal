@@ -16,6 +16,10 @@ interface SyncEnv {
   SYNC_MODE?: 'merge'
 }
 
+interface QueueBatch {
+  messages: Array<{ body: unknown; ack?: () => void }>
+}
+
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
 
 function usersFromEnv(value: string): string[] {
@@ -85,5 +89,12 @@ async function scheduled(event: { scheduledTime?: number }, env: SyncEnv, ctx: {
   await promise
 }
 
+async function queue(batch: QueueBatch, env: SyncEnv): Promise<void> {
+  for (const message of batch.messages) {
+    await runScheduledSync(env)
+    message.ack?.()
+  }
+}
+
 export { runScheduledSync, shouldRunSync }
-export default { fetch, scheduled }
+export default { fetch, scheduled, queue }

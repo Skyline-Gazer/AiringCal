@@ -76,6 +76,7 @@ CI 也会在部署前自动运行这个检查。这个检查会把 `airing-cal-s
 | KV namespace title | `airing-cal-kv` |
 | R2 bucket | `airing-cal-images` |
 | Queue | `airing-cal-media` |
+| Queue | `airing-cal-sync-trigger` |
 | Service binding | `READ_WORKER -> airing-cal-read` |
 
 当前绑定名：
@@ -84,14 +85,14 @@ CI 也会在部署前自动运行这个检查。这个检查会把 `airing-cal-s
 |--------|---------|
 | `airing-cal-frontend` | `READ_WORKER` |
 | `airing-cal-read` | `AIRING_CAL_KV`, `AIRING_CAL_R2` |
-| `airing-cal-sync` | `AIRING_CAL_KV`, `MEDIA_QUEUE` |
+| `airing-cal-sync` | `AIRING_CAL_KV`, `MEDIA_QUEUE`, `airing-cal-sync-trigger` queue consumer |
 | `airing-cal-media` | `AIRING_CAL_KV`, `AIRING_CAL_R2` |
 
 CI 会用上面的固定名称做资源 pre-check：
 
 - KV：先执行 namespace list，找不到 `airing-cal-kv` 就创建，再读取实际 namespace ID。
 - R2：先检查 `airing-cal-images`，找不到就创建。
-- Queue：先检查 `airing-cal-media`，找不到就创建。
+- Queue：先检查 `airing-cal-media` 和 `airing-cal-sync-trigger`，找不到就创建。
 
 KV 比较特殊：`wrangler.toml` 里的 `kv_namespaces.id` 不是 namespace title，而是 Cloudflare 生成的 namespace ID。仓库里的 3 个 Worker config 保留占位符：
 
@@ -102,6 +103,8 @@ id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 CI 不会把这个 ID 写回仓库。部署时会临时生成 `apps/*/wrangler.deploy.toml`，只在临时 config 里替换成真实 KV ID，然后用临时 config 部署。这样本地文件保持干净，也不用你在 3 个 Worker 里重复手填。
 
 CI 仍然不会上传运行时 secret，也不会手写 `curl` 去改 cron schedule。Cron schedule 只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers]`；部署 `airing-cal-sync` 时，Wrangler 会自动把这个配置同步到 Cloudflare Cron Triggers。
+
+为了避免首次部署后页面长时间停在“KV 无数据”，CI 会在 read/media/sync 这三个内部 Worker 部署完成后，向 `airing-cal-sync-trigger` 投递一条 `deploy-sync` 消息。`airing-cal-sync` 消费这条消息后会立即执行一次完整同步；这个触发不占 Cron Trigger 额度，也不暴露公开同步 URL。
 
 ## 最小配置
 
@@ -289,7 +292,8 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 5. pre-check Cloudflare 资源：KV/R2/Queue 存在就复用，不存在就按固定名称创建
 6. 读取真实 KV namespace ID，生成临时 `wrangler.deploy.toml`
 7. 用 matrix 部署 `airing-cal-read`、`airing-cal-media`、`airing-cal-sync`
-8. 最后部署 `airing-cal-frontend`
+8. 向 `airing-cal-sync-trigger` 部署完成后自动投递一次同步消息
+9. 最后部署 `airing-cal-frontend`
 
 部署步骤直接运行 `pnpm exec wrangler deploy`，不再通过 `cloudflare/wrangler-action` 包装。CI 会设置 `WRANGLER_LOG=debug` 和 `WRANGLER_LOG_PATH`；如果部署失败，会打印脱敏后的 Wrangler debug log，便于看到 Cloudflare API 返回的真实错误。
 
