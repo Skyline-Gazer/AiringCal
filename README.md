@@ -77,19 +77,21 @@ crons = ["0 */4 * * *"]
 | `airing-cal-sync` | `AIRING_CAL_KV`, `MEDIA_QUEUE` |
 | `airing-cal-media` | `AIRING_CAL_KV`, `AIRING_CAL_R2` |
 
-常规 CI 部署不会创建 KV/R2/Queue，不会上传运行时 secret，不会改写 `wrangler.toml`，也不会调用 Cloudflare REST API 修改 cron schedule。请先在 Cloudflare 侧创建资源，再部署。
+CI 会用上面的固定名称做资源 pre-check：
 
-KV 比较特殊：`wrangler.toml` 里的 `kv_namespaces.id` 不是 namespace title，而是 Cloudflare 生成的 namespace ID。创建 `airing-cal-kv` 后，把实际 ID 填到这 3 个文件中：
+- KV：先执行 namespace list，找不到 `airing-cal-kv` 就创建，再读取实际 namespace ID。
+- R2：先检查 `airing-cal-images`，找不到就创建。
+- Queue：先检查 `airing-cal-media`，找不到就创建。
 
-- `apps/read-worker/wrangler.toml`
-- `apps/sync-worker/wrangler.toml`
-- `apps/media-worker/wrangler.toml`
-
-需要替换的占位符是：
+KV 比较特殊：`wrangler.toml` 里的 `kv_namespaces.id` 不是 namespace title，而是 Cloudflare 生成的 namespace ID。仓库里的 3 个 Worker config 保留占位符：
 
 ```toml
 id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 ```
+
+CI 不会把这个 ID 写回仓库。部署时会临时生成 `apps/*/wrangler.deploy.toml`，只在临时 config 里替换成真实 KV ID，然后用临时 config 部署。这样本地文件保持干净，也不用你在 3 个 Worker 里重复手填。
+
+CI 仍然不会上传运行时 secret，也不会调用 Cloudflare REST API 修改 cron schedule。Cron schedule 只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers]`。
 
 ## 最小配置
 
@@ -111,9 +113,9 @@ Cloudflare Dashboard -> My Profile -> API Tokens -> Create custom token。
 | 范围 | 权限 | 用途 |
 |------|------|------|
 | Account | `Workers Scripts: Edit` | 部署 4 个 Worker script |
-| Account | `Workers KV Storage: Edit` | 部署带 `airing-cal-kv` 绑定的 Worker |
-| Account | `Workers R2 Storage: Edit` | 部署带 `airing-cal-images` 绑定的 Worker |
-| Account | `Workers Queues: Edit` | 部署 Queue producer/consumer binding |
+| Account | `Workers KV Storage: Edit` | 检查/创建 `airing-cal-kv`，并部署 KV binding |
+| Account | `Workers R2 Storage: Edit` | 检查/创建 `airing-cal-images`，并部署 R2 binding |
+| Account | `Workers Queues: Edit` | 检查/创建 `airing-cal-media`，并部署 Queue binding |
 | Account | `Account Settings: Read` | 让 Wrangler 解析账户信息 |
 | User | `User Details: Read` | 让 Wrangler 识别 API token 用户 |
 
@@ -122,7 +124,6 @@ Cloudflare Dashboard -> My Profile -> API Tokens -> Create custom token。
 | 权限 | 是否需要 |
 |------|----------|
 | Zone - Workers Routes: Edit | 不需要，除非以后在 `wrangler.toml` 中加入 route/custom domain 部署 |
-| 创建 KV namespace / R2 bucket / Queue 的权限 | 不需要，资源在常规部署外预先创建 |
 | 通过 CI 上传 Worker secrets | 不需要，运行时 secret 在 Cloudflare Dashboard 配置 |
 
 ### Cloudflare Worker 变量
@@ -227,12 +228,12 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 2. `pnpm typecheck`
 3. `pnpm test`
 4. `pnpm build:check`
-5. 部署 `airing-cal-read`
-6. 部署 `airing-cal-media`
-7. 部署 `airing-cal-sync`
-8. 部署 `airing-cal-frontend`
+5. pre-check Cloudflare 资源：KV/R2/Queue 存在就复用，不存在就按固定名称创建
+6. 读取真实 KV namespace ID，生成临时 `wrangler.deploy.toml`
+7. 用 matrix 部署 `airing-cal-read`、`airing-cal-media`、`airing-cal-sync`
+8. 最后部署 `airing-cal-frontend`
 
-这个顺序保证内部 read/media/sync Worker 先更新，最后再更新公开入口 frontend Worker。
+这个顺序保证内部 read/media/sync Worker 先更新，最后再更新公开入口 frontend Worker。首次部署时，`airing-cal-frontend` 的 service binding 需要目标 `airing-cal-read` 已经存在，所以 frontend 不放进并行 matrix。
 
 ## Cache 与 NSFW
 

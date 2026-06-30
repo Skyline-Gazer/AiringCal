@@ -42,21 +42,27 @@ test('Cloudflare resource names use the AiringCal prefix', () => {
   }
 })
 
-test('deploy workflow uses checked-in app configs without provisioning or schedule mutation', () => {
+test('deploy workflow pre-checks resources, resolves KV id, and avoids secret or schedule mutation', () => {
   const workflow = readFileSync(resolve(root, '.github/workflows/deploy.yml'), 'utf8')
-  for (const app of appConfigs.map(([app]) => app)) {
-    assert.match(workflow, new RegExp(`apps/${app}/wrangler\\.toml`), `workflow should deploy ${app} config`)
+  for (const app of ['read-worker', 'sync-worker', 'media-worker']) {
+    assert.match(workflow, new RegExp(`apps/${app}/wrangler\\.deploy\\.toml`), `workflow should deploy resolved ${app} config`)
   }
+  assert.match(workflow, /apps\/frontend-worker\/wrangler\.toml/, 'workflow should deploy frontend config')
   assert.match(workflow, /CLOUDFLARE_API_TOKEN:\s*\$\{\{ secrets\.CF_API_TOKEN \}\}/, 'workflow should expose CLOUDFLARE_API_TOKEN to wrangler')
   assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID:\s*\$\{\{ secrets\.CF_ACCOUNT_ID \}\}/, 'workflow should expose CLOUDFLARE_ACCOUNT_ID to wrangler')
+  assert.match(workflow, /wrangler kv namespace list/, 'workflow should pre-check KV namespaces')
+  assert.match(workflow, /wrangler kv namespace create "\$KV_TITLE"/, 'workflow should create the KV namespace when missing')
+  assert.match(workflow, /wrangler r2 bucket info "\$R2_BUCKET" --json/, 'workflow should pre-check the R2 bucket')
+  assert.match(workflow, /wrangler r2 bucket create "\$R2_BUCKET"/, 'workflow should create the R2 bucket when missing')
+  assert.match(workflow, /wrangler queues info "\$QUEUE_NAME"/, 'workflow should pre-check the Queue')
+  assert.match(workflow, /wrangler queues create "\$QUEUE_NAME"/, 'workflow should create the Queue when missing')
+  assert.match(workflow, /replaceAll\('<AIRING_CAL_KV_NAMESPACE_ID>', kvId\)/, 'workflow should resolve the KV namespace id in temporary deploy configs')
+  assert.match(workflow, /deploy_internal_workers:/, 'workflow should deploy internal workers through a matrix job')
+  assert.match(workflow, /deploy_frontend_worker:/, 'workflow should deploy the public frontend after internal workers')
 
   const forbidden = [
-    'wrangler kv namespace create',
-    'wrangler r2 bucket create',
-    'wrangler kv namespace list',
     'wrangler secret put',
     'CRON_SECRET',
-    'Inject KV id',
     'python3 -',
     '/schedules',
     '/__cron/sync',
@@ -74,7 +80,10 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['Workers Scripts: Edit', 'Workers KV Storage: Edit', 'Workers R2 Storage: Edit', 'Workers Queues: Edit', 'Account Settings: Read', 'User Details: Read']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document CF_API_TOKEN permission ${fragment}`)
   }
-  for (const fragment of ['CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', 'wrangler kv namespace create', 'wrangler r2 bucket create']) {
+  for (const fragment of ['pre-check Cloudflare 资源', 'wrangler.deploy.toml', '找不到就创建']) {
+    assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document CI resource provisioning: ${fragment}`)
+  }
+  for (const fragment of ['CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large']) {
     assert.doesNotMatch(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should not mention ${fragment}`)
   }
 })

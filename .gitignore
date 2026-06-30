@@ -115,6 +115,7 @@ package-lock.json
 
 # Cloudflare Wrangler runtime cache
 .wrangler/
+apps/*/wrangler.deploy.toml
 
 # Local isolated development worktrees
 .worktrees/

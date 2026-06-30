@@ -11,11 +11,8 @@ on:
         default: dev
 
 jobs:
-  deploy:
+  validate:
     runs-on: ubuntu-latest
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,26 +38,164 @@ jobs:
       - name: Build Check
         run: pnpm build:check
 
-      - name: Deploy Read Worker
-        uses: cloudflare/wrangler-action@v3
+  provision_cloudflare:
+    needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      kv_id: ${{ steps.resources.outputs.kv_id }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
         with:
-          apiToken: ${{ secrets.CF_API_TOKEN }}
-          accountId: ${{ secrets.CF_ACCOUNT_ID }}
-          command: deploy --config apps/read-worker/wrangler.toml
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name }}
 
-      - name: Deploy Media Worker
-        uses: cloudflare/wrangler-action@v3
+      - uses: pnpm/action-setup@v4
         with:
-          apiToken: ${{ secrets.CF_API_TOKEN }}
-          accountId: ${{ secrets.CF_ACCOUNT_ID }}
-          command: deploy --config apps/media-worker/wrangler.toml
+          version: 9.15.9
 
-      - name: Deploy Sync Worker
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Pre-check or create Cloudflare resources
+        id: resources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KV_TITLE="airing-cal-kv"
+          R2_BUCKET="airing-cal-images"
+          QUEUE_NAME="airing-cal-media"
+
+          pnpm exec wrangler kv namespace list > "$RUNNER_TEMP/kv-namespaces.json"
+          KV_ID="$(jq -r --arg title "$KV_TITLE" '.[] | select(.title == $title) | .id' "$RUNNER_TEMP/kv-namespaces.json" | head -n 1)"
+
+          if [ -z "$KV_ID" ]; then
+            pnpm exec wrangler kv namespace create "$KV_TITLE"
+            pnpm exec wrangler kv namespace list > "$RUNNER_TEMP/kv-namespaces.json"
+            KV_ID="$(jq -r --arg title "$KV_TITLE" '.[] | select(.title == $title) | .id' "$RUNNER_TEMP/kv-namespaces.json" | head -n 1)"
+          fi
+
+          if [ -z "$KV_ID" ]; then
+            echo "Failed to find or create KV namespace: $KV_TITLE" >&2
+            exit 1
+          fi
+
+          if pnpm exec wrangler r2 bucket info "$R2_BUCKET" --json > /dev/null 2>&1; then
+            echo "R2 bucket exists: $R2_BUCKET"
+          else
+            pnpm exec wrangler r2 bucket create "$R2_BUCKET"
+          fi
+
+          if pnpm exec wrangler queues info "$QUEUE_NAME" > /dev/null 2>&1; then
+            echo "Queue exists: $QUEUE_NAME"
+          else
+            pnpm exec wrangler queues create "$QUEUE_NAME"
+          fi
+
+          echo "kv_id=$KV_ID" >> "$GITHUB_OUTPUT"
+
+  deploy_internal_workers:
+    needs: [validate, provision_cloudflare]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - app: read-worker
+            source_config: apps/read-worker/wrangler.toml
+            deploy_config: apps/read-worker/wrangler.deploy.toml
+          - app: media-worker
+            source_config: apps/media-worker/wrangler.toml
+            deploy_config: apps/media-worker/wrangler.deploy.toml
+          - app: sync-worker
+            source_config: apps/sync-worker/wrangler.toml
+            deploy_config: apps/sync-worker/wrangler.deploy.toml
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Prepare resolved Wrangler config
+        env:
+          SOURCE_CONFIG: ${{ matrix.source_config }}
+          DEPLOY_CONFIG: ${{ matrix.deploy_config }}
+          AIRING_CAL_KV_NAMESPACE_ID: ${{ needs.provision_cloudflare.outputs.kv_id }}
+        run: |
+          node - <<'NODE'
+          const { readFileSync, writeFileSync } = require('node:fs')
+
+          const sourceConfig = process.env.SOURCE_CONFIG
+          const deployConfig = process.env.DEPLOY_CONFIG
+          const kvId = process.env.AIRING_CAL_KV_NAMESPACE_ID
+
+          if (!kvId) {
+            throw new Error('AIRING_CAL_KV_NAMESPACE_ID is empty')
+          }
+
+          const source = readFileSync(sourceConfig, 'utf8')
+          const resolved = source.replaceAll('<AIRING_CAL_KV_NAMESPACE_ID>', kvId)
+
+          if (resolved.includes('<AIRING_CAL_KV_NAMESPACE_ID>')) {
+            throw new Error(`Failed to resolve KV namespace id in ${sourceConfig}`)
+          }
+
+          writeFileSync(deployConfig, resolved)
+          NODE
+
+      - name: Build Check
+        run: pnpm exec wrangler deploy --dry-run --outdir apps/${{ matrix.app }}/dist --config ${{ matrix.deploy_config }}
+
+      - name: Deploy ${{ matrix.app }}
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ secrets.CF_ACCOUNT_ID }}
-          command: deploy --config apps/sync-worker/wrangler.toml
+          command: deploy --config ${{ matrix.deploy_config }}
+
+  deploy_frontend_worker:
+    needs: [validate, deploy_internal_workers]
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build Check
+        run: pnpm exec wrangler deploy --dry-run --outdir apps/frontend-worker/dist --config apps/frontend-worker/wrangler.toml
 
       - name: Deploy Frontend Worker
         uses: cloudflare/wrangler-action@v3
