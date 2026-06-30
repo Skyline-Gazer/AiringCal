@@ -1,11 +1,11 @@
 {
-  "name": "bangumi-tv",
+  "name": "airing-cal",
   "version": "2.0.0",
   "private": true,
   "packageManager": "pnpm@9.15.9",
   "description": "render your bangumi.tv progress on a static web page",
   "scripts": {
-    "dev": "pnpm -F @bangumi-tv/frontend-worker dev",
+    "dev": "pnpm -F @airing-cal/frontend-worker dev",
     "deploy": "pnpm -r --filter './apps/*' --if-present deploy",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
@@ -13,7 +13,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/markd3ng/BangumiTV.git"
+    "url": "git+https://github.com/markd3ng/AiringCal.git"
   },
   "keywords": [
     "bangumi",

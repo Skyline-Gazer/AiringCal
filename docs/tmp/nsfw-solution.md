@@ -27,7 +27,7 @@
 
 ```bash
 curl -sL \
-  -H 'User-Agent: markd3ng/BangumiTV (https://github.com/markd3ng/BangumiTV)' \
+  -H 'User-Agent: markd3ng/AiringCal (https://github.com/markd3ng/AiringCal)' \
   -H 'Accept: application/json' \
   -w '\nHTTP_STATUS:%{http_code}\n' \
   https://api.bgm.tv/v0/subjects/23080

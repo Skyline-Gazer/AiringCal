@@ -24,10 +24,10 @@ importers:
 
   apps/frontend-worker:
     dependencies:
-      '@bangumi-tv/widget':
+      '@airing-cal/widget':
         specifier: workspace:*
         version: link:../../packages/widget
-      '@bangumi-tv/worker-common':
+      '@airing-cal/worker-common':
         specifier: workspace:*
         version: link:../../packages/worker-common
       hono:
@@ -40,16 +40,16 @@ importers:
 
   apps/media-worker:
     dependencies:
-      '@bangumi-tv/bgm-api':
+      '@airing-cal/bgm-api':
         specifier: workspace:*
         version: link:../../packages/bgm-api
-      '@bangumi-tv/domain':
+      '@airing-cal/domain':
         specifier: workspace:*
         version: link:../../packages/domain
-      '@bangumi-tv/storage':
+      '@airing-cal/storage':
         specifier: workspace:*
         version: link:../../packages/storage
-      '@bangumi-tv/worker-common':
+      '@airing-cal/worker-common':
         specifier: workspace:*
         version: link:../../packages/worker-common
     devDependencies:
@@ -59,13 +59,13 @@ importers:
 
   apps/read-worker:
     dependencies:
-      '@bangumi-tv/domain':
+      '@airing-cal/domain':
         specifier: workspace:*
         version: link:../../packages/domain
-      '@bangumi-tv/storage':
+      '@airing-cal/storage':
         specifier: workspace:*
         version: link:../../packages/storage
-      '@bangumi-tv/worker-common':
+      '@airing-cal/worker-common':
         specifier: workspace:*
         version: link:../../packages/worker-common
       hono:
@@ -78,16 +78,16 @@ importers:
 
   apps/sync-worker:
     dependencies:
-      '@bangumi-tv/bgm-api':
+      '@airing-cal/bgm-api':
         specifier: workspace:*
         version: link:../../packages/bgm-api
-      '@bangumi-tv/domain':
+      '@airing-cal/domain':
         specifier: workspace:*
         version: link:../../packages/domain
-      '@bangumi-tv/storage':
+      '@airing-cal/storage':
         specifier: workspace:*
         version: link:../../packages/storage
-      '@bangumi-tv/worker-common':
+      '@airing-cal/worker-common':
         specifier: workspace:*
         version: link:../../packages/worker-common
     devDependencies:

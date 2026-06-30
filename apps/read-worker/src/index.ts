@@ -1,16 +1,16 @@
 export const appBoundary = 'read-worker'
 
-import { imageOriginalKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey } from '@bangumi-tv/storage'
-import { sanitizeErrorMessage } from '@bangumi-tv/worker-common'
+import { imageOriginalKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey } from '@airing-cal/storage'
+import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 interface ReadEnv {
-  BANGUMI_KV: {
+  AIRING_CAL_KV: {
     get(key: string, type: 'json'): Promise<unknown>
     put(key: string, value: string): Promise<void>
     delete(key: string): Promise<void>
     list?(options?: { prefix?: string }): Promise<{ keys: Array<{ name: string }> }>
   }
-  BANGUMI_R2: {
+  AIRING_CAL_R2: {
     get(key: string): Promise<{
       arrayBuffer(): Promise<ArrayBuffer>
       httpMetadata?: { contentType?: string }
@@ -47,7 +47,7 @@ function sanitizeStatus(value: any): any {
 }
 
 async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
-  const storage = new KVStorage(env.BANGUMI_KV)
+  const storage = new KVStorage(env.AIRING_CAL_KV)
   const type = validCollectionType(url.searchParams.get('type'))
   const data = await storage.get<unknown[]>(snapshotCollectionsKey(type)) ?? []
   const types = await storage.get<Record<string, number>>(snapshotSummaryKey()) ?? {}
@@ -55,15 +55,15 @@ async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
 }
 
 async function handleCalendar(env: ReadEnv): Promise<Response> {
-  const storage = new KVStorage(env.BANGUMI_KV)
+  const storage = new KVStorage(env.AIRING_CAL_KV)
   return json(await storage.get(snapshotCalendarKey()) ?? [])
 }
 
 async function handleCache(env: ReadEnv): Promise<Response> {
-  const list = await env.BANGUMI_KV.list?.({ prefix: 'image:status:' })
+  const list = await env.AIRING_CAL_KV.list?.({ prefix: 'image:status:' })
   const entries = []
   for (const key of list?.keys ?? []) {
-    const status = await env.BANGUMI_KV.get(key.name, 'json')
+    const status = await env.AIRING_CAL_KV.get(key.name, 'json')
     if (status) entries.push(sanitizeStatus(status))
   }
   const counts = {
@@ -90,7 +90,7 @@ async function handleCache(env: ReadEnv): Promise<Response> {
 async function handleImage(pathname: string, env: ReadEnv): Promise<Response> {
   const hash = pathname.split('/').pop() ?? ''
   if (!/^[0-9a-f]{64}$/i.test(hash)) return new Response('Invalid hash', { status: 400 })
-  const object = await env.BANGUMI_R2.get(imageOriginalKey(hash))
+  const object = await env.AIRING_CAL_R2.get(imageOriginalKey(hash))
   if (!object) return new Response('Not found', { status: 404 })
   const headers = new Headers({
     'Cache-Control': 'public, max-age=31536000, immutable',

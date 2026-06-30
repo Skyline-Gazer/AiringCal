@@ -1,5 +1,5 @@
 const BGM_BASE = 'https://api.bgm.tv'
-const UA = 'markd3ng/BangumiTV (https://github.com/markd3ng/BangumiTV)'
+const UA = 'markd3ng/AiringCal (https://github.com/markd3ng/AiringCal)'
 
 export type TokenStatus =
   | { status: 'valid'; expires: number }

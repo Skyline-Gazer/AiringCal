@@ -73,7 +73,7 @@ test('scheduled sync writes new snapshot keys and enqueues media work without im
 
   try {
     await worker.scheduled({} as any, {
-      BANGUMI_KV: kv,
+      AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
       BANGUMI_USERS: 'alice',

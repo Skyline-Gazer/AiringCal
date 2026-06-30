@@ -1,9 +1,9 @@
 export const appBoundary = 'media-worker'
 
-import { BgmClient } from '@bangumi-tv/bgm-api'
-import { imageRef, subjectMetaFromNotFound } from '@bangumi-tv/domain'
-import { imageIndexKey, imageStatusKey, KVStorage, R2ImageStore, subjectMetaKey, type ImageSourceSize } from '@bangumi-tv/storage'
-import { sanitizeErrorMessage } from '@bangumi-tv/worker-common'
+import { BgmClient } from '@airing-cal/bgm-api'
+import { imageRef, subjectMetaFromNotFound } from '@airing-cal/domain'
+import { imageIndexKey, imageStatusKey, KVStorage, R2ImageStore, subjectMetaKey, type ImageSourceSize } from '@airing-cal/storage'
+import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 interface MediaJob {
   subject_id: number
@@ -15,12 +15,12 @@ interface MediaJob {
 }
 
 interface MediaEnv {
-  BANGUMI_KV: {
+  AIRING_CAL_KV: {
     get(key: string, type: 'json'): Promise<unknown>
     put(key: string, value: string): Promise<void>
     delete(key: string): Promise<void>
   }
-  BANGUMI_R2: ConstructorParameters<typeof R2ImageStore>[0]
+  AIRING_CAL_R2: ConstructorParameters<typeof R2ImageStore>[0]
   BANGUMI_TOKEN: string
 }
 
@@ -103,8 +103,8 @@ async function processSubjectMeta(job: MediaJob, client: BgmClient, storage: KVS
 }
 
 async function processJob(job: MediaJob, env: MediaEnv): Promise<void> {
-  const storage = new KVStorage(env.BANGUMI_KV)
-  const imageStore = new R2ImageStore(env.BANGUMI_R2)
+  const storage = new KVStorage(env.AIRING_CAL_KV)
+  const imageStore = new R2ImageStore(env.AIRING_CAL_R2)
   const client = new BgmClient(env.BANGUMI_TOKEN)
   const now = Math.floor(Date.now() / 1000)
 

@@ -17,7 +17,7 @@ function env() {
       },
     },
     BANGUMI_GIT_COMMIT_SHA: '0123456789abcdef',
-    BANGUMI_GIT_REPOSITORY_URL: 'https://github.com/markd3ng/BangumiTV',
+    BANGUMI_GIT_REPOSITORY_URL: 'https://github.com/markd3ng/AiringCal',
   }
 }
 

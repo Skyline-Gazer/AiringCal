@@ -1,4 +1,4 @@
-export const packageBoundary = '@bangumi-tv/storage'
+export const packageBoundary = '@airing-cal/storage'
 
 export type CollectionType = 'want' | 'watched' | 'watching' | 'on_hold' | 'dropped'
 export type ImageSourceSize = 'common' | 'large'

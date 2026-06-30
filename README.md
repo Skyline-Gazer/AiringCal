@@ -1,8 +1,8 @@
-# BangumiTV
+# AiringCal
 
 > 在静态页面中渲染你的 Bangumi 追番进度
 
-BangumiTV 现在是 Cloudflare Workers monorepo：公开页面、只读数据、定时同步、媒体补全分别部署，避免把公开请求、KV/R2 读取、bgm.tv 抓取和图片下载挤在同一个 Worker 调用预算里。
+AiringCal 现在是 Cloudflare Workers monorepo：公开页面、只读数据、定时同步、媒体补全分别部署，避免把公开请求、KV/R2 读取、bgm.tv 抓取和图片下载挤在同一个 Worker 调用预算里。
 
 ## Architecture
 
@@ -17,11 +17,11 @@ Shared packages:
 
 | Package | Responsibility |
 |---------|----------------|
-| `@bangumi-tv/bgm-api` | bgm.tv client、OpenAPI-pinned types、token/API helpers |
-| `@bangumi-tv/domain` | snapshot merge、image ref、subject meta、queue/data contracts |
-| `@bangumi-tv/storage` | KV/R2 adapters and key builders |
-| `@bangumi-tv/widget` | HTML shell, footer, cache page, widget JS/CSS assets |
-| `@bangumi-tv/worker-common` | public errors, safe headers, sanitization, deploy/docs guard tests |
+| `@airing-cal/bgm-api` | bgm.tv client、OpenAPI-pinned types、token/API helpers |
+| `@airing-cal/domain` | snapshot merge、image ref、subject meta、queue/data contracts |
+| `@airing-cal/storage` | KV/R2 adapters and key builders |
+| `@airing-cal/widget` | HTML shell, footer, cache page, widget JS/CSS assets |
+| `@airing-cal/worker-common` | public errors, safe headers, sanitization, deploy/docs guard tests |
 
 ## Public Surface
 
@@ -98,10 +98,10 @@ Routine deployment uses checked-in app configs only:
 
 | App config | Worker |
 |------------|--------|
-| `apps/frontend-worker/wrangler.toml` | `bangumi-tv-frontend` |
-| `apps/read-worker/wrangler.toml` | `bangumi-tv-read` |
-| `apps/sync-worker/wrangler.toml` | `bangumi-tv-sync` |
-| `apps/media-worker/wrangler.toml` | `bangumi-tv-media` |
+| `apps/frontend-worker/wrangler.toml` | `airing-cal-frontend` |
+| `apps/read-worker/wrangler.toml` | `airing-cal-read` |
+| `apps/sync-worker/wrangler.toml` | `airing-cal-sync` |
+| `apps/media-worker/wrangler.toml` | `airing-cal-media` |
 
 Provision Cloudflare resources outside the normal deploy path, then put the real resource identifiers in the app configs. The GitHub Actions workflow does not create KV/R2 resources, list namespaces, rewrite configs, upload secrets in a loop, or mutate schedules.
 
@@ -138,8 +138,8 @@ pnpm build:check
 Run one Worker at a time:
 
 ```bash
-pnpm -F @bangumi-tv/frontend-worker cf:types
-pnpm -F @bangumi-tv/frontend-worker build:check
+pnpm -F @airing-cal/frontend-worker cf:types
+pnpm -F @airing-cal/frontend-worker build:check
 ```
 
 Use each app's `wrangler.toml` as the source of truth for local and deployed bindings. `wrangler types worker-configuration.d.ts --check --config wrangler.toml` is part of every app build check.

@@ -1,4 +1,4 @@
-export const packageBoundary = '@bangumi-tv/worker-common'
+export const packageBoundary = '@airing-cal/worker-common'
 
 const PUBLIC_ERROR_MESSAGES: Record<string, string> = {
   BGM_AUTH: 'Authentication failed',

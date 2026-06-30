@@ -1,5 +1,5 @@
 {
-  "name": "@bangumi-tv/read-worker",
+  "name": "@airing-cal/read-worker",
   "version": "1.0.0",
   "type": "module",
   "main": "./src/index.ts",
@@ -12,9 +12,9 @@
     "test": "tsx --test"
   },
   "dependencies": {
-    "@bangumi-tv/domain": "workspace:*",
-    "@bangumi-tv/storage": "workspace:*",
-    "@bangumi-tv/worker-common": "workspace:*",
+    "@airing-cal/domain": "workspace:*",
+    "@airing-cal/storage": "workspace:*",
+    "@airing-cal/worker-common": "workspace:*",
     "hono": "^4.12.27"
   },
   "devDependencies": {

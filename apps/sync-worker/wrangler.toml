@@ -1,4 +1,4 @@
-name = "bangumi-tv-sync"
+name = "airing-cal-sync"
 main = "src/index.ts"
 compatibility_date = "2026-06-17"
 
@@ -9,9 +9,9 @@ SYNC_MODE = "merge"
 crons = ["0 */4 * * *"]
 
 [[kv_namespaces]]
-binding = "BANGUMI_KV"
-id = "bangumi-tv-kv"
+binding = "AIRING_CAL_KV"
+id = "airing-cal-kv"
 
 [[queues.producers]]
 binding = "MEDIA_QUEUE"
-queue = "bangumi-tv-media"
+queue = "airing-cal-media"

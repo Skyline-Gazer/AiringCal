@@ -24,11 +24,30 @@ test('each target worker has a checked-in Wrangler config with required bindings
   }
 })
 
+test('Cloudflare resource names use the AiringCal prefix', () => {
+  const expected = new Map([
+    ['frontend-worker', ['name = "airing-cal-frontend"', 'service = "airing-cal-read"', 'PUBLIC_REPOSITORY_URL = "https://github.com/markd3ng/AiringCal"']],
+    ['read-worker', ['name = "airing-cal-read"', 'id = "airing-cal-kv"', 'bucket_name = "airing-cal-images"']],
+    ['sync-worker', ['name = "airing-cal-sync"', 'id = "airing-cal-kv"', 'queue = "airing-cal-media"']],
+    ['media-worker', ['name = "airing-cal-media"', 'id = "airing-cal-kv"', 'bucket_name = "airing-cal-images"', 'queue = "airing-cal-media"']],
+  ])
+
+  for (const [app, expectedFragments] of expected) {
+    const config = readFileSync(resolve(root, 'apps', app, 'wrangler.toml'), 'utf8')
+    assert.doesNotMatch(config, /bangumi-tv/, `${app} config should not use old Cloudflare resource names`)
+    for (const fragment of expectedFragments) {
+      assert.match(config, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${app} config should include ${fragment}`)
+    }
+  }
+})
+
 test('deploy workflow uses checked-in app configs without provisioning or schedule mutation', () => {
   const workflow = readFileSync(resolve(root, '.github/workflows/deploy.yml'), 'utf8')
   for (const app of appConfigs.map(([app]) => app)) {
     assert.match(workflow, new RegExp(`apps/${app}/wrangler\\.toml`), `workflow should deploy ${app} config`)
   }
+  assert.match(workflow, /CLOUDFLARE_API_TOKEN:\s*\$\{\{ secrets\.CF_API_TOKEN \}\}/, 'workflow should expose CLOUDFLARE_API_TOKEN to wrangler')
+  assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID:\s*\$\{\{ secrets\.CF_ACCOUNT_ID \}\}/, 'workflow should expose CLOUDFLARE_ACCOUNT_ID to wrangler')
 
   const forbidden = [
     'wrangler kv namespace create',

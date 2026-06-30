@@ -1,4 +1,4 @@
-export const packageBoundary = '@bangumi-tv/widget'
+export const packageBoundary = '@airing-cal/widget'
 
 export interface BuildInfo {
   commitSha?: string
@@ -76,7 +76,7 @@ export function renderIndexPage(options: { build?: BuildInfo; verification?: Ver
   <meta name="viewport" content="width=device-width, initial-scale=1">
   ${renderWebmasterMeta(options.verification ?? {})}
   <link rel="stylesheet" href="/src/bangumi.css">
-  <title>BangumiTV</title>
+  <title>AiringCal</title>
 </head>
 <body>
   <div class="bgm-container"></div>
@@ -95,7 +95,7 @@ export function renderCachePage(options: { build?: BuildInfo; verification?: Ver
   <meta name="viewport" content="width=device-width, initial-scale=1">
   ${renderWebmasterMeta(options.verification ?? {})}
   <link rel="stylesheet" href="/src/bangumi.css">
-  <title>BangumiTV Cache</title>
+  <title>AiringCal Cache</title>
 </head>
 <body>
   <main class="bgm-cache-page">

@@ -1,4 +1,4 @@
-export const packageBoundary = '@bangumi-tv/domain'
+export const packageBoundary = '@airing-cal/domain'
 
 export type CollectionType = 'want' | 'watched' | 'watching' | 'on_hold' | 'dropped'
 

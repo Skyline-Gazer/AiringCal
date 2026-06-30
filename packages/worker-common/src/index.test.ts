@@ -3,5 +3,5 @@ import test from 'node:test'
 import { packageBoundary } from './index.ts'
 
 test('worker-common package boundary exposes its package name', () => {
-  assert.equal(packageBoundary, '@bangumi-tv/worker-common')
+  assert.equal(packageBoundary, '@airing-cal/worker-common')
 })

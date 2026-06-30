@@ -40,8 +40,8 @@ class MockR2 {
 
 function env(kv = new MockKV()) {
   return {
-    BANGUMI_KV: kv,
-    BANGUMI_R2: new MockR2(),
+    AIRING_CAL_KV: kv,
+    AIRING_CAL_R2: new MockR2(),
     NSFW_SHOW: 'true',
   }
 }

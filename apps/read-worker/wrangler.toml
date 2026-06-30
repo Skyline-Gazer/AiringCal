@@ -1,11 +1,11 @@
-name = "bangumi-tv-read"
+name = "airing-cal-read"
 main = "src/index.ts"
 compatibility_date = "2026-06-17"
 
 [[kv_namespaces]]
-binding = "BANGUMI_KV"
-id = "bangumi-tv-kv"
+binding = "AIRING_CAL_KV"
+id = "airing-cal-kv"
 
 [[r2_buckets]]
-binding = "BANGUMI_R2"
-bucket_name = "bangumi-tv-images"
+binding = "AIRING_CAL_R2"
+bucket_name = "airing-cal-images"

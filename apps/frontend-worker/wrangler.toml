@@ -1,10 +1,10 @@
-name = "bangumi-tv-frontend"
+name = "airing-cal-frontend"
 main = "src/index.ts"
 compatibility_date = "2026-06-17"
 
 [vars]
-PUBLIC_REPOSITORY_URL = "https://github.com/markd3ng/BangumiTV"
+PUBLIC_REPOSITORY_URL = "https://github.com/markd3ng/AiringCal"
 
 [[services]]
 binding = "READ_WORKER"
-service = "bangumi-tv-read"
+service = "airing-cal-read"

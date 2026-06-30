@@ -1,11 +1,11 @@
 export const appBoundary = 'sync-worker'
 
-import { BgmClient, fetchAllCollections } from '@bangumi-tv/bgm-api'
-import { mergeCollections } from '@bangumi-tv/domain'
-import { KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, syncMetaKey } from '@bangumi-tv/storage'
+import { BgmClient, fetchAllCollections } from '@airing-cal/bgm-api'
+import { mergeCollections } from '@airing-cal/domain'
+import { KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, syncMetaKey } from '@airing-cal/storage'
 
 interface SyncEnv {
-  BANGUMI_KV: {
+  AIRING_CAL_KV: {
     get(key: string, type: 'json'): Promise<unknown>
     put(key: string, value: string): Promise<void>
     delete(key: string): Promise<void>
@@ -31,7 +31,7 @@ function imageSources(collection: any): { common?: string; large?: string } {
 }
 
 async function runScheduledSync(env: SyncEnv): Promise<void> {
-  const storage = new KVStorage(env.BANGUMI_KV)
+  const storage = new KVStorage(env.AIRING_CAL_KV)
   const client = new BgmClient(env.BANGUMI_TOKEN)
   const users = usersFromEnv(env.BANGUMI_USERS)
   if (!users.length) throw new Error('sync-worker: BANGUMI_USERS is empty')

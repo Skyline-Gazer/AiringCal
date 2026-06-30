@@ -1,5 +1,5 @@
 {
-  "name": "@bangumi-tv/worker-common",
+  "name": "@airing-cal/worker-common",
   "version": "1.0.0",
   "type": "module",
   "main": "./src/index.ts",

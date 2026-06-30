@@ -1,17 +1,17 @@
-name = "bangumi-tv-media"
+name = "airing-cal-media"
 main = "src/index.ts"
 compatibility_date = "2026-06-17"
 
 [[kv_namespaces]]
-binding = "BANGUMI_KV"
-id = "bangumi-tv-kv"
+binding = "AIRING_CAL_KV"
+id = "airing-cal-kv"
 
 [[r2_buckets]]
-binding = "BANGUMI_R2"
-bucket_name = "bangumi-tv-images"
+binding = "AIRING_CAL_R2"
+bucket_name = "airing-cal-images"
 
 [[queues.consumers]]
-queue = "bangumi-tv-media"
+queue = "airing-cal-media"
 max_batch_size = 10
 max_batch_timeout = 30
 max_retries = 3

@@ -55,8 +55,8 @@ test('media-worker downloads common and large images, writes R2 and cache status
       title: 'A CN',
       images: { common: 'https://img.example/common.jpg', large: 'https://img.example/large.jpg' },
     }) as any, {
-      BANGUMI_KV: kv,
-      BANGUMI_R2: r2,
+      AIRING_CAL_KV: kv,
+      AIRING_CAL_R2: r2,
       BANGUMI_TOKEN: 'token-a',
     } as any)
 
@@ -97,8 +97,8 @@ test('media-worker treats subject detail 404 as restricted NSFW', async () => {
       title: 'A CN',
       images: { common: 'https://img.example/common.jpg' },
     }) as any, {
-      BANGUMI_KV: kv,
-      BANGUMI_R2: r2,
+      AIRING_CAL_KV: kv,
+      AIRING_CAL_R2: r2,
       BANGUMI_TOKEN: 'token-a',
     } as any)
 

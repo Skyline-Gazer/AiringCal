@@ -1,4 +1,4 @@
-export const packageBoundary = '@bangumi-tv/bgm-api'
+export const packageBoundary = '@airing-cal/bgm-api'
 
 export { BgmClient, BgmHttpError, BgmTimeoutError, BgmNetworkError } from './bgm-client.ts'
 export type {

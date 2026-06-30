@@ -3,5 +3,5 @@ import test from 'node:test'
 import { packageBoundary } from './index.ts'
 
 test('bgm-api package boundary exposes its package name', () => {
-  assert.equal(packageBoundary, '@bangumi-tv/bgm-api')
+  assert.equal(packageBoundary, '@airing-cal/bgm-api')
 })

@@ -589,8 +589,8 @@ Optional direct R2 binding is avoided unless `/image/:hash` performance requires
 Bindings:
 
 ```text
-BANGUMI_KV KV
-BANGUMI_R2 R2
+AIRING_CAL_KV KV
+AIRING_CAL_R2 R2
 ```
 
 ### `sync-worker`
@@ -598,7 +598,7 @@ BANGUMI_R2 R2
 Bindings:
 
 ```text
-BANGUMI_KV KV
+AIRING_CAL_KV KV
 MEDIA_QUEUE queue producer
 SYNCLOCK Durable Object
 ```
@@ -628,8 +628,8 @@ The exact syntax must be written in the target Worker config only after validati
 Bindings:
 
 ```text
-BANGUMI_KV KV
-BANGUMI_R2 R2
+AIRING_CAL_KV KV
+AIRING_CAL_R2 R2
 MEDIA_QUEUE queue consumer
 ```
 

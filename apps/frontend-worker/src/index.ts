@@ -1,6 +1,6 @@
 export const appBoundary = 'frontend-worker'
 
-import { renderCachePage, renderIndexPage, widgetCss, widgetJs, type BuildInfo } from '@bangumi-tv/widget'
+import { renderCachePage, renderIndexPage, widgetCss, widgetJs, type BuildInfo } from '@airing-cal/widget'
 
 interface FrontendEnv {
   READ_WORKER: { fetch(request: Request): Promise<Response> }

@@ -1,5 +1,5 @@
 {
-  "name": "@bangumi-tv/frontend-worker",
+  "name": "@airing-cal/frontend-worker",
   "version": "1.0.0",
   "type": "module",
   "main": "./src/index.ts",
@@ -12,8 +12,8 @@
     "test": "tsx --test"
   },
   "dependencies": {
-    "@bangumi-tv/widget": "workspace:*",
-    "@bangumi-tv/worker-common": "workspace:*",
+    "@airing-cal/widget": "workspace:*",
+    "@airing-cal/worker-common": "workspace:*",
     "hono": "^4.12.27"
   },
   "devDependencies": {
