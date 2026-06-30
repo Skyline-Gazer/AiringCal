@@ -107,12 +107,14 @@ GitHub repo -> Settings -> Secrets and variables -> Actions -> Repository secret
 
 | 名称 | 说明 |
 |------|------|
-| `CF_API_TOKEN` | Cloudflare API Token |
-| `CF_ACCOUNT_ID` | Cloudflare Account ID |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API Token |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Account ID |
 
-`CF_API_TOKEN` 创建位置：
+`CLOUDFLARE_API_TOKEN` 创建位置：
 
 Cloudflare Dashboard -> My Profile -> API Tokens -> Create custom token。
+
+不要再创建 `CF_API_TOKEN` / `CF_ACCOUNT_ID`。旧文档曾经写过这两个短名，但当前 workflow 只读取 `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID`，和 Wrangler 标准环境变量名保持一致。
 
 当前 workflow 需要的 token 权限：
 
@@ -132,11 +134,11 @@ Some triggers failed to deploy for airing-cal-sync
 /workers/scripts/airing-cal-sync/schedules
 ```
 
-说明 Worker 代码已经上传，但这个 token 不能更新 Cron Trigger。请重新创建或更新 `CF_API_TOKEN`，确认：
+说明 Worker 代码已经上传，但这个 token 不能更新 Cron Trigger。请重新创建或更新 `CLOUDFLARE_API_TOKEN`，确认：
 
-- token 的 Account Resources 包含 `CF_ACCOUNT_ID` 对应的 Cloudflare account。
+- token 的 Account Resources 包含 `CLOUDFLARE_ACCOUNT_ID` 对应的 Cloudflare account。
 - Account 权限组 `Workers Scripts` 是 `Edit`，不是 `Read`。
-- 更新 GitHub Repository secret `CF_API_TOKEN` 后重新跑 workflow。
+- 更新 GitHub Repository secret `CLOUDFLARE_API_TOKEN` 后重新跑 workflow。
 
 Wrangler 本地权限映射把 `workers_scripts:write` 描述为可修改 Workers scripts、subdomains、triggers 等；Cron schedule 部署走的就是 triggers/schedules 这一类权限。GitHub Actions 里的 Node 20 deprecation 提示不是这次失败原因。
 

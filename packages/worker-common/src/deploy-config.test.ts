@@ -48,8 +48,8 @@ test('deploy workflow pre-checks resources, resolves KV id, and avoids secret or
     assert.match(workflow, new RegExp(`apps/${app}/wrangler\\.deploy\\.toml`), `workflow should deploy resolved ${app} config`)
   }
   assert.match(workflow, /apps\/frontend-worker\/wrangler\.toml/, 'workflow should deploy frontend config')
-  assert.match(workflow, /CLOUDFLARE_API_TOKEN:\s*\$\{\{ secrets\.CF_API_TOKEN \}\}/, 'workflow should expose CLOUDFLARE_API_TOKEN to wrangler')
-  assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID:\s*\$\{\{ secrets\.CF_ACCOUNT_ID \}\}/, 'workflow should expose CLOUDFLARE_ACCOUNT_ID to wrangler')
+  assert.match(workflow, /CLOUDFLARE_API_TOKEN:\s*\$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/, 'workflow should expose CLOUDFLARE_API_TOKEN to wrangler')
+  assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID:\s*\$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/, 'workflow should expose CLOUDFLARE_ACCOUNT_ID to wrangler')
   assert.match(workflow, /wrangler kv namespace list/, 'workflow should pre-check KV namespaces')
   assert.match(workflow, /wrangler kv namespace create "\$KV_TITLE"/, 'workflow should create the KV namespace when missing')
   assert.match(workflow, /wrangler r2 bucket info "\$R2_BUCKET" --json/, 'workflow should pre-check the R2 bucket')
@@ -61,6 +61,8 @@ test('deploy workflow pre-checks resources, resolves KV id, and avoids secret or
   assert.match(workflow, /deploy_frontend_worker:/, 'workflow should deploy the public frontend after internal workers')
 
   const forbidden = [
+    'secrets.CF_API_TOKEN',
+    'secrets.CF_ACCOUNT_ID',
     'wrangler secret put',
     'CRON_SECRET',
     'python3 -',
@@ -76,7 +78,7 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/cache', 'images.common', 'images.large']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document ${fragment}`)
   }
-  for (const fragment of ['Workers Scripts', 'Workers KV Storage', 'Workers R2 Storage', 'Queues', 'Account Settings', 'User Details', 'Workers Routes']) {
+  for (const fragment of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', '不要再创建 `CF_API_TOKEN` / `CF_ACCOUNT_ID`', 'Workers Scripts', 'Workers KV Storage', 'Workers R2 Storage', 'Queues', 'Account Settings', 'User Details', 'Workers Routes']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document CF_API_TOKEN permission ${fragment}`)
   }
   for (const fragment of ['Repository secrets', 'New repository secret', '当前 workflow 没有设置 GitHub Actions `environment:`', '不是 Environment secrets']) {
@@ -94,7 +96,7 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['BANGUMI_GIT_COMMIT_SHA', 'BANGUMI_GIT_REPOSITORY_URL', '绑定自定义域名不需要改任何 repository URL 变量']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document optional frontend build metadata: ${fragment}`)
   }
-  for (const fragment of ['CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets', 'PUBLIC_REPOSITORY_URL']) {
+  for (const fragment of ['secrets.CF_API_TOKEN', 'secrets.CF_ACCOUNT_ID', 'CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets', 'PUBLIC_REPOSITORY_URL']) {
     assert.doesNotMatch(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should not mention ${fragment}`)
   }
 })
