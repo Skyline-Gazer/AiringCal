@@ -59,8 +59,14 @@ test('deploy workflow pre-checks resources, resolves KV id, and avoids secret or
   assert.match(workflow, /replaceAll\('<AIRING_CAL_KV_NAMESPACE_ID>', kvId\)/, 'workflow should resolve the KV namespace id in temporary deploy configs')
   assert.match(workflow, /deploy_internal_workers:/, 'workflow should deploy internal workers through a matrix job')
   assert.match(workflow, /deploy_frontend_worker:/, 'workflow should deploy the public frontend after internal workers')
+  assert.match(workflow, /pnpm exec wrangler deploy --config \$\{\{ matrix\.deploy_config \}\}/, 'workflow should deploy internal workers with the Wrangler CLI')
+  assert.match(workflow, /WRANGLER_LOG_PATH:\s*\$\{\{ runner\.temp \}\}\/wrangler-\$\{\{ matrix\.app \}\}\.log/, 'workflow should save Wrangler debug logs for matrix deploys')
+  assert.match(workflow, /sed -E 's\/\(Authorization: Bearer \)\[A-Za-z0-9\._-\]\+\/\\1\[redacted\]\/g'/, 'workflow should redact bearer tokens when printing Wrangler logs')
 
   const forbidden = [
+    'cloudflare/wrangler-action',
+    'apiToken:',
+    'accountId:',
     'secrets.CF_API_TOKEN',
     'secrets.CF_ACCOUNT_ID',
     'wrangler secret put',

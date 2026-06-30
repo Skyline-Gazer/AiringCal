@@ -281,6 +281,8 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 7. 用 matrix 部署 `airing-cal-read`、`airing-cal-media`、`airing-cal-sync`
 8. 最后部署 `airing-cal-frontend`
 
+部署步骤直接运行 `pnpm exec wrangler deploy`，不再通过 `cloudflare/wrangler-action` 包装。CI 会设置 `WRANGLER_LOG=debug` 和 `WRANGLER_LOG_PATH`；如果部署失败，会打印脱敏后的 Wrangler debug log，便于看到 Cloudflare API 返回的真实错误。
+
 这个顺序保证内部 read/media/sync Worker 先更新，最后再更新公开入口 frontend Worker。首次部署时，`airing-cal-frontend` 的 service binding 需要目标 `airing-cal-read` 已经存在，所以 frontend 不放进并行 matrix。
 
 ## Cache 与 NSFW

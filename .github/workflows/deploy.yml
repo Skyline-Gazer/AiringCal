@@ -163,14 +163,27 @@ jobs:
           NODE
 
       - name: Build Check
+        env:
+          WRANGLER_LOG: debug
+          WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-${{ matrix.app }}-dry-run.log
         run: pnpm exec wrangler deploy --dry-run --outdir apps/${{ matrix.app }}/dist --config ${{ matrix.deploy_config }}
 
       - name: Deploy ${{ matrix.app }}
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy --config ${{ matrix.deploy_config }}
+        env:
+          WRANGLER_LOG: debug
+          WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-${{ matrix.app }}.log
+        run: pnpm exec wrangler deploy --config ${{ matrix.deploy_config }}
+
+      - name: Print Wrangler debug log on failure
+        if: failure()
+        env:
+          WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-${{ matrix.app }}.log
+        run: |
+          if [ -f "$WRANGLER_LOG_PATH" ]; then
+            sed -E 's/(Authorization: Bearer )[A-Za-z0-9._-]+/\1[redacted]/g' "$WRANGLER_LOG_PATH"
+          else
+            echo "Wrangler log not found: $WRANGLER_LOG_PATH"
+          fi
 
   deploy_frontend_worker:
     needs: [validate, deploy_internal_workers]
@@ -195,11 +208,24 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Build Check
+        env:
+          WRANGLER_LOG: debug
+          WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-frontend-worker-dry-run.log
         run: pnpm exec wrangler deploy --dry-run --outdir apps/frontend-worker/dist --config apps/frontend-worker/wrangler.toml
 
       - name: Deploy Frontend Worker
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: deploy --config apps/frontend-worker/wrangler.toml
+        env:
+          WRANGLER_LOG: debug
+          WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-frontend-worker.log
+        run: pnpm exec wrangler deploy --config apps/frontend-worker/wrangler.toml
+
+      - name: Print Wrangler debug log on failure
+        if: failure()
+        env:
+          WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-frontend-worker.log
+        run: |
+          if [ -f "$WRANGLER_LOG_PATH" ]; then
+            sed -E 's/(Authorization: Bearer )[A-Za-z0-9._-]+/\1[redacted]/g' "$WRANGLER_LOG_PATH"
+          else
+            echo "Wrangler log not found: $WRANGLER_LOG_PATH"
+          fi
