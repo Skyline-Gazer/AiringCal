@@ -105,24 +105,28 @@ Routine deployment uses checked-in app configs only:
 
 Provision Cloudflare resources outside the normal deploy path, then put the real resource identifiers in the app configs. The GitHub Actions workflow does not create KV/R2 resources, list namespaces, rewrite configs, upload secrets in a loop, or mutate schedules.
 
-Required GitHub Actions secrets:
+Minimal configuration:
+
+GitHub only needs Cloudflare deploy credentials:
 
 | Name | Used by | Purpose |
 |------|---------|---------|
 | `CF_API_TOKEN` | workflow | Cloudflare deploy token |
 | `CF_ACCOUNT_ID` | workflow | Cloudflare account id |
-| `BANGUMI_TOKEN` | `sync-worker`, `media-worker` | bgm.tv access token configured in Cloudflare dashboard or Worker secret store |
 
-Required deployment variables:
+Set bgm.tv runtime values in the Cloudflare dashboard, not in GitHub Actions:
 
 | Name | Config | Purpose |
 |------|--------|---------|
-| `PUBLIC_REPOSITORY_URL` | `frontend-worker` | Footer commit link base |
-| `SYNC_MODE` | `sync-worker` | `merge` by default |
-| `BANGUMI_USERS` | `sync-worker` | Comma-separated bgm usernames |
-| `BANGUMI_PRIMARY_USER` | `sync-worker` | Optional primary user for primary-mode sync |
+| `BANGUMI_TOKEN` | `airing-cal-sync` secret, `airing-cal-media` secret | bgm.tv access token |
+| `BANGUMI_USERS` | `airing-cal-sync` variable | Comma-separated bgm usernames |
+| `BANGUMI_PRIMARY_USER` | `airing-cal-sync` variable | Optional primary user for primary-mode sync |
 
-Optional build/page metadata variables are read by the widget renderer when present: commit SHA, analytics snippets, and webmaster verification tags. Analytics snippets should only be added after checking the provider's current official install snippet.
+Everything else is checked in:
+
+- `PUBLIC_REPOSITORY_URL` lives in `apps/frontend-worker/wrangler.toml`.
+- `SYNC_MODE = "merge"` lives in `apps/sync-worker/wrangler.toml`.
+- `keep_vars = true` is set in each Worker config so deploys do not wipe dashboard-managed runtime variables.
 
 ## Local Development
 

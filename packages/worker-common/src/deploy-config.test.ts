@@ -35,6 +35,7 @@ test('Cloudflare resource names use the AiringCal prefix', () => {
   for (const [app, expectedFragments] of expected) {
     const config = readFileSync(resolve(root, 'apps', app, 'wrangler.toml'), 'utf8')
     assert.doesNotMatch(config, /bangumi-tv/, `${app} config should not use old Cloudflare resource names`)
+    assert.match(config, /keep_vars = true/, `${app} config should preserve dashboard runtime vars`)
     for (const fragment of expectedFragments) {
       assert.match(config, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${app} config should include ${fragment}`)
     }

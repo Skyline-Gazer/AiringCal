@@ -1,6 +1,7 @@
 name = "airing-cal-media"
 main = "src/index.ts"
 compatibility_date = "2026-06-17"
+keep_vars = true
 
 [[kv_namespaces]]
 binding = "AIRING_CAL_KV"

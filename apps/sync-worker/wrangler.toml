@@ -1,6 +1,7 @@
 name = "airing-cal-sync"
 main = "src/index.ts"
 compatibility_date = "2026-06-17"
+keep_vars = true
 
 [vars]
 SYNC_MODE = "merge"
