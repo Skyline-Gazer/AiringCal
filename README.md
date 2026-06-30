@@ -110,21 +110,20 @@ Cloudflare Dashboard -> My Profile -> API Tokens -> Create custom token。
 
 当前 workflow 需要的 token 权限：
 
-| 范围 | 权限 | 用途 |
-|------|------|------|
-| Account | `Workers Scripts: Edit` | 部署 4 个 Worker script |
-| Account | `Workers KV Storage: Edit` | 检查/创建 `airing-cal-kv`，并部署 KV binding |
-| Account | `Workers R2 Storage: Edit` | 检查/创建 `airing-cal-images`，并部署 R2 binding |
-| Account | `Workers Queues: Edit` | 检查/创建 `airing-cal-media`，并部署 Queue binding |
-| Account | `Account Settings: Read` | 让 Wrangler 解析账户信息 |
-| User | `User Details: Read` | 让 Wrangler 识别 API token 用户 |
+| 范围 | 权限组 | 级别 | 用途 |
+|------|--------|------|------|
+| Account | `Workers Scripts` | `Edit` | 部署 4 个 Worker script |
+| Account | `Workers KV Storage` | `Edit` | 检查/创建 `airing-cal-kv`，并部署 KV binding |
+| Account | `Workers R2 Storage` | `Edit` | 检查/创建 `airing-cal-images`，并部署 R2 binding |
+| Account | `Queues` | `Edit` | 检查/创建 `airing-cal-media`，并部署 Queue binding |
+| Account | `Account Settings` | `Read` | 让 Wrangler 解析账户信息 |
+| User | `User Details` | `Read` | 让 Wrangler 识别 API token 用户 |
 
-当前 workflow 不需要这些权限：
+如果要让 CI 同时部署自定义域名或 route，再额外加这个可选权限：
 
-| 权限 | 是否需要 |
-|------|----------|
-| Zone - Workers Routes: Edit | 不需要，除非以后在 `wrangler.toml` 中加入 route/custom domain 部署 |
-| 通过 CI 上传 Worker secrets | 不需要，运行时 secret 在 Cloudflare Dashboard 配置 |
+| 范围 | 权限组 | 级别 | 什么时候需要 |
+|------|--------|------|------------|
+| Zone | `Workers Routes` | `Edit` | `wrangler.toml` 里配置 `routes`、custom domain，或希望 CI 绑定域名时 |
 
 ### Cloudflare Worker 变量
 

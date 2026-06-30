@@ -77,7 +77,7 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/cache', 'images.common', 'images.large']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document ${fragment}`)
   }
-  for (const fragment of ['Workers Scripts: Edit', 'Workers KV Storage: Edit', 'Workers R2 Storage: Edit', 'Workers Queues: Edit', 'Account Settings: Read', 'User Details: Read']) {
+  for (const fragment of ['Workers Scripts', 'Workers KV Storage', 'Workers R2 Storage', 'Queues', 'Account Settings', 'User Details', 'Workers Routes']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document CF_API_TOKEN permission ${fragment}`)
   }
   for (const fragment of ['pre-check Cloudflare 资源', 'wrangler.deploy.toml', '找不到就创建']) {
@@ -86,7 +86,7 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['https://next.bgm.tv/demo/access-token', 'https://bgm.tv/user/sai', 'sai,another_user', '只配置在 `airing-cal-sync`']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document how to configure bgm runtime value: ${fragment}`)
   }
-  for (const fragment of ['CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large']) {
+  for (const fragment of ['CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets']) {
     assert.doesNotMatch(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should not mention ${fragment}`)
   }
 })
