@@ -26,7 +26,7 @@ test('each target worker has a checked-in Wrangler config with required bindings
 
 test('Cloudflare resource names use the AiringCal prefix', () => {
   const expected = new Map([
-    ['frontend-worker', ['name = "airing-cal-frontend"', 'service = "airing-cal-read"', 'PUBLIC_REPOSITORY_URL = "https://github.com/markd3ng/AiringCal"']],
+    ['frontend-worker', ['name = "airing-cal-frontend"', 'service = "airing-cal-read"']],
     ['read-worker', ['name = "airing-cal-read"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-images"']],
     ['sync-worker', ['name = "airing-cal-sync"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'queue = "airing-cal-media"']],
     ['media-worker', ['name = "airing-cal-media"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-images"', 'queue = "airing-cal-media"']],
@@ -86,7 +86,10 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['https://next.bgm.tv/demo/access-token', 'https://bgm.tv/user/sai', 'sai,another_user', '只配置在 `airing-cal-sync`']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document how to configure bgm runtime value: ${fragment}`)
   }
-  for (const fragment of ['CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets']) {
+  for (const fragment of ['BANGUMI_GIT_COMMIT_SHA', 'BANGUMI_GIT_REPOSITORY_URL', '绑定自定义域名不需要改任何 repository URL 变量']) {
+    assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document optional frontend build metadata: ${fragment}`)
+  }
+  for (const fragment of ['CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets', 'PUBLIC_REPOSITORY_URL']) {
     assert.doesNotMatch(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should not mention ${fragment}`)
   }
 })

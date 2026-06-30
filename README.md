@@ -161,7 +161,6 @@ Cloudflare Dashboard -> My Profile -> API Tokens -> Create custom token。
 
 其余配置已经写在 repo：
 
-- `PUBLIC_REPOSITORY_URL` 在 `apps/frontend-worker/wrangler.toml`
 - `SYNC_MODE = "merge"` 在 `apps/sync-worker/wrangler.toml`
 - 4 个 Worker 都设置了 `keep_vars = true`，CI 部署不会擦掉 Dashboard 里的运行时变量
 
@@ -170,6 +169,10 @@ Cloudflare Dashboard -> My Profile -> API Tokens -> Create custom token。
 | 名称 | 配置位置 | 说明 |
 |------|----------|------|
 | `NSFW_SHOW=false` | `airing-cal-read` Variable | 不展示 R18 内容；不设置时默认展示 |
+| `BANGUMI_GIT_COMMIT_SHA` | `airing-cal-frontend` Variable | 可选；footer 显示并链接当前 commit |
+| `BANGUMI_GIT_REPOSITORY_URL` | `airing-cal-frontend` Variable | 可选；footer commit link 的 GitHub 仓库地址 |
+
+绑定自定义域名不需要改任何 repository URL 变量。自定义域名只影响访问入口，应该绑定到 `airing-cal-frontend`；repository URL 只用于页面 footer 的 commit link，不参与路由、service binding、KV/R2/Queue 或域名解析。
 
 ## 数据契约
 
@@ -267,7 +270,7 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 
 Widget 的唯一来源是 `packages/widget`。公开 HTML 页面复用同一个 footer renderer。
 
-如果部署环境提供 commit SHA 和 repository URL，footer 会链接到对应 commit；否则显示 `Build unknown`。
+如果部署环境提供 `BANGUMI_GIT_COMMIT_SHA` 和 `BANGUMI_GIT_REPOSITORY_URL`，footer 会链接到对应 commit；否则显示 `Build unknown`。这只是页面追踪构建来源的可选信息，不影响部署和访问。
 
 浏览器 widget 使用 `images.common.uri` 渲染封面。没有缓存图片时，使用内联 placeholder。
 

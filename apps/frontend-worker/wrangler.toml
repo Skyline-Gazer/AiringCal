@@ -3,9 +3,6 @@ main = "src/index.ts"
 compatibility_date = "2026-06-17"
 keep_vars = true
 
-[vars]
-PUBLIC_REPOSITORY_URL = "https://github.com/markd3ng/AiringCal"
-
 [[services]]
 binding = "READ_WORKER"
 service = "airing-cal-read"
