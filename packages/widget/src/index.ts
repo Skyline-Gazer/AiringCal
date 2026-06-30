@@ -1,3 +1,5 @@
+import { generatedWidgetCss, generatedWidgetJs } from './generated-assets.ts'
+
 export const packageBoundary = '@airing-cal/widget'
 
 export interface BuildInfo {
@@ -19,9 +21,9 @@ export interface AnalyticsEnv {
   baiduTongjiId?: string
 }
 
-export const widgetCss = `:root{color-scheme:light dark}.bgm-footer{margin:24px 0 0;font:12px/1.5 system-ui,sans-serif;color:#666}.bgm-footer a{color:inherit}.bgm-cache-table{width:100%;border-collapse:collapse}.bgm-cache-table th,.bgm-cache-table td{border:1px solid #ddd;padding:6px;text-align:left}`
+export const widgetCss = generatedWidgetCss
 
-export const widgetJs = `(function(){function subjectImageUrl(images){return images?.common?.uri?window.location.origin+images.common.uri:null}window.__bangumiWidget={subjectImageUrl}})();`
+export const widgetJs = generatedWidgetJs
 
 function escapeHtml(value: unknown): string {
   return String(value)

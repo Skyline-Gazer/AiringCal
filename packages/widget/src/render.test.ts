@@ -53,6 +53,7 @@ test('renderWebmasterMeta emits only configured verification tags', () => {
 
 test('widgetJs consumes new images.common.uri shape', () => {
   assert.match(widgetJs, /images\?\.common\?\.uri/)
+  assert.match(widgetJs, /document\.querySelector\('\.bgm-container'\)/)
   assert.equal(widgetJs.includes('hash_large'), false)
 })
 
