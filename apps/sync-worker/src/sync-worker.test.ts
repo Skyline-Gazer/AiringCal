@@ -119,6 +119,51 @@ test('scheduled sync writes new snapshot keys and enqueues media work without im
   }
 })
 
+test('scheduled sync marks queued image status before media-worker caches calendar-only subjects', async () => {
+  const kv = new MockKV()
+  const queueMessages: unknown[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      return Response.json({ total: 0, data: [] })
+    }
+    if (text.endsWith('/calendar')) {
+      return Response.json([{
+        weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+        items: [{
+          id: 456080,
+          type: 2,
+          name: 'Calendar Only',
+          name_cn: '日历限定',
+          images: { common: 'https://img.example/calendar-common.jpg', large: 'https://img.example/calendar-large.jpg' },
+          rating: { score: 0, rank: 0, total: 0 },
+        }],
+      }])
+    }
+    throw new Error(`unexpected upstream fetch: ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
+      BANGUMI_TOKEN: 'token-a',
+      BANGUMI_USERS: 'alice',
+      SYNC_MODE: 'merge',
+    } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+
+    const status = kv.values.get('image:status:456080') as any
+    assert.equal(queueMessages.length, 1)
+    assert.equal(status.subject_id, 456080)
+    assert.equal(status.title, '日历限定')
+    assert.equal(status.common.status, 'queued')
+    assert.equal(status.large.status, 'queued')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('scheduled sync enriches collection and calendar snapshots from existing media cache', async () => {
   const kv = new MockKV()
   kv.values.set('image:status:23080', {

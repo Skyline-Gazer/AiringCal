@@ -71,6 +71,24 @@ function hasCachedImage(refs: SubjectImages, size: 'common' | 'large'): boolean 
   return refs[size] !== null
 }
 
+function emptyImageStatus() {
+  return {
+    status: 'pending_next_cron',
+    hash: null,
+    uri: null,
+    r2_key: null,
+    queued_at: null,
+    cached_at: null,
+    last_error: null,
+  }
+}
+
+function queuedImageStatus(sourceUrl: string | undefined, previous: any, now: number) {
+  if (previous?.status === 'cached') return previous
+  if (!sourceUrl) return { ...emptyImageStatus(), status: 'missing_source' }
+  return { ...emptyImageStatus(), status: 'queued', queued_at: now }
+}
+
 function operationLogKey(id: string): string {
   return `${SYNC_OPERATION_PREFIX}${id}`
 }
@@ -176,6 +194,17 @@ async function loadImageMap(storage: KVStorage, subjectIds: Iterable<number>): P
   return map
 }
 
+async function markMediaQueued(storage: KVStorage, input: SubjectInput, now: number): Promise<void> {
+  const previousStatus = await storage.get<any>(imageStatusKey(input.subject_id))
+  await storage.put(imageStatusKey(input.subject_id), {
+    subject_id: input.subject_id,
+    title: input.title,
+    common: queuedImageStatus(input.images.common, previousStatus?.common, now),
+    large: queuedImageStatus(input.images.large, previousStatus?.large, now),
+    subject_checked_at: previousStatus?.subject_checked_at ?? null,
+  })
+}
+
 async function loadSubjectMetaMap(storage: KVStorage, subjectIds: Iterable<number>): Promise<Map<number, Pick<SubjectMeta, 'nsfw'>>> {
   const map = new Map<number, Pick<SubjectMeta, 'nsfw'>>()
   for (const subjectId of subjectIds) {
@@ -232,6 +261,7 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
       subject_meta: true,
       images: input.images,
     })
+    await markMediaQueued(storage, input, Math.floor(Date.now() / 1000))
   }
 }
 

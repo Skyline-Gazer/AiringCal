@@ -8,7 +8,7 @@ const pollTimeoutMs = Number.parseInt(process.env.SYNC_TRIGGER_TIMEOUT_MS || '12
 const pollIntervalMs = Number.parseInt(process.env.SYNC_TRIGGER_POLL_INTERVAL_MS || '5000', 10)
 const summaryKey = 'snapshot:summary'
 const calendarKey = 'snapshot:calendar'
-const terminalCommonImageStatuses = new Set(['cached', 'failed', 'missing_source'])
+const observableCommonImageStatuses = new Set(['queued', 'cached', 'failed', 'missing_source'])
 
 export function syncSnapshotReady(summary) {
   return Boolean(summary && typeof summary === 'object' && Number.isFinite(summary._total) && summary._total > 0)
@@ -31,7 +31,7 @@ export function calendarSubjectIds(calendar) {
 }
 
 function calendarImageStatusReady(status) {
-  return terminalCommonImageStatuses.has(status?.common?.status)
+  return observableCommonImageStatuses.has(status?.common?.status)
 }
 
 export function syncTriggerReady(summary, calendar, imageStatusesBySubject) {
@@ -91,13 +91,13 @@ async function waitForSyncSnapshot() {
       await kvJson(`image:status:${subjectId}`),
     ])))
     if (syncTriggerReady(lastSummary, lastCalendar, lastImageStatusesBySubject)) {
-      console.log(`Sync snapshot and calendar image cache status are ready: ${summaryKey} _total=${lastSummary._total}, calendar_subjects=${subjectIds.length}`)
+      console.log(`Sync snapshot and calendar image pipeline status are ready: ${summaryKey} _total=${lastSummary._total}, calendar_subjects=${subjectIds.length}`)
       return
     }
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
   }
   const readyCount = [...lastImageStatusesBySubject.values()].filter(calendarImageStatusReady).length
-  throw new Error(`Timed out waiting for sync-worker/media-worker to cache calendar images. Last summary: ${JSON.stringify(lastSummary)}; calendar_subjects=${calendarSubjectIds(lastCalendar).length}; ready_common_status=${readyCount}`)
+  throw new Error(`Timed out waiting for sync-worker/media-worker to publish calendar image pipeline status. Last summary: ${JSON.stringify(lastSummary)}; calendar_subjects=${calendarSubjectIds(lastCalendar).length}; ready_common_status=${readyCount}`)
 }
 
 function queuesFromResult(result) {

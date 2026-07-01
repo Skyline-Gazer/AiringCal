@@ -295,7 +295,7 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 3. `pnpm test`
 4. `pnpm build:check`
 5. 用 matrix 部署 `airing-cal-read`、`airing-cal-media`、`airing-cal-sync`
-6. 向 `airing-cal-sync-trigger` 推送一次同步触发，并等待 `snapshot:calendar` 中的 subject 都有终态 common 图片缓存状态
+6. 向 `airing-cal-sync-trigger` 推送一次同步触发，并等待 `snapshot:calendar` 中的 subject 都有可观测 common 图片管线状态（`queued` / `cached` / `failed` / `missing_source`）
 7. 最后部署 `airing-cal-frontend`
 
 部署步骤直接运行 `pnpm exec wrangler deploy`，不再通过 `cloudflare/wrangler-action` 包装。CI 会设置 `WRANGLER_LOG=debug` 和 `WRANGLER_LOG_PATH`；如果部署失败，会打印脱敏后的 Wrangler debug log，便于看到 Cloudflare API 返回的真实错误。

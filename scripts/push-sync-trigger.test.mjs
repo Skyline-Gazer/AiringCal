@@ -17,12 +17,12 @@ test('calendarSubjectIds extracts ids from raw and transformed calendar snapshot
   ]), [23080, 456080])
 })
 
-test('sync trigger readiness requires calendar subjects to have terminal common image status', () => {
+test('sync trigger readiness requires calendar subjects to have observable common image status', () => {
   const summary = { _total: 1 }
   const calendar = [{ items: [{ id: 23080 }, { id: 456080 }] }]
   const statuses = new Map([
     [23080, { common: { status: 'cached' } }],
-    [456080, { common: { status: 'cached' } }],
+    [456080, { common: { status: 'queued' } }],
   ])
 
   assert.equal(syncTriggerReady(summary, calendar, statuses), true)
