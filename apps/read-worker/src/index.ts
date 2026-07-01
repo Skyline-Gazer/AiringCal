@@ -1,6 +1,6 @@
 export const appBoundary = 'read-worker'
 
-import { imageOriginalKey, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, syncMetaKey } from '@airing-cal/storage'
+import { imageOriginalKey, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 interface ReadEnv {
@@ -76,6 +76,33 @@ async function hydrateCollectionImages(data: unknown[], env: ReadEnv): Promise<u
   }))
 }
 
+async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unknown[]> {
+  return Promise.all(days.map(async (day: any) => {
+    if (!day || typeof day !== 'object' || !Array.isArray(day.items)) return day
+    const items = await Promise.all(day.items.map(async (entry: any) => {
+      if (!entry || typeof entry !== 'object') return entry
+      const subjectId = typeof entry.subject_id === 'number' ? entry.subject_id : entry.id
+      if (typeof subjectId !== 'number') return entry
+      const [status, meta] = await Promise.all([
+        env.AIRING_CAL_KV.get(imageStatusKey(subjectId), 'json'),
+        env.AIRING_CAL_KV.get(subjectMetaKey(subjectId), 'json'),
+      ])
+      if (!status && !meta) return entry
+      return {
+        ...entry,
+        images: status
+          ? {
+              common: cachedImageRef((status as any).common),
+              large: cachedImageRef((status as any).large),
+            }
+          : entry.images,
+        nsfw: (meta as any)?.nsfw ?? entry.nsfw,
+      }
+    }))
+    return { ...day, items }
+  }))
+}
+
 async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const type = validCollectionType(url.searchParams.get('type'))
@@ -91,7 +118,8 @@ async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
 
 async function handleCalendar(env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
-  return json(await storage.get(snapshotCalendarKey()) ?? [])
+  const data = await storage.get<unknown[]>(snapshotCalendarKey()) ?? []
+  return json(await hydrateCalendarImages(data, env))
 }
 
 async function handleCache(env: ReadEnv): Promise<Response> {
