@@ -42,6 +42,14 @@ test('public pages reuse the exact shared footer output', () => {
   assert.equal(renderCachePage({ build }).includes(footer), true)
 })
 
+test('renderFooter exposes an inline cache statistics slot', () => {
+  const footer = renderFooter({})
+
+  assert.match(footer, /href="\/cache"/)
+  assert.match(footer, /data-cache-stats/)
+  assert.match(footer, /Cache loading/)
+})
+
 test('renderWebmasterMeta emits only configured verification tags', () => {
   const html = renderWebmasterMeta({
     googleSiteVerification: 'google-token',
@@ -87,15 +95,25 @@ test('widgetJs includes animation sync UI and public sync endpoints', () => {
   assert.match(widgetJs, /\/api\/check\//)
 })
 
-test('cache page loads cacheJs which fetches cache API', () => {
+test('pages load cacheJs which fills the footer cache statistics slot', () => {
+  assert.match(renderIndexPage(), /<script src="\/src\/cache\.js"><\/script>/)
   assert.match(renderCachePage(), /<script src="\/src\/cache\.js"><\/script>/)
+  assert.doesNotMatch(renderCachePage(), /<main class="bgm-cache-page">/)
   assert.match(cacheJs, /\/api\/cache/)
-  assert.match(cacheJs, /bgm-cache-root/)
+  assert.match(cacheJs, /data-cache-stats/)
+  assert.match(cacheJs, /response\.ok/)
+  assert.match(cacheJs, /Common cached/)
+  assert.match(cacheJs, /Large cached/)
 })
 
 test('widgetCss styles the shared footer', () => {
   assert.match(widgetCss, /\.bgm-footer\s*\{/)
   assert.match(widgetCss, /\.bgm-footer a\s*\{/)
+})
+
+test('widgetCss styles footer cache statistics', () => {
+  assert.match(widgetCss, /\.bgm-footer-cache\s*\{/)
+  assert.match(widgetCss, /\.bgm-footer-cache span\s*\{/)
 })
 
 test('packaged widget assets do not read legacy image hash fields', () => {

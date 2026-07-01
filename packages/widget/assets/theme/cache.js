@@ -1,21 +1,37 @@
 (() => {
-  const root = document.getElementById('bgm-cache-root')
-  if (!root) return
+  const targets = Array.from(document.querySelectorAll('[data-cache-stats]'))
+  if (!targets.length) return
 
-  function row(label, counts) {
-    const total = Object.values(counts || {}).reduce((sum, value) => sum + Number(value || 0), 0)
-    return '<tr><th>' + label + '</th><td>' + total + '</td><td>' +
-      ['cached', 'pending_next_cron', 'queued', 'failed', 'missing_source'].map((key) => key + ': ' + Number((counts || {})[key] || 0)).join('<br>') +
-      '</td></tr>'
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;')
+  }
+
+  function setTargets(html) {
+    for (const target of targets) target.innerHTML = html
+  }
+
+  function render(data) {
+    const failures = Number((data.common && data.common.failed) || 0) + Number((data.large && data.large.failed) || 0)
+    setTargets(
+      '<span>Subjects ' + Number(data.total_subjects || 0) + '</span>' +
+      '<span>Common cached ' + Number((data.common && data.common.cached) || 0) + '</span>' +
+      '<span>Large cached ' + Number((data.large && data.large.cached) || 0) + '</span>' +
+      '<span>Failures ' + failures + '</span>',
+    )
   }
 
   fetch('/api/cache')
-    .then((response) => response.json())
-    .then((data) => {
-      root.innerHTML = '<p>Total subjects: ' + Number(data.total_subjects || 0) + '</p>' +
-        '<table class="bgm-cache-table"><tbody>' + row('common', data.common) + row('large', data.large) + '</tbody></table>'
+    .then((response) => {
+      if (!response.ok) throw new Error('HTTP ' + response.status + ' ' + response.statusText)
+      return response.json()
     })
+    .then(render)
     .catch((error) => {
-      root.textContent = 'Cache statistics unavailable: ' + (error && error.message ? error.message : String(error))
+      setTargets('<span>Cache unavailable: ' + escapeHtml(error && error.message ? error.message : String(error)) + '</span>')
     })
 })()

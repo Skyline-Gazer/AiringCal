@@ -207,6 +207,28 @@ body {
   background: var(--nb-bg);
 }
 
+/* ---------- Footer cache statistics ---------- */
+.bgm-footer-cache {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.bgm-footer-cache::before {
+  content: "·";
+}
+.bgm-footer-cache span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 1px 7px;
+  border: 2px solid var(--nb-ink);
+  background: var(--nb-bg);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
 /* ---------- NSFW 模糊遮罩 ---------- */
 .bgm-card.bgm-nsfw .bgm-card-cover img {
   filter: blur(20px);

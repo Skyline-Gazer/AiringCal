@@ -49,7 +49,7 @@ export function renderFooter(build: BuildInfo): string {
   const buildHtml = commit && repo
     ? `<a href="${escapeHtml(normalizeRepositoryUrl(repo))}/commit/${escapeHtml(commit)}">${buildLabel}</a>`
     : `<span>${buildLabel}</span>`
-  return `<footer class="bgm-footer"><a href="/cache">Cache statistics</a><span> · </span>${buildHtml}</footer>`
+  return `<footer class="bgm-footer"><a href="/cache">Cache statistics</a><span class="bgm-footer-cache" data-cache-stats>Cache loading...</span><span> · </span>${buildHtml}</footer>`
 }
 
 export function renderWebmasterMeta(env: VerificationEnv): string {
@@ -81,6 +81,7 @@ export function renderIndexPage(options: { build?: BuildInfo; verification?: Ver
   <div class="bgm-container"></div>
   ${renderFooter(options.build ?? {})}
   <script src="/src/bangumi.js"></script>
+  <script src="/src/cache.js"></script>
   ${renderAnalyticsScripts(options.analytics ?? {})}
 </body>
 </html>`
@@ -97,10 +98,6 @@ export function renderCachePage(options: { build?: BuildInfo; verification?: Ver
   <title>AiringCal Cache</title>
 </head>
 <body>
-  <main class="bgm-cache-page">
-    <h1>Cache statistics</h1>
-    <div id="bgm-cache-root"></div>
-  </main>
   ${renderFooter(options.build ?? {})}
   <script src="/src/cache.js"></script>
   ${renderAnalyticsScripts(options.analytics ?? {})}
