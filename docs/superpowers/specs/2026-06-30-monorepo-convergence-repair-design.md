@@ -176,7 +176,7 @@ Missing image ref stays `null`. Missing subject meta stays `nsfw: false`.
 
 If a collection/calendar item has no image source but subject meta is missing, it must still enqueue a subject-meta-only job.
 
-After a media job is accepted by the queue, `sync-worker` writes `image:status:{subject_id}` with `queued` or `missing_source` image states unless that size is already `cached`. This makes calendar-only subjects observable to `read-worker` immediately, while `media-worker` remains responsible for downloading images, writing R2 objects, and replacing `queued` with terminal cache states.
+Before sending a media job, `sync-worker` writes `image:status:{subject_id}` with `queued` or `missing_source` image states unless that size is already `cached`. This makes calendar-only subjects observable to `read-worker` immediately; if queue delivery fails, the trigger still retries, while `media-worker` remains responsible for downloading images, writing R2 objects, and replacing `queued` with terminal cache states.
 
 The queue message schema must explicitly support optional image work and required subject meta work:
 

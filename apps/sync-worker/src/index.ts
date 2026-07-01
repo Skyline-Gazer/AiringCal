@@ -255,13 +255,13 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
   for (const input of subjectInputs.values()) {
     if (!hasImageSource(input.images) && subjectMetaMap.has(input.subject_id)) continue
     if (!shouldQueueMedia(input, imageMap.get(input.subject_id), subjectMetaMap.has(input.subject_id))) continue
+    await markMediaQueued(storage, input, Math.floor(Date.now() / 1000))
     await env.MEDIA_QUEUE.send({
       subject_id: input.subject_id,
       title: input.title,
       subject_meta: true,
       images: input.images,
     })
-    await markMediaQueued(storage, input, Math.floor(Date.now() / 1000))
   }
 }
 
