@@ -1,9 +1,10 @@
 export const appBoundary = 'frontend-worker'
 
-import { renderCachePage, renderIndexPage, widgetCss, widgetJs, type BuildInfo } from '@airing-cal/widget'
+import { cacheJs, renderCachePage, renderIndexPage, widgetCss, widgetJs, type BuildInfo } from '@airing-cal/widget'
 
 interface FrontendEnv {
   READ_WORKER: { fetch(request: Request): Promise<Response> }
+  SYNC_WORKER: { fetch(request: Request): Promise<Response> }
   BANGUMI_GIT_COMMIT_SHA?: string
   BANGUMI_GIT_REPOSITORY_URL?: string
   BANGUMI_GOOGLE_SITE_VERIFICATION?: string
@@ -56,12 +57,19 @@ function readWorkerRequest(url: URL, path: string, request: Request): Request {
   return new Request(target, request)
 }
 
+function serviceRequest(url: URL, path: string, request: Request): Request {
+  const target = new URL(url)
+  target.pathname = path
+  return new Request(target, request)
+}
+
 async function fetch(request: Request, env: FrontendEnv): Promise<Response> {
   const url = new URL(request.url)
   if (url.pathname === '/') return text(renderIndexPage(pageOptions(env)), 'text/html; charset=utf-8')
   if (url.pathname === '/cache') return text(renderCachePage(pageOptions(env)), 'text/html; charset=utf-8')
   if (url.pathname === '/src/bangumi.js') return text(widgetJs, 'application/javascript; charset=utf-8')
   if (url.pathname === '/src/bangumi.css') return text(widgetCss, 'text/css; charset=utf-8')
+  if (url.pathname === '/src/cache.js') return text(cacheJs, 'application/javascript; charset=utf-8')
 
   if (url.pathname === '/api/collections') return env.READ_WORKER.fetch(readWorkerRequest(url, '/collections', request))
   if (url.pathname === '/api/calendar') return env.READ_WORKER.fetch(readWorkerRequest(url, '/calendar', request))
@@ -69,6 +77,12 @@ async function fetch(request: Request, env: FrontendEnv): Promise<Response> {
   if (url.pathname === '/api/health') return env.READ_WORKER.fetch(readWorkerRequest(url, '/health', request))
   if (url.pathname === '/api/cache') return env.READ_WORKER.fetch(readWorkerRequest(url, '/cache', request))
   if (url.pathname.startsWith('/image/')) return env.READ_WORKER.fetch(readWorkerRequest(url, url.pathname, request))
+  if (url.pathname === '/api/sync/compare') return env.SYNC_WORKER.fetch(serviceRequest(url, '/internal/sync/compare', request))
+  if (url.pathname === '/api/sync/apply') return env.SYNC_WORKER.fetch(serviceRequest(url, '/internal/sync/apply', request))
+  if (url.pathname.startsWith('/api/check/')) {
+    const id = url.pathname.slice('/api/check/'.length)
+    return env.SYNC_WORKER.fetch(serviceRequest(url, `/internal/check/${id}`, request))
+  }
 
   return new Response('Not found', { status: 404 })
 }

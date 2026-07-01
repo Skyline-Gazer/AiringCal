@@ -6,3 +6,7 @@ keep_vars = true
 [[services]]
 binding = "READ_WORKER"
 service = "airing-cal-read"
+
+[[services]]
+binding = "SYNC_WORKER"
+service = "airing-cal-sync"

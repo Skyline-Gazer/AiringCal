@@ -3,6 +3,7 @@
 // Runtime types generated with workerd@1.20260611.1 2026-06-17 
 interface __BaseEnv_Env {
 	READ_WORKER: Fetcher /* airing-cal-read */;
+	SYNC_WORKER: Fetcher /* airing-cal-sync */;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
