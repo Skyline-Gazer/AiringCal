@@ -63,13 +63,8 @@ export function renderWebmasterMeta(env: VerificationEnv): string {
 }
 
 export function renderAnalyticsScripts(env: AnalyticsEnv): string {
-  const snippets = [
-    env.ga4Id ? `<!-- GA4 ${escapeHtml(env.ga4Id)} -->` : '',
-    env.clarityId ? `<!-- Clarity ${escapeHtml(env.clarityId)} -->` : '',
-    env.yandexMetricaId ? `<!-- Yandex Metrica ${escapeHtml(env.yandexMetricaId)} -->` : '',
-    env.baiduTongjiId ? `<!-- Baidu Tongji ${escapeHtml(env.baiduTongjiId)} -->` : '',
-  ]
-  return snippets.filter(Boolean).join('\n')
+  void env
+  return ''
 }
 
 export function renderIndexPage(options: { build?: BuildInfo; verification?: VerificationEnv; analytics?: AnalyticsEnv } = {}): string {

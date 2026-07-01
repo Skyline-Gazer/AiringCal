@@ -43,11 +43,15 @@ https://airing-cal-frontend.<你的 workers.dev 子域>.workers.dev
 | `/cache` | 公开、脱敏后的缓存统计页 |
 | `/src/bangumi.js` | Widget script |
 | `/src/bangumi.css` | Widget styles |
+| `/src/cache.js` | Cache page script |
 | `/api/collections?type=watching` | 通过 `READ_WORKER` 读取 collection snapshot |
 | `/api/calendar` | 通过 `READ_WORKER` 读取 calendar snapshot |
 | `/api/config?key=nsfw` | 通过 `READ_WORKER` 读取公开配置 |
 | `/api/health` | 通过 `READ_WORKER` 读取健康状态 |
 | `/api/cache` | 通过 `READ_WORKER` 读取脱敏缓存 JSON |
+| `/api/sync/compare` | 通过 `SYNC_WORKER` 执行动画收藏对比 |
+| `/api/sync/apply` | 通过 `SYNC_WORKER` 执行动画收藏同步并写操作日志 |
+| `/api/check/:id` | 通过 `SYNC_WORKER` 查询 24 小时内的同步操作日志 |
 | `/image/:hash` | 通过 `READ_WORKER` 读取 R2 图片 |
 
 `airing-cal-sync` 没有公开同步 URL；生产同步由 Cloudflare Cron 触发：
@@ -59,13 +63,7 @@ crons = ["0 * * * *"]
 
 Cloudflare 免费计划对 Cron Trigger 数量有限制，所以这里只配置 1 个每小时触发器；`sync-worker` 会在代码里只允许 UTC 0/4/8/12/16/20 点真正同步，其余小时直接跳过。
 
-查看当前 Cloudflare account 里哪些 Worker 占用了 Cron Trigger：
-
-```bash
-CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... node scripts/list-cloudflare-crons.mjs
-```
-
-CI 也会在部署前自动运行这个检查。这个检查会把 `airing-cal-sync` 已经占用的 Cron Trigger 当成可复用额度：如果账号里已经有 `airing-cal-sync` 的 trigger，即使总数已经到 5，部署仍会继续，因为 Wrangler 只是更新同一个 Worker 的 schedule；只有账号已满且 `airing-cal-sync` 还没有 trigger、需要新增第 6 条时，CI 才会先打印占用列表再停止部署。
+查看当前 Cloudflare account 里哪些 Worker 占用了 Cron Trigger 可以用 Cloudflare Dashboard 或 Wrangler 手动检查；routine deploy 不会自动创建、删除或迁移 schedule。
 
 ## Cloudflare 资源
 
@@ -76,23 +74,24 @@ CI 也会在部署前自动运行这个检查。这个检查会把 `airing-cal-s
 | KV namespace title | `airing-cal-kv` |
 | R2 bucket | `airing-cal-images` |
 | Queue | `airing-cal-media` |
-| Queue | `airing-cal-sync-trigger` |
 | Service binding | `READ_WORKER -> airing-cal-read` |
+| Service binding | `SYNC_WORKER -> airing-cal-sync` |
 
 当前绑定名：
 
 | Worker | Binding |
 |--------|---------|
-| `airing-cal-frontend` | `READ_WORKER` |
+| `airing-cal-frontend` | `READ_WORKER`, `SYNC_WORKER` |
 | `airing-cal-read` | `AIRING_CAL_KV`, `AIRING_CAL_R2` |
-| `airing-cal-sync` | `AIRING_CAL_KV`, `MEDIA_QUEUE`, `airing-cal-sync-trigger` queue consumer |
+| `airing-cal-sync` | `AIRING_CAL_KV`, `MEDIA_QUEUE` |
 | `airing-cal-media` | `AIRING_CAL_KV`, `AIRING_CAL_R2` |
 
-CI 会用上面的固定名称做资源 pre-check：
+资源初始化是人工前置步骤，routine deploy 不创建 KV/R2/Queue：
 
-- KV：先执行 namespace list，找不到 `airing-cal-kv` 就创建，再读取实际 namespace ID。
-- R2：先检查 `airing-cal-images`，找不到就创建。
-- Queue：先检查 `airing-cal-media` 和 `airing-cal-sync-trigger`，找不到就创建。
+- 创建或复用 KV namespace `airing-cal-kv`，并把实际 namespace ID 写入 `apps/read-worker/wrangler.toml`、`apps/sync-worker/wrangler.toml`、`apps/media-worker/wrangler.toml`。
+- 创建或复用 R2 bucket `airing-cal-images`。
+- 创建或复用 Queue `airing-cal-media`。
+- 确认 `airing-cal-frontend` 的 service bindings 指向 `airing-cal-read` 和 `airing-cal-sync`。
 
 KV 比较特殊：`wrangler.toml` 里的 `kv_namespaces.id` 不是 namespace title，而是 Cloudflare 生成的 namespace ID。仓库里的 3 个 Worker config 保留占位符：
 
@@ -100,11 +99,11 @@ KV 比较特殊：`wrangler.toml` 里的 `kv_namespaces.id` 不是 namespace tit
 id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 ```
 
-CI 不会把这个 ID 写回仓库。部署时会临时生成 `apps/*/wrangler.deploy.toml`，只在临时 config 里替换成真实 KV ID，然后用临时 config 部署。这样本地文件保持干净，也不用你在 3 个 Worker 里重复手填。
+部署前需要把这个占位符替换为稳定的 Cloudflare namespace ID。routine deploy 使用稳定的 checked-in `wrangler.toml`，不会临时生成 deploy config，也不会在每次 push 时创建资源。
 
 CI 仍然不会上传运行时 secret，也不会手写 `curl` 去改 cron schedule。Cron schedule 只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers]`；部署 `airing-cal-sync` 时，Wrangler 会自动把这个配置同步到 Cloudflare Cron Triggers。
 
-为了避免首次部署后页面长时间停在“KV 无数据”，CI 会在 read/media/sync 这三个内部 Worker 部署完成后，向 `airing-cal-sync-trigger` 投递一条 `deploy-sync` 消息。`airing-cal-sync` 消费这条消息后会立即执行一次完整同步；CI 随后轮询 KV 里的 `snapshot:summary`，确认 `_total > 0` 后才继续部署 frontend。这个触发不占 Cron Trigger 额度，也不暴露公开同步 URL。
+部署完成后不会自动投递同步消息。首次部署如果页面暂时显示“KV 无数据”，等待下一个有效 Cron tick，或在 widget 的动画同步视图中使用两个 bgm.tv access token 手动执行同步。
 
 ## 最小配置
 
@@ -134,9 +133,9 @@ Cloudflare Dashboard -> My Profile -> API Tokens -> Create custom token。
 | 范围 | 权限组 | 级别 | 用途 |
 |------|--------|------|------|
 | Account | `Workers Scripts` | `Edit` | 部署 4 个 Worker script，并更新 `airing-cal-sync` 的 Cron Trigger |
-| Account | `Workers KV Storage` | `Edit` | 检查/创建 `airing-cal-kv`，并部署 KV binding |
-| Account | `Workers R2 Storage` | `Edit` | 检查/创建 `airing-cal-images`，并部署 R2 binding |
-| Account | `Queues` | `Edit` | 检查/创建 `airing-cal-media`，并部署 Queue binding |
+| Account | `Workers KV Storage` | `Edit` | 部署 KV binding |
+| Account | `Workers R2 Storage` | `Edit` | 部署 R2 binding |
+| Account | `Queues` | `Edit` | 部署 Queue binding |
 | Account | `Account Settings` | `Read` | 让 Wrangler 解析账户信息 |
 | User | `User Details` | `Read` | 让 Wrangler 识别 API token 用户 |
 
@@ -289,15 +288,12 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 2. `pnpm typecheck`
 3. `pnpm test`
 4. `pnpm build:check`
-5. pre-check Cloudflare 资源：KV/R2/Queue 存在就复用，不存在就按固定名称创建
-6. 读取真实 KV namespace ID，生成临时 `wrangler.deploy.toml`
-7. 用 matrix 部署 `airing-cal-read`、`airing-cal-media`、`airing-cal-sync`
-8. 向 `airing-cal-sync-trigger` 部署完成后自动投递一次同步消息，并等待 KV `snapshot:summary` 出现非空数据
-9. 最后部署 `airing-cal-frontend`
+5. 用 matrix 部署 `airing-cal-read`、`airing-cal-media`、`airing-cal-sync`
+6. 最后部署 `airing-cal-frontend`
 
 部署步骤直接运行 `pnpm exec wrangler deploy`，不再通过 `cloudflare/wrangler-action` 包装。CI 会设置 `WRANGLER_LOG=debug` 和 `WRANGLER_LOG_PATH`；如果部署失败，会打印脱敏后的 Wrangler debug log，便于看到 Cloudflare API 返回的真实错误。
 
-这个顺序保证内部 read/media/sync Worker 先更新，最后再更新公开入口 frontend Worker。首次部署时，`airing-cal-frontend` 的 service binding 需要目标 `airing-cal-read` 已经存在，所以 frontend 不放进并行 matrix。
+这个顺序保证内部 read/media/sync Worker 先更新，最后再更新公开入口 frontend Worker。首次部署时，`airing-cal-frontend` 的 service binding 需要目标 `airing-cal-read` 和 `airing-cal-sync` 已经存在，所以 frontend 不放进并行 matrix。
 
 ## Cache 与 NSFW
 
@@ -312,6 +308,10 @@ Widget 的唯一来源是 `packages/widget`。公开 HTML 页面复用同一个 
 如果部署环境提供 `BANGUMI_GIT_COMMIT_SHA` 和 `BANGUMI_GIT_REPOSITORY_URL`，footer 会链接到对应 commit；否则显示 `Build unknown`。这只是页面追踪构建来源的可选信息，不影响部署和访问。
 
 浏览器 widget 使用 `images.common.uri` 渲染封面。没有缓存图片时直接显示 `image cache failed` 文字状态，不内嵌 `data:image` placeholder。
+
+浏览器 widget 也包含动画同步视图。同步请求只打到 frontend 的 `/api/sync/compare`、`/api/sync/apply` 和 `/api/check/:id`，再由 service binding 转给 `airing-cal-sync` 的内部路由。
+
+Analytics 环境变量目前是保留项，代码不会注入 GA4、Clarity、Yandex Metrica 或 Baidu Tongji 脚本；这避免在没有官方片段验证前输出假的占位注释。
 
 ## 致谢
 

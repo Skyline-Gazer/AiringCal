@@ -7,7 +7,7 @@ import { dirname, resolve } from 'node:path'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 
 const appConfigs = [
-  ['frontend-worker', ['[[services]]', 'READ_WORKER']],
+  ['frontend-worker', ['[[services]]', 'READ_WORKER', 'SYNC_WORKER']],
   ['read-worker', ['[[kv_namespaces]]', '[[r2_buckets]]']],
   ['sync-worker', ['[[queues.producers]]', '[[queues.consumers]]', '[triggers]', '0 * * * *']],
   ['media-worker', ['[[queues.consumers]]', '[[kv_namespaces]]', '[[r2_buckets]]']],
@@ -42,29 +42,17 @@ test('Cloudflare resource names use the AiringCal prefix', () => {
   }
 })
 
-test('deploy workflow pre-checks resources, resolves KV id, and avoids secret or schedule mutation', () => {
+test('deploy workflow uses checked-in worker configs and avoids routine resource mutation', () => {
   const workflow = readFileSync(resolve(root, '.github/workflows/deploy.yml'), 'utf8')
   for (const app of ['read-worker', 'sync-worker', 'media-worker']) {
-    assert.match(workflow, new RegExp(`apps/${app}/wrangler\\.deploy\\.toml`), `workflow should deploy resolved ${app} config`)
+    assert.match(workflow, new RegExp(`apps/${app}/wrangler\\.toml`), `workflow should deploy checked-in ${app} config`)
   }
   assert.match(workflow, /apps\/frontend-worker\/wrangler\.toml/, 'workflow should deploy frontend config')
   assert.match(workflow, /CLOUDFLARE_API_TOKEN:\s*\$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/, 'workflow should expose CLOUDFLARE_API_TOKEN to wrangler')
   assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID:\s*\$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/, 'workflow should expose CLOUDFLARE_ACCOUNT_ID to wrangler')
-  assert.match(workflow, /wrangler kv namespace list/, 'workflow should pre-check KV namespaces')
-  assert.match(workflow, /wrangler kv namespace create "\$KV_TITLE"/, 'workflow should create the KV namespace when missing')
-  assert.match(workflow, /wrangler r2 bucket info "\$R2_BUCKET" --json/, 'workflow should pre-check the R2 bucket')
-  assert.match(workflow, /wrangler r2 bucket create "\$R2_BUCKET"/, 'workflow should create the R2 bucket when missing')
-  assert.match(workflow, /wrangler queues info "\$QUEUE_NAME"/, 'workflow should pre-check the Queue')
-  assert.match(workflow, /wrangler queues create "\$QUEUE_NAME"/, 'workflow should create the Queue when missing')
-  assert.match(workflow, /wrangler queues info "\$SYNC_TRIGGER_QUEUE_NAME"/, 'workflow should pre-check the sync trigger Queue')
-  assert.match(workflow, /wrangler queues create "\$SYNC_TRIGGER_QUEUE_NAME"/, 'workflow should create the sync trigger Queue when missing')
-  assert.match(workflow, /node scripts\/list-cloudflare-crons\.mjs/, 'workflow should list Cloudflare cron triggers before deploying')
-  assert.match(workflow, /node scripts\/push-sync-trigger\.mjs/, 'workflow should trigger sync-worker once after internal worker deployment')
-  assert.match(workflow, /AIRING_CAL_KV_NAMESPACE_ID:\s*\$\{\{ needs\.provision_cloudflare\.outputs\.kv_id \}\}/, 'workflow should pass the resolved KV namespace id to the deploy sync trigger')
-  assert.match(workflow, /replaceAll\('<AIRING_CAL_KV_NAMESPACE_ID>', kvId\)/, 'workflow should resolve the KV namespace id in temporary deploy configs')
   assert.match(workflow, /deploy_internal_workers:/, 'workflow should deploy internal workers through a matrix job')
   assert.match(workflow, /deploy_frontend_worker:/, 'workflow should deploy the public frontend after internal workers')
-  assert.match(workflow, /pnpm exec wrangler deploy --config \$\{\{ matrix\.deploy_config \}\}/, 'workflow should deploy internal workers with the Wrangler CLI')
+  assert.match(workflow, /pnpm exec wrangler deploy --config \$\{\{ matrix\.config \}\}/, 'workflow should deploy internal workers with the Wrangler CLI')
   assert.match(workflow, /WRANGLER_LOG_PATH:\s*\$\{\{ runner\.temp \}\}\/wrangler-\$\{\{ matrix\.app \}\}\.log/, 'workflow should save Wrangler debug logs for matrix deploys')
   assert.match(workflow, /WRANGLER_LOG_SANITIZE:\s*"false"/, 'workflow should include unsanitized Wrangler response bodies for failed deploy diagnosis')
   assert.match(workflow, /s\/\(Authorization: Bearer \)\[A-Za-z0-9\._-\]\+\/\\1\[redacted\]\/g/, 'workflow should redact bearer tokens in header-like Wrangler logs')
@@ -76,6 +64,15 @@ test('deploy workflow pre-checks resources, resolves KV id, and avoids secret or
     'accountId:',
     'secrets.CF_API_TOKEN',
     'secrets.CF_ACCOUNT_ID',
+    'provision_cloudflare:',
+    'trigger_deploy_sync:',
+    'wrangler.deploy.toml',
+    'wrangler kv namespace create',
+    'wrangler r2 bucket create',
+    'wrangler queues create',
+    'node scripts/list-cloudflare-crons.mjs',
+    'node scripts/push-sync-trigger.mjs',
+    'replaceAll(',
     'wrangler secret put',
     'CRON_SECRET',
     'python3 -',
@@ -88,7 +85,7 @@ test('deploy workflow pre-checks resources, resolves KV id, and avoids secret or
 
 test('README documents the multi-worker deployment without legacy cron instructions', () => {
   const readme = readFileSync(resolve(root, 'README.md'), 'utf8')
-  for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/cache', 'images.common', 'images.large', 'Cloudflare 免费计划对 Cron Trigger 数量有限制', 'UTC 0/4/8/12/16/20 点真正同步', 'node scripts/list-cloudflare-crons.mjs']) {
+  for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/cache', 'images.common', 'images.large', 'Cloudflare 免费计划对 Cron Trigger 数量有限制', 'UTC 0/4/8/12/16/20 点真正同步', '资源初始化是人工前置步骤', 'routine deploy 不创建 KV/R2/Queue']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document ${fragment}`)
   }
   for (const fragment of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', '不要再创建 `CF_API_TOKEN` / `CF_ACCOUNT_ID`', 'Workers Scripts', 'Workers KV Storage', 'Workers R2 Storage', 'Queues', 'Account Settings', 'User Details', 'Workers Routes']) {
@@ -100,8 +97,8 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['Some triggers failed to deploy for airing-cal-sync', '/workers/scripts/airing-cal-sync/schedules', 'Workers Scripts` 是 `Edit`', 'Node 20 deprecation 提示不是这次失败原因']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document sync-worker cron trigger permission troubleshooting: ${fragment}`)
   }
-  for (const fragment of ['pre-check Cloudflare 资源', 'wrangler.deploy.toml', '找不到就创建', 'airing-cal-sync-trigger', '部署完成后自动投递一次']) {
-    assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document CI resource provisioning: ${fragment}`)
+  for (const fragment of ['稳定的 checked-in `wrangler.toml`', '不会临时生成 deploy config', '不会自动投递同步消息']) {
+    assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document routine deploy boundaries: ${fragment}`)
   }
   for (const fragment of ['https://next.bgm.tv/demo/access-token', 'https://bgm.tv/user/sai', 'sai,another_user', '只配置在 `airing-cal-sync`']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document how to configure bgm runtime value: ${fragment}`)
@@ -109,7 +106,7 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['BANGUMI_GIT_COMMIT_SHA', 'BANGUMI_GIT_REPOSITORY_URL', '绑定自定义域名不需要改任何 repository URL 变量']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document optional frontend build metadata: ${fragment}`)
   }
-  for (const fragment of ['secrets.CF_API_TOKEN', 'secrets.CF_ACCOUNT_ID', 'CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', '内联 placeholder', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets', 'PUBLIC_REPOSITORY_URL']) {
+  for (const fragment of ['secrets.CF_API_TOKEN', 'secrets.CF_ACCOUNT_ID', 'CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', '内联 placeholder', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets', 'PUBLIC_REPOSITORY_URL', 'wrangler.deploy.toml', 'pre-check Cloudflare 资源', '找不到就创建', 'airing-cal-sync-trigger', '部署完成后自动投递一次']) {
     assert.doesNotMatch(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should not mention ${fragment}`)
   }
 })

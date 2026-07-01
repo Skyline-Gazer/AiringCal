@@ -8,6 +8,7 @@ import {
   renderCachePage,
   renderFooter,
   renderIndexPage,
+  renderAnalyticsScripts,
   renderWebmasterMeta,
   widgetJs,
   widgetCss,
@@ -51,6 +52,17 @@ test('renderWebmasterMeta emits only configured verification tags', () => {
   assert.match(html, /name="msvalidate\.01" content="bing-token"/)
   assert.equal(html.includes('yandex-verification'), false)
   assert.equal(html.includes('baidu-site-verification'), false)
+})
+
+test('renderAnalyticsScripts does not emit placeholder analytics snippets', () => {
+  const html = renderAnalyticsScripts({
+    ga4Id: 'G-TEST',
+    clarityId: 'clarity',
+    yandexMetricaId: 'yandex',
+    baiduTongjiId: 'baidu',
+  })
+
+  assert.equal(html, '')
 })
 
 test('widgetJs consumes new images.common.uri shape', () => {
