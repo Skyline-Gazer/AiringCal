@@ -82,3 +82,18 @@ test('fetchJson classifies non-404 upstream errors as BgmHttpError', async () =>
     globalThis.fetch = originalFetch
   }
 })
+
+test('downloadImage normalizes protocol-relative bgm image urls before fetching', async () => {
+  const client = new BgmClient()
+  const originalFetch = globalThis.fetch
+  const captured = captureFetch(200, 'image-bytes')
+  globalThis.fetch = captured.fetch
+  try {
+    const image = await client.downloadImage('//lain.bgm.tv/pic/cover/c/test.jpg')
+
+    assert.equal(captured.calls[0].url, 'https://lain.bgm.tv/pic/cover/c/test.jpg')
+    assert.equal(image?.contentType, 'text/plain;charset=UTF-8')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

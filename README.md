@@ -222,6 +222,10 @@ Wrangler 本地权限映射把 `workers_scripts:write` 描述为可修改 Worker
       "r2_key": "images/sha256-hex/original"
     },
     "large": null
+  },
+  "image_status": {
+    "common": "cached",
+    "large": "failed"
   }
 }
 ```
@@ -229,9 +233,11 @@ Wrangler 本地权限映射把 `workers_scripts:write` 描述为可修改 Worker
 规则：
 
 - 卡片封面默认使用 `images.common.uri`
+- `image_status.common` / `image_status.large` 暴露非敏感缓存状态，便于区分 `cached`、`pending_next_cron`、`queued`、`failed` 和 `missing_source`
 - 需要大图时使用 `images.large`
 - 图片 hash 是 `sha256(downloaded_image_bytes)` 的小写 hex
 - R2 key 固定为 `images/{hash}/original`
+- bgm.tv 返回协议相对图片 URL（例如 `//lain.bgm.tv/...`）时，media-worker 下载前会规范化为 `https://...`
 
 KV key：
 
@@ -307,7 +313,7 @@ Widget 的唯一来源是 `packages/widget`。公开 HTML 页面复用同一个 
 
 如果部署环境提供 `BANGUMI_GIT_COMMIT_SHA` 和 `BANGUMI_GIT_REPOSITORY_URL`，footer 会链接到对应 commit；否则显示 `Build unknown`。这只是页面追踪构建来源的可选信息，不影响部署和访问。
 
-浏览器 widget 使用 `images.common.uri` 渲染封面。没有缓存图片时直接显示 `image cache failed` 文字状态，不内嵌 `data:image` placeholder。
+浏览器 widget 使用 `images.common.uri` 渲染封面。没有缓存图片时读取 `image_status.common` 显示 `image pending`、`image queued`、`image missing source` 或 `image cache failed`，不内嵌 `data:image` placeholder。
 
 浏览器 widget 也包含动画同步视图。同步请求只打到 frontend 的 `/api/sync/compare`、`/api/sync/apply` 和 `/api/check/:id`，再由 service binding 转给 `airing-cal-sync` 的内部路由。
 

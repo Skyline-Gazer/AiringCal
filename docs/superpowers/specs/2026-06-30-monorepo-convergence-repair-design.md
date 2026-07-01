@@ -155,11 +155,17 @@ Calendar entries must be transformed to the same public image shape used by coll
     },
     "large": null
   },
+  "image_status": {
+    "common": "cached",
+    "large": "failed"
+  },
   "nsfw": false
 }
 ```
 
-Missing image status stays `null`. Missing subject meta stays `nsfw: false`.
+Missing image ref stays `null`. Missing subject meta stays `nsfw: false`.
+
+`image_status.common` and `image_status.large` may expose sanitized cache states such as `cached`, `pending_next_cron`, `queued`, `failed`, and `missing_source` so the widget and operators can distinguish "not cached yet" from a real failed image job without exposing raw upstream URLs or error details.
 
 ### R3. Media Queue Must Track Missing Meta, Not Only Images
 

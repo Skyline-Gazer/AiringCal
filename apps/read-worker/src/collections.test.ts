@@ -51,6 +51,8 @@ test('collections hydrate cached image refs from media-worker status', async () 
 
   assert.equal(body.data[0].images.common.uri, `/image/${hash}`)
   assert.equal(body.data[0].images.large, null)
+  assert.equal(body.data[0].image_status.common, 'cached')
+  assert.equal(body.data[0].image_status.large, 'failed')
 })
 
 test('calendar hydrates cached image refs and subject metadata like collections', async () => {
@@ -92,5 +94,7 @@ test('calendar hydrates cached image refs and subject metadata like collections'
 
   assert.equal(body[0].items[0].images.common.uri, `/image/${hash}`)
   assert.equal(body[0].items[0].images.large, null)
+  assert.equal(body[0].items[0].image_status.common, 'cached')
+  assert.equal(body[0].items[0].image_status.large, 'failed')
   assert.equal(body[0].items[0].nsfw, true)
 })

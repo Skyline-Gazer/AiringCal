@@ -128,9 +128,10 @@ export class BgmClient {
   }
 
   async downloadImage(url: string): Promise<{ data: ArrayBuffer; contentType: string } | null> {
+    const normalizedUrl = url.startsWith('//') ? `https:${url}` : url
     let res: Response
     try {
-      res = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(30000) })
+      res = await fetch(normalizedUrl, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(30000) })
     } catch {
       return null
     }

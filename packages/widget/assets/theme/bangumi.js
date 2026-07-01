@@ -43,11 +43,20 @@
       : null
   }
 
-  function renderCover(images, alt, attrs) {
+  function imageCacheLabel(imageStatus) {
+    const status = imageStatus?.common || 'pending_next_cron'
+    if (status === 'cached') return ''
+    if (status === 'missing_source') return 'image missing source'
+    if (status === 'failed') return 'image cache failed'
+    if (status === 'queued') return 'image queued'
+    return 'image pending'
+  }
+
+  function renderCover(images, imageStatus, alt, attrs) {
     const imgUrl = subjectImageUrl(images)
     return imgUrl
       ? '<img src="' + imgUrl + '" alt="' + alt + '" ' + attrs + '>'
-      : '<span class="bgm-image-cache-failed">image cache failed</span>'
+      : '<span class="bgm-image-cache-failed">' + imageCacheLabel(imageStatus) + '</span>'
   }
 
   function renderSubjectCard(card) {
@@ -55,7 +64,7 @@
     if (card.nsfw) html += ' bgm-nsfw'
     html += '">' +
       '<div class="bgm-card-cover">' +
-        renderCover(card.images, card.name, 'width="300" height="400" loading="lazy"')
+        renderCover(card.images, card.imageStatus, card.name, 'width="300" height="400" loading="lazy"')
     if (card.nsfw) html += '<div class="bgm-nsfw-overlay" onclick="event.preventDefault();this.parentElement.parentElement.classList.toggle(\'bgm-nsfw-reveal\')">R18</div>'
     html += '</div>' +
       '<div class="bgm-card-info">' +
@@ -74,6 +83,7 @@
     return renderSubjectCard({
       subjectId: entry.subject_id,
       images: entry.images,
+      imageStatus: entry.image_status,
       name: entry.name_cn || entry.name || '',
       nsfw: entry.nsfw,
       progress: progress,
@@ -86,6 +96,7 @@
     return renderSubjectCard({
       subjectId: entry.id,
       images: entry.images,
+      imageStatus: entry.image_status,
       name: entry.name_cn || entry.name || '',
       nsfw: entry.nsfw,
       progress: 0,

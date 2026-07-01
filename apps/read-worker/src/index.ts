@@ -61,6 +61,10 @@ function cachedImageRef(status: any) {
     : null
 }
 
+function imageStatus(status: any): string {
+  return typeof status?.status === 'string' ? status.status : 'pending_next_cron'
+}
+
 async function hydrateCollectionImages(data: unknown[], env: ReadEnv): Promise<unknown[]> {
   return Promise.all(data.map(async (entry: any) => {
     if (!entry || typeof entry !== 'object' || typeof entry.subject_id !== 'number') return entry
@@ -71,6 +75,10 @@ async function hydrateCollectionImages(data: unknown[], env: ReadEnv): Promise<u
       images: {
         common: cachedImageRef((status as any).common),
         large: cachedImageRef((status as any).large),
+      },
+      image_status: {
+        common: imageStatus((status as any).common),
+        large: imageStatus((status as any).large),
       },
     }
   }))
@@ -96,6 +104,12 @@ async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unk
               large: cachedImageRef((status as any).large),
             }
           : entry.images,
+        image_status: status
+          ? {
+              common: imageStatus((status as any).common),
+              large: imageStatus((status as any).large),
+            }
+          : entry.image_status,
         nsfw: (meta as any)?.nsfw ?? entry.nsfw,
       }
     }))

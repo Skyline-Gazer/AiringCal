@@ -83,7 +83,11 @@ test('widgetJs uses eps as the collection total episode fallback', () => {
   assert.match(widgetJs, /entry\.eps \|\| entry\.total_episodes/)
 })
 
-test('widgetJs renders text when image cache is unavailable instead of a data URI placeholder', () => {
+test('widgetJs renders precise cache status text when image cache is unavailable', () => {
+  assert.match(widgetJs, /entry\.image_status/)
+  assert.match(widgetJs, /imageStatus\?\.common/)
+  assert.match(widgetJs, /image pending/)
+  assert.match(widgetJs, /image missing source/)
   assert.match(widgetJs, /image cache failed/)
   assert.equal(widgetJs.includes('data:image'), false)
 })
