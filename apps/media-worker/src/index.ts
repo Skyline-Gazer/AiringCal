@@ -8,7 +8,8 @@ import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 interface MediaJob {
   subject_id: number
   title: string
-  images: {
+  subject_meta?: boolean
+  images?: {
     common?: string
     large?: string
   }
@@ -44,13 +45,17 @@ function emptyImageStatus() {
   }
 }
 
-async function processImage(size: ImageSourceSize, sourceUrl: string | undefined, job: MediaJob, client: BgmClient, imageStore: R2ImageStore, storage: KVStorage, now: number) {
+function preserveCachedImageStatus(previous: any) {
+  return previous?.status === 'cached' ? previous : null
+}
+
+async function processImage(size: ImageSourceSize, sourceUrl: string | undefined, previous: any, job: MediaJob, client: BgmClient, imageStore: R2ImageStore, storage: KVStorage, now: number) {
   if (!sourceUrl) {
-    return { ...emptyImageStatus(), status: 'missing_source' }
+    return preserveCachedImageStatus(previous) ?? previous ?? { ...emptyImageStatus(), status: 'missing_source' }
   }
   try {
     const downloaded = await client.downloadImage(sourceUrl)
-    if (!downloaded) return { ...emptyImageStatus(), status: 'failed', last_error: 'image download failed' }
+    if (!downloaded) return preserveCachedImageStatus(previous) ?? { ...emptyImageStatus(), status: 'failed', queued_at: now, last_error: 'image download failed' }
     const hash = await sha256Hex(downloaded.data)
     const ref = imageRef(hash)
     await imageStore.putOriginal(hash, downloaded.data, downloaded.contentType, {
@@ -77,7 +82,7 @@ async function processImage(size: ImageSourceSize, sourceUrl: string | undefined
       last_error: null,
     }
   } catch (error) {
-    return {
+    return preserveCachedImageStatus(previous) ?? {
       ...emptyImageStatus(),
       status: 'failed',
       queued_at: now,
@@ -87,18 +92,31 @@ async function processImage(size: ImageSourceSize, sourceUrl: string | undefined
 }
 
 async function processSubjectMeta(job: MediaJob, client: BgmClient, storage: KVStorage, now: number): Promise<void> {
-  const subject = await client.getSubject(job.subject_id)
-  if (!subject) {
-    await storage.put(subjectMetaKey(job.subject_id), subjectMetaFromNotFound(job.subject_id, now))
-    return
+  try {
+    const subject = await client.getSubject(job.subject_id)
+    if (!subject) {
+      await storage.put(subjectMetaKey(job.subject_id), subjectMetaFromNotFound(job.subject_id, now))
+      return
+    }
+    await storage.put(subjectMetaKey(job.subject_id), {
+      subject_id: job.subject_id,
+      exists: true,
+      nsfw: subject.nsfw === true,
+      checked_at: now,
+      reason: 'subject_detail',
+    })
+  } catch (error) {
+    const existing = await storage.get(subjectMetaKey(job.subject_id))
+    if (existing) return
+    await storage.put(subjectMetaKey(job.subject_id), {
+      subject_id: job.subject_id,
+      exists: null,
+      nsfw: true,
+      checked_at: now,
+      reason: 'network_error',
+      last_error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+    })
   }
-  await storage.put(subjectMetaKey(job.subject_id), {
-    subject_id: job.subject_id,
-    exists: true,
-    nsfw: subject.nsfw === true,
-    checked_at: now,
-    reason: 'subject_detail',
-  })
 }
 
 async function processJob(job: MediaJob, env: MediaEnv): Promise<void> {
@@ -106,10 +124,12 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<void> {
   const imageStore = new R2ImageStore(env.AIRING_CAL_R2)
   const client = new BgmClient()
   const now = Math.floor(Date.now() / 1000)
+  const previousStatus = await storage.get<any>(imageStatusKey(job.subject_id))
+  const images = job.images ?? {}
 
   const [common, large] = await Promise.all([
-    processImage('common', job.images.common, job, client, imageStore, storage, now),
-    processImage('large', job.images.large, job, client, imageStore, storage, now),
+    processImage('common', images.common, previousStatus?.common, job, client, imageStore, storage, now),
+    processImage('large', images.large, previousStatus?.large, job, client, imageStore, storage, now),
   ])
   await processSubjectMeta(job, client, storage, now)
 
