@@ -76,6 +76,169 @@ export interface MergedCollections {
 export type SubjectImageMap = Map<number, SubjectImages>
 export type SubjectMetaMap = Map<number, Pick<SubjectMeta, 'nsfw'>>
 
+export type PlatformId = 'bgm'
+
+export enum WatchStatus {
+  WATCHING = 'watching',
+  COMPLETED = 'completed',
+  PLAN_TO_WATCH = 'plan_to_watch',
+  ON_HOLD = 'on_hold',
+  DROPPED = 'dropped',
+}
+
+export interface ComparisonItem {
+  externalId: string
+  title: string
+  status: WatchStatus
+  progress: number
+  totalEpisodes: number
+  score: number
+  platform: PlatformId
+}
+
+export interface PatchEntryOptions {
+  sourceToken?: string
+}
+
+export interface PatchEntryResult {
+  episodeChanged: number
+  episodeProgress?: {
+    before: number
+    after: number
+    total: number
+  }
+}
+
+export interface AccountInfo {
+  username: string
+  externalId: string
+  platform: PlatformId
+}
+
+export interface PlatformClient {
+  readonly platform: PlatformId
+  getMe(token: string): Promise<AccountInfo>
+  fetchCollections(token: string, username: string): Promise<ComparisonItem[]>
+  patchEntry(token: string, externalId: string, item: ComparisonItem, options?: PatchEntryOptions): Promise<PatchEntryResult>
+}
+
+export interface Difference {
+  externalId: string
+  title: string
+  statusA: string
+  statusB: string
+  progressA: number
+  progressB: number
+  scoreA: number
+  scoreB: number
+}
+
+export interface SameEntry {
+  externalId: string
+  title: string
+  status: string
+  progress: number
+  totalEpisodes: number
+  score: number
+}
+
+export interface CompareResult {
+  userA: { name: string; total: number; error?: string }
+  userB: { name: string; total: number; error?: string }
+  common: number
+  differences: Difference[]
+  same: SameEntry[]
+  onlyA: Difference[]
+  onlyB: Difference[]
+}
+
+export interface SyncBaseline {
+  externalId: string
+  status?: string | null
+  score?: number | null
+  progress?: number | null
+  totalEpisodes?: number | null
+}
+
+export interface SyncRequest {
+  mode: 'full' | 'partial'
+  from: string
+  to: string
+  subject_ids?: string[]
+  baseline?: SyncBaseline[]
+}
+
+export interface FieldChange<T> {
+  before: T
+  after: T
+}
+
+export interface SyncResult {
+  externalId: string
+  title: string
+  status: 'ok' | 'error'
+  collectionStatus?: FieldChange<string>
+  scoreChange?: FieldChange<number | null>
+  episodeChanged?: number
+  episodeProgress?: {
+    before: number
+    after: number
+    total: number
+  }
+  error?: string
+}
+
+export interface BgmCalendarSubjectLike {
+  id: number
+  type: number
+  name: string
+  name_cn: string
+  summary: string
+  nsfw?: boolean
+  date: string
+  eps: number
+  total_episodes: number
+  images?: { large?: string; common?: string; medium?: string; small?: string; grid?: string }
+  rating?: { score: number; rank: number; total: number }
+}
+
+export interface BgmCalendarDayLike {
+  weekday: { en: string; cn: string; ja: string; id: number }
+  items: BgmCalendarSubjectLike[]
+}
+
+export interface CalendarSubjectSnapshot {
+  subject_id: number
+  id: number
+  type: number
+  name: string
+  name_cn: string
+  summary: string
+  images: SubjectImages
+  nsfw: boolean
+  date: string
+  eps: number
+  total_episodes: number
+  rating?: { score: number; rank: number; total: number }
+}
+
+export interface CalendarDaySnapshot {
+  weekday: BgmCalendarDayLike['weekday']
+  items: CalendarSubjectSnapshot[]
+}
+
+interface CachedImageStatusLike {
+  status?: string
+  hash?: string | null
+  uri?: string | null
+  r2_key?: string | null
+}
+
+interface ImageStatusLike {
+  common?: CachedImageStatusLike | null
+  large?: CachedImageStatusLike | null
+}
+
 const TYPE_MAP: Record<number, CollectionType> = {
   1: 'want',
   2: 'watched',
@@ -100,6 +263,18 @@ export function subjectMetaFromNotFound(subjectId: number, checkedAt: number): S
     checked_at: checkedAt,
     reason: 'not_found_or_restricted',
   }
+}
+
+export function imageRefsFromStatus(status: ImageStatusLike | null | undefined): SubjectImages {
+  return {
+    common: cachedImageRef(status?.common),
+    large: cachedImageRef(status?.large),
+  }
+}
+
+function cachedImageRef(status: CachedImageStatusLike | null | undefined): ImageRef | null {
+  if (status?.status !== 'cached' || !status.hash || !status.uri || !status.r2_key) return null
+  return { hash: status.hash, uri: status.uri, r2_key: status.r2_key }
 }
 
 function toTimestamp(value: string | undefined): number {
@@ -153,4 +328,167 @@ export function mergeCollections(collections: BgmCollectionLike[], imageMap?: Su
     merged[TYPE_MAP[entry.collection_type] ?? 'want'].push(entry)
   }
   return merged
+}
+
+export function transformCalendar(calendar: BgmCalendarDayLike[], imageMap?: SubjectImageMap, subjectMetaMap?: SubjectMetaMap): CalendarDaySnapshot[] {
+  return calendar.map((day) => ({
+    weekday: day.weekday,
+    items: day.items.map((subject) => ({
+      subject_id: subject.id,
+      id: subject.id,
+      type: subject.type,
+      name: subject.name,
+      name_cn: subject.name_cn,
+      summary: subject.summary,
+      images: imageMap?.get(subject.id) ?? { common: null, large: null },
+      nsfw: subjectMetaMap?.get(subject.id)?.nsfw ?? subject.nsfw === true,
+      date: subject.date,
+      eps: subject.eps,
+      total_episodes: subject.total_episodes,
+      ...(subject.rating ? { rating: subject.rating } : {}),
+    })),
+  }))
+}
+
+function statusLabel(status: string | null | undefined): string {
+  if (!status || status === '—') return '未收藏'
+  return ({
+    [WatchStatus.WATCHING]: '在看',
+    [WatchStatus.COMPLETED]: '看过',
+    [WatchStatus.PLAN_TO_WATCH]: '想看',
+    [WatchStatus.ON_HOLD]: '搁置',
+    [WatchStatus.DROPPED]: '抛弃',
+  } as Record<string, string>)[status] || status
+}
+
+export async function compareAccounts(
+  clientA: PlatformClient,
+  tokenA: string,
+  clientB: PlatformClient,
+  tokenB: string,
+): Promise<CompareResult> {
+  const [meA, meB] = await Promise.allSettled([
+    clientA.getMe(tokenA),
+    clientB.getMe(tokenB),
+  ])
+  const nameA = meA.status === 'fulfilled' ? meA.value.username : 'Account A'
+  const nameB = meB.status === 'fulfilled' ? meB.value.username : 'Account B'
+
+  const [settledA, settledB] = await Promise.allSettled([
+    clientA.fetchCollections(tokenA, nameA),
+    clientB.fetchCollections(tokenB, nameB),
+  ])
+
+  const colA = unwrapCollections(settledA, nameA)
+  const colB = unwrapCollections(settledB, nameB)
+
+  if (colA.error && colB.error) {
+    return { userA: colA, userB: colB, common: 0, same: [], onlyA: [], onlyB: [], differences: [] }
+  }
+
+  const mapA = new Map(colA.items.map((item) => [item.externalId, item]))
+  const mapB = new Map(colB.items.map((item) => [item.externalId, item]))
+  const differences: Difference[] = []
+  const same: SameEntry[] = []
+  const onlyA: Difference[] = []
+  const onlyB: Difference[] = []
+  const allIds = new Set([...mapA.keys(), ...mapB.keys()])
+
+  for (const id of allIds) {
+    const a = mapA.get(id)
+    const b = mapB.get(id)
+    if (a && b) {
+      if (a.status === b.status && a.progress === b.progress && a.score === b.score) {
+        same.push({
+          externalId: id,
+          title: a.title,
+          status: statusLabel(a.status),
+          progress: a.progress,
+          totalEpisodes: a.totalEpisodes,
+          score: a.score,
+        })
+      } else {
+        differences.push({
+          externalId: id,
+          title: a.title || b.title,
+          statusA: statusLabel(a.status),
+          statusB: statusLabel(b.status),
+          progressA: a.progress,
+          progressB: b.progress,
+          scoreA: a.score,
+          scoreB: b.score,
+        })
+      }
+    } else if (a) {
+      onlyA.push({ externalId: id, title: a.title, statusA: statusLabel(a.status), statusB: '—', progressA: a.progress, progressB: 0, scoreA: a.score, scoreB: 0 })
+    } else if (b) {
+      onlyB.push({ externalId: id, title: b.title, statusA: '—', statusB: statusLabel(b.status), progressA: 0, progressB: b.progress, scoreA: 0, scoreB: b.score })
+    }
+  }
+
+  return {
+    userA: colA,
+    userB: colB,
+    common: [...allIds].filter((id) => mapA.has(id) && mapB.has(id)).length,
+    same,
+    onlyA,
+    onlyB,
+    differences,
+  }
+}
+
+function unwrapCollections(settled: PromiseSettledResult<ComparisonItem[]>, name: string) {
+  if (settled.status === 'fulfilled') return { name, items: settled.value, total: settled.value.length }
+  const reason = settled.reason instanceof Error ? settled.reason.message : String(settled.reason)
+  return { name, items: [] as ComparisonItem[], total: 0, error: reason }
+}
+
+export async function executeSync(
+  clientA: PlatformClient,
+  fromToken: string,
+  clientB: PlatformClient,
+  toToken: string,
+  request: SyncRequest,
+): Promise<SyncResult[]> {
+  validateSyncRequest(request)
+  const sourceAccount = await clientA.getMe(fromToken)
+  const sourceCollections = await clientA.fetchCollections(fromToken, sourceAccount.username)
+  const targets = request.mode === 'full'
+    ? sourceCollections
+    : sourceCollections.filter((item) => new Set(request.subject_ids ?? []).has(item.externalId))
+  const baselineMap = new Map((request.baseline ?? []).map((entry) => [entry.externalId, entry]))
+  const results: SyncResult[] = []
+
+  for (const entry of targets) {
+    try {
+      const patchResult = await clientB.patchEntry(toToken, entry.externalId, entry, { sourceToken: fromToken })
+      const baseline = baselineMap.get(entry.externalId)
+      results.push({
+        externalId: entry.externalId,
+        title: entry.title,
+        status: 'ok',
+        collectionStatus: { before: statusLabel(baseline?.status), after: statusLabel(entry.status) },
+        scoreChange: { before: typeof baseline?.score === 'number' ? baseline.score : null, after: entry.score || null },
+        episodeChanged: patchResult.episodeChanged,
+        episodeProgress: patchResult.episodeProgress,
+      })
+    } catch (error) {
+      results.push({
+        externalId: entry.externalId,
+        title: entry.title,
+        status: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  return results
+}
+
+function validateSyncRequest(request: SyncRequest): void {
+  if (request.mode !== 'full' && request.mode !== 'partial') throw new Error('Invalid sync mode')
+  if (!request.from?.trim() || !request.to?.trim()) throw new Error('Missing source/target user')
+  if (request.mode === 'partial' && (!Array.isArray(request.subject_ids) || request.subject_ids.length === 0)) {
+    throw new Error('Partial sync requires subject_ids')
+  }
 }
