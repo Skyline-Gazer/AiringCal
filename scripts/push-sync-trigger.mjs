@@ -7,13 +7,41 @@ const namespaceId = process.env.AIRING_CAL_KV_NAMESPACE_ID
 const pollTimeoutMs = Number.parseInt(process.env.SYNC_TRIGGER_TIMEOUT_MS || '120000', 10)
 const pollIntervalMs = Number.parseInt(process.env.SYNC_TRIGGER_POLL_INTERVAL_MS || '5000', 10)
 const summaryKey = 'snapshot:summary'
+const calendarKey = 'snapshot:calendar'
+const terminalCommonImageStatuses = new Set(['cached', 'failed', 'missing_source'])
 
 export function syncSnapshotReady(summary) {
   return Boolean(summary && typeof summary === 'object' && Number.isFinite(summary._total) && summary._total > 0)
 }
 
-export function syncTriggerReady(summary, imageStatusKeys) {
-  return syncSnapshotReady(summary) && Array.isArray(imageStatusKeys) && imageStatusKeys.length > 0
+export function calendarSubjectIds(calendar) {
+  if (!Array.isArray(calendar)) return []
+  const ids = []
+  const seen = new Set()
+  for (const day of calendar) {
+    if (!Array.isArray(day?.items)) continue
+    for (const item of day.items) {
+      const id = typeof item?.subject_id === 'number' ? item.subject_id : item?.id
+      if (typeof id !== 'number' || seen.has(id)) continue
+      seen.add(id)
+      ids.push(id)
+    }
+  }
+  return ids
+}
+
+function calendarImageStatusReady(status) {
+  return terminalCommonImageStatuses.has(status?.common?.status)
+}
+
+export function syncTriggerReady(summary, calendar, imageStatusesBySubject) {
+  if (!syncSnapshotReady(summary)) return false
+  const subjectIds = calendarSubjectIds(calendar)
+  if (!subjectIds.length) return false
+  for (const subjectId of subjectIds) {
+    if (!calendarImageStatusReady(imageStatusesBySubject?.get(subjectId))) return false
+  }
+  return true
 }
 
 async function api(path, init = {}) {
@@ -47,28 +75,29 @@ async function kvJson(key) {
   return JSON.parse(text)
 }
 
-async function kvKeys(prefix) {
-  const query = new URLSearchParams({ prefix })
-  const body = await api(`/accounts/${accountId}/storage/kv/namespaces/${namespaceId}/keys?${query}`)
-  return Array.isArray(body.result) ? body.result : []
-}
-
 async function waitForSyncSnapshot() {
   const deadline = Date.now() + pollTimeoutMs
   let lastSummary = null
-  let lastImageStatusKeys = []
+  let lastCalendar = null
+  let lastImageStatusesBySubject = new Map()
   while (Date.now() <= deadline) {
-    ;[lastSummary, lastImageStatusKeys] = await Promise.all([
+    ;[lastSummary, lastCalendar] = await Promise.all([
       kvJson(summaryKey),
-      kvKeys('image:status:'),
+      kvJson(calendarKey),
     ])
-    if (syncTriggerReady(lastSummary, lastImageStatusKeys)) {
-      console.log(`Sync snapshot and image cache status are ready: ${summaryKey} _total=${lastSummary._total}, image_status_keys=${lastImageStatusKeys.length}`)
+    const subjectIds = calendarSubjectIds(lastCalendar)
+    lastImageStatusesBySubject = new Map(await Promise.all(subjectIds.map(async (subjectId) => [
+      subjectId,
+      await kvJson(`image:status:${subjectId}`),
+    ])))
+    if (syncTriggerReady(lastSummary, lastCalendar, lastImageStatusesBySubject)) {
+      console.log(`Sync snapshot and calendar image cache status are ready: ${summaryKey} _total=${lastSummary._total}, calendar_subjects=${subjectIds.length}`)
       return
     }
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
   }
-  throw new Error(`Timed out waiting for sync-worker/media-worker to write non-empty ${summaryKey} and image:status:* keys. Last summary: ${JSON.stringify(lastSummary)}; image_status_keys=${lastImageStatusKeys.length}`)
+  const readyCount = [...lastImageStatusesBySubject.values()].filter(calendarImageStatusReady).length
+  throw new Error(`Timed out waiting for sync-worker/media-worker to cache calendar images. Last summary: ${JSON.stringify(lastSummary)}; calendar_subjects=${calendarSubjectIds(lastCalendar).length}; ready_common_status=${readyCount}`)
 }
 
 function queuesFromResult(result) {
