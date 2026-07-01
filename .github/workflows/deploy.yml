@@ -124,8 +124,30 @@ jobs:
             echo "Wrangler log not found: $WRANGLER_LOG_PATH"
           fi
 
+  refresh_cache_after_internal_deploy:
+    needs: [validate, provision_cloudflare, deploy_internal_workers]
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      AIRING_CAL_KV_NAMESPACE_ID: ${{ needs.provision_cloudflare.outputs.kv_namespace_id }}
+      GITHUB_REF_NAME: ${{ github.ref_name }}
+      GITHUB_SHA: ${{ github.sha }}
+      GITHUB_RUN_ID: ${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Trigger sync and wait for media cache status
+        run: node scripts/push-sync-trigger.mjs
+
   deploy_frontend_worker:
-    needs: [validate, deploy_internal_workers]
+    needs: [validate, refresh_cache_after_internal_deploy]
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

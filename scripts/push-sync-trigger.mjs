@@ -12,6 +12,10 @@ export function syncSnapshotReady(summary) {
   return Boolean(summary && typeof summary === 'object' && Number.isFinite(summary._total) && summary._total > 0)
 }
 
+export function syncTriggerReady(summary, imageStatusKeys) {
+  return syncSnapshotReady(summary) && Array.isArray(imageStatusKeys) && imageStatusKeys.length > 0
+}
+
 async function api(path, init = {}) {
   const response = await fetch(`https://api.cloudflare.com/client/v4${path}`, {
     ...init,
@@ -43,18 +47,28 @@ async function kvJson(key) {
   return JSON.parse(text)
 }
 
+async function kvKeys(prefix) {
+  const query = new URLSearchParams({ prefix })
+  const body = await api(`/accounts/${accountId}/storage/kv/namespaces/${namespaceId}/keys?${query}`)
+  return Array.isArray(body.result) ? body.result : []
+}
+
 async function waitForSyncSnapshot() {
   const deadline = Date.now() + pollTimeoutMs
   let lastSummary = null
+  let lastImageStatusKeys = []
   while (Date.now() <= deadline) {
-    lastSummary = await kvJson(summaryKey)
-    if (syncSnapshotReady(lastSummary)) {
-      console.log(`Sync snapshot is ready: ${summaryKey} _total=${lastSummary._total}`)
+    ;[lastSummary, lastImageStatusKeys] = await Promise.all([
+      kvJson(summaryKey),
+      kvKeys('image:status:'),
+    ])
+    if (syncTriggerReady(lastSummary, lastImageStatusKeys)) {
+      console.log(`Sync snapshot and image cache status are ready: ${summaryKey} _total=${lastSummary._total}, image_status_keys=${lastImageStatusKeys.length}`)
       return
     }
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
   }
-  throw new Error(`Timed out waiting for sync-worker to write non-empty ${summaryKey}. Last value: ${JSON.stringify(lastSummary)}`)
+  throw new Error(`Timed out waiting for sync-worker/media-worker to write non-empty ${summaryKey} and image:status:* keys. Last summary: ${JSON.stringify(lastSummary)}; image_status_keys=${lastImageStatusKeys.length}`)
 }
 
 function queuesFromResult(result) {
