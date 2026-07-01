@@ -38,8 +38,29 @@ jobs:
       - name: Build Check
         run: pnpm build:check
 
-  deploy_internal_workers:
+  provision_cloudflare:
     needs: validate
+    runs-on: ubuntu-latest
+    outputs:
+      kv_namespace_id: ${{ steps.provision.outputs.kv_namespace_id }}
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - id: provision
+        name: Provision Cloudflare resources
+        run: node scripts/provision-cloudflare-resources.mjs
+
+  deploy_internal_workers:
+    needs: [validate, provision_cloudflare]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -54,7 +75,7 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      AIRING_CAL_KV_NAMESPACE_ID: ${{ secrets.AIRING_CAL_KV_NAMESPACE_ID }}
+      AIRING_CAL_KV_NAMESPACE_ID: ${{ needs.provision_cloudflare.outputs.kv_namespace_id }}
     steps:
       - uses: actions/checkout@v4
         with:

@@ -86,11 +86,11 @@ Cloudflare 免费计划对 Cron Trigger 数量有限制，所以这里只配置 
 | `airing-cal-sync` | `AIRING_CAL_KV`, `MEDIA_QUEUE` |
 | `airing-cal-media` | `AIRING_CAL_KV`, `AIRING_CAL_R2` |
 
-资源初始化是人工前置步骤，routine deploy 不创建 KV/R2/Queue：
+CI/CD 会创建或复用 Cloudflare 资源：
 
-- 创建或复用 KV namespace `airing-cal-kv`，并把实际 namespace ID 配置到 GitHub Actions secret `AIRING_CAL_KV_NAMESPACE_ID`。
+- 创建或复用 KV namespace `airing-cal-kv`，并把实际 namespace ID 注入后续 Worker deploy config。
 - 创建或复用 R2 bucket `airing-cal-images`。
-- 创建或复用 Queue `airing-cal-media`。
+- 创建或复用 Queue `airing-cal-media` 与 `airing-cal-sync-trigger`。
 - 确认 `airing-cal-frontend` 的 service bindings 指向 `airing-cal-read` 和 `airing-cal-sync`。
 
 KV 比较特殊：`wrangler.toml` 里的 `kv_namespaces.id` 不是 namespace title，而是 Cloudflare 生成的 namespace ID。仓库里的 3 个 Worker config 保留占位符：
@@ -99,7 +99,7 @@ KV 比较特殊：`wrangler.toml` 里的 `kv_namespaces.id` 不是 namespace tit
 id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 ```
 
-部署时 CI 会把 `AIRING_CAL_KV_NAMESPACE_ID` 注入临时 deploy config，再交给 Wrangler dry-run/deploy。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会在每次 push 时发现或创建资源，也不会把临时 deploy config 提交回仓库。
+部署时 CI 会自动获取实际 KV namespace ID，注入临时 deploy config，再交给 Wrangler dry-run/deploy。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
 
 CI 仍然不会上传运行时 secret，也不会手写 `curl` 去改 cron schedule。Cron schedule 只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers]`；部署 `airing-cal-sync` 时，Wrangler 会自动把这个配置同步到 Cloudflare Cron Triggers。
 
@@ -109,7 +109,7 @@ CI 仍然不会上传运行时 secret，也不会手写 `curl` 去改 cron sched
 
 ### GitHub Actions Secrets
 
-GitHub 需要三个 **Repository secrets**，用于部署 Cloudflare。
+GitHub 只需要两个 **Repository secrets**，用于部署 Cloudflare。
 
 配置位置：
 
@@ -121,7 +121,6 @@ GitHub repo -> Settings -> Secrets and variables -> Actions -> Repository secret
 |------|------|
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API Token |
 | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Account ID |
-| `AIRING_CAL_KV_NAMESPACE_ID` | `airing-cal-kv` 的 32 位 KV namespace ID，用于 CI 物化 Worker deploy config |
 
 `CLOUDFLARE_API_TOKEN` 创建位置：
 
