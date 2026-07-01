@@ -4,6 +4,7 @@ import test from 'node:test'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  cacheJs,
   renderCachePage,
   renderFooter,
   renderIndexPage,
@@ -67,13 +68,26 @@ test('widgetJs renders text when image cache is unavailable instead of a data UR
   assert.equal(widgetJs.includes('data:image'), false)
 })
 
+test('widgetJs includes animation sync UI and public sync endpoints', () => {
+  assert.match(widgetJs, /动画同步/)
+  assert.match(widgetJs, /\/api\/sync\/compare/)
+  assert.match(widgetJs, /\/api\/sync\/apply/)
+  assert.match(widgetJs, /\/api\/check\//)
+})
+
+test('cache page loads cacheJs which fetches cache API', () => {
+  assert.match(renderCachePage(), /<script src="\/src\/cache\.js"><\/script>/)
+  assert.match(cacheJs, /\/api\/cache/)
+  assert.match(cacheJs, /bgm-cache-root/)
+})
+
 test('widgetCss styles the shared footer', () => {
   assert.match(widgetCss, /\.bgm-footer\s*\{/)
   assert.match(widgetCss, /\.bgm-footer a\s*\{/)
 })
 
 test('packaged widget assets do not read legacy image hash fields', () => {
-  for (const asset of ['assets/public/src/bangumi.js', 'assets/theme/bangumi.js', 'assets/theme/v1/bangumi.js']) {
+  for (const asset of ['assets/public/src/bangumi.js', 'assets/theme/bangumi.js', 'assets/theme/cache.js', 'assets/theme/v1/bangumi.js']) {
     const source = readFileSync(resolve(widgetRoot, asset), 'utf8')
     assert.equal(source.includes('images.hash'), false, `${asset} should not read images.hash`)
     assert.equal(source.includes('hash_large'), false, `${asset} should not read hash_large`)

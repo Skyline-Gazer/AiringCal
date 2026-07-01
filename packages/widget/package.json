@@ -8,6 +8,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "generate": "node ../../scripts/generate-widget-assets.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test"
   },
