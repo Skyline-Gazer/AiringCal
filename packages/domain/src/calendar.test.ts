@@ -39,3 +39,28 @@ test('transformCalendar enriches calendar subjects with image refs and NSFW meta
   assert.equal(calendar[0]?.items[0]?.images.large, null)
   assert.equal(calendar[0]?.items[0]?.nsfw, true)
 })
+
+test('transformCalendar maps legacy calendar eps_count into public episode totals', () => {
+  const calendar = transformCalendar([
+    {
+      weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+      items: [
+        {
+          id: 23080,
+          type: 2,
+          name: 'A',
+          name_cn: 'A CN',
+          summary: '',
+          nsfw: false,
+          date: '2026-07-01',
+          eps_count: 13,
+          images: { large: '', common: '', medium: '', small: '', grid: '' },
+          rating: { score: 0, rank: 0, total: 0 },
+        },
+      ],
+    },
+  ])
+
+  assert.equal(calendar[0]?.items[0]?.eps, 13)
+  assert.equal(calendar[0]?.items[0]?.total_episodes, 13)
+})

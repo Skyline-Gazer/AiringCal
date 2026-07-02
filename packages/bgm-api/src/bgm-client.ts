@@ -55,9 +55,14 @@ export interface BgmSlimSubject {
   rating: { score: number; rank: number; total: number }
 }
 
+export type BgmCalendarSubject = Omit<BgmSlimSubject, 'total_episodes'> & {
+  eps_count?: number
+  total_episodes?: number
+}
+
 export interface BgmCalendarItem {
   weekday: { en: string; cn: string; ja: string; id: number }
-  items: BgmSlimSubject[]
+  items: BgmCalendarSubject[]
 }
 
 export interface BgmEpisodeCollection {

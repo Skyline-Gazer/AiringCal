@@ -300,6 +300,7 @@ Webmaster verification meta tags are already structurally implemented and remain
 
 - Builds collection snapshots with image and subject meta maps.
 - Builds calendar snapshots with image and subject meta maps.
+- Normalizes legacy calendar `eps_count` into public `eps` and `total_episodes`.
 - Missing meta writes `nsfw: false`.
 - Restricted/not-found meta writes `nsfw: true`.
 - No legacy image fields appear.

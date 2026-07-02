@@ -28,6 +28,15 @@ test('OpenAPI confirms GET /v0/subjects/{subject_id} returns Subject with option
   assert.equal(subjectSchema.properties.nsfw.type, 'boolean')
 })
 
+test('OpenAPI confirms GET /calendar returns legacy subjects with eps_count', () => {
+  const spec = apiSpec()
+  const calendarItems = spec.paths['/calendar'].get.responses['200'].content['application/json'].schema.items.properties.items.items
+  const legacySubject = spec.components.schemas.Legacy_SubjectSmall
+
+  assert.equal(calendarItems.$ref, '#/components/schemas/Legacy_SubjectSmall')
+  assert.equal(legacySubject.properties.eps_count.type, 'integer')
+})
+
 test('getSubject fetches full subject detail with bearer token when configured', async () => {
   const client = new BgmClient('token-a')
   const originalFetch = globalThis.fetch

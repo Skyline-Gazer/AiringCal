@@ -196,8 +196,9 @@ export interface BgmCalendarSubjectLike {
   summary: string
   nsfw?: boolean
   date: string
-  eps: number
-  total_episodes: number
+  eps?: number
+  eps_count?: number
+  total_episodes?: number
   images?: { large?: string; common?: string; medium?: string; small?: string; grid?: string }
   rating?: { score: number; rank: number; total: number }
 }
@@ -283,6 +284,13 @@ function toTimestamp(value: string | undefined): number {
   return Number.isNaN(timestamp) ? 0 : timestamp
 }
 
+function calendarEpisodeCount(subject: BgmCalendarSubjectLike): number {
+  for (const value of [subject.eps, subject.eps_count, subject.total_episodes]) {
+    if (typeof value === 'number' && value > 0) return value
+  }
+  return 0
+}
+
 function toMergedEntry(collection: BgmCollectionLike, imageMap?: SubjectImageMap, subjectMetaMap?: SubjectMetaMap): MergedEntry {
   const subject = collection.subject
   return {
@@ -333,20 +341,23 @@ export function mergeCollections(collections: BgmCollectionLike[], imageMap?: Su
 export function transformCalendar(calendar: BgmCalendarDayLike[], imageMap?: SubjectImageMap, subjectMetaMap?: SubjectMetaMap): CalendarDaySnapshot[] {
   return calendar.map((day) => ({
     weekday: day.weekday,
-    items: day.items.map((subject) => ({
-      subject_id: subject.id,
-      id: subject.id,
-      type: subject.type,
-      name: subject.name,
-      name_cn: subject.name_cn,
-      summary: subject.summary,
-      images: imageMap?.get(subject.id) ?? { common: null, large: null },
-      nsfw: subjectMetaMap?.get(subject.id)?.nsfw ?? subject.nsfw === true,
-      date: subject.date,
-      eps: subject.eps,
-      total_episodes: subject.total_episodes,
-      ...(subject.rating ? { rating: subject.rating } : {}),
-    })),
+    items: day.items.map((subject) => {
+      const episodeCount = calendarEpisodeCount(subject)
+      return {
+        subject_id: subject.id,
+        id: subject.id,
+        type: subject.type,
+        name: subject.name,
+        name_cn: subject.name_cn,
+        summary: subject.summary,
+        images: imageMap?.get(subject.id) ?? { common: null, large: null },
+        nsfw: subjectMetaMap?.get(subject.id)?.nsfw ?? subject.nsfw === true,
+        date: subject.date,
+        eps: episodeCount,
+        total_episodes: typeof subject.total_episodes === 'number' && subject.total_episodes > 0 ? subject.total_episodes : episodeCount,
+        ...(subject.rating ? { rating: subject.rating } : {}),
+      }
+    }),
   }))
 }
 
