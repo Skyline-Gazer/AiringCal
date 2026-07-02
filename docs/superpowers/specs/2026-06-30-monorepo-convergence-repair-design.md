@@ -98,9 +98,9 @@ sync-worker scheduled/queue trigger
   -> write snapshot collection keys, calendar key, summary, sync meta
 
 media-worker queue consumer
-  -> download common and large images
-  -> write R2 originals and image status
   -> fetch subject detail
+  -> download subject detail common and large images
+  -> write R2 originals and image status
   -> write subject meta
 
 frontend-worker
@@ -316,6 +316,8 @@ Webmaster verification meta tags are already structurally implemented and remain
 
 - Handles image+meta jobs.
 - Handles meta-only jobs.
+- Uses `/v0/subjects/{subject_id}` as the canonical image source for both collection and calendar jobs.
+- Tracks the downloaded source URL internally so older calendar-derived cached images refresh to subject-detail quality.
 - Keeps prior successful image/meta data on temporary failures.
 - 404 subject detail writes conservative NSFW meta.
 

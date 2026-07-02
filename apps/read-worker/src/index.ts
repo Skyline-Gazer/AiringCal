@@ -50,6 +50,7 @@ function sanitizeStatus(value: any): any {
   if (!value || typeof value !== 'object') return value
   const sanitized: Record<string, unknown> = {}
   for (const [key, item] of Object.entries(value)) {
+    if (key === 'source_url') continue
     sanitized[key] = key === 'last_error' && item ? sanitizeErrorMessage(item) : sanitizeStatus(item)
   }
   return sanitized

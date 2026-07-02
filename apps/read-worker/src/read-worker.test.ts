@@ -83,7 +83,7 @@ test('read-worker cache stats expose sanitized image cache data only', async () 
     subject_id: 23080,
     title: 'Sensitive',
     common: { status: 'failed', hash: null, uri: null, r2_key: null, last_error: 'Bearer secret-token upstream failed' },
-    large: { status: 'cached', hash: 'b'.repeat(64), uri: `/image/${'b'.repeat(64)}`, r2_key: `images/${'b'.repeat(64)}/original`, last_error: null },
+    large: { status: 'cached', hash: 'b'.repeat(64), uri: `/image/${'b'.repeat(64)}`, r2_key: `images/${'b'.repeat(64)}/original`, last_error: null, source_url: 'https://img.example/large.jpg' },
   })
 
   const response = await worker.fetch(new Request('https://read.local/cache'), env(kv) as any)
@@ -93,6 +93,7 @@ test('read-worker cache stats expose sanitized image cache data only', async () 
   assert.equal(body.common.failed, 1)
   assert.equal(body.large.cached, 1)
   assert.equal(JSON.stringify(body).includes('secret-token'), false)
+  assert.equal(JSON.stringify(body).includes('source_url'), false)
 })
 
 test('read-worker serves images from R2 by hash', async () => {
