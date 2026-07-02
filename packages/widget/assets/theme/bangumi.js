@@ -101,7 +101,7 @@
       nsfw: entry.nsfw,
       progress: 0,
       score: entry.rating && entry.rating.score,
-      meta: ((entry.eps || entry.total_episodes) || '??') + ' 话',
+      meta: ((entry.total_episodes || entry.eps) || '??') + ' 话',
     })
   }
 

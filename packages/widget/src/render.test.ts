@@ -83,6 +83,10 @@ test('widgetJs uses eps as the collection total episode fallback', () => {
   assert.match(widgetJs, /entry\.eps \|\| entry\.total_episodes/)
 })
 
+test('widgetJs uses total_episodes before eps for calendar episode totals', () => {
+  assert.match(widgetJs, /entry\.total_episodes \|\| entry\.eps/)
+})
+
 test('widgetJs renders precise cache status text when image cache is unavailable', () => {
   assert.match(widgetJs, /entry\.image_status/)
   assert.match(widgetJs, /imageStatus\?\.common/)

@@ -92,6 +92,7 @@ Ignored local `dist/` directories exist after builds. They are not tracked and a
 ```text
 sync-worker scheduled/queue trigger
   -> fetch bgm collections and calendar
+  -> enrich calendar subjects from /v0/subjects/{subject_id}
   -> read image status and subject meta from KV
   -> build public snapshots with available enrichment
   -> enqueue missing/stale media or subject meta jobs
@@ -300,7 +301,7 @@ Webmaster verification meta tags are already structurally implemented and remain
 
 - Builds collection snapshots with image and subject meta maps.
 - Builds calendar snapshots with image and subject meta maps.
-- Normalizes legacy calendar `eps_count` into public `eps` and `total_episodes`.
+- Uses subject detail as the canonical source for calendar display fields, including `total_episodes`.
 - Missing meta writes `nsfw: false`.
 - Restricted/not-found meta writes `nsfw: true`.
 - No legacy image fields appear.

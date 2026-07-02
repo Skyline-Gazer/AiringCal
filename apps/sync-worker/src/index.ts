@@ -23,6 +23,7 @@ interface QueueBatch {
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
 const SYNC_OPERATION_PREFIX = 'sync:operation:'
 const SYNC_OPERATION_TTL_SECONDS = 60 * 60 * 24
+const SUBJECT_DETAIL_CONCURRENCY = 8
 
 interface SubjectInput {
   subject_id: number
@@ -185,6 +186,60 @@ function collectSubjectInputs(collections: any[], calendar: any[]): Map<number, 
   return inputs
 }
 
+function calendarSubjectIds(calendar: any[]): number[] {
+  const seen = new Set<number>()
+  for (const day of calendar) {
+    for (const subject of day.items ?? []) {
+      if (typeof subject.id !== 'number' || seen.has(subject.id)) continue
+      seen.add(subject.id)
+    }
+  }
+  return [...seen]
+}
+
+function mergeSubjectDetail(calendarSubject: any, detail: any | null): any {
+  if (!detail || typeof detail !== 'object') return calendarSubject
+  return {
+    ...calendarSubject,
+    type: detail.type ?? calendarSubject.type,
+    name: detail.name ?? calendarSubject.name,
+    name_cn: detail.name_cn ?? calendarSubject.name_cn,
+    summary: detail.summary ?? calendarSubject.summary,
+    nsfw: detail.nsfw ?? calendarSubject.nsfw,
+    date: detail.date ?? calendarSubject.date,
+    eps: detail.eps ?? calendarSubject.eps,
+    total_episodes: detail.total_episodes ?? calendarSubject.total_episodes,
+    images: detail.images ?? calendarSubject.images,
+    rating: detail.rating ?? calendarSubject.rating,
+  }
+}
+
+async function loadSubjectDetails(client: BgmClient, subjectIds: number[]): Promise<Map<number, any>> {
+  const map = new Map<number, any>()
+  for (let index = 0; index < subjectIds.length; index += SUBJECT_DETAIL_CONCURRENCY) {
+    const chunk = subjectIds.slice(index, index + SUBJECT_DETAIL_CONCURRENCY)
+    const details = await Promise.all(chunk.map(async (subjectId) => {
+      try {
+        return [subjectId, await client.getSubject(subjectId)] as const
+      } catch {
+        return [subjectId, null] as const
+      }
+    }))
+    for (const [subjectId, detail] of details) {
+      if (detail) map.set(subjectId, detail)
+    }
+  }
+  return map
+}
+
+async function enrichCalendarWithSubjectDetails(client: BgmClient, calendar: any[]): Promise<any[]> {
+  const details = await loadSubjectDetails(client, calendarSubjectIds(calendar))
+  return calendar.map((day) => ({
+    ...day,
+    items: (day.items ?? []).map((subject: any) => mergeSubjectDetail(subject, details.get(subject.id) ?? null)),
+  }))
+}
+
 async function loadImageMap(storage: KVStorage, subjectIds: Iterable<number>): Promise<Map<number, SubjectImages>> {
   const map = new Map<number, SubjectImages>()
   for (const subjectId of subjectIds) {
@@ -253,7 +308,7 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
 
   const collectionGroups = await Promise.all(users.map((user) => fetchAllCollections(client, user)))
   const collections = collectionGroups.flat()
-  const calendar = await client.getCalendar()
+  const calendar = await enrichCalendarWithSubjectDetails(client, await client.getCalendar() as any[])
   const subjectInputs = collectSubjectInputs(collections as any[], calendar as any[])
   const earlyMediaSubjectIds = await enqueueCalendarMediaEarly(env, storage, subjectInputs, calendar as any[], Math.floor(Date.now() / 1000))
   const subjectIds = subjectInputs.keys()
