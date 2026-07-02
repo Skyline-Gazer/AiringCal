@@ -2,11 +2,21 @@ export const packageBoundary = '@airing-cal/storage'
 
 export type CollectionType = 'want' | 'watched' | 'watching' | 'on_hold' | 'dropped'
 export type ImageSourceSize = 'common' | 'large'
+export const SUBJECT_DETAIL_TTL_SECONDS = 60 * 60 * 24 * 7
 
 export interface StorageAdapter {
   get<T>(key: string, validate?: (value: unknown) => value is T): Promise<T | null>
   put<T>(key: string, value: T): Promise<void>
   delete(key: string): Promise<void>
+}
+
+export interface SubjectDetailCacheEntry<T = any> {
+  cached_at: number
+  subject: T
+}
+
+export interface SubjectDetailClient<T = any> {
+  getSubject(subjectId: number): Promise<T | null>
 }
 
 export interface StoredImage {
@@ -61,6 +71,10 @@ export function subjectMetaKey(subjectId: number): string {
   return `subject:meta:${subjectId}`
 }
 
+export function subjectDetailKey(subjectId: number): string {
+  return `subject:detail:${subjectId}`
+}
+
 export function imageStatusKey(subjectId: number): string {
   return `image:status:${subjectId}`
 }
@@ -89,6 +103,33 @@ export class KVStorage implements StorageAdapter {
 
   async delete(key: string): Promise<void> {
     await this.kv.delete(key)
+  }
+}
+
+function freshSubjectDetail<T>(entry: SubjectDetailCacheEntry<T> | null, now: number, ttlSeconds: number): T | null {
+  if (!entry || !entry.subject || typeof entry.cached_at !== 'number') return null
+  return now - entry.cached_at <= ttlSeconds ? entry.subject : null
+}
+
+export async function getCachedSubjectDetail<T = any>(
+  storage: StorageAdapter,
+  client: SubjectDetailClient<T>,
+  subjectId: number,
+  now: number,
+  ttlSeconds = SUBJECT_DETAIL_TTL_SECONDS,
+): Promise<T | null> {
+  const cached = await storage.get<SubjectDetailCacheEntry<T>>(subjectDetailKey(subjectId))
+  const fresh = freshSubjectDetail(cached, now, ttlSeconds)
+  if (fresh) return fresh
+
+  try {
+    const subject = await client.getSubject(subjectId)
+    if (!subject) return cached?.subject ?? null
+    await storage.put(subjectDetailKey(subjectId), { cached_at: now, subject })
+    return subject
+  } catch (error) {
+    if (cached?.subject) return cached.subject
+    throw error
   }
 }
 

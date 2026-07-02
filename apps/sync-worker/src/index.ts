@@ -2,7 +2,7 @@ export const appBoundary = 'sync-worker'
 
 import { BgmClient, BgmPlatformClient, fetchAllCollections } from '@airing-cal/bgm-api'
 import { compareAccounts, executeSync, imageRefsFromStatus, mergeCollections, transformCalendar, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
-import { imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
+import { getCachedSubjectDetail, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
 
 interface SyncEnv {
   AIRING_CAL_KV: {
@@ -214,13 +214,13 @@ function mergeSubjectDetail(calendarSubject: any, detail: any | null): any {
   }
 }
 
-async function loadSubjectDetails(client: BgmClient, subjectIds: number[]): Promise<Map<number, any>> {
+async function loadSubjectDetails(storage: KVStorage, client: BgmClient, subjectIds: number[], now: number): Promise<Map<number, any>> {
   const map = new Map<number, any>()
   for (let index = 0; index < subjectIds.length; index += SUBJECT_DETAIL_CONCURRENCY) {
     const chunk = subjectIds.slice(index, index + SUBJECT_DETAIL_CONCURRENCY)
     const details = await Promise.all(chunk.map(async (subjectId) => {
       try {
-        return [subjectId, await client.getSubject(subjectId)] as const
+        return [subjectId, await getCachedSubjectDetail(storage, client, subjectId, now)] as const
       } catch {
         return [subjectId, null] as const
       }
@@ -232,8 +232,8 @@ async function loadSubjectDetails(client: BgmClient, subjectIds: number[]): Prom
   return map
 }
 
-async function enrichCalendarWithSubjectDetails(client: BgmClient, calendar: any[]): Promise<any[]> {
-  const details = await loadSubjectDetails(client, calendarSubjectIds(calendar))
+async function enrichCalendarWithSubjectDetails(storage: KVStorage, client: BgmClient, calendar: any[], now: number): Promise<any[]> {
+  const details = await loadSubjectDetails(storage, client, calendarSubjectIds(calendar), now)
   return calendar.map((day) => ({
     ...day,
     items: (day.items ?? []).map((subject: any) => mergeSubjectDetail(subject, details.get(subject.id) ?? null)),
@@ -303,14 +303,15 @@ function shouldQueueMedia(input: SubjectInput, images: SubjectImages | undefined
 async function runScheduledSync(env: SyncEnv): Promise<void> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const client = new BgmClient(env.BANGUMI_TOKEN)
+  const now = Math.floor(Date.now() / 1000)
   const users = usersFromEnv(env.BANGUMI_USERS)
   if (!users.length) throw new Error('sync-worker: BANGUMI_USERS is empty')
 
   const collectionGroups = await Promise.all(users.map((user) => fetchAllCollections(client, user)))
   const collections = collectionGroups.flat()
-  const calendar = await enrichCalendarWithSubjectDetails(client, await client.getCalendar() as any[])
+  const calendar = await enrichCalendarWithSubjectDetails(storage, client, await client.getCalendar() as any[], now)
   const subjectInputs = collectSubjectInputs(collections as any[], calendar as any[])
-  const earlyMediaSubjectIds = await enqueueCalendarMediaEarly(env, storage, subjectInputs, calendar as any[], Math.floor(Date.now() / 1000))
+  const earlyMediaSubjectIds = await enqueueCalendarMediaEarly(env, storage, subjectInputs, calendar as any[], now)
   const subjectIds = subjectInputs.keys()
   const imageMap = await loadImageMap(storage, subjectIds)
   const subjectMetaMap = await loadSubjectMetaMap(storage, subjectInputs.keys())
@@ -336,7 +337,7 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
     if (earlyMediaSubjectIds.has(input.subject_id)) continue
     if (!hasImageSource(input.images) && subjectMetaMap.has(input.subject_id)) continue
     if (!shouldQueueMedia(input, imageMap.get(input.subject_id), subjectMetaMap.has(input.subject_id))) continue
-    await markMediaQueued(storage, input, Math.floor(Date.now() / 1000))
+    await markMediaQueued(storage, input, now)
     await sendMediaJob(env, input)
   }
 }

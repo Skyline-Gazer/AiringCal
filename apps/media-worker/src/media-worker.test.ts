@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { subjectDetailKey } from '@airing-cal/storage'
 import worker from './index.ts'
 
 class MockKV {
@@ -134,6 +135,60 @@ test('media-worker uses subject detail images instead of calendar job image URLs
     assert.equal(status.common.source_url, 'https://img.example/detail-common.jpg')
     assert.equal(status.large.source_url, 'https://img.example/detail-large.jpg')
     assert.equal(r2.writes.length, 2)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker reuses cached subject detail without fetching subject API', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  kv.values.set(subjectDetailKey(23080), {
+    cached_at: Math.floor(Date.now() / 1000),
+    subject: {
+      id: 23080,
+      nsfw: false,
+      images: {
+        common: 'https://img.example/cached-common.jpg',
+        large: 'https://img.example/cached-large.jpg',
+      },
+    },
+  })
+  const originalFetch = globalThis.fetch
+  const calls: string[] = []
+  globalThis.fetch = async (url: string | URL | Request) => {
+    const text = String(url)
+    calls.push(text)
+    if (text.includes('cached-common.jpg')) return new Response('cached-common-bytes', { headers: { 'content-type': 'image/jpeg' } })
+    if (text.includes('cached-large.jpg')) return new Response('cached-large-bytes', { headers: { 'content-type': 'image/png' } })
+    throw new Error(`unexpected fetch ${text}`)
+  }
+
+  try {
+    await worker.queue(batch({
+      subject_id: 23080,
+      title: 'A CN',
+      images: {
+        common: 'https://img.example/calendar-common.jpg',
+        large: 'https://img.example/calendar-large.jpg',
+      },
+    }) as any, {
+      AIRING_CAL_KV: kv,
+      AIRING_CAL_R2: r2,
+    } as any)
+
+    const status = kv.values.get('image:status:23080') as any
+    assert.equal(calls.some((url) => url.includes('/v0/subjects/23080')), false)
+    assert.equal(calls.some((url) => url.includes('calendar-common.jpg')), false)
+    assert.equal(status.common.source_url, 'https://img.example/cached-common.jpg')
+    assert.equal(status.large.source_url, 'https://img.example/cached-large.jpg')
+    assert.deepEqual(kv.values.get('subject:meta:23080'), {
+      subject_id: 23080,
+      exists: true,
+      nsfw: false,
+      checked_at: status.subject_checked_at,
+      reason: 'subject_detail',
+    })
   } finally {
     globalThis.fetch = originalFetch
   }

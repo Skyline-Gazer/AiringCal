@@ -2,7 +2,7 @@ export const appBoundary = 'media-worker'
 
 import { BgmClient } from '@airing-cal/bgm-api'
 import { imageRef, subjectMetaFromNotFound } from '@airing-cal/domain'
-import { imageIndexKey, imageStatusKey, KVStorage, R2ImageStore, subjectMetaKey, type ImageSourceSize } from '@airing-cal/storage'
+import { getCachedSubjectDetail, imageIndexKey, imageStatusKey, KVStorage, R2ImageStore, subjectMetaKey, type ImageSourceSize } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 interface MediaJob {
@@ -103,7 +103,7 @@ async function processImage(size: ImageSourceSize, sourceUrl: string | undefined
 
 async function fetchSubjectDetail(job: MediaJob, client: BgmClient, storage: KVStorage, now: number): Promise<any | null> {
   try {
-    const subject = await client.getSubject(job.subject_id)
+    const subject = await getCachedSubjectDetail(storage, client, job.subject_id, now)
     if (!subject) {
       await storage.put(subjectMetaKey(job.subject_id), subjectMetaFromNotFound(job.subject_id, now))
       return null

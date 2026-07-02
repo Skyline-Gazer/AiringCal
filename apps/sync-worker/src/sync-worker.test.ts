@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { subjectDetailKey } from '@airing-cal/storage'
 import worker from './index.ts'
 
 class MockKV {
@@ -224,6 +225,77 @@ test('scheduled sync enriches calendar episode totals from subject detail', asyn
       images: {
         common: 'https://img.example/detail-common.jpg',
         large: 'https://img.example/detail-large.jpg',
+      },
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled sync reuses cached subject detail for calendar enrichment', async () => {
+  const kv = new MockKV()
+  kv.values.set(subjectDetailKey(456080), {
+    cached_at: Math.floor(Date.now() / 1000),
+    subject: {
+      id: 456080,
+      type: 2,
+      name: 'Cached Calendar Only',
+      name_cn: '缓存日历限定',
+      summary: 'from subject detail cache',
+      nsfw: false,
+      date: '2026-07-01',
+      eps: 12,
+      total_episodes: 24,
+      images: { common: 'https://img.example/cached-common.jpg', large: 'https://img.example/cached-large.jpg' },
+      rating: { score: 7.1, rank: 0, total: 10 },
+    },
+  })
+  const queueMessages: unknown[] = []
+  const originalFetch = globalThis.fetch
+  const calls: string[] = []
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    calls.push(text)
+    if (text.includes('/collections?')) {
+      return Response.json({ total: 0, data: [] })
+    }
+    if (text.endsWith('/calendar')) {
+      return Response.json([{
+        weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+        items: [{
+          id: 456080,
+          type: 2,
+          name: 'Calendar Only',
+          name_cn: '日历限定',
+          images: { common: 'https://img.example/calendar-common.jpg', large: 'https://img.example/calendar-large.jpg' },
+          rating: { score: 0, rank: 0, total: 0 },
+        }],
+      }])
+    }
+    throw new Error(`unexpected upstream fetch: ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
+      BANGUMI_TOKEN: 'token-a',
+      BANGUMI_USERS: 'alice',
+      SYNC_MODE: 'merge',
+    } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+
+    const calendar = (kv.values.get('snapshot:calendar') as any[])[0]
+    assert.equal(calls.some((url) => url.includes('/v0/subjects/456080')), false)
+    assert.equal(calendar.items[0].name_cn, '缓存日历限定')
+    assert.equal(calendar.items[0].summary, 'from subject detail cache')
+    assert.equal(calendar.items[0].total_episodes, 24)
+    assert.deepEqual(queueMessages[0], {
+      subject_id: 456080,
+      title: '缓存日历限定',
+      subject_meta: true,
+      images: {
+        common: 'https://img.example/cached-common.jpg',
+        large: 'https://img.example/cached-large.jpg',
       },
     })
   } finally {

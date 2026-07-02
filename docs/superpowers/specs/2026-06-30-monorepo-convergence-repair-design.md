@@ -92,14 +92,14 @@ Ignored local `dist/` directories exist after builds. They are not tracked and a
 ```text
 sync-worker scheduled/queue trigger
   -> fetch bgm collections and calendar
-  -> enrich calendar subjects from /v0/subjects/{subject_id}
+  -> enrich calendar subjects from cached subject detail or /v0/subjects/{subject_id}
   -> read image status and subject meta from KV
   -> build public snapshots with available enrichment
   -> enqueue missing/stale media or subject meta jobs
   -> write snapshot collection keys, calendar key, summary, sync meta
 
 media-worker queue consumer
-  -> fetch subject detail
+  -> read cached subject detail or fetch /v0/subjects/{subject_id}
   -> download subject detail common and large images
   -> write R2 originals and image status
   -> write subject meta
@@ -128,7 +128,7 @@ No source code should import from or reference `packages/worker`.
 
 ### R1. Snapshot Enrichment Must Converge
 
-`sync-worker` must load existing `image:status:{subject_id}` and `subject:meta:{subject_id}` for subjects seen in collections and calendar.
+`sync-worker` must load existing `subject:detail:{subject_id}`, `image:status:{subject_id}`, and `subject:meta:{subject_id}` for subjects seen in collections and calendar.
 
 It must pass a `SubjectImageMap` and `SubjectMetaMap` into domain snapshot builders so saved snapshots contain:
 
@@ -139,6 +139,8 @@ It must pass a `SubjectImageMap` and `SubjectMetaMap` into domain snapshot build
 The next successful scheduled or queue-triggered sync after media jobs complete must produce improved public snapshots without requiring request-time collection hydration.
 
 `read-worker` may keep request-time image hydration as a defensive fallback, but snapshot generation is the primary convergence point.
+
+Subject detail cache entries store the full `/v0/subjects/{subject_id}` response plus `cached_at`. Workers reuse fresh cache entries for seven days, refresh stale entries when possible, and keep stale entries if refresh fails.
 
 ### R2. Calendar Must Use Public Snapshot Shape
 
@@ -302,6 +304,7 @@ Webmaster verification meta tags are already structurally implemented and remain
 - Builds collection snapshots with image and subject meta maps.
 - Builds calendar snapshots with image and subject meta maps.
 - Uses subject detail as the canonical source for calendar display fields, including `total_episodes`.
+- Reuses fresh subject detail cache without calling `/v0/subjects/{subject_id}`.
 - Missing meta writes `nsfw: false`.
 - Restricted/not-found meta writes `nsfw: true`.
 - No legacy image fields appear.
@@ -309,6 +312,7 @@ Webmaster verification meta tags are already structurally implemented and remain
 ### Sync Worker
 
 - Reads existing image status and subject meta before writing snapshots.
+- Reuses `subject:detail:{subject_id}` before fetching subject detail.
 - Enqueues image jobs for missing/stale image status.
 - Enqueues subject-meta-only jobs when images are absent but meta is missing.
 - Queue-triggered sync and scheduled sync share the same convergence logic.
@@ -319,6 +323,7 @@ Webmaster verification meta tags are already structurally implemented and remain
 - Handles image+meta jobs.
 - Handles meta-only jobs.
 - Uses `/v0/subjects/{subject_id}` as the canonical image source for both collection and calendar jobs.
+- Reuses `subject:detail:{subject_id}` before fetching subject detail.
 - Tracks the downloaded source URL internally so older calendar-derived cached images refresh to subject-detail quality.
 - Keeps prior successful image/meta data on temporary failures.
 - 404 subject detail writes conservative NSFW meta.
