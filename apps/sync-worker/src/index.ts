@@ -205,6 +205,18 @@ async function markMediaQueued(storage: KVStorage, input: SubjectInput, now: num
   })
 }
 
+async function markCalendarMediaObservable(storage: KVStorage, subjectInputs: Map<number, SubjectInput>, calendar: any[], now: number): Promise<void> {
+  const seen = new Set<number>()
+  for (const day of calendar) {
+    for (const subject of day.items ?? []) {
+      if (typeof subject.id !== 'number' || seen.has(subject.id)) continue
+      seen.add(subject.id)
+      const input = subjectInputs.get(subject.id)
+      if (input) await markMediaQueued(storage, input, now)
+    }
+  }
+}
+
 async function loadSubjectMetaMap(storage: KVStorage, subjectIds: Iterable<number>): Promise<Map<number, Pick<SubjectMeta, 'nsfw'>>> {
   const map = new Map<number, Pick<SubjectMeta, 'nsfw'>>()
   for (const subjectId of subjectIds) {
@@ -231,6 +243,7 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
   const collections = collectionGroups.flat()
   const calendar = await client.getCalendar()
   const subjectInputs = collectSubjectInputs(collections as any[], calendar as any[])
+  await markCalendarMediaObservable(storage, subjectInputs, calendar as any[], Math.floor(Date.now() / 1000))
   const subjectIds = subjectInputs.keys()
   const imageMap = await loadImageMap(storage, subjectIds)
   const subjectMetaMap = await loadSubjectMetaMap(storage, subjectInputs.keys())
