@@ -147,6 +147,48 @@ test('media-worker preserves existing cached image status when a later download 
   }
 })
 
+test('media-worker skips downloading image sizes that are already cached', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  kv.values.set('image:status:23080', {
+    subject_id: 23080,
+    title: 'A CN',
+    common: { status: 'cached', hash: 'a'.repeat(64), uri: `/image/${'a'.repeat(64)}`, r2_key: `images/${'a'.repeat(64)}/original`, queued_at: 1, cached_at: 1, last_error: null },
+    large: { status: 'missing_source', hash: null, uri: null, r2_key: null, queued_at: null, cached_at: null, last_error: null },
+    subject_checked_at: 1,
+  })
+  const originalFetch = globalThis.fetch
+  const calls: string[] = []
+  globalThis.fetch = async (url: string | URL | Request) => {
+    const text = String(url)
+    calls.push(text)
+    if (text.includes('large.jpg')) return new Response('large-bytes', { headers: { 'content-type': 'image/png' } })
+    if (text.includes('/v0/subjects/23080')) return Response.json({ id: 23080, nsfw: false })
+    throw new Error(`unexpected fetch ${text}`)
+  }
+
+  try {
+    await worker.queue(batch({
+      subject_id: 23080,
+      title: 'A CN',
+      images: { common: 'https://img.example/common.jpg', large: 'https://img.example/large.jpg' },
+      subject_meta: true,
+    }) as any, {
+      AIRING_CAL_KV: kv,
+      AIRING_CAL_R2: r2,
+    } as any)
+
+    const status = kv.values.get('image:status:23080') as any
+    assert.equal(calls.some((url) => url.includes('common.jpg')), false)
+    assert.equal(calls.some((url) => url.includes('large.jpg')), true)
+    assert.equal(status.common.hash, 'a'.repeat(64))
+    assert.equal(status.large.status, 'cached')
+    assert.equal(r2.writes.length, 1)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('media-worker processes subject metadata without image sources', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()

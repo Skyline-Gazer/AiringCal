@@ -205,16 +205,28 @@ async function markMediaQueued(storage: KVStorage, input: SubjectInput, now: num
   })
 }
 
-async function markCalendarMediaObservable(storage: KVStorage, subjectInputs: Map<number, SubjectInput>, calendar: any[], now: number): Promise<void> {
+async function sendMediaJob(env: SyncEnv, input: SubjectInput): Promise<void> {
+  await env.MEDIA_QUEUE.send({
+    subject_id: input.subject_id,
+    title: input.title,
+    subject_meta: true,
+    images: input.images,
+  })
+}
+
+async function enqueueCalendarMediaEarly(env: SyncEnv, storage: KVStorage, subjectInputs: Map<number, SubjectInput>, calendar: any[], now: number): Promise<Set<number>> {
   const seen = new Set<number>()
   for (const day of calendar) {
     for (const subject of day.items ?? []) {
       if (typeof subject.id !== 'number' || seen.has(subject.id)) continue
-      seen.add(subject.id)
       const input = subjectInputs.get(subject.id)
-      if (input) await markMediaQueued(storage, input, now)
+      if (!input) continue
+      await markMediaQueued(storage, input, now)
+      await sendMediaJob(env, input)
+      seen.add(subject.id)
     }
   }
+  return seen
 }
 
 async function loadSubjectMetaMap(storage: KVStorage, subjectIds: Iterable<number>): Promise<Map<number, Pick<SubjectMeta, 'nsfw'>>> {
@@ -243,7 +255,7 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
   const collections = collectionGroups.flat()
   const calendar = await client.getCalendar()
   const subjectInputs = collectSubjectInputs(collections as any[], calendar as any[])
-  await markCalendarMediaObservable(storage, subjectInputs, calendar as any[], Math.floor(Date.now() / 1000))
+  const earlyMediaSubjectIds = await enqueueCalendarMediaEarly(env, storage, subjectInputs, calendar as any[], Math.floor(Date.now() / 1000))
   const subjectIds = subjectInputs.keys()
   const imageMap = await loadImageMap(storage, subjectIds)
   const subjectMetaMap = await loadSubjectMetaMap(storage, subjectInputs.keys())
@@ -266,15 +278,11 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
   })
 
   for (const input of subjectInputs.values()) {
+    if (earlyMediaSubjectIds.has(input.subject_id)) continue
     if (!hasImageSource(input.images) && subjectMetaMap.has(input.subject_id)) continue
     if (!shouldQueueMedia(input, imageMap.get(input.subject_id), subjectMetaMap.has(input.subject_id))) continue
     await markMediaQueued(storage, input, Math.floor(Date.now() / 1000))
-    await env.MEDIA_QUEUE.send({
-      subject_id: input.subject_id,
-      title: input.title,
-      subject_meta: true,
-      images: input.images,
-    })
+    await sendMediaJob(env, input)
   }
 }
 

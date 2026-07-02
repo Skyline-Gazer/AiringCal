@@ -210,6 +210,7 @@ test('scheduled sync marks queued image status even when media queue send fails'
 
 test('scheduled sync publishes calendar image status before later KV enrichment failures', async () => {
   const kv = new MockKV()
+  const queueMessages: unknown[] = []
   const originalGet = kv.get.bind(kv)
   kv.get = async (key: string, type?: 'json') => {
     if (key === 'subject:meta:456080') throw new Error('late kv failure')
@@ -241,7 +242,7 @@ test('scheduled sync publishes calendar image status before later KV enrichment 
     await assert.rejects(
       worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
         AIRING_CAL_KV: kv,
-        MEDIA_QUEUE: { send: async () => {} },
+        MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
         BANGUMI_TOKEN: 'token-a',
         BANGUMI_USERS: 'alice',
         SYNC_MODE: 'merge',
@@ -250,6 +251,16 @@ test('scheduled sync publishes calendar image status before later KV enrichment 
     )
 
     const status = kv.values.get('image:status:456080') as any
+    assert.equal(queueMessages.length, 1)
+    assert.deepEqual(queueMessages[0], {
+      subject_id: 456080,
+      title: '日历限定',
+      subject_meta: true,
+      images: {
+        common: 'https://img.example/calendar-common.jpg',
+        large: 'https://img.example/calendar-large.jpg',
+      },
+    })
     assert.equal(status.common.status, 'queued')
     assert.equal(status.large.status, 'queued')
   } finally {
@@ -285,7 +296,15 @@ test('scheduled sync enriches collection and calendar snapshots from existing me
     assert.equal(collection.nsfw, true)
     assert.equal(calendar.items[0].images.common.hash, 'a'.repeat(64))
     assert.equal(calendar.items[0].nsfw, true)
-    assert.deepEqual(queueMessages, [])
+    assert.deepEqual(queueMessages, [{
+      subject_id: 23080,
+      title: 'A CN',
+      subject_meta: true,
+      images: {
+        common: 'https://img.example/common.jpg',
+        large: 'https://img.example/large.jpg',
+      },
+    }])
   } finally {
     globalThis.fetch = originalFetch
   }

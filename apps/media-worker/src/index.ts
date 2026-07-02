@@ -50,12 +50,14 @@ function preserveCachedImageStatus(previous: any) {
 }
 
 async function processImage(size: ImageSourceSize, sourceUrl: string | undefined, previous: any, job: MediaJob, client: BgmClient, imageStore: R2ImageStore, storage: KVStorage, now: number) {
+  const cached = preserveCachedImageStatus(previous)
+  if (cached) return cached
   if (!sourceUrl) {
-    return preserveCachedImageStatus(previous) ?? previous ?? { ...emptyImageStatus(), status: 'missing_source' }
+    return previous ?? { ...emptyImageStatus(), status: 'missing_source' }
   }
   try {
     const downloaded = await client.downloadImage(sourceUrl)
-    if (!downloaded) return preserveCachedImageStatus(previous) ?? { ...emptyImageStatus(), status: 'failed', queued_at: now, last_error: 'image download failed' }
+    if (!downloaded) return { ...emptyImageStatus(), status: 'failed', queued_at: now, last_error: 'image download failed' }
     const hash = await sha256Hex(downloaded.data)
     const ref = imageRef(hash)
     await imageStore.putOriginal(hash, downloaded.data, downloaded.contentType, {
@@ -82,7 +84,7 @@ async function processImage(size: ImageSourceSize, sourceUrl: string | undefined
       last_error: null,
     }
   } catch (error) {
-    return preserveCachedImageStatus(previous) ?? {
+    return {
       ...emptyImageStatus(),
       status: 'failed',
       queued_at: now,
