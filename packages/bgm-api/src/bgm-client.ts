@@ -55,6 +55,10 @@ export interface BgmSlimSubject {
   rating: { score: number; rank: number; total: number }
 }
 
+export type BgmSubject = BgmSlimSubject & {
+  eps_count?: number
+}
+
 export type BgmCalendarSubject = Omit<BgmSlimSubject, 'total_episodes'> & {
   eps_count?: number
   total_episodes?: number
@@ -117,7 +121,7 @@ export class BgmClient {
     return this.fetchJson(url, { headers: this.headers(), signal: AbortSignal.timeout(30000) })
   }
 
-  async getSubject(subjectId: number): Promise<BgmSlimSubject | null> {
+  async getSubject(subjectId: number): Promise<BgmSubject | null> {
     const url = `${BGM_BASE}/v0/subjects/${subjectId}`
     try {
       return await this.fetchJson(url, { headers: this.headers(), signal: AbortSignal.timeout(30000) })

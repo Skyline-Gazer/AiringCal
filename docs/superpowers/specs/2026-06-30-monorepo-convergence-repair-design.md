@@ -142,6 +142,8 @@ The next successful scheduled or queue-triggered sync after media jobs complete 
 
 Subject detail cache entries store the full `/v0/subjects/{subject_id}` response plus `cached_at`. Workers reuse fresh cache entries for seven days, refresh stale entries when possible, and keep stale entries if refresh fails.
 
+The shared subject-detail projection lives in `@airing-cal/domain`: `subjectDetailImages()` selects canonical `common`/`large` source URLs, `subjectMetaFromDetail()` creates the NSFW meta cache payload, and `withSubjectDetail()` overlays full subject detail onto calendar slim subjects. Workers should call these helpers instead of reimplementing per-worker image/meta/display extraction.
+
 ### R2. Calendar Must Use Public Snapshot Shape
 
 Calendar data served by `/api/calendar` must not expose raw bgm.tv image URLs as the primary public image contract.

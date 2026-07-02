@@ -1,7 +1,7 @@
 export const appBoundary = 'sync-worker'
 
 import { BgmClient, BgmPlatformClient, fetchAllCollections } from '@airing-cal/bgm-api'
-import { compareAccounts, executeSync, imageRefsFromStatus, mergeCollections, transformCalendar, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
+import { compareAccounts, executeSync, imageRefsFromStatus, mergeCollections, subjectDetailImages, transformCalendar, withSubjectDetail, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
 import { getCachedSubjectDetail, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
 
 interface SyncEnv {
@@ -58,10 +58,7 @@ function usersFromEnv(value: string): string[] {
 }
 
 function imageSources(collection: any): { common?: string; large?: string } {
-  return {
-    common: collection.subject?.images?.common,
-    large: collection.subject?.images?.large,
-  }
+  return subjectDetailImages(collection.subject)
 }
 
 function hasImageSource(images: { common?: string; large?: string }): boolean {
@@ -179,7 +176,7 @@ function collectSubjectInputs(collections: any[], calendar: any[]): Map<number, 
       inputs.set(subject.id, {
         subject_id: subject.id,
         title: subject.name_cn || subject.name || String(subject.id),
-        images: { common: subject.images?.common, large: subject.images?.large },
+        images: subjectDetailImages(subject),
       })
     }
   }
@@ -195,46 +192,6 @@ function calendarSubjectIds(calendar: any[]): number[] {
     }
   }
   return [...seen]
-}
-
-function positiveEpisodeCount(...values: unknown[]): number | undefined {
-  for (const value of values) {
-    if (typeof value === 'number' && value > 0) return value
-  }
-}
-
-function mergeSubjectDetail(calendarSubject: any, detail: any | null): any {
-  if (!detail || typeof detail !== 'object') return calendarSubject
-  const eps = positiveEpisodeCount(
-    detail.eps,
-    detail.eps_count,
-    detail.total_episodes,
-    calendarSubject.eps,
-    calendarSubject.eps_count,
-    calendarSubject.total_episodes,
-  )
-  const totalEpisodes = positiveEpisodeCount(
-    detail.total_episodes,
-    detail.eps,
-    detail.eps_count,
-    calendarSubject.total_episodes,
-    calendarSubject.eps,
-    calendarSubject.eps_count,
-  )
-  return {
-    ...calendarSubject,
-    type: detail.type ?? calendarSubject.type,
-    name: detail.name ?? calendarSubject.name,
-    name_cn: detail.name_cn ?? calendarSubject.name_cn,
-    summary: detail.summary ?? calendarSubject.summary,
-    nsfw: detail.nsfw ?? calendarSubject.nsfw,
-    date: detail.date ?? calendarSubject.date,
-    eps: eps ?? calendarSubject.eps,
-    eps_count: eps ?? calendarSubject.eps_count,
-    total_episodes: totalEpisodes ?? calendarSubject.total_episodes,
-    images: detail.images ?? calendarSubject.images,
-    rating: detail.rating ?? calendarSubject.rating,
-  }
 }
 
 async function loadSubjectDetails(storage: KVStorage, client: BgmClient, subjectIds: number[], now: number): Promise<Map<number, any>> {
@@ -259,7 +216,7 @@ async function enrichCalendarWithSubjectDetails(storage: KVStorage, client: BgmC
   const details = await loadSubjectDetails(storage, client, calendarSubjectIds(calendar), now)
   return calendar.map((day) => ({
     ...day,
-    items: (day.items ?? []).map((subject: any) => mergeSubjectDetail(subject, details.get(subject.id) ?? null)),
+    items: (day.items ?? []).map((subject: any) => withSubjectDetail(subject, details.get(subject.id) ?? null)),
   }))
 }
 

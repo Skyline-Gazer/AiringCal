@@ -251,6 +251,12 @@ KV key：
 | `image:status:{subject_id}` | `airing-cal-media` | subject 的 common/large 缓存状态 |
 | `image:index:{hash}` | `airing-cal-media` | hash 到 subject/source metadata 的索引 |
 
+`subject:detail:{subject_id}` 存完整 `GET /v0/subjects/{subject_id}` 响应和 `cached_at`。代码里不要重复从 collection/calendar 的 slim subject 推导 canonical 图片或 NSFW；公共投影入口在 `@airing-cal/domain`：
+
+- `subjectDetailImages(subject)`：从完整 subject detail 取 `common` / `large` 源图。
+- `subjectMetaFromDetail(subjectId, subject, checkedAt)`：从完整 subject detail 生成 `subject:meta`。
+- `withSubjectDetail(subject, detail)`：用完整 subject detail 覆盖 calendar slim subject 的展示字段。
+
 subject detail 返回 404 时会保守缓存为：
 
 ```json

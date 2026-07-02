@@ -203,6 +203,21 @@ export interface BgmCalendarSubjectLike {
   rating?: { score: number; rank: number; total: number }
 }
 
+export interface SubjectDetailLike {
+  id?: number
+  type?: number
+  name?: string
+  name_cn?: string
+  summary?: string
+  nsfw?: boolean
+  date?: string
+  eps?: number
+  eps_count?: number
+  total_episodes?: number
+  images?: { large?: string; common?: string; medium?: string; small?: string; grid?: string }
+  rating?: { score: number; rank: number; total: number }
+}
+
 export interface BgmCalendarDayLike {
   weekday: { en: string; cn: string; ja: string; id: number }
   items: BgmCalendarSubjectLike[]
@@ -266,6 +281,24 @@ export function subjectMetaFromNotFound(subjectId: number, checkedAt: number): S
   }
 }
 
+export function subjectMetaFromDetail(subjectId: number, subject: SubjectDetailLike, checkedAt: number): SubjectMeta {
+  return {
+    subject_id: subjectId,
+    exists: true,
+    nsfw: subject.nsfw === true,
+    checked_at: checkedAt,
+    reason: 'subject_detail',
+  }
+}
+
+export function subjectDetailImages(subject: SubjectDetailLike | null | undefined): { common?: string; large?: string } {
+  const images = subject?.images && typeof subject.images === 'object' ? subject.images : {}
+  return {
+    common: images.common,
+    large: images.large,
+  }
+}
+
 export function imageRefsFromStatus(status: ImageStatusLike | null | undefined): SubjectImages {
   return {
     common: cachedImageRef(status?.common),
@@ -289,6 +322,46 @@ function calendarEpisodeCount(subject: BgmCalendarSubjectLike): number {
     if (typeof value === 'number' && value > 0) return value
   }
   return 0
+}
+
+function positiveEpisodeCount(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === 'number' && value > 0) return value
+  }
+}
+
+export function withSubjectDetail<T extends BgmCalendarSubjectLike>(subject: T, detail: SubjectDetailLike | null | undefined): T {
+  if (!detail || typeof detail !== 'object') return subject
+  const eps = positiveEpisodeCount(
+    detail.eps,
+    detail.eps_count,
+    detail.total_episodes,
+    subject.eps,
+    subject.eps_count,
+    subject.total_episodes,
+  )
+  const totalEpisodes = positiveEpisodeCount(
+    detail.total_episodes,
+    detail.eps,
+    detail.eps_count,
+    subject.total_episodes,
+    subject.eps,
+    subject.eps_count,
+  )
+  return {
+    ...subject,
+    type: detail.type ?? subject.type,
+    name: detail.name ?? subject.name,
+    name_cn: detail.name_cn ?? subject.name_cn,
+    summary: detail.summary ?? subject.summary,
+    nsfw: detail.nsfw ?? subject.nsfw,
+    date: detail.date ?? subject.date,
+    eps: eps ?? subject.eps,
+    eps_count: eps ?? subject.eps_count,
+    total_episodes: totalEpisodes ?? subject.total_episodes,
+    images: detail.images ?? subject.images,
+    rating: detail.rating ?? subject.rating,
+  }
 }
 
 function toMergedEntry(collection: BgmCollectionLike, imageMap?: SubjectImageMap, subjectMetaMap?: SubjectMetaMap): MergedEntry {

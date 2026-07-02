@@ -1,7 +1,7 @@
 export const appBoundary = 'media-worker'
 
 import { BgmClient } from '@airing-cal/bgm-api'
-import { imageRef, subjectMetaFromNotFound } from '@airing-cal/domain'
+import { imageRef, subjectDetailImages, subjectMetaFromDetail, subjectMetaFromNotFound } from '@airing-cal/domain'
 import { getCachedSubjectDetail, imageIndexKey, imageStatusKey, KVStorage, R2ImageStore, subjectMetaKey, type ImageSourceSize } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
@@ -108,13 +108,7 @@ async function fetchSubjectDetail(job: MediaJob, client: BgmClient, storage: KVS
       await storage.put(subjectMetaKey(job.subject_id), subjectMetaFromNotFound(job.subject_id, now))
       return null
     }
-    await storage.put(subjectMetaKey(job.subject_id), {
-      subject_id: job.subject_id,
-      exists: true,
-      nsfw: subject.nsfw === true,
-      checked_at: now,
-      reason: 'subject_detail',
-    })
+    await storage.put(subjectMetaKey(job.subject_id), subjectMetaFromDetail(job.subject_id, subject, now))
     return subject
   } catch (error) {
     const existing = await storage.get(subjectMetaKey(job.subject_id))
@@ -132,14 +126,6 @@ async function fetchSubjectDetail(job: MediaJob, client: BgmClient, storage: KVS
   }
 }
 
-function subjectImageSources(subject: any | null): { common?: string; large?: string } {
-  const detailImages = subject?.images && typeof subject.images === 'object' ? subject.images : {}
-  return {
-    common: detailImages.common,
-    large: detailImages.large,
-  }
-}
-
 async function processJob(job: MediaJob, env: MediaEnv): Promise<void> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const imageStore = new R2ImageStore(env.AIRING_CAL_R2)
@@ -147,7 +133,7 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<void> {
   const now = Math.floor(Date.now() / 1000)
   const previousStatus = await storage.get<any>(imageStatusKey(job.subject_id))
   const subject = await fetchSubjectDetail(job, client, storage, now)
-  const images = subjectImageSources(subject)
+  const images = subjectDetailImages(subject)
 
   const [common, large] = await Promise.all([
     processImage('common', images.common, previousStatus?.common, job, client, imageStore, storage, now),
