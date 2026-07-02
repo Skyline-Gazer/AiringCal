@@ -87,6 +87,11 @@ test('widgetJs uses total_episodes before eps for calendar episode totals', () =
   assert.match(widgetJs, /entry\.total_episodes \|\| entry\.eps/)
 })
 
+test('widgetJs accepts legacy and sync episode count field names for calendar cards', () => {
+  assert.match(widgetJs, /entry\.eps_count/)
+  assert.match(widgetJs, /entry\.totalEpisodes/)
+})
+
 test('widgetJs renders precise cache status text when image cache is unavailable', () => {
   assert.match(widgetJs, /entry\.image_status/)
   assert.match(widgetJs, /imageStatus\?\.common/)

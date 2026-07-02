@@ -82,6 +82,10 @@
     })
   }
 
+  function calendarEpisodeTotal(entry) {
+    return entry.total_episodes || entry.eps || entry.eps_count || entry.totalEpisodes || 0
+  }
+
   function renderCalendarCard(entry) {
     return renderSubjectCard({
       subjectId: entry.id,
@@ -90,7 +94,7 @@
       nsfw: entry.nsfw,
       progress: 0,
       score: entry.rating && entry.rating.score,
-      meta: ((entry.eps || entry.total_episodes) || '??') + ' 话',
+      meta: (calendarEpisodeTotal(entry) || '??') + ' 话',
     })
   }
 
