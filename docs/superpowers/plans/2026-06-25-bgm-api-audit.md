@@ -290,7 +290,7 @@ Expected: commit and push succeed, with SSH-over-443 fallback if HTTPS fails.
 Run:
 
 ```bash
-rg -n "PATCH /v0/users/-/collections|POST /v0/users/-/collections|ep_status|vol_status|/calendar|/v0/subjects/.*/image|oauth/access_token|token_status|subject_type=2|GET /calendar|GET /v0/users|Bearer|OptionalBearer" README.md docs/superpowers/specs docs/superpowers/plans
+rg -n "PATCH /v0/users/-/collections|POST /v0/users/-/collections|ep_status|vol_status|/calendar|/v0/subjects/\\{subject_id\\}|oauth/access_token|token_status|subject_type=2|GET /calendar|GET /v0/users|Bearer|OptionalBearer" README.md docs/superpowers/specs docs/superpowers/plans
 ```
 
 Expected: matches in README and historical design/plan docs. Treat archive-like historical plans as evidence of stale guidance, not automatically as files that must be rewritten.

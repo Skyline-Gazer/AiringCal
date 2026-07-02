@@ -73,6 +73,21 @@ function mockFetch() {
         }],
       }])
     }
+    if (text.endsWith('/v0/subjects/23080')) {
+      return Response.json({
+        id: 23080,
+        type: 2,
+        name: 'A Full',
+        name_cn: 'A Full CN',
+        summary: 'from subject detail',
+        nsfw: false,
+        date: '2026-07-02',
+        eps: 12,
+        total_episodes: 24,
+        images: { common: 'https://img.example/detail-common.jpg', large: 'https://img.example/detail-large.jpg' },
+        rating: { score: 8, rank: 0, total: 10 },
+      })
+    }
     throw new Error(`unexpected upstream fetch: ${text}`)
   }
   return { calls, fetch }
@@ -107,11 +122,11 @@ test('scheduled sync writes new snapshot keys and enqueues media work without im
     assert.equal(queueMessages.length, 1)
     assert.deepEqual(queueMessages[0], {
       subject_id: 23080,
-      title: 'A CN',
+      title: 'A Full CN',
       subject_meta: true,
       images: {
-        common: 'https://img.example/common.jpg',
-        large: 'https://img.example/large.jpg',
+        common: 'https://img.example/detail-common.jpg',
+        large: 'https://img.example/detail-large.jpg',
       },
     })
     assert.equal(upstream.calls.some((url) => url.includes('img.example')), false)
@@ -496,13 +511,39 @@ test('scheduled sync enriches collection and calendar snapshots from existing me
     assert.equal(calendar.items[0].nsfw, true)
     assert.deepEqual(queueMessages, [{
       subject_id: 23080,
-      title: 'A CN',
+      title: 'A Full CN',
       subject_meta: true,
       images: {
-        common: 'https://img.example/common.jpg',
-        large: 'https://img.example/large.jpg',
+        common: 'https://img.example/detail-common.jpg',
+        large: 'https://img.example/detail-large.jpg',
       },
     }])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled sync uses subject detail as canonical collection display source', async () => {
+  const kv = new MockKV()
+  const queueMessages: unknown[] = []
+  const originalFetch = globalThis.fetch
+  const upstream = mockFetch()
+  globalThis.fetch = upstream.fetch as typeof globalThis.fetch
+
+  try {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
+      BANGUMI_TOKEN: 'token-a',
+      BANGUMI_USERS: 'alice',
+      SYNC_MODE: 'merge',
+    } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+
+    const collection = (kv.values.get('snapshot:collections:watching') as any[])[0]
+    assert.equal(collection.name, 'A Full')
+    assert.equal(collection.name_cn, 'A Full CN')
+    assert.equal(collection.summary, 'from subject detail')
+    assert.equal(collection.total_episodes, 24)
   } finally {
     globalThis.fetch = originalFetch
   }

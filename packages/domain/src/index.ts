@@ -75,6 +75,7 @@ export interface MergedCollections {
 
 export type SubjectImageMap = Map<number, SubjectImages>
 export type SubjectMetaMap = Map<number, Pick<SubjectMeta, 'nsfw'>>
+export type SubjectDetailMap = Map<number, SubjectDetailLike>
 
 export type PlatformId = 'bgm'
 
@@ -364,33 +365,36 @@ export function withSubjectDetail<T extends BgmCalendarSubjectLike>(subject: T, 
   }
 }
 
-function toMergedEntry(collection: BgmCollectionLike, imageMap?: SubjectImageMap, subjectMetaMap?: SubjectMetaMap): MergedEntry {
+function toMergedEntry(collection: BgmCollectionLike, imageMap?: SubjectImageMap, subjectMetaMap?: SubjectMetaMap, subjectDetailMap?: SubjectDetailMap): MergedEntry {
   const subject = collection.subject
+  const detail = subjectDetailMap?.get(collection.subject_id)
+  const eps = positiveEpisodeCount(detail?.eps, detail?.eps_count, detail?.total_episodes, subject?.eps)
+  const totalEpisodes = positiveEpisodeCount(detail?.total_episodes, detail?.eps, detail?.eps_count, subject?.total_episodes, subject?.eps)
   return {
     subject_id: collection.subject_id,
-    name: subject?.name ?? '',
-    name_cn: subject?.name_cn ?? '',
-    summary: subject?.summary ?? '',
+    name: detail?.name ?? subject?.name ?? '',
+    name_cn: detail?.name_cn ?? subject?.name_cn ?? '',
+    summary: detail?.summary ?? subject?.summary ?? '',
     images: imageMap?.get(collection.subject_id) ?? { common: null, large: null },
-    eps: subject?.eps ?? 0,
-    total_episodes: subject?.total_episodes ?? 0,
+    eps: eps ?? 0,
+    total_episodes: totalEpisodes ?? 0,
     ep_status: collection.ep_status,
     vol_status: collection.vol_status,
     type: collection.subject_type,
     collection_type: collection.type,
     rate: collection.rate,
-    nsfw: subjectMetaMap?.get(collection.subject_id)?.nsfw ?? subject?.nsfw ?? false,
-    date: subject?.date ?? '',
+    nsfw: subjectMetaMap?.get(collection.subject_id)?.nsfw ?? detail?.nsfw ?? subject?.nsfw ?? false,
+    date: detail?.date ?? subject?.date ?? '',
     tags: collection.tags ?? [],
     updated_at: collection.updated_at,
   }
 }
 
-export function mergeCollections(collections: BgmCollectionLike[], imageMap?: SubjectImageMap, subjectMetaMap?: SubjectMetaMap): MergedCollections {
+export function mergeCollections(collections: BgmCollectionLike[], imageMap?: SubjectImageMap, subjectMetaMap?: SubjectMetaMap, subjectDetailMap?: SubjectDetailMap): MergedCollections {
   const latestBySubject = new Map<number, MergedEntry>()
 
   for (const collection of collections) {
-    const entry = toMergedEntry(collection, imageMap, subjectMetaMap)
+    const entry = toMergedEntry(collection, imageMap, subjectMetaMap, subjectDetailMap)
     const existing = latestBySubject.get(collection.subject_id)
     if (!existing || toTimestamp(collection.updated_at) > toTimestamp(existing.updated_at)) {
       latestBySubject.set(collection.subject_id, entry)

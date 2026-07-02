@@ -135,14 +135,15 @@ It must pass a `SubjectImageMap` and `SubjectMetaMap` into domain snapshot build
 - `images.common` and `images.large` from cached statuses when available.
 - `nsfw` from subject meta when available.
 - `nsfw: false` for missing subject meta.
+- collection and calendar display fields from cached or refreshed full subject detail when available.
 
 The next successful scheduled or queue-triggered sync after media jobs complete must produce improved public snapshots without requiring request-time collection hydration.
 
-`read-worker` may keep request-time image hydration as a defensive fallback, but snapshot generation is the primary convergence point.
+`read-worker` may keep request-time image and meta status hydration as a defensive fallback, but it must not read `subject:detail:{subject_id}` to patch display fields. Snapshot generation is the primary convergence point for subject detail.
 
 Subject detail cache entries store the full `/v0/subjects/{subject_id}` response plus `cached_at`. Workers reuse fresh cache entries for seven days, refresh stale entries when possible, and keep stale entries if refresh fails.
 
-The shared subject-detail projection lives in `@airing-cal/domain`: `subjectDetailImages()` selects canonical `common`/`large` source URLs, `subjectMetaFromDetail()` creates the NSFW meta cache payload, and `withSubjectDetail()` overlays full subject detail onto calendar slim subjects. Workers should call these helpers instead of reimplementing per-worker image/meta/display extraction.
+The shared subject-detail projection lives in `@airing-cal/domain`: `subjectDetailImages()` selects canonical `common`/`large` source URLs, `subjectMetaFromDetail()` creates the NSFW meta cache payload, `withSubjectDetail()` overlays full subject detail onto calendar slim subjects, and `mergeCollections()` accepts a subject detail map for collection display fields. Workers should call these helpers instead of reimplementing per-worker image/meta/display extraction.
 
 ### R2. Calendar Must Use Public Snapshot Shape
 

@@ -257,6 +257,8 @@ KV key：
 - `subjectMetaFromDetail(subjectId, subject, checkedAt)`：从完整 subject detail 生成 `subject:meta`。
 - `withSubjectDetail(subject, detail)`：用完整 subject detail 覆盖 calendar slim subject 的展示字段。
 
+`airing-cal-sync` 会为 collections 和 calendar 发现到的 subject id 复用/刷新 `subject:detail:{subject_id}`，再生成公开 snapshot。collections 的名称、简介、日期和集数字段也优先来自完整 subject detail；`airing-cal-read` 只做 image/meta 状态 hydration，不再在请求时读取 `subject:detail` 补展示字段。
+
 subject detail 返回 404 时会保守缓存为：
 
 ```json

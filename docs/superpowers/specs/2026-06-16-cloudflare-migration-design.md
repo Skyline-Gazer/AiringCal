@@ -171,7 +171,7 @@ GET /image/abc123?w=300&fmt=webp
   2. 命中 → 直接返回，带上长缓存头
   3. 未命中:
      a. 查 R2: images/abc123/original
-     b. 没有 → 从 bgm.tv CDN 下载（通过 /v0/subjects/{id}/image?type=large）
+     b. 没有 → 通过 `GET /v0/subjects/{id}` 的 `images.large` 找到源图并下载
      c. 存为 images/abc123/original
      d. Worker 内裁切 + 转格式（Cloudflare Image Resizing 或 wasm sharp）
      e. 存变体 images/abc123/w300.webp
@@ -449,8 +449,7 @@ GitHub Actions 触发
 | 端点 | 用途 | 认证 |
 |------|------|------|
 | `GET /v0/users/{user}/collections` | 获取用户收藏（分页） | Bearer（公开收藏可选） |
-| `GET /v0/subjects/{subject_id}` | 获取条目详情 + 图片 | Bearer（公开条目可选） |
-| `GET /v0/subjects/{subject_id}/image?type=large` | 获取条目图片跳转地址 | 可选 |
+| `GET /v0/subjects/{subject_id}` | 获取条目详情，并以 `images.common` / `images.large` 作为 canonical 图片源 | Bearer（公开条目可选） |
 | `POST /v0/users/-/collections/{subject_id}` | 写回动画同步（新增或修改） | Bearer 必须 |
 | `GET /calendar` | 每日放送 | 无 |
 | `POST /oauth/access_token` | 用 code 换 token | client_id/secret |

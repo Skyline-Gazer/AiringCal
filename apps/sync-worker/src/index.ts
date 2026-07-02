@@ -1,7 +1,7 @@
 export const appBoundary = 'sync-worker'
 
 import { BgmClient, BgmPlatformClient, fetchAllCollections } from '@airing-cal/bgm-api'
-import { compareAccounts, executeSync, imageRefsFromStatus, mergeCollections, subjectDetailImages, transformCalendar, withSubjectDetail, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
+import { compareAccounts, executeSync, imageRefsFromStatus, mergeCollections, subjectDetailImages, transformCalendar, withSubjectDetail, type SubjectDetailMap, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
 import { getCachedSubjectDetail, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
 
 interface SyncEnv {
@@ -55,10 +55,6 @@ interface SyncOperationLog {
 
 function usersFromEnv(value: string): string[] {
   return value.split(',').map((part) => part.trim()).filter(Boolean)
-}
-
-function imageSources(collection: any): { common?: string; large?: string } {
-  return subjectDetailImages(collection.subject)
 }
 
 function hasImageSource(images: { common?: string; large?: string }): boolean {
@@ -161,13 +157,14 @@ function getPlatformClient(platform: string): BgmPlatformClient {
   throw new Error(`Unsupported platform: ${platform}`)
 }
 
-function collectSubjectInputs(collections: any[], calendar: any[]): Map<number, SubjectInput> {
+function collectSubjectInputs(collections: any[], calendar: any[], subjectDetails?: SubjectDetailMap): Map<number, SubjectInput> {
   const inputs = new Map<number, SubjectInput>()
   for (const collection of collections) {
+    const detail = subjectDetails?.get(collection.subject_id)
     inputs.set(collection.subject_id, {
       subject_id: collection.subject_id,
-      title: collection.subject?.name_cn || collection.subject?.name || String(collection.subject_id),
-      images: imageSources(collection),
+      title: detail?.name_cn || detail?.name || collection.subject?.name_cn || collection.subject?.name || String(collection.subject_id),
+      images: subjectDetailImages(detail ?? collection.subject),
     })
   }
   for (const day of calendar) {
@@ -212,8 +209,7 @@ async function loadSubjectDetails(storage: KVStorage, client: BgmClient, subject
   return map
 }
 
-async function enrichCalendarWithSubjectDetails(storage: KVStorage, client: BgmClient, calendar: any[], now: number): Promise<any[]> {
-  const details = await loadSubjectDetails(storage, client, calendarSubjectIds(calendar), now)
+function enrichCalendarWithSubjectDetails(calendar: any[], details: SubjectDetailMap): any[] {
   return calendar.map((day) => ({
     ...day,
     items: (day.items ?? []).map((subject: any) => withSubjectDetail(subject, details.get(subject.id) ?? null)),
@@ -289,13 +285,19 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
 
   const collectionGroups = await Promise.all(users.map((user) => fetchAllCollections(client, user)))
   const collections = collectionGroups.flat()
-  const calendar = await enrichCalendarWithSubjectDetails(storage, client, await client.getCalendar() as any[], now)
-  const subjectInputs = collectSubjectInputs(collections as any[], calendar as any[])
+  const rawCalendar = await client.getCalendar() as any[]
+  const discoveredSubjectIds = new Set<number>([
+    ...collections.map((collection: any) => collection.subject_id).filter((subjectId: unknown) => typeof subjectId === 'number'),
+    ...calendarSubjectIds(rawCalendar),
+  ])
+  const subjectDetails = await loadSubjectDetails(storage, client, [...discoveredSubjectIds], now)
+  const calendar = enrichCalendarWithSubjectDetails(rawCalendar, subjectDetails)
+  const subjectInputs = collectSubjectInputs(collections as any[], calendar as any[], subjectDetails)
   const earlyMediaSubjectIds = await enqueueCalendarMediaEarly(env, storage, subjectInputs, calendar as any[], now)
   const subjectIds = subjectInputs.keys()
   const imageMap = await loadImageMap(storage, subjectIds)
   const subjectMetaMap = await loadSubjectMetaMap(storage, subjectInputs.keys())
-  const merged = mergeCollections(collections as any[], imageMap, subjectMetaMap)
+  const merged = mergeCollections(collections as any[], imageMap, subjectMetaMap, subjectDetails)
   const calendarSnapshot = transformCalendar(calendar as any[], imageMap, subjectMetaMap)
 
   const summary: Record<string, number> = {}

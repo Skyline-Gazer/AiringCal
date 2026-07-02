@@ -4,8 +4,10 @@ import worker from './index.ts'
 
 class MockKV {
   values = new Map<string, unknown>()
+  gets: string[] = []
 
   async get(key: string, type?: 'json') {
+    this.gets.push(key)
     const value = this.values.get(key)
     if (type === 'json') return value ?? null
     return value == null ? null : JSON.stringify(value)
@@ -91,8 +93,8 @@ test('calendar hydrates cached image refs and subject metadata like collections'
       id: 23080,
       name: 'A',
       name_cn: 'A CN',
-      eps: 12,
-      total_episodes: 12,
+      eps: 99,
+      total_episodes: 99,
     },
   })
 
@@ -107,6 +109,7 @@ test('calendar hydrates cached image refs and subject metadata like collections'
   assert.equal(body[0].items[0].image_status.common, 'cached')
   assert.equal(body[0].items[0].image_status.large, 'failed')
   assert.equal(body[0].items[0].nsfw, true)
-  assert.equal(body[0].items[0].eps, 12)
-  assert.equal(body[0].items[0].total_episodes, 12)
+  assert.equal(body[0].items[0].eps, undefined)
+  assert.equal(body[0].items[0].total_episodes, undefined)
+  assert.equal(kv.gets.includes('subject:detail:23080'), false)
 })
