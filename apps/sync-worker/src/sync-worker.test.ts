@@ -303,6 +303,65 @@ test('scheduled sync reuses cached subject detail for calendar enrichment', asyn
   }
 })
 
+test('scheduled sync normalizes cached subject detail episode count aliases into calendar totals', async () => {
+  const kv = new MockKV()
+  kv.values.set(subjectDetailKey(456080), {
+    cached_at: Math.floor(Date.now() / 1000),
+    subject: {
+      id: 456080,
+      type: 2,
+      name: 'Cached Calendar Only',
+      name_cn: '缓存日历限定',
+      summary: 'from subject detail cache',
+      nsfw: false,
+      date: '2026-07-01',
+      eps_count: 12,
+      images: { common: 'https://img.example/cached-common.jpg', large: 'https://img.example/cached-large.jpg' },
+      rating: { score: 7.1, rank: 0, total: 10 },
+    },
+  })
+  const originalFetch = globalThis.fetch
+  const calls: string[] = []
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    calls.push(text)
+    if (text.includes('/collections?')) {
+      return Response.json({ total: 0, data: [] })
+    }
+    if (text.endsWith('/calendar')) {
+      return Response.json([{
+        weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+        items: [{
+          id: 456080,
+          type: 2,
+          name: 'Calendar Only',
+          name_cn: '日历限定',
+          images: { common: 'https://img.example/calendar-common.jpg', large: 'https://img.example/calendar-large.jpg' },
+          rating: { score: 0, rank: 0, total: 0 },
+        }],
+      }])
+    }
+    throw new Error(`unexpected upstream fetch: ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async () => {} },
+      BANGUMI_TOKEN: 'token-a',
+      BANGUMI_USERS: 'alice',
+      SYNC_MODE: 'merge',
+    } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+
+    const calendar = (kv.values.get('snapshot:calendar') as any[])[0]
+    assert.equal(calls.some((url) => url.includes('/v0/subjects/456080')), false)
+    assert.equal(calendar.items[0].eps, 12)
+    assert.equal(calendar.items[0].total_episodes, 12)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('scheduled sync marks queued image status even when media queue send fails', async () => {
   const kv = new MockKV()
   const originalFetch = globalThis.fetch

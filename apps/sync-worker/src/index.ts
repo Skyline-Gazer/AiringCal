@@ -197,8 +197,30 @@ function calendarSubjectIds(calendar: any[]): number[] {
   return [...seen]
 }
 
+function positiveEpisodeCount(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === 'number' && value > 0) return value
+  }
+}
+
 function mergeSubjectDetail(calendarSubject: any, detail: any | null): any {
   if (!detail || typeof detail !== 'object') return calendarSubject
+  const eps = positiveEpisodeCount(
+    detail.eps,
+    detail.eps_count,
+    detail.total_episodes,
+    calendarSubject.eps,
+    calendarSubject.eps_count,
+    calendarSubject.total_episodes,
+  )
+  const totalEpisodes = positiveEpisodeCount(
+    detail.total_episodes,
+    detail.eps,
+    detail.eps_count,
+    calendarSubject.total_episodes,
+    calendarSubject.eps,
+    calendarSubject.eps_count,
+  )
   return {
     ...calendarSubject,
     type: detail.type ?? calendarSubject.type,
@@ -207,8 +229,9 @@ function mergeSubjectDetail(calendarSubject: any, detail: any | null): any {
     summary: detail.summary ?? calendarSubject.summary,
     nsfw: detail.nsfw ?? calendarSubject.nsfw,
     date: detail.date ?? calendarSubject.date,
-    eps: detail.eps ?? calendarSubject.eps,
-    total_episodes: detail.total_episodes ?? calendarSubject.total_episodes,
+    eps: eps ?? calendarSubject.eps,
+    eps_count: eps ?? calendarSubject.eps_count,
+    total_episodes: totalEpisodes ?? calendarSubject.total_episodes,
     images: detail.images ?? calendarSubject.images,
     rating: detail.rating ?? calendarSubject.rating,
   }
