@@ -85,6 +85,16 @@ test('calendar hydrates cached image refs and subject metadata like collections'
     checked_at: 1782650300,
     reason: 'subject_detail',
   })
+  kv.values.set('subject:detail:23080', {
+    cached_at: 1782650300,
+    subject: {
+      id: 23080,
+      name: 'A',
+      name_cn: 'A CN',
+      eps: 12,
+      total_episodes: 12,
+    },
+  })
 
   const response = await worker.fetch(new Request('https://read.local/calendar'), {
     AIRING_CAL_KV: kv,
@@ -97,4 +107,6 @@ test('calendar hydrates cached image refs and subject metadata like collections'
   assert.equal(body[0].items[0].image_status.common, 'cached')
   assert.equal(body[0].items[0].image_status.large, 'failed')
   assert.equal(body[0].items[0].nsfw, true)
+  assert.equal(body[0].items[0].eps, 12)
+  assert.equal(body[0].items[0].total_episodes, 12)
 })

@@ -1,6 +1,6 @@
 export const appBoundary = 'read-worker'
 
-import { imageOriginalKey, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
+import { imageOriginalKey, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectDetailKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 interface ReadEnv {
@@ -66,6 +66,16 @@ function imageStatus(status: any): string {
   return typeof status?.status === 'string' ? status.status : 'pending_next_cron'
 }
 
+function mergeCalendarSubjectDetail(entry: any, detail: any): any {
+  const subject = detail?.subject && typeof detail.subject === 'object' ? detail.subject : null
+  if (!subject) return entry
+  return {
+    ...entry,
+    eps: entry.eps ?? subject.eps ?? subject.eps_count ?? subject.total_episodes,
+    total_episodes: entry.total_episodes ?? subject.total_episodes ?? subject.eps ?? subject.eps_count,
+  }
+}
+
 async function hydrateCollectionImages(data: unknown[], env: ReadEnv): Promise<unknown[]> {
   return Promise.all(data.map(async (entry: any) => {
     if (!entry || typeof entry !== 'object' || typeof entry.subject_id !== 'number') return entry
@@ -92,26 +102,28 @@ async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unk
       if (!entry || typeof entry !== 'object') return entry
       const subjectId = typeof entry.subject_id === 'number' ? entry.subject_id : entry.id
       if (typeof subjectId !== 'number') return entry
-      const [status, meta] = await Promise.all([
+      const [status, meta, detail] = await Promise.all([
         env.AIRING_CAL_KV.get(imageStatusKey(subjectId), 'json'),
         env.AIRING_CAL_KV.get(subjectMetaKey(subjectId), 'json'),
+        env.AIRING_CAL_KV.get(subjectDetailKey(subjectId), 'json'),
       ])
-      if (!status && !meta) return entry
+      if (!status && !meta && !detail) return entry
+      const detailedEntry = mergeCalendarSubjectDetail(entry, detail)
       return {
-        ...entry,
+        ...detailedEntry,
         images: status
           ? {
               common: cachedImageRef((status as any).common),
               large: cachedImageRef((status as any).large),
             }
-          : entry.images,
+          : detailedEntry.images,
         image_status: status
           ? {
               common: imageStatus((status as any).common),
               large: imageStatus((status as any).large),
             }
-          : entry.image_status,
-        nsfw: (meta as any)?.nsfw ?? entry.nsfw,
+          : detailedEntry.image_status,
+        nsfw: (meta as any)?.nsfw ?? detailedEntry.nsfw,
       }
     }))
     return { ...day, items }
