@@ -41,24 +41,22 @@ function calendarEpisodeTotal(item) {
   return 0
 }
 
-function calendarSnapshotHasEpisodeTotals(calendar) {
+function calendarSnapshotHasAnyEpisodeTotals(calendar) {
   if (!Array.isArray(calendar)) return false
-  let subjects = 0
   for (const day of calendar) {
     if (!Array.isArray(day?.items)) continue
     for (const item of day.items) {
       const id = typeof item?.subject_id === 'number' ? item.subject_id : item?.id
       if (typeof id !== 'number') continue
-      subjects += 1
-      if (calendarEpisodeTotal(item) <= 0) return false
+      if (calendarEpisodeTotal(item) > 0) return true
     }
   }
-  return subjects > 0
+  return false
 }
 
 export function syncTriggerReady(summary, calendar, imageStatusesBySubject) {
   if (!syncSnapshotReady(summary)) return false
-  if (!calendarSnapshotHasEpisodeTotals(calendar)) return false
+  if (!calendarSnapshotHasAnyEpisodeTotals(calendar)) return false
   const subjectIds = calendarSubjectIds(calendar)
   if (!subjectIds.length) return false
   for (const subjectId of subjectIds) {
