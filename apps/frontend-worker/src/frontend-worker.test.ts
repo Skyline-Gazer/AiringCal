@@ -47,7 +47,9 @@ test('frontend-worker serves widget assets from widget package', async () => {
   const cache = await worker.fetch(new Request('https://front.local/src/cache.js'), env() as any)
 
   assert.equal(js.headers.get('Content-Type'), 'application/javascript; charset=utf-8')
-  assert.match(await js.text(), /images\?\.common\?\.uri/)
+  const jsBody = await js.text()
+  assert.match(jsBody, /images\?\.common\?\.uri/)
+  assert.equal(jsBody.includes("'??') + ' 话'"), false)
   assert.equal(css.headers.get('Content-Type'), 'text/css; charset=utf-8')
   assert.equal(cache.headers.get('Content-Type'), 'application/javascript; charset=utf-8')
   assert.match(await cache.text(), /\/api\/cache/)

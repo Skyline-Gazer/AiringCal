@@ -79,6 +79,11 @@
     return entry.total_episodes || entry.eps || entry.eps_count || entry.totalEpisodes || 0
   }
 
+  function formatCalendarEpisodeMeta(entry) {
+    const episodeTotal = calendarEpisodeTotal(entry)
+    return episodeTotal > 0 ? episodeTotal + ' 话' : ''
+  }
+
   // ---------------------------------------------------------------
   // 放送日历卡片（新增）：items 是 BgmSlimSubject
   // 字段与收藏不同：用 id、images.common（bgm.tv 原图）、rating.score
@@ -97,8 +102,9 @@
       '<div class="bgm-card-info">' +
         '<h3>' + name + '</h3>';
     if (score) html += '<span class="bgm-score">★ ' + Number(score).toFixed(1) + '</span>';
-    html += '<span class="bgm-ep">' + (calendarEpisodeTotal(entry) || '??') + ' 话</span>' +
-      '</div>' +
+    const episodeMeta = formatCalendarEpisodeMeta(entry)
+    if (episodeMeta) html += '<span class="bgm-ep">' + episodeMeta + '</span>'
+    html += '</div>' +
     '</a>';
     return html;
   }

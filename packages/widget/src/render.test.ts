@@ -92,6 +92,13 @@ test('widgetJs accepts legacy and sync episode count field names for calendar ca
   assert.match(widgetJs, /entry\.totalEpisodes/)
 })
 
+test('widgetJs does not render unknown calendar episode totals as question marks', () => {
+  assert.match(widgetJs, /function formatCalendarEpisodeMeta\(entry\)/)
+  assert.match(widgetJs, /return episodeTotal > 0 \? episodeTotal \+ ' 话' : ''/)
+  assert.equal(widgetJs.includes("|| '??') + ' 话'"), false)
+  assert.equal(widgetJs.includes("'??') + ' 话'"), false)
+})
+
 test('widgetJs renders precise cache status text when image cache is unavailable', () => {
   assert.match(widgetJs, /entry\.image_status/)
   assert.match(widgetJs, /imageStatus\?\.common/)
@@ -135,5 +142,6 @@ test('packaged widget assets do not read legacy image hash fields', () => {
     assert.equal(source.includes('images.hash'), false, `${asset} should not read images.hash`)
     assert.equal(source.includes('hash_large'), false, `${asset} should not read hash_large`)
     assert.equal(source.includes('data:image'), false, `${asset} should not embed a base64/data URI cover fallback`)
+    assert.equal(source.includes("'??') + ' 话'"), false, `${asset} should not render unknown calendar totals as question marks`)
   }
 })
