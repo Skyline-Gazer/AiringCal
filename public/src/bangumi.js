@@ -62,8 +62,8 @@
         '<h3>' + card.name + '</h3>'
     if (card.progress > 0) html += '<div class="bgm-progress"><span style="width:' + card.progress + '%"></span></div>'
     if (card.score) html += '<span class="bgm-score">★ ' + Number(card.score).toFixed(1) + '</span>'
-    html += '<span class="bgm-ep">' + card.meta + '</span>' +
-      '</div>' +
+    if (card.meta) html += '<span class="bgm-ep">' + card.meta + '</span>'
+    html += '</div>' +
     '</a>'
     return html
   }
@@ -82,6 +82,11 @@
     })
   }
 
+  function formatCalendarEpisodeMeta(entry) {
+    const episodeTotal = entry.eps || entry.total_episodes || 0
+    return episodeTotal > 0 ? episodeTotal + ' 话' : ''
+  }
+
   function renderCalendarCard(entry) {
     return renderSubjectCard({
       subjectId: entry.id,
@@ -90,7 +95,7 @@
       nsfw: entry.nsfw,
       progress: 0,
       score: entry.rating && entry.rating.score,
-      meta: ((entry.eps || entry.total_episodes) || '??') + ' 话',
+      meta: formatCalendarEpisodeMeta(entry),
     })
   }
 

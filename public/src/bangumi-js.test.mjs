@@ -81,3 +81,10 @@ test('public cards use R2 image refs and text cache failure state', () => {
 test('public cards use eps as the collection total episode fallback', () => {
   assert.ok(source.includes('entry.eps || entry.total_episodes'), 'uses eps before falling back to total_episodes')
 })
+
+test('calendar cards do not render unknown subject-detail episode totals as question marks', () => {
+  assert.ok(source.includes('function formatCalendarEpisodeMeta(entry)'), 'calendar cards format episode copy in one place')
+  assert.ok(source.includes("return episodeTotal > 0 ? episodeTotal + ' 话' : ''"), 'unknown calendar totals render no episode copy')
+  assert.equal(source.includes("|| '??') + ' 话'"), false)
+  assert.equal(source.includes("'??') + ' 话'"), false)
+})
