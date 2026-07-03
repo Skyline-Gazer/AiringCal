@@ -157,6 +157,21 @@ test('scheduled sync marks queued image status before media-worker caches calend
         }],
       }])
     }
+    if (text.endsWith('/v0/subjects/456080')) {
+      return Response.json({
+        id: 456080,
+        type: 2,
+        name: 'Calendar Only',
+        name_cn: '日历限定',
+        summary: 'from subject detail',
+        nsfw: false,
+        date: '2026-07-01',
+        eps: 12,
+        total_episodes: 12,
+        images: { common: 'https://img.example/calendar-common.jpg', large: 'https://img.example/calendar-large.jpg' },
+        rating: { score: 7.1, rank: 0, total: 10 },
+      })
+    }
     throw new Error(`unexpected upstream fetch: ${text}`)
   }) as typeof globalThis.fetch
 
@@ -247,6 +262,62 @@ test('scheduled sync enriches calendar episode totals from subject detail', asyn
   }
 })
 
+test('scheduled sync preserves existing calendar snapshot when subject detail enrichment fails', async () => {
+  const kv = new MockKV()
+  const existingCalendar = [{
+    weekday: { en: 'Sun', cn: '星期日', ja: '日曜日', id: 7 },
+    items: [{
+      subject_id: 456080,
+      id: 456080,
+      name: 'Existing Full',
+      name_cn: '已有完整条目',
+      eps: 12,
+      total_episodes: 24,
+      rating: { score: 7.1, rank: 0, total: 10 },
+    }],
+  }]
+  kv.values.set('snapshot:calendar', existingCalendar)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      return Response.json({ total: 0, data: [] })
+    }
+    if (text.endsWith('/calendar')) {
+      return Response.json([{
+        weekday: { en: 'Sun', cn: '星期日', ja: '日曜日', id: 7 },
+        items: [{
+          id: 456080,
+          type: 2,
+          name: 'Raw Calendar Only',
+          name_cn: '原始日历条目',
+          images: { common: 'https://img.example/calendar-common.jpg', large: 'https://img.example/calendar-large.jpg' },
+        }],
+      }])
+    }
+    if (text.endsWith('/v0/subjects/456080')) {
+      return new Response('upstream unavailable', { status: 503 })
+    }
+    throw new Error(`unexpected upstream fetch: ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await assert.rejects(
+      worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+        AIRING_CAL_KV: kv,
+        MEDIA_QUEUE: { send: async () => {} },
+        BANGUMI_TOKEN: 'token-a',
+        BANGUMI_USERS: 'alice',
+        SYNC_MODE: 'merge',
+      } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any),
+      /Failed to load subject details/,
+    )
+    assert.deepEqual(kv.values.get('snapshot:calendar'), existingCalendar)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('scheduled sync reuses cached subject detail for calendar enrichment', async () => {
   const kv = new MockKV()
   kv.values.set(subjectDetailKey(456080), {
@@ -286,6 +357,21 @@ test('scheduled sync reuses cached subject detail for calendar enrichment', asyn
           rating: { score: 0, rank: 0, total: 0 },
         }],
       }])
+    }
+    if (text.endsWith('/v0/subjects/456080')) {
+      return Response.json({
+        id: 456080,
+        type: 2,
+        name: 'Calendar Only',
+        name_cn: '日历限定',
+        summary: 'from subject detail',
+        nsfw: false,
+        date: '2026-07-01',
+        eps: 12,
+        total_episodes: 12,
+        images: { common: 'https://img.example/calendar-common.jpg', large: 'https://img.example/calendar-large.jpg' },
+        rating: { score: 7.1, rank: 0, total: 10 },
+      })
     }
     throw new Error(`unexpected upstream fetch: ${text}`)
   }) as typeof globalThis.fetch
@@ -356,6 +442,21 @@ test('scheduled sync normalizes cached subject detail episode count aliases into
         }],
       }])
     }
+    if (text.endsWith('/v0/subjects/456080')) {
+      return Response.json({
+        id: 456080,
+        type: 2,
+        name: 'Calendar Only',
+        name_cn: '日历限定',
+        summary: 'from subject detail',
+        nsfw: false,
+        date: '2026-07-01',
+        eps: 12,
+        total_episodes: 12,
+        images: { common: 'https://img.example/calendar-common.jpg', large: 'https://img.example/calendar-large.jpg' },
+        rating: { score: 7.1, rank: 0, total: 10 },
+      })
+    }
     throw new Error(`unexpected upstream fetch: ${text}`)
   }) as typeof globalThis.fetch
 
@@ -397,6 +498,21 @@ test('scheduled sync marks queued image status even when media queue send fails'
           rating: { score: 0, rank: 0, total: 0 },
         }],
       }])
+    }
+    if (text.endsWith('/v0/subjects/456080')) {
+      return Response.json({
+        id: 456080,
+        type: 2,
+        name: 'Calendar Only',
+        name_cn: '日历限定',
+        summary: 'from subject detail',
+        nsfw: false,
+        date: '2026-07-01',
+        eps: 12,
+        total_episodes: 12,
+        images: { common: 'https://img.example/calendar-common.jpg', large: 'https://img.example/calendar-large.jpg' },
+        rating: { score: 7.1, rank: 0, total: 10 },
+      })
     }
     throw new Error(`unexpected upstream fetch: ${text}`)
   }) as typeof globalThis.fetch
@@ -447,6 +563,21 @@ test('scheduled sync publishes calendar image status before later KV enrichment 
           rating: { score: 0, rank: 0, total: 0 },
         }],
       }])
+    }
+    if (text.endsWith('/v0/subjects/456080')) {
+      return Response.json({
+        id: 456080,
+        type: 2,
+        name: 'Calendar Only',
+        name_cn: '日历限定',
+        summary: 'from subject detail',
+        nsfw: false,
+        date: '2026-07-01',
+        eps: 12,
+        total_episodes: 12,
+        images: { common: 'https://img.example/calendar-common.jpg', large: 'https://img.example/calendar-large.jpg' },
+        rating: { score: 7.1, rank: 0, total: 10 },
+      })
     }
     throw new Error(`unexpected upstream fetch: ${text}`)
   }) as typeof globalThis.fetch

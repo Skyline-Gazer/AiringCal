@@ -193,18 +193,23 @@ function calendarSubjectIds(calendar: any[]): number[] {
 
 async function loadSubjectDetails(storage: KVStorage, client: BgmClient, subjectIds: number[], now: number): Promise<Map<number, any>> {
   const map = new Map<number, any>()
+  const failures: number[] = []
   for (let index = 0; index < subjectIds.length; index += SUBJECT_DETAIL_CONCURRENCY) {
     const chunk = subjectIds.slice(index, index + SUBJECT_DETAIL_CONCURRENCY)
     const details = await Promise.all(chunk.map(async (subjectId) => {
       try {
         return [subjectId, await getCachedSubjectDetail(storage, client, subjectId, now)] as const
       } catch {
+        failures.push(subjectId)
         return [subjectId, null] as const
       }
     }))
     for (const [subjectId, detail] of details) {
       if (detail) map.set(subjectId, detail)
     }
+  }
+  if (failures.length) {
+    throw new Error(`Failed to load subject details: ${failures.join(', ')}`)
   }
   return map
 }
