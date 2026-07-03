@@ -82,9 +82,13 @@
     })
   }
 
+  function calendarEpisodeTotal(entry) {
+    return entry.total_episodes || entry.eps || entry.eps_count || entry.totalEpisodes || 0
+  }
+
   function formatCalendarEpisodeMeta(entry) {
-    const episodeTotal = entry.eps || entry.total_episodes || 0
-    return episodeTotal > 0 ? episodeTotal + ' 话' : ''
+    const episodeTotal = calendarEpisodeTotal(entry)
+    return episodeTotal > 0 ? episodeTotal + ' 话' : '集数待定'
   }
 
   function renderCalendarCard(entry) {

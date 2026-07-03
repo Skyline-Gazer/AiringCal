@@ -81,7 +81,7 @@
 
   function formatCalendarEpisodeMeta(entry) {
     const episodeTotal = calendarEpisodeTotal(entry)
-    return episodeTotal > 0 ? episodeTotal + ' 话' : ''
+    return episodeTotal > 0 ? episodeTotal + ' 话' : '集数待定'
   }
 
   // ---------------------------------------------------------------

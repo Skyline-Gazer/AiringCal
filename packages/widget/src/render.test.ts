@@ -94,7 +94,7 @@ test('widgetJs accepts legacy and sync episode count field names for calendar ca
 
 test('widgetJs does not render unknown calendar episode totals as question marks', () => {
   assert.match(widgetJs, /function formatCalendarEpisodeMeta\(entry\)/)
-  assert.match(widgetJs, /return episodeTotal > 0 \? episodeTotal \+ ' 话' : ''/)
+  assert.match(widgetJs, /return episodeTotal > 0 \? episodeTotal \+ ' 话' : '集数待定'/)
   assert.equal(widgetJs.includes("|| '??') + ' 话'"), false)
   assert.equal(widgetJs.includes("'??') + ' 话'"), false)
 })
@@ -143,5 +143,8 @@ test('packaged widget assets do not read legacy image hash fields', () => {
     assert.equal(source.includes('hash_large'), false, `${asset} should not read hash_large`)
     assert.equal(source.includes('data:image'), false, `${asset} should not embed a base64/data URI cover fallback`)
     assert.equal(source.includes("'??') + ' 话'"), false, `${asset} should not render unknown calendar totals as question marks`)
+    if (asset.endsWith('bangumi.js')) {
+      assert.equal(source.includes("'集数待定'"), true, `${asset} should render a stable pending label for unknown calendar totals`)
+    }
   }
 })
