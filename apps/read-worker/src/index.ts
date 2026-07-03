@@ -1,6 +1,6 @@
 export const appBoundary = 'read-worker'
 
-import { imageOriginalKey, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
+import { imageOriginalKey, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectDetailKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 interface ReadEnv {
@@ -66,6 +66,12 @@ function imageStatus(status: any): string {
   return typeof status?.status === 'string' ? status.status : 'pending_next_cron'
 }
 
+function positiveEpisodeCount(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === 'number' && value > 0) return value
+  }
+}
+
 async function hydrateCollectionImages(data: unknown[], env: ReadEnv): Promise<unknown[]> {
   return Promise.all(data.map(async (entry: any) => {
     if (!entry || typeof entry !== 'object' || typeof entry.subject_id !== 'number') return entry
@@ -92,13 +98,20 @@ async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unk
       if (!entry || typeof entry !== 'object') return entry
       const subjectId = typeof entry.subject_id === 'number' ? entry.subject_id : entry.id
       if (typeof subjectId !== 'number') return entry
-      const [status, meta] = await Promise.all([
+      const [status, meta, detailEntry] = await Promise.all([
         env.AIRING_CAL_KV.get(imageStatusKey(subjectId), 'json'),
         env.AIRING_CAL_KV.get(subjectMetaKey(subjectId), 'json'),
+        env.AIRING_CAL_KV.get(subjectDetailKey(subjectId), 'json'),
       ])
-      if (!status && !meta) return entry
+      if (!status && !meta && !detailEntry) return entry
+      const detail = (detailEntry as any)?.subject
+      const eps = positiveEpisodeCount(detail?.eps, detail?.eps_count, detail?.total_episodes, entry.eps, entry.eps_count, entry.total_episodes)
+      const totalEpisodes = positiveEpisodeCount(detail?.total_episodes, detail?.eps, detail?.eps_count, entry.total_episodes, entry.eps, entry.eps_count)
       return {
         ...entry,
+        ...(eps ? { eps } : {}),
+        ...(totalEpisodes ? { total_episodes: totalEpisodes } : {}),
+        ...(detail?.rating ? { rating: detail.rating } : {}),
         images: status
           ? {
               common: cachedImageRef((status as any).common),

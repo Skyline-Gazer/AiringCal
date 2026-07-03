@@ -19,7 +19,7 @@ test('calendarSubjectIds extracts ids from raw and transformed calendar snapshot
 
 test('sync trigger readiness requires calendar subjects to have observable common image status', () => {
   const summary = { _total: 1 }
-  const calendar = [{ items: [{ id: 23080 }, { id: 456080 }] }]
+  const calendar = [{ items: [{ id: 23080, total_episodes: 12 }, { id: 456080, eps: 24 }] }]
   const statuses = new Map([
     [23080, { common: { status: 'cached' } }],
     [456080, { common: { status: 'queued' } }],
@@ -33,4 +33,15 @@ test('sync trigger readiness requires calendar subjects to have observable commo
   ])), false)
   assert.equal(syncTriggerReady({ _total: 0 }, calendar, statuses), false)
   assert.equal(syncTriggerReady(summary, [], statuses), false)
+})
+
+test('sync trigger readiness rejects calendar snapshots without episode totals', () => {
+  const summary = { _total: 1 }
+  const statuses = new Map([
+    [23080, { common: { status: 'cached' } }],
+    [456080, { common: { status: 'cached' } }],
+  ])
+
+  assert.equal(syncTriggerReady(summary, [{ items: [{ id: 23080, total_episodes: 12 }, { id: 456080 }] }], statuses), false)
+  assert.equal(syncTriggerReady(summary, [{ items: [{ id: 23080, eps_count: 12 }, { id: 456080, totalEpisodes: 24 }] }], statuses), true)
 })

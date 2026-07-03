@@ -95,6 +95,7 @@ test('calendar hydrates cached image refs and subject metadata like collections'
       name_cn: 'A CN',
       eps: 99,
       total_episodes: 99,
+      rating: { score: 8.1, total: 100 },
     },
   })
 
@@ -109,7 +110,8 @@ test('calendar hydrates cached image refs and subject metadata like collections'
   assert.equal(body[0].items[0].image_status.common, 'cached')
   assert.equal(body[0].items[0].image_status.large, 'failed')
   assert.equal(body[0].items[0].nsfw, true)
-  assert.equal(body[0].items[0].eps, undefined)
-  assert.equal(body[0].items[0].total_episodes, undefined)
-  assert.equal(kv.gets.includes('subject:detail:23080'), false)
+  assert.equal(body[0].items[0].eps, 99)
+  assert.equal(body[0].items[0].total_episodes, 99)
+  assert.equal(body[0].items[0].rating.score, 8.1)
+  assert.equal(kv.gets.includes('subject:detail:23080'), true)
 })
