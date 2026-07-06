@@ -57,3 +57,25 @@ test('materialize-wrangler-config rejects missing or invalid KV namespace ids', 
     /Command failed/,
   )
 })
+
+test('materialize-wrangler-config injects build vars when provided without requiring KV placeholder', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airing-cal-wrangler-config-'))
+  const source = join(dir, 'apps', 'frontend-worker', 'wrangler.toml')
+  const target = join(dir, 'runner-temp', 'wrangler-frontend-worker.toml')
+
+  mkdirSync(join(dir, 'apps', 'frontend-worker'), { recursive: true })
+  writeFileSync(source, 'name = "airing-cal-frontend"\nmain = "src/index.ts"\nkeep_vars = true\n')
+
+  execFileSync(process.execPath, [script, source, target], {
+    env: {
+      ...process.env,
+      BANGUMI_GIT_COMMIT_SHA: '0123456789abcdef',
+      BANGUMI_GIT_REPOSITORY_URL: 'https://github.com/markd3ng/AiringCal',
+    },
+  })
+
+  assert.equal(
+    readFileSync(target, 'utf8'),
+    `name = "airing-cal-frontend"\nmain = "../apps/frontend-worker/src/index.ts"\nkeep_vars = true\n\n[vars]\nBANGUMI_GIT_COMMIT_SHA = "0123456789abcdef"\nBANGUMI_GIT_REPOSITORY_URL = "https://github.com/markd3ng/AiringCal"\n`,
+  )
+})

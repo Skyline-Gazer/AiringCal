@@ -22,7 +22,7 @@ AiringCal 是一个 Cloudflare Workers monorepo。它把公开访问、只读数
 | `@airing-cal/bgm-api` | bgm.tv client、OpenAPI 对齐的类型、API helpers |
 | `@airing-cal/domain` | snapshot merge、image ref、subject meta、queue/data contracts |
 | `@airing-cal/storage` | KV/R2 adapter 和 key builder |
-| `@airing-cal/widget` | HTML shell、footer、cache page、widget JS/CSS assets |
+| `@airing-cal/widget` | HTML shell、footer runtime status、widget JS/CSS assets |
 | `@airing-cal/worker-common` | public error、安全 header、敏感信息清理、部署/文档守护测试 |
 
 ## 外部访问入口
@@ -40,14 +40,13 @@ https://airing-cal-frontend.<你的 workers.dev 子域>.workers.dev
 | Route | 说明 |
 |-------|------|
 | `/` | 公开 widget 页面，带共享 footer 和 build link |
-| `/cache` | 公开、脱敏后的缓存统计页 |
 | `/src/bangumi.js` | Widget script |
 | `/src/bangumi.css` | Widget styles |
-| `/src/cache.js` | Cache page script |
+| `/src/cache.js` | Footer runtime status script |
 | `/api/collections?type=watching` | 通过 `READ_WORKER` 读取 collection snapshot |
 | `/api/calendar` | 通过 `READ_WORKER` 读取 calendar snapshot |
 | `/api/config?key=nsfw` | 通过 `READ_WORKER` 读取公开配置 |
-| `/api/health` | 通过 `READ_WORKER` 读取健康状态 |
+| `/api/health` | 通过 `READ_WORKER` 读取健康状态、轻量 cache 摘要和 cron 状态 |
 | `/api/cache` | 通过 `READ_WORKER` 读取脱敏缓存 JSON |
 | `/api/sync/compare` | 通过 `SYNC_WORKER` 执行动画收藏对比 |
 | `/api/sync/apply` | 通过 `SYNC_WORKER` 执行动画收藏同步并写操作日志 |
@@ -304,7 +303,7 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 4. `pnpm build:check`
 5. 用 matrix 部署 `airing-cal-read`、`airing-cal-media`、`airing-cal-sync`
 6. 向 `airing-cal-sync-trigger` 推送一次同步触发，并等待 `snapshot:calendar` 中的 subject 都有可观测 common 图片管线状态（`queued` / `cached` / `failed` / `missing_source`）
-7. 最后部署 `airing-cal-frontend`
+7. 注入当前 commit/repository build vars，最后部署 `airing-cal-frontend`
 
 部署步骤直接运行 `pnpm exec wrangler deploy`，不再通过 `cloudflare/wrangler-action` 包装。CI 会设置 `WRANGLER_LOG=debug` 和 `WRANGLER_LOG_PATH`；如果部署失败，会打印脱敏后的 Wrangler debug log，便于看到 Cloudflare API 返回的真实错误。
 
@@ -312,7 +311,9 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 
 ## Cache 与 NSFW
 
-`/cache` 是公开且脱敏的缓存状态页。它只展示聚合后的缓存状态，不暴露 access token、上游认证响应体或未清理的错误信息。
+`/api/cache` 是公开且脱敏的缓存状态 JSON。它只展示聚合后的缓存状态，不暴露 access token、上游认证响应体或未清理的错误信息。
+
+页面 footer 不再读取完整 `/api/cache` 明细；`/src/cache.js` 只读取 `/api/health` 中的轻量 cache 摘要、next cron time 和最近一次 cron 状态，避免为了展示 footer 触发大量 KV image status 读取。
 
 `airing-cal-media` 会抓取 subject detail 做 NSFW enrichment。受限或不存在的 subject 会按 NSFW 处理，避免误展示为安全内容。
 
@@ -320,7 +321,7 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 
 Widget 的唯一来源是 `packages/widget`。公开 HTML 页面复用同一个 footer renderer。
 
-如果部署环境提供 `BANGUMI_GIT_COMMIT_SHA` 和 `BANGUMI_GIT_REPOSITORY_URL`，footer 会链接到对应 commit；否则显示 `Build unknown`。这只是页面追踪构建来源的可选信息，不影响部署和访问。
+CI 部署 frontend 时会把 `BANGUMI_GIT_COMMIT_SHA` 和 `BANGUMI_GIT_REPOSITORY_URL` 注入临时 Wrangler config，footer 会链接到对应 commit；本地或自定义部署没有提供这两个值时会显示 `Build unknown`。这只是页面追踪构建来源的信息，不影响部署和访问。
 
 浏览器 widget 使用 `images.common.uri` 渲染封面。没有缓存图片时读取 `image_status.common` 显示 `image pending`、`image queued`、`image missing source` 或 `image cache failed`，不内嵌 `data:image` placeholder。
 

@@ -1,6 +1,6 @@
 export const appBoundary = 'frontend-worker'
 
-import { cacheJs, renderCachePage, renderIndexPage, widgetCss, widgetJs, type BuildInfo } from '@airing-cal/widget'
+import { cacheJs, renderIndexPage, widgetCss, widgetJs, type BuildInfo } from '@airing-cal/widget'
 
 interface FrontendEnv {
   READ_WORKER: { fetch(request: Request): Promise<Response> }
@@ -66,7 +66,6 @@ function serviceRequest(url: URL, path: string, request: Request): Request {
 async function fetch(request: Request, env: FrontendEnv): Promise<Response> {
   const url = new URL(request.url)
   if (url.pathname === '/') return text(renderIndexPage(pageOptions(env)), 'text/html; charset=utf-8')
-  if (url.pathname === '/cache') return text(renderCachePage(pageOptions(env)), 'text/html; charset=utf-8')
   if (url.pathname === '/src/bangumi.js') return text(widgetJs, 'application/javascript; charset=utf-8')
   if (url.pathname === '/src/bangumi.css') return text(widgetCss, 'text/css; charset=utf-8')
   if (url.pathname === '/src/cache.js') return text(cacheJs, 'application/javascript; charset=utf-8')

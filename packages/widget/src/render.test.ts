@@ -5,7 +5,6 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   cacheJs,
-  renderCachePage,
   renderFooter,
   renderIndexPage,
   renderAnalyticsScripts,
@@ -16,15 +15,16 @@ import {
 
 const widgetRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
-test('renderFooter links cache page and commit when SHA and repository are present', () => {
+test('renderFooter omits cache page link and links commit when SHA and repository are present', () => {
   const footer = renderFooter({
     commitSha: '0123456789abcdef',
     repositoryUrl: 'https://github.com/markd3ng/AiringCal',
   })
 
-  assert.match(footer, /href="\/cache"/)
+  assert.equal(footer.includes('href="/cache"'), false)
   assert.match(footer, /Build 0123456/)
   assert.match(footer, /https:\/\/github.com\/markd3ng\/AiringCal\/commit\/0123456789abcdef/)
+  assert.match(footer, /data-runtime-status/)
 })
 
 test('renderFooter falls back to Build unknown without commit link', () => {
@@ -39,15 +39,15 @@ test('public pages reuse the exact shared footer output', () => {
   const footer = renderFooter(build)
 
   assert.equal(renderIndexPage({ build }).includes(footer), true)
-  assert.equal(renderCachePage({ build }).includes(footer), true)
 })
 
-test('renderFooter exposes an inline cache statistics slot', () => {
+test('renderFooter exposes an inline runtime status slot without cache loading copy', () => {
   const footer = renderFooter({})
 
-  assert.match(footer, /href="\/cache"/)
-  assert.match(footer, /data-cache-stats/)
-  assert.match(footer, /Cache loading/)
+  assert.equal(footer.includes('href="/cache"'), false)
+  assert.match(footer, /data-runtime-status/)
+  assert.match(footer, /Status loading/)
+  assert.equal(footer.includes('Cache loading'), false)
 })
 
 test('renderWebmasterMeta emits only configured verification tags', () => {
@@ -115,15 +115,13 @@ test('widgetJs includes animation sync UI and public sync endpoints', () => {
   assert.match(widgetJs, /\/api\/check\//)
 })
 
-test('pages load cacheJs which fills the footer cache statistics slot', () => {
+test('pages load cacheJs which fills the footer runtime status slot from health', () => {
   assert.match(renderIndexPage(), /<script src="\/src\/cache\.js"><\/script>/)
-  assert.match(renderCachePage(), /<script src="\/src\/cache\.js"><\/script>/)
-  assert.doesNotMatch(renderCachePage(), /<main class="bgm-cache-page">/)
-  assert.match(cacheJs, /\/api\/cache/)
-  assert.match(cacheJs, /data-cache-stats/)
+  assert.match(cacheJs, /\/api\/health/)
+  assert.match(cacheJs, /data-runtime-status/)
   assert.match(cacheJs, /response\.ok/)
-  assert.match(cacheJs, /Common cached/)
-  assert.match(cacheJs, /Large cached/)
+  assert.match(cacheJs, /Next cron/)
+  assert.match(cacheJs, /Last cron/)
 })
 
 test('widgetCss styles the shared footer', () => {

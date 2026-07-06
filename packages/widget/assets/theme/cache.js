@@ -1,5 +1,5 @@
 (() => {
-  const targets = Array.from(document.querySelectorAll('[data-cache-stats]'))
+  const targets = Array.from(document.querySelectorAll('[data-runtime-status]'))
   if (!targets.length) return
 
   function escapeHtml(value) {
@@ -15,23 +15,39 @@
     for (const target of targets) target.innerHTML = html
   }
 
+  function formatTime(value) {
+    if (!value) return ''
+    const numeric = Number(value)
+    const time = Number.isFinite(numeric) ? numeric * 1000 : value
+    const date = new Date(time)
+    if (Number.isNaN(date.getTime())) return ''
+    return date.toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
+  }
+
   function render(data) {
-    const failures = Number((data.common && data.common.failed) || 0) + Number((data.large && data.large.failed) || 0)
+    const health = data && data.data ? data.data : {}
+    const cache = health.cache || {}
+    const cron = health.cron || {}
+    const last = cron.last || {}
+    const totalSubjects = Number(cache.total_subjects || 0)
+    const nextCron = formatTime(cron.next_at) || 'unknown'
+    const lastStatus = last.status ? last.status : 'unknown'
+    const lastTime = last.completed_at || last.triggered_at
+    const lastSuffix = lastTime ? ' @ ' + formatTime(lastTime) : ''
     setTargets(
-      '<span>Subjects ' + Number(data.total_subjects || 0) + '</span>' +
-      '<span>Common cached ' + Number((data.common && data.common.cached) || 0) + '</span>' +
-      '<span>Large cached ' + Number((data.large && data.large.cached) || 0) + '</span>' +
-      '<span>Failures ' + failures + '</span>',
+      '<span>Subjects ' + totalSubjects + '</span>' +
+      '<span>Next cron ' + escapeHtml(nextCron) + '</span>' +
+      '<span>Last cron ' + escapeHtml(lastStatus + lastSuffix) + '</span>',
     )
   }
 
-  fetch('/api/cache')
+  fetch('/api/health')
     .then((response) => {
       if (!response.ok) throw new Error('HTTP ' + response.status + ' ' + response.statusText)
       return response.json()
     })
     .then(render)
     .catch((error) => {
-      setTargets('<span>Cache unavailable: ' + escapeHtml(error && error.message ? error.message : String(error)) + '</span>')
+      setTargets('<span>Status unavailable: ' + escapeHtml(error && error.message ? error.message : String(error)) + '</span>')
     })
 })()

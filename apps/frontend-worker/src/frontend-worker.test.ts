@@ -32,13 +32,15 @@ function env() {
   }
 }
 
-test('frontend-worker serves index and cache HTML with shared footer', async () => {
+test('frontend-worker serves index without cache page link and removes cache HTML page', async () => {
   const appEnv = env()
   const index = await worker.fetch(new Request('https://front.local/'), appEnv as any)
   const cache = await worker.fetch(new Request('https://front.local/cache'), appEnv as any)
+  const indexHtml = await index.text()
 
-  assert.match(await index.text(), /href="\/cache"/)
-  assert.match(await cache.text(), /Build 0123456/)
+  assert.equal(indexHtml.includes('href="/cache"'), false)
+  assert.match(indexHtml, /Build 0123456/)
+  assert.equal(cache.status, 404)
 })
 
 test('frontend-worker serves widget assets from widget package', async () => {
@@ -52,7 +54,7 @@ test('frontend-worker serves widget assets from widget package', async () => {
   assert.equal(jsBody.includes("'??') + ' 话'"), false)
   assert.equal(css.headers.get('Content-Type'), 'text/css; charset=utf-8')
   assert.equal(cache.headers.get('Content-Type'), 'application/javascript; charset=utf-8')
-  assert.match(await cache.text(), /\/api\/cache/)
+  assert.match(await cache.text(), /\/api\/health/)
 })
 
 test('frontend-worker forwards public JSON reads to read-worker service binding', async () => {

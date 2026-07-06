@@ -119,6 +119,8 @@ test('scheduled sync writes new snapshot keys and enqueues media work without im
     assert.ok(kv.values.has('snapshot:calendar'))
     assert.ok(kv.values.has('snapshot:summary'))
     assert.ok(kv.values.has('sync:meta'))
+    assert.equal((kv.values.get('sync:meta') as any).cron.last.status, 'ok')
+    assert.equal((kv.values.get('sync:meta') as any).cron.last.source, 'scheduled')
     assert.equal(queueMessages.length, 1)
     assert.deepEqual(queueMessages[0], {
       subject_id: 23080,
@@ -763,7 +765,8 @@ test('scheduled sync skips non-four-hour cron ticks without upstream work', asyn
     } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
 
     assert.equal(fetchCount, 0)
-    assert.equal(kv.values.size, 0)
+    assert.equal((kv.values.get('sync:meta') as any).cron.last.status, 'skipped')
+    assert.equal((kv.values.get('sync:meta') as any).cron.last.source, 'scheduled')
     assert.equal(queueMessages.length, 0)
   } finally {
     globalThis.fetch = originalFetch

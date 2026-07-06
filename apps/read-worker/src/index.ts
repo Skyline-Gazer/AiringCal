@@ -21,6 +21,7 @@ interface ReadEnv {
 }
 
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
+const CRON_INTERVAL_HOURS = 4
 
 function json(data: unknown, init?: ResponseInit): Response {
   return Response.json(data, {
@@ -64,6 +65,16 @@ function cachedImageRef(status: any) {
 
 function imageStatus(status: any): string {
   return typeof status?.status === 'string' ? status.status : 'pending_next_cron'
+}
+
+function nextCronAt(now = Date.now()): string {
+  const next = new Date(now)
+  next.setUTCMinutes(0, 0, 0)
+  if (next.getTime() <= now) next.setUTCHours(next.getUTCHours() + 1)
+  while (next.getUTCHours() % CRON_INTERVAL_HOURS !== 0) {
+    next.setUTCHours(next.getUTCHours() + 1)
+  }
+  return next.toISOString()
 }
 
 function positiveEpisodeCount(...values: unknown[]): number | undefined {
@@ -152,11 +163,10 @@ async function handleCalendar(env: ReadEnv): Promise<Response> {
 
 async function handleCache(env: ReadEnv): Promise<Response> {
   const list = await env.AIRING_CAL_KV.list?.({ prefix: 'image:status:' })
-  const entries = []
-  for (const key of list?.keys ?? []) {
+  const entries = (await Promise.all((list?.keys ?? []).map(async (key) => {
     const status = await env.AIRING_CAL_KV.get(key.name, 'json')
-    if (status) entries.push(sanitizeStatus(status))
-  }
+    return status ? sanitizeStatus(status) : null
+  }))).filter(Boolean)
   const counts = {
     cached: 0,
     pending_next_cron: 0,
@@ -181,7 +191,7 @@ async function handleCache(env: ReadEnv): Promise<Response> {
 async function handleHealth(env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const types = await storage.get<Record<string, number>>(snapshotSummaryKey())
-  const meta = await storage.get<{ synced_at?: number; users?: string[] }>(syncMetaKey())
+  const meta = await storage.get<{ synced_at?: number; users?: string[]; cron?: { last?: unknown } }>(syncMetaKey())
   return json({
     ok: true,
     worker: 'read-worker',
@@ -191,6 +201,14 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
             types,
             updated_at: meta?.synced_at ? new Date(meta.synced_at * 1000).toISOString() : null,
             users: meta?.users ?? [],
+          },
+          cache: {
+            total_subjects: types._total,
+            source: 'snapshot_summary',
+          },
+          cron: {
+            next_at: nextCronAt(),
+            last: meta?.cron?.last ?? null,
           },
         }
       : null,

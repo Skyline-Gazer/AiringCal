@@ -24,6 +24,8 @@ const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] a
 const SYNC_OPERATION_PREFIX = 'sync:operation:'
 const SYNC_OPERATION_TTL_SECONDS = 60 * 60 * 24
 const SUBJECT_DETAIL_CONCURRENCY = 8
+const CRON_SCHEDULE = '0 * * * *'
+const EFFECTIVE_CRON_SCHEDULE = '0 */4 * * *'
 
 interface SubjectInput {
   subject_id: number
@@ -384,11 +386,53 @@ function shouldRunSync(scheduledTime: number): boolean {
   return hour % 4 === 0
 }
 
+async function recordCronStatus(env: SyncEnv, last: Record<string, unknown>): Promise<void> {
+  const storage = new KVStorage(env.AIRING_CAL_KV)
+  const current = await storage.get<Record<string, unknown>>(syncMetaKey()) ?? {}
+  const currentCron = current.cron && typeof current.cron === 'object' ? current.cron as Record<string, unknown> : {}
+  await storage.put(syncMetaKey(), {
+    ...current,
+    cron: {
+      ...currentCron,
+      schedule: CRON_SCHEDULE,
+      effective_schedule: EFFECTIVE_CRON_SCHEDULE,
+      last,
+    },
+  })
+}
+
 async function scheduled(event: { scheduledTime?: number }, env: SyncEnv, ctx: { waitUntil(promise: Promise<unknown>): unknown }): Promise<void> {
-  if (!shouldRunSync(event.scheduledTime ?? Date.now())) return
-  const promise = runScheduledSync(env)
-  ctx.waitUntil(promise)
-  await promise
+  const scheduledTime = event.scheduledTime ?? Date.now()
+  const triggeredAt = Math.floor(scheduledTime / 1000)
+  if (!shouldRunSync(scheduledTime)) {
+    await recordCronStatus(env, {
+      status: 'skipped',
+      source: 'scheduled',
+      triggered_at: triggeredAt,
+      reason: 'outside_effective_schedule',
+    })
+    return
+  }
+  try {
+    const promise = runScheduledSync(env)
+    ctx.waitUntil(promise)
+    await promise
+    await recordCronStatus(env, {
+      status: 'ok',
+      source: 'scheduled',
+      triggered_at: triggeredAt,
+      completed_at: Math.floor(Date.now() / 1000),
+    })
+  } catch (error) {
+    await recordCronStatus(env, {
+      status: 'error',
+      source: 'scheduled',
+      triggered_at: triggeredAt,
+      completed_at: Math.floor(Date.now() / 1000),
+      message: error instanceof Error ? error.message : String(error),
+    })
+    throw error
+  }
 }
 
 async function queue(batch: QueueBatch, env: SyncEnv): Promise<void> {

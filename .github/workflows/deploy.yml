@@ -154,6 +154,8 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      BANGUMI_GIT_COMMIT_SHA: ${{ github.sha }}
+      BANGUMI_GIT_REPOSITORY_URL: https://github.com/${{ github.repository }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -170,18 +172,21 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Materialize Wrangler config
+        run: node scripts/materialize-wrangler-config.mjs apps/frontend-worker/wrangler.toml ${{ runner.temp }}/wrangler-frontend-worker.toml
+
       - name: Build Check
         env:
           WRANGLER_LOG: debug
           WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-frontend-worker-dry-run.log
-        run: pnpm exec wrangler deploy --dry-run --outdir apps/frontend-worker/dist --config apps/frontend-worker/wrangler.toml
+        run: pnpm exec wrangler deploy --dry-run --outdir apps/frontend-worker/dist --config ${{ runner.temp }}/wrangler-frontend-worker.toml
 
       - name: Deploy Frontend Worker
         env:
           WRANGLER_LOG: debug
           WRANGLER_LOG_SANITIZE: "false"
           WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-frontend-worker.log
-        run: pnpm exec wrangler deploy --config apps/frontend-worker/wrangler.toml
+        run: pnpm exec wrangler deploy --config ${{ runner.temp }}/wrangler-frontend-worker.toml
 
       - name: Print Wrangler debug log on failure
         if: failure()
