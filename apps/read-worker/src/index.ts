@@ -78,7 +78,8 @@ function nextCronAt(now = Date.now()): string {
 }
 
 function cronLastStatus(meta: { synced_at?: number; cron?: { last?: unknown } } | null | undefined): unknown {
-  if (meta?.cron?.last) return meta.cron.last
+  const last = meta?.cron?.last
+  if (last && typeof last === 'object' && (last as { status?: unknown }).status !== 'skipped') return last
   if (meta?.synced_at) {
     return {
       status: 'synced',

@@ -386,7 +386,7 @@ function shouldRunSync(scheduledTime: number): boolean {
   return hour % 4 === 0
 }
 
-async function recordCronStatus(env: SyncEnv, last: Record<string, unknown>): Promise<void> {
+async function recordCronStatus(env: SyncEnv, statusKey: 'last' | 'last_skip', status: Record<string, unknown>): Promise<void> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const current = await storage.get<Record<string, unknown>>(syncMetaKey()) ?? {}
   const currentCron = current.cron && typeof current.cron === 'object' ? current.cron as Record<string, unknown> : {}
@@ -396,7 +396,7 @@ async function recordCronStatus(env: SyncEnv, last: Record<string, unknown>): Pr
       ...currentCron,
       schedule: CRON_SCHEDULE,
       effective_schedule: EFFECTIVE_CRON_SCHEDULE,
-      last,
+      [statusKey]: status,
     },
   })
 }
@@ -405,7 +405,7 @@ async function scheduled(event: { scheduledTime?: number }, env: SyncEnv, ctx: {
   const scheduledTime = event.scheduledTime ?? Date.now()
   const triggeredAt = Math.floor(scheduledTime / 1000)
   if (!shouldRunSync(scheduledTime)) {
-    await recordCronStatus(env, {
+    await recordCronStatus(env, 'last_skip', {
       status: 'skipped',
       source: 'scheduled',
       triggered_at: triggeredAt,
@@ -417,14 +417,14 @@ async function scheduled(event: { scheduledTime?: number }, env: SyncEnv, ctx: {
     const promise = runScheduledSync(env)
     ctx.waitUntil(promise)
     await promise
-    await recordCronStatus(env, {
+    await recordCronStatus(env, 'last', {
       status: 'ok',
       source: 'scheduled',
       triggered_at: triggeredAt,
       completed_at: Math.floor(Date.now() / 1000),
     })
   } catch (error) {
-    await recordCronStatus(env, {
+    await recordCronStatus(env, 'last', {
       status: 'error',
       source: 'scheduled',
       triggered_at: triggeredAt,

@@ -747,6 +747,17 @@ test('internal sync apply persists a 24h operation log and check returns it', as
 
 test('scheduled sync skips non-four-hour cron ticks without upstream work', async () => {
   const kv = new MockKV()
+  kv.values.set('sync:meta', {
+    synced_at: 1782650300,
+    cron: {
+      last: {
+        status: 'ok',
+        source: 'scheduled',
+        triggered_at: 1782650000,
+        completed_at: 1782650300,
+      },
+    },
+  })
   const queueMessages: unknown[] = []
   const originalFetch = globalThis.fetch
   let fetchCount = 0
@@ -765,8 +776,9 @@ test('scheduled sync skips non-four-hour cron ticks without upstream work', asyn
     } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
 
     assert.equal(fetchCount, 0)
-    assert.equal((kv.values.get('sync:meta') as any).cron.last.status, 'skipped')
-    assert.equal((kv.values.get('sync:meta') as any).cron.last.source, 'scheduled')
+    assert.equal((kv.values.get('sync:meta') as any).cron.last.status, 'ok')
+    assert.equal((kv.values.get('sync:meta') as any).cron.last_skip.status, 'skipped')
+    assert.equal((kv.values.get('sync:meta') as any).cron.last_skip.source, 'scheduled')
     assert.equal(queueMessages.length, 0)
   } finally {
     globalThis.fetch = originalFetch
