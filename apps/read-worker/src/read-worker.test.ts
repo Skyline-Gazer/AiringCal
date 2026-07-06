@@ -133,6 +133,24 @@ test('read-worker health reports collection snapshot status when KV has data', a
   assert.equal(body.data.cron.last.status, 'ok')
 })
 
+test('read-worker health falls back to snapshot sync time when cron status is missing', async () => {
+  const kv = new MockKV()
+  kv.values.set('snapshot:summary', { watching: 20, _total: 42 })
+  kv.values.set('sync:meta', {
+    synced_at: 1782650300,
+    mode: 'merge',
+    users: ['alice'],
+  })
+
+  const response = await worker.fetch(new Request('https://read.local/health'), env(kv) as any)
+  const body = await response.json() as any
+
+  assert.equal(response.status, 200)
+  assert.equal(body.data.cron.last.status, 'synced')
+  assert.equal(body.data.cron.last.source, 'snapshot')
+  assert.equal(body.data.cron.last.completed_at, 1782650300)
+})
+
 test('read-worker does not call upstream fetch for read requests', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = async () => {

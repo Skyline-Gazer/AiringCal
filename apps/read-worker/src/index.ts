@@ -77,6 +77,18 @@ function nextCronAt(now = Date.now()): string {
   return next.toISOString()
 }
 
+function cronLastStatus(meta: { synced_at?: number; cron?: { last?: unknown } } | null | undefined): unknown {
+  if (meta?.cron?.last) return meta.cron.last
+  if (meta?.synced_at) {
+    return {
+      status: 'synced',
+      source: 'snapshot',
+      completed_at: meta.synced_at,
+    }
+  }
+  return null
+}
+
 function positiveEpisodeCount(...values: unknown[]): number | undefined {
   for (const value of values) {
     if (typeof value === 'number' && value > 0) return value
@@ -208,7 +220,7 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
           },
           cron: {
             next_at: nextCronAt(),
-            last: meta?.cron?.last ?? null,
+            last: cronLastStatus(meta),
           },
         }
       : null,
