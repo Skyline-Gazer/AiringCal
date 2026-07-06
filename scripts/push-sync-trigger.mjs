@@ -34,29 +34,8 @@ function calendarImageStatusReady(status) {
   return observableCommonImageStatuses.has(status?.common?.status)
 }
 
-function calendarEpisodeTotal(item) {
-  for (const value of [item?.total_episodes, item?.eps, item?.eps_count, item?.totalEpisodes]) {
-    if (typeof value === 'number' && value > 0) return value
-  }
-  return 0
-}
-
-function calendarSnapshotHasAnyEpisodeTotals(calendar) {
-  if (!Array.isArray(calendar)) return false
-  for (const day of calendar) {
-    if (!Array.isArray(day?.items)) continue
-    for (const item of day.items) {
-      const id = typeof item?.subject_id === 'number' ? item.subject_id : item?.id
-      if (typeof id !== 'number') continue
-      if (calendarEpisodeTotal(item) > 0) return true
-    }
-  }
-  return false
-}
-
 export function syncTriggerReady(summary, calendar, imageStatusesBySubject) {
   if (!syncSnapshotReady(summary)) return false
-  if (!calendarSnapshotHasAnyEpisodeTotals(calendar)) return false
   const subjectIds = calendarSubjectIds(calendar)
   if (!subjectIds.length) return false
   for (const subjectId of subjectIds) {
