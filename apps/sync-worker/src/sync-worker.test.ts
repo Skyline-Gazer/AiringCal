@@ -806,6 +806,8 @@ test('queue trigger runs sync immediately without cron hour gating', async () =>
     assert.ok(kv.values.has('snapshot:collections:watching'))
     assert.ok(kv.values.has('snapshot:calendar'))
     assert.ok(kv.values.has('sync:meta'))
+    assert.equal((kv.values.get('sync:meta') as any).cron.last.status, 'ok')
+    assert.equal((kv.values.get('sync:meta') as any).cron.last.source, 'queue')
     assert.equal(queueMessages.length, 1)
     assert.equal(upstream.calls.some((url) => url.includes('/collections?')), true)
   } finally {

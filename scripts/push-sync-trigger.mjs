@@ -8,10 +8,21 @@ const pollTimeoutMs = Number.parseInt(process.env.SYNC_TRIGGER_TIMEOUT_MS || '12
 const pollIntervalMs = Number.parseInt(process.env.SYNC_TRIGGER_POLL_INTERVAL_MS || '5000', 10)
 const summaryKey = 'snapshot:summary'
 const calendarKey = 'snapshot:calendar'
+const syncMetaKey = 'sync:meta'
 const observableCommonImageStatuses = new Set(['queued', 'cached', 'failed', 'missing_source'])
 
 export function syncSnapshotReady(summary) {
   return Boolean(summary && typeof summary === 'object' && Number.isFinite(summary._total) && summary._total > 0)
+}
+
+export function syncMetaFresh(meta, queuedAtMs) {
+  const queuedAtSeconds = Math.floor(queuedAtMs / 1000)
+  return Boolean(
+    meta &&
+    typeof meta === 'object' &&
+    Number.isFinite(meta.synced_at) &&
+    meta.synced_at >= queuedAtSeconds,
+  )
 }
 
 export function calendarSubjectIds(calendar) {
@@ -34,7 +45,8 @@ function calendarImageStatusReady(status) {
   return observableCommonImageStatuses.has(status?.common?.status)
 }
 
-export function syncTriggerReady(summary, calendar, imageStatusesBySubject) {
+export function syncTriggerReady(summary, calendar, imageStatusesBySubject, meta, queuedAtMs) {
+  if (!syncMetaFresh(meta, queuedAtMs)) return false
   if (!syncSnapshotReady(summary)) return false
   const subjectIds = calendarSubjectIds(calendar)
   if (!subjectIds.length) return false
@@ -75,29 +87,31 @@ async function kvJson(key) {
   return JSON.parse(text)
 }
 
-async function waitForSyncSnapshot() {
+async function waitForSyncSnapshot(queuedAtMs) {
   const deadline = Date.now() + pollTimeoutMs
   let lastSummary = null
   let lastCalendar = null
+  let lastMeta = null
   let lastImageStatusesBySubject = new Map()
   while (Date.now() <= deadline) {
-    ;[lastSummary, lastCalendar] = await Promise.all([
+    ;[lastSummary, lastCalendar, lastMeta] = await Promise.all([
       kvJson(summaryKey),
       kvJson(calendarKey),
+      kvJson(syncMetaKey),
     ])
     const subjectIds = calendarSubjectIds(lastCalendar)
     lastImageStatusesBySubject = new Map(await Promise.all(subjectIds.map(async (subjectId) => [
       subjectId,
       await kvJson(`image:status:${subjectId}`),
     ])))
-    if (syncTriggerReady(lastSummary, lastCalendar, lastImageStatusesBySubject)) {
-      console.log(`Sync snapshot and calendar image pipeline status are ready: ${summaryKey} _total=${lastSummary._total}, calendar_subjects=${subjectIds.length}`)
+    if (syncTriggerReady(lastSummary, lastCalendar, lastImageStatusesBySubject, lastMeta, queuedAtMs)) {
+      console.log(`Fresh sync snapshot and calendar image pipeline status are ready: ${summaryKey} _total=${lastSummary._total}, calendar_subjects=${subjectIds.length}, synced_at=${lastMeta.synced_at}`)
       return
     }
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
   }
   const readyCount = [...lastImageStatusesBySubject.values()].filter(calendarImageStatusReady).length
-  throw new Error(`Timed out waiting for sync-worker/media-worker to publish calendar image pipeline status. Last summary: ${JSON.stringify(lastSummary)}; calendar_subjects=${calendarSubjectIds(lastCalendar).length}; ready_common_status=${readyCount}`)
+  throw new Error(`Timed out waiting for sync-worker/media-worker to publish fresh calendar image pipeline status. Last summary: ${JSON.stringify(lastSummary)}; last_meta=${JSON.stringify(lastMeta)}; calendar_subjects=${calendarSubjectIds(lastCalendar).length}; ready_common_status=${readyCount}`)
 }
 
 function queuesFromResult(result) {
@@ -130,6 +144,7 @@ async function main() {
     process.exit(1)
   }
 
+  const queuedAtMs = Date.now()
   await api(`/accounts/${accountId}/queues/${encodeURIComponent(id)}/messages`, {
     method: 'POST',
     body: JSON.stringify({
@@ -139,14 +154,14 @@ async function main() {
         ref: process.env.GITHUB_REF_NAME || null,
         sha: process.env.GITHUB_SHA || null,
         run_id: process.env.GITHUB_RUN_ID || null,
-        queued_at: new Date().toISOString(),
+        queued_at: new Date(queuedAtMs).toISOString(),
       },
       content_type: 'json',
     }),
   })
 
   console.log(`Queued deploy sync trigger on ${queueName}`)
-  await waitForSyncSnapshot()
+  await waitForSyncSnapshot(queuedAtMs)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

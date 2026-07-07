@@ -1,13 +1,22 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { calendarSubjectIds, syncSnapshotReady, syncTriggerReady } from './push-sync-trigger.mjs'
+import { calendarSubjectIds, syncMetaFresh, syncSnapshotReady, syncTriggerReady } from './push-sync-trigger.mjs'
 
 test('sync trigger readiness requires a non-empty snapshot summary', () => {
   assert.equal(syncSnapshotReady({ _total: 1 }), true)
   assert.equal(syncSnapshotReady({ _total: 0 }), false)
   assert.equal(syncSnapshotReady(null), false)
   assert.equal(syncSnapshotReady({ watching: 1 }), false)
+})
+
+test('sync trigger readiness requires sync metadata written after the trigger was queued', () => {
+  const sinceMs = Date.UTC(2026, 6, 8, 4, 0, 0) + 900
+
+  assert.equal(syncMetaFresh({ synced_at: Math.floor(sinceMs / 1000) }, sinceMs), true)
+  assert.equal(syncMetaFresh({ synced_at: Math.floor(sinceMs / 1000) - 1 }, sinceMs), false)
+  assert.equal(syncMetaFresh({ synced_at: 'bad' }, sinceMs), false)
+  assert.equal(syncMetaFresh(null, sinceMs), false)
 })
 
 test('calendarSubjectIds extracts ids from raw and transformed calendar snapshots', () => {
@@ -18,6 +27,8 @@ test('calendarSubjectIds extracts ids from raw and transformed calendar snapshot
 })
 
 test('sync trigger readiness requires calendar subjects to have observable common image status', () => {
+  const sinceMs = Date.UTC(2026, 6, 8, 4, 0, 0)
+  const meta = { synced_at: Math.floor(sinceMs / 1000) }
   const summary = { _total: 1 }
   const calendar = [{ items: [{ id: 23080, total_episodes: 12 }, { id: 456080, eps: 24 }] }]
   const statuses = new Map([
@@ -25,24 +36,27 @@ test('sync trigger readiness requires calendar subjects to have observable commo
     [456080, { common: { status: 'queued' } }],
   ])
 
-  assert.equal(syncTriggerReady(summary, calendar, statuses), true)
-  assert.equal(syncTriggerReady(summary, calendar, new Map([[23080, { common: { status: 'cached' } }]])), false)
+  assert.equal(syncTriggerReady(summary, calendar, statuses, meta, sinceMs), true)
+  assert.equal(syncTriggerReady(summary, calendar, statuses, { synced_at: Math.floor(sinceMs / 1000) - 1 }, sinceMs), false)
+  assert.equal(syncTriggerReady(summary, calendar, new Map([[23080, { common: { status: 'cached' } }]]), meta, sinceMs), false)
   assert.equal(syncTriggerReady(summary, calendar, new Map([
     [23080, { common: { status: 'cached' } }],
     [456080, { common: { status: 'pending_next_cron' } }],
-  ])), false)
-  assert.equal(syncTriggerReady({ _total: 0 }, calendar, statuses), false)
-  assert.equal(syncTriggerReady(summary, [], statuses), false)
+  ]), meta, sinceMs), false)
+  assert.equal(syncTriggerReady({ _total: 0 }, calendar, statuses, meta, sinceMs), false)
+  assert.equal(syncTriggerReady(summary, [], statuses, meta, sinceMs), false)
 })
 
 test('sync trigger readiness does not require raw calendar snapshots to include episode totals', () => {
+  const sinceMs = Date.UTC(2026, 6, 8, 4, 0, 0)
+  const meta = { synced_at: Math.floor(sinceMs / 1000) }
   const summary = { _total: 1 }
   const statuses = new Map([
     [23080, { common: { status: 'cached' } }],
     [456080, { common: { status: 'cached' } }],
   ])
 
-  assert.equal(syncTriggerReady(summary, [{ items: [{ id: 23080 }, { id: 456080 }] }], statuses), true)
-  assert.equal(syncTriggerReady(summary, [{ items: [{ id: 23080, total_episodes: 12 }, { id: 456080 }] }], statuses), true)
-  assert.equal(syncTriggerReady(summary, [{ items: [{ id: 23080, eps_count: 12 }, { id: 456080, totalEpisodes: 24 }] }], statuses), true)
+  assert.equal(syncTriggerReady(summary, [{ items: [{ id: 23080 }, { id: 456080 }] }], statuses, meta, sinceMs), true)
+  assert.equal(syncTriggerReady(summary, [{ items: [{ id: 23080, total_episodes: 12 }, { id: 456080 }] }], statuses, meta, sinceMs), true)
+  assert.equal(syncTriggerReady(summary, [{ items: [{ id: 23080, eps_count: 12 }, { id: 456080, totalEpisodes: 24 }] }], statuses, meta, sinceMs), true)
 })
