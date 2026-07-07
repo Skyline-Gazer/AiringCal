@@ -1,6 +1,8 @@
 (() => {
   const targets = Array.from(document.querySelectorAll('[data-runtime-status]'))
   if (!targets.length) return
+  const REFRESH_INTERVAL_MS = 60 * 1000
+  let inFlight = false
 
   function escapeHtml(value) {
     return String(value)
@@ -41,13 +43,23 @@
     )
   }
 
-  fetch('/api/health')
-    .then((response) => {
-      if (!response.ok) throw new Error('HTTP ' + response.status + ' ' + response.statusText)
-      return response.json()
-    })
-    .then(render)
-    .catch((error) => {
-      setTargets('<span>Status unavailable: ' + escapeHtml(error && error.message ? error.message : String(error)) + '</span>')
-    })
+  function refreshRuntimeStatus() {
+    if (inFlight) return
+    inFlight = true
+    fetch('/api/health?t=' + Date.now(), { cache: 'no-store' })
+      .then((response) => {
+        if (!response.ok) throw new Error('HTTP ' + response.status + ' ' + response.statusText)
+        return response.json()
+      })
+      .then(render)
+      .catch((error) => {
+        setTargets('<span>Status unavailable: ' + escapeHtml(error && error.message ? error.message : String(error)) + '</span>')
+      })
+      .finally(() => {
+        inFlight = false
+      })
+  }
+
+  refreshRuntimeStatus()
+  setInterval(refreshRuntimeStatus, REFRESH_INTERVAL_MS)
 })()

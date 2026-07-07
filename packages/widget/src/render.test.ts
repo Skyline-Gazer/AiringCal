@@ -122,6 +122,10 @@ test('pages load cacheJs which fills the footer runtime status slot from health'
   assert.match(cacheJs, /response\.ok/)
   assert.match(cacheJs, /Next cron/)
   assert.match(cacheJs, /Last cron/)
+  assert.match(cacheJs, /setInterval/)
+  assert.match(cacheJs, /refreshRuntimeStatus/)
+  assert.match(cacheJs, /Date\.now/)
+  assert.match(cacheJs, /inFlight/)
 })
 
 test('widgetCss styles the shared footer', () => {
