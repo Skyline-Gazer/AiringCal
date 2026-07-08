@@ -24,6 +24,7 @@ const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] a
 const SYNC_OPERATION_PREFIX = 'sync:operation:'
 const SYNC_OPERATION_TTL_SECONDS = 60 * 60 * 24
 const SUBJECT_DETAIL_CONCURRENCY = 8
+const CACHE_LOAD_CONCURRENCY = 32
 const CRON_SCHEDULE = '0 * * * *'
 const EFFECTIVE_CRON_SCHEDULE = '0 */4 * * *'
 
@@ -95,6 +96,21 @@ function createOperationId(): string {
 
 function isOperationId(id: string): boolean {
   return /^[0-9a-z]+-[0-9a-f]{16}$/i.test(id)
+}
+
+async function mapConcurrent<T, R>(items: Iterable<T>, concurrency: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
+  const list = [...items]
+  const results = new Array<R>(list.length)
+  let nextIndex = 0
+  const workers = Array.from({ length: Math.min(concurrency, list.length) }, async () => {
+    while (nextIndex < list.length) {
+      const index = nextIndex
+      nextIndex += 1
+      results[index] = await mapper(list[index])
+    }
+  })
+  await Promise.all(workers)
+  return results
 }
 
 function json(data: unknown, init?: ResponseInit): Response {
@@ -218,9 +234,12 @@ async function loadSubjectDetails(storage: KVStorage, client: BgmClient, subject
 
 async function loadStoredSubjectDetails(storage: KVStorage, subjectIds: number[]): Promise<Map<number, any>> {
   const map = new Map<number, any>()
-  for (const subjectId of subjectIds) {
+  const cachedEntries = await mapConcurrent(subjectIds, CACHE_LOAD_CONCURRENCY, async (subjectId) => {
     const cached = await storage.get<{ subject?: any }>(subjectDetailKey(subjectId))
-    if (cached?.subject) map.set(subjectId, cached.subject)
+    return [subjectId, cached?.subject ?? null] as const
+  })
+  for (const [subjectId, subject] of cachedEntries) {
+    if (subject) map.set(subjectId, subject)
   }
   return map
 }
@@ -234,9 +253,12 @@ function enrichCalendarWithSubjectDetails(calendar: any[], details: SubjectDetai
 
 async function loadImageMap(storage: KVStorage, subjectIds: Iterable<number>): Promise<Map<number, SubjectImages>> {
   const map = new Map<number, SubjectImages>()
-  for (const subjectId of subjectIds) {
+  const imageEntries = await mapConcurrent(subjectIds, CACHE_LOAD_CONCURRENCY, async (subjectId) => {
     const status = await storage.get<any>(imageStatusKey(subjectId))
-    map.set(subjectId, imageRefsFromStatus(status))
+    return [subjectId, imageRefsFromStatus(status)] as const
+  })
+  for (const [subjectId, images] of imageEntries) {
+    map.set(subjectId, images)
   }
   return map
 }
@@ -278,9 +300,12 @@ async function enqueueCalendarMediaEarly(env: SyncEnv, storage: KVStorage, subje
 
 async function loadSubjectMetaMap(storage: KVStorage, subjectIds: Iterable<number>): Promise<Map<number, Pick<SubjectMeta, 'nsfw'>>> {
   const map = new Map<number, Pick<SubjectMeta, 'nsfw'>>()
-  for (const subjectId of subjectIds) {
+  const metaEntries = await mapConcurrent(subjectIds, CACHE_LOAD_CONCURRENCY, async (subjectId) => {
     const meta = await storage.get<SubjectMeta>(subjectMetaKey(subjectId))
-    if (meta) map.set(subjectId, { nsfw: meta.nsfw })
+    return [subjectId, meta ? { nsfw: meta.nsfw } : null] as const
+  })
+  for (const [subjectId, meta] of metaEntries) {
+    if (meta) map.set(subjectId, meta)
   }
   return map
 }
@@ -309,9 +334,11 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
   const calendar = enrichCalendarWithSubjectDetails(rawCalendar, subjectDetails)
   const subjectInputs = collectSubjectInputs(collections as any[], calendar as any[], subjectDetails)
   const earlyMediaSubjectIds = await enqueueCalendarMediaEarly(env, storage, subjectInputs, calendar as any[], now)
-  const subjectIds = subjectInputs.keys()
-  const imageMap = await loadImageMap(storage, subjectIds)
-  const subjectMetaMap = await loadSubjectMetaMap(storage, subjectInputs.keys())
+  const subjectIds = [...subjectInputs.keys()]
+  const [imageMap, subjectMetaMap] = await Promise.all([
+    loadImageMap(storage, subjectIds),
+    loadSubjectMetaMap(storage, subjectIds),
+  ])
   const merged = mergeCollections(collections as any[], imageMap, subjectMetaMap, subjectDetails)
   const calendarSnapshot = transformCalendar(calendar as any[], imageMap, subjectMetaMap)
 

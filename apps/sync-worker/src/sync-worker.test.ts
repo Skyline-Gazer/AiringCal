@@ -23,6 +23,10 @@ class MockKV {
   }
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 function mockFetch() {
   const calls: string[] = []
   const fetch = async (url: string | URL | Request) => {
@@ -651,6 +655,106 @@ test('scheduled sync enriches collection and calendar snapshots from existing me
         large: 'https://img.example/detail-large.jpg',
       },
     }])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled sync loads collection cache state concurrently before publishing snapshots', async () => {
+  const kv = new MockKV()
+  const collectionCount = 30
+  let activeCacheReads = 0
+  let maxActiveCacheReads = 0
+  const originalGet = kv.get.bind(kv)
+  kv.get = async (key: string, type?: 'json') => {
+    if (key.startsWith('subject:detail:') || key.startsWith('image:status:') || key.startsWith('subject:meta:')) {
+      activeCacheReads += 1
+      maxActiveCacheReads = Math.max(maxActiveCacheReads, activeCacheReads)
+      await delay(5)
+      try {
+        return await originalGet(key, type)
+      } finally {
+        activeCacheReads -= 1
+      }
+    }
+    return originalGet(key, type)
+  }
+  const queueMessages: unknown[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      return Response.json({
+        total: collectionCount,
+        data: Array.from({ length: collectionCount }, (_, index) => {
+          const id = 1000 + index
+          return {
+            subject_id: id,
+            subject_type: 2,
+            rate: 7,
+            type: 3,
+            comment: '',
+            tags: [],
+            ep_status: 1,
+            vol_status: 0,
+            updated_at: '2026-06-29T00:00:00.000Z',
+            private: false,
+            subject: {
+              id,
+              name: `Collection ${id}`,
+              name_cn: `收藏 ${id}`,
+              summary: '',
+              date: '',
+              eps: 12,
+              total_episodes: 12,
+              images: { common: `https://img.example/${id}-common.jpg`, large: `https://img.example/${id}-large.jpg` },
+            },
+          }
+        }),
+      })
+    }
+    if (text.endsWith('/calendar')) {
+      return Response.json([{
+        weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+        items: [{
+          id: 900,
+          type: 2,
+          name: 'Calendar Only',
+          name_cn: '日历限定',
+          images: { common: 'https://img.example/calendar-common.jpg', large: 'https://img.example/calendar-large.jpg' },
+          rating: { score: 0, rank: 0, total: 0 },
+        }],
+      }])
+    }
+    if (text.endsWith('/v0/subjects/900')) {
+      return Response.json({
+        id: 900,
+        type: 2,
+        name: 'Calendar Full',
+        name_cn: '日历详情',
+        summary: '',
+        nsfw: false,
+        date: '2026-07-01',
+        eps: 12,
+        total_episodes: 12,
+        images: { common: 'https://img.example/calendar-common.jpg', large: 'https://img.example/calendar-large.jpg' },
+        rating: { score: 7.8, rank: 0, total: 12 },
+      })
+    }
+    throw new Error(`unexpected upstream fetch: ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
+      BANGUMI_TOKEN: 'token-a',
+      BANGUMI_USERS: 'alice',
+      SYNC_MODE: 'merge',
+    } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+
+    assert.ok(kv.values.has('snapshot:summary'))
+    assert.ok(maxActiveCacheReads > 1)
   } finally {
     globalThis.fetch = originalFetch
   }
