@@ -682,6 +682,104 @@ test('scheduled sync uses subject detail as canonical collection display source'
   }
 })
 
+test('scheduled sync refreshes subject details for calendar subjects only', async () => {
+  const kv = new MockKV()
+  const queueMessages: unknown[] = []
+  const calls: string[] = []
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    calls.push(text)
+    if (text.includes('/collections?')) {
+      return Response.json({
+        total: 1,
+        data: [{
+          subject_id: 111,
+          subject_type: 2,
+          rate: 7,
+          type: 3,
+          comment: '',
+          tags: [],
+          ep_status: 3,
+          vol_status: 0,
+          updated_at: '2026-06-29T00:00:00.000Z',
+          private: false,
+          subject: {
+            id: 111,
+            name: 'Collection Only',
+            name_cn: '收藏限定',
+            summary: '',
+            date: '',
+            eps: 12,
+            total_episodes: 12,
+            images: { common: 'https://img.example/collection-common.jpg', large: 'https://img.example/collection-large.jpg' },
+            rating: { score: 6.5, rank: 0, total: 20 },
+          },
+        }],
+      })
+    }
+    if (text.endsWith('/calendar')) {
+      return Response.json([{
+        weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+        items: [{
+          id: 222,
+          type: 2,
+          name: 'Calendar Only',
+          name_cn: '日历限定',
+          summary: '',
+          nsfw: false,
+          date: '2026-07-01',
+          eps: 12,
+          total_episodes: 12,
+          images: { common: 'https://img.example/calendar-common.jpg', large: 'https://img.example/calendar-large.jpg' },
+          rating: { score: 0, rank: 0, total: 0 },
+        }],
+      }])
+    }
+    if (text.endsWith('/v0/subjects/222')) {
+      return Response.json({
+        id: 222,
+        type: 2,
+        name: 'Calendar Full',
+        name_cn: '日历详情',
+        summary: 'from calendar subject detail',
+        nsfw: false,
+        date: '2026-07-01',
+        eps: 12,
+        total_episodes: 12,
+        images: { common: 'https://img.example/calendar-detail-common.jpg', large: 'https://img.example/calendar-detail-large.jpg' },
+        rating: { score: 7.8, rank: 0, total: 12 },
+      })
+    }
+    if (text.endsWith('/v0/subjects/111')) {
+      throw new Error('collection-only subject detail should not be fetched during scheduled sync')
+    }
+    throw new Error(`unexpected upstream fetch: ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
+      BANGUMI_TOKEN: 'token-a',
+      BANGUMI_USERS: 'alice',
+      SYNC_MODE: 'merge',
+    } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+
+    const collection = (kv.values.get('snapshot:collections:watching') as any[])[0]
+    const calendar = (kv.values.get('snapshot:calendar') as any[])[0]
+    assert.equal(collection.name_cn, '收藏限定')
+    assert.equal(collection.total_episodes, 12)
+    assert.equal(calendar.items[0].name_cn, '日历详情')
+    assert.equal(calendar.items[0].rating.score, 7.8)
+    assert.equal(calls.some((url) => url.endsWith('/v0/subjects/222')), true)
+    assert.equal(calls.some((url) => url.endsWith('/v0/subjects/111')), false)
+    assert.equal(queueMessages.length, 2)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('internal sync apply persists a 24h operation log and check returns it', async () => {
   const kv = new MockKV()
   const originalFetch = globalThis.fetch

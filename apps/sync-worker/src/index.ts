@@ -2,7 +2,7 @@ export const appBoundary = 'sync-worker'
 
 import { BgmClient, BgmPlatformClient, fetchAllCollections } from '@airing-cal/bgm-api'
 import { compareAccounts, executeSync, imageRefsFromStatus, mergeCollections, subjectDetailImages, transformCalendar, withSubjectDetail, type SubjectDetailMap, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
-import { getCachedSubjectDetail, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
+import { getCachedSubjectDetail, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectDetailKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
 
 interface SyncEnv {
   AIRING_CAL_KV: {
@@ -216,6 +216,15 @@ async function loadSubjectDetails(storage: KVStorage, client: BgmClient, subject
   return map
 }
 
+async function loadStoredSubjectDetails(storage: KVStorage, subjectIds: number[]): Promise<Map<number, any>> {
+  const map = new Map<number, any>()
+  for (const subjectId of subjectIds) {
+    const cached = await storage.get<{ subject?: any }>(subjectDetailKey(subjectId))
+    if (cached?.subject) map.set(subjectId, cached.subject)
+  }
+  return map
+}
+
 function enrichCalendarWithSubjectDetails(calendar: any[], details: SubjectDetailMap): any[] {
   return calendar.map((day) => ({
     ...day,
@@ -293,11 +302,10 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
   const collectionGroups = await Promise.all(users.map((user) => fetchAllCollections(client, user)))
   const collections = collectionGroups.flat()
   const rawCalendar = await client.getCalendar() as any[]
-  const discoveredSubjectIds = new Set<number>([
-    ...collections.map((collection: any) => collection.subject_id).filter((subjectId: unknown) => typeof subjectId === 'number'),
-    ...calendarSubjectIds(rawCalendar),
-  ])
-  const subjectDetails = await loadSubjectDetails(storage, client, [...discoveredSubjectIds], now)
+  const collectionSubjectIds = collections.map((collection: any) => collection.subject_id).filter((subjectId: unknown): subjectId is number => typeof subjectId === 'number')
+  const calendarDetails = await loadSubjectDetails(storage, client, calendarSubjectIds(rawCalendar), now)
+  const storedCollectionDetails = await loadStoredSubjectDetails(storage, collectionSubjectIds)
+  const subjectDetails = new Map([...storedCollectionDetails, ...calendarDetails])
   const calendar = enrichCalendarWithSubjectDetails(rawCalendar, subjectDetails)
   const subjectInputs = collectSubjectInputs(collections as any[], calendar as any[], subjectDetails)
   const earlyMediaSubjectIds = await enqueueCalendarMediaEarly(env, storage, subjectInputs, calendar as any[], now)
