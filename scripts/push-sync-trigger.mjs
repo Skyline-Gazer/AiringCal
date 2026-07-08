@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url'
 const token = process.env.CLOUDFLARE_API_TOKEN
 const accountId = process.env.CLOUDFLARE_ACCOUNT_ID
 const queueName = process.env.SYNC_TRIGGER_QUEUE_NAME || 'airing-cal-sync-trigger'
+const syncConsumerScriptName = process.env.SYNC_TRIGGER_CONSUMER_SCRIPT || 'airing-cal-sync'
 const namespaceId = process.env.AIRING_CAL_KV_NAMESPACE_ID
 const pollTimeoutMs = Number.parseInt(process.env.SYNC_TRIGGER_TIMEOUT_MS || '120000', 10)
 const pollIntervalMs = Number.parseInt(process.env.SYNC_TRIGGER_POLL_INTERVAL_MS || '5000', 10)
@@ -129,6 +130,64 @@ function queueTitle(queue) {
   return queue.queue_name ?? queue.name ?? ''
 }
 
+function queueDeliveryPaused(queue) {
+  return queue?.settings?.delivery_paused === true
+}
+
+function consumersFromResult(result) {
+  if (Array.isArray(result)) return result
+  if (Array.isArray(result?.items)) return result.items
+  if (Array.isArray(result?.consumers)) return result.consumers
+  return []
+}
+
+function syncConsumerBody() {
+  return {
+    script_name: syncConsumerScriptName,
+    type: 'worker',
+    settings: {
+      batch_size: 1,
+      max_wait_time_ms: 5000,
+      max_retries: 3,
+    },
+  }
+}
+
+function isExpectedSyncConsumer(consumer) {
+  return consumer?.type === 'worker' && consumer?.script_name === syncConsumerScriptName
+}
+
+export function syncConsumerNeedsUpdate(consumer) {
+  const settings = consumer?.settings ?? {}
+  return settings.batch_size !== 1 || settings.max_wait_time_ms !== 5000 || settings.max_retries !== 3
+}
+
+export async function ensureSyncConsumer(queueIdValue, apiImpl = api, accountIdValue = accountId, log = console.log) {
+  const body = await apiImpl(`/accounts/${accountIdValue}/queues/${encodeURIComponent(queueIdValue)}/consumers`)
+  const consumers = consumersFromResult(body.result)
+  const expected = consumers.find(isExpectedSyncConsumer)
+  const unexpected = consumers.filter((consumer) => !isExpectedSyncConsumer(consumer))
+  if (unexpected.length) {
+    throw new Error(`Queue ${queueName} already has unexpected consumers: ${JSON.stringify(unexpected)}`)
+  }
+  if (!expected) {
+    await apiImpl(`/accounts/${accountIdValue}/queues/${encodeURIComponent(queueIdValue)}/consumers`, {
+      method: 'POST',
+      body: JSON.stringify(syncConsumerBody()),
+    })
+    log(`Attached ${syncConsumerScriptName} as consumer for ${queueName}`)
+    return
+  }
+  if (syncConsumerNeedsUpdate(expected)) {
+    if (!expected.consumer_id) throw new Error(`Queue ${queueName} consumer ${syncConsumerScriptName} is missing consumer_id`)
+    await apiImpl(`/accounts/${accountIdValue}/queues/${encodeURIComponent(queueIdValue)}/consumers/${encodeURIComponent(expected.consumer_id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(syncConsumerBody()),
+    })
+    log(`Updated ${syncConsumerScriptName} consumer settings for ${queueName}`)
+  }
+}
+
 async function main() {
   if (!token || !accountId || !namespaceId) {
     console.error('CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, and AIRING_CAL_KV_NAMESPACE_ID are required')
@@ -143,7 +202,11 @@ async function main() {
     console.error(`Cloudflare queue not found: ${queueName}`)
     process.exit(1)
   }
+  if (queueDeliveryPaused(queue)) {
+    throw new Error(`Cloudflare queue delivery is paused: ${queueName}`)
+  }
 
+  await ensureSyncConsumer(id)
   const queuedAtMs = Date.now()
   await api(`/accounts/${accountId}/queues/${encodeURIComponent(id)}/messages`, {
     method: 'POST',
