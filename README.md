@@ -62,6 +62,10 @@ crons = ["0 * * * *"]
 
 Cloudflare 免费计划对 Cron Trigger 数量有限制，所以这里只配置 1 个每小时触发器；`sync-worker` 会在代码里只允许 UTC 0/4/8/12/16/20 点真正同步，其余小时直接跳过。
 
+收藏页读取的是 `snapshot:collections:*` 快照，不会在每次浏览页面时实时请求 bgm.tv。每次有效 cron/queue 同步会先读取 `GET /v0/users/{username}/collections?subject_type=2`，再按 bgm.tv `type` 字段写入 `want`、`watched`、`watching`、`on_hold`、`dropped` 快照。日历 subject detail 补全使用 `GET /v0/subjects/{subject_id}`；如果某些详情请求失败且没有可用缓存，同步会保留上一版 calendar snapshot，但仍会发布新的 collection snapshots，避免一个日历补全失败阻断收藏状态刷新。
+
+`/api/health` 的 `data.cron.last` 会暴露最近一次有效同步状态。若同步完成但存在可降级问题，会带 `warnings`，例如 `stage: "subject_details"`、失败的 `subject_ids`、错误名称、错误消息和 bgm.tv 上游 HTTP 状态码（如 `upstream_status: 503`）。这些 warning 用于排查官方 API 调用失败，不包含 access token 或 refresh token。
+
 查看当前 Cloudflare account 里哪些 Worker 占用了 Cron Trigger 可以用 Cloudflare Dashboard 或 Wrangler 手动检查；routine deploy 不会自动创建、删除或迁移 schedule。
 
 ## Cloudflare 资源

@@ -1,6 +1,6 @@
 export const appBoundary = 'sync-worker'
 
-import { BgmClient, BgmPlatformClient, fetchAllCollections } from '@airing-cal/bgm-api'
+import { BgmClient, BgmHttpError, BgmPlatformClient, fetchAllCollections } from '@airing-cal/bgm-api'
 import { compareAccounts, executeSync, imageRefsFromStatus, mergeCollections, subjectDetailImages, transformCalendar, withSubjectDetail, type SubjectDetailMap, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
 import { getCachedSubjectDetail, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectDetailKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
 
@@ -32,6 +32,17 @@ interface SubjectInput {
   subject_id: number
   title: string
   images: { common?: string; large?: string }
+}
+
+interface SyncWarning {
+  stage: 'subject_details'
+  subject_ids: number[]
+  errors: Array<{
+    subject_id: number
+    name: string
+    message: string
+    upstream_status?: number
+  }>
 }
 
 function isDeploySyncMessage(body: unknown): boolean {
@@ -100,6 +111,16 @@ function createOperationId(): string {
 
 function isOperationId(id: string): boolean {
   return /^[0-9a-z]+-[0-9a-f]{16}$/i.test(id)
+}
+
+function warningError(subjectId: number, error: unknown): SyncWarning['errors'][number] {
+  const message = error instanceof Error ? error.message : String(error)
+  return {
+    subject_id: subjectId,
+    name: error instanceof Error ? error.name : 'Error',
+    message,
+    ...(error instanceof BgmHttpError ? { upstream_status: error.status } : {}),
+  }
 }
 
 async function mapConcurrent<T, R>(items: Iterable<T>, concurrency: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
@@ -213,16 +234,16 @@ function calendarSubjectIds(calendar: any[]): number[] {
   return [...seen]
 }
 
-async function loadSubjectDetails(storage: KVStorage, client: BgmClient, subjectIds: number[], now: number): Promise<Map<number, any>> {
+async function loadSubjectDetails(storage: KVStorage, client: BgmClient, subjectIds: number[], now: number): Promise<{ details: Map<number, any>; warnings: SyncWarning[] }> {
   const map = new Map<number, any>()
-  const failures: number[] = []
+  const errors: SyncWarning['errors'] = []
   for (let index = 0; index < subjectIds.length; index += SUBJECT_DETAIL_CONCURRENCY) {
     const chunk = subjectIds.slice(index, index + SUBJECT_DETAIL_CONCURRENCY)
     const details = await Promise.all(chunk.map(async (subjectId) => {
       try {
         return [subjectId, await getCachedSubjectDetail(storage, client, subjectId, now)] as const
-      } catch {
-        failures.push(subjectId)
+      } catch (error) {
+        errors.push(warningError(subjectId, error))
         return [subjectId, null] as const
       }
     }))
@@ -230,10 +251,12 @@ async function loadSubjectDetails(storage: KVStorage, client: BgmClient, subject
       if (detail) map.set(subjectId, detail)
     }
   }
-  if (failures.length) {
-    throw new Error(`Failed to load subject details: ${failures.join(', ')}`)
+  return {
+    details: map,
+    warnings: errors.length
+      ? [{ stage: 'subject_details', subject_ids: errors.map((error) => error.subject_id), errors }]
+      : [],
   }
-  return map
 }
 
 async function loadStoredSubjectDetails(storage: KVStorage, subjectIds: number[]): Promise<Map<number, any>> {
@@ -321,10 +344,11 @@ function shouldQueueMedia(input: SubjectInput, images: SubjectImages | undefined
   return false
 }
 
-async function runScheduledSync(env: SyncEnv): Promise<void> {
+async function runScheduledSync(env: SyncEnv): Promise<SyncWarning[]> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const client = new BgmClient(env.BANGUMI_TOKEN)
   const now = Math.floor(Date.now() / 1000)
+  const warnings: SyncWarning[] = []
   const users = usersFromEnv(env.BANGUMI_USERS)
   if (!users.length) throw new Error('sync-worker: BANGUMI_USERS is empty')
 
@@ -332,7 +356,8 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
   const collections = collectionGroups.flat()
   const rawCalendar = await client.getCalendar() as any[]
   const collectionSubjectIds = collections.map((collection: any) => collection.subject_id).filter((subjectId: unknown): subjectId is number => typeof subjectId === 'number')
-  const calendarDetails = await loadSubjectDetails(storage, client, calendarSubjectIds(rawCalendar), now)
+  const { details: calendarDetails, warnings: detailWarnings } = await loadSubjectDetails(storage, client, calendarSubjectIds(rawCalendar), now)
+  warnings.push(...detailWarnings)
   const storedCollectionDetails = await loadStoredSubjectDetails(storage, collectionSubjectIds)
   const subjectDetails = new Map([...storedCollectionDetails, ...calendarDetails])
   const calendar = enrichCalendarWithSubjectDetails(rawCalendar, subjectDetails)
@@ -354,7 +379,9 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
   }
   summary._total = COLLECTION_TYPES.reduce((total, type) => total + summary[type], 0)
   await storage.put(snapshotSummaryKey(), summary)
-  await storage.put(snapshotCalendarKey(), calendarSnapshot)
+  if (!detailWarnings.length) {
+    await storage.put(snapshotCalendarKey(), calendarSnapshot)
+  }
   await storage.put(syncMetaKey(), {
     synced_at: Math.floor(Date.now() / 1000),
     mode: 'merge',
@@ -368,15 +395,19 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
     await markMediaQueued(storage, input, now)
     await sendMediaJob(env, input)
   }
+
+  return warnings
 }
 
-async function runDeployCalendarWarmup(env: SyncEnv): Promise<void> {
+async function runDeployCalendarWarmup(env: SyncEnv): Promise<SyncWarning[]> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const client = new BgmClient(env.BANGUMI_TOKEN)
   const now = Math.floor(Date.now() / 1000)
+  const warnings: SyncWarning[] = []
 
   const rawCalendar = await client.getCalendar() as any[]
-  const calendarDetails = await loadSubjectDetails(storage, client, calendarSubjectIds(rawCalendar), now)
+  const { details: calendarDetails, warnings: detailWarnings } = await loadSubjectDetails(storage, client, calendarSubjectIds(rawCalendar), now)
+  warnings.push(...detailWarnings)
   const calendar = enrichCalendarWithSubjectDetails(rawCalendar, calendarDetails)
   const subjectInputs = collectSubjectInputs([], calendar as any[], calendarDetails)
   await enqueueCalendarMediaEarly(env, storage, subjectInputs, calendar as any[], now)
@@ -385,12 +416,15 @@ async function runDeployCalendarWarmup(env: SyncEnv): Promise<void> {
     loadImageMap(storage, subjectIds),
     loadSubjectMetaMap(storage, subjectIds),
   ])
-  await storage.put(snapshotCalendarKey(), transformCalendar(calendar as any[], imageMap, subjectMetaMap))
+  if (!detailWarnings.length) {
+    await storage.put(snapshotCalendarKey(), transformCalendar(calendar as any[], imageMap, subjectMetaMap))
+  }
   const current = await storage.get<Record<string, unknown>>(syncMetaKey()) ?? {}
   await storage.put(syncMetaKey(), {
     ...current,
     calendar_synced_at: Math.floor(Date.now() / 1000),
   })
+  return warnings
 }
 
 async function fetch(request: Request, env: SyncEnv): Promise<Response> {
@@ -478,12 +512,13 @@ async function scheduled(event: { scheduledTime?: number }, env: SyncEnv, ctx: {
   try {
     const promise = runScheduledSync(env)
     ctx.waitUntil(promise)
-    await promise
+    const warnings = await promise
     await recordCronStatus(env, 'last', {
       status: 'ok',
       source: 'scheduled',
       triggered_at: triggeredAt,
       completed_at: Math.floor(Date.now() / 1000),
+      ...(warnings.length ? { warnings } : {}),
     })
   } catch (error) {
     await recordCronStatus(env, 'last', {
@@ -508,10 +543,11 @@ async function queue(batch: QueueBatch, env: SyncEnv): Promise<void> {
       ...(deploySync ? { mode: 'deploy-calendar' } : {}),
     })
     try {
+      let warnings: SyncWarning[] = []
       if (deploySync) {
-        await runDeployCalendarWarmup(env)
+        warnings = await runDeployCalendarWarmup(env)
       } else {
-        await runScheduledSync(env)
+        warnings = await runScheduledSync(env)
       }
       await recordCronStatus(env, 'last', {
         status: 'ok',
@@ -519,6 +555,7 @@ async function queue(batch: QueueBatch, env: SyncEnv): Promise<void> {
         triggered_at: triggeredAt,
         completed_at: Math.floor(Date.now() / 1000),
         ...(deploySync ? { mode: 'deploy-calendar' } : {}),
+        ...(warnings.length ? { warnings } : {}),
       })
       message.ack?.()
     } catch (error) {

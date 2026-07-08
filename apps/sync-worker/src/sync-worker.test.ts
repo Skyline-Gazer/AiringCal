@@ -268,7 +268,7 @@ test('scheduled sync enriches calendar episode totals from subject detail', asyn
   }
 })
 
-test('scheduled sync preserves existing calendar snapshot when subject detail enrichment fails', async () => {
+test('scheduled sync still updates collection snapshots when subject detail enrichment fails', async () => {
   const kv = new MockKV()
   const existingCalendar = [{
     weekday: { en: 'Sun', cn: '星期日', ja: '日曜日', id: 7 },
@@ -287,7 +287,31 @@ test('scheduled sync preserves existing calendar snapshot when subject detail en
   globalThis.fetch = (async (url: string | URL | Request) => {
     const text = String(url)
     if (text.includes('/collections?')) {
-      return Response.json({ total: 0, data: [] })
+      return Response.json({
+        total: 1,
+        data: [{
+          subject_id: 23080,
+          subject_type: 2,
+          rate: 9,
+          type: 2,
+          comment: '',
+          tags: [],
+          ep_status: 12,
+          vol_status: 0,
+          updated_at: '2026-07-08T00:00:00.000Z',
+          private: false,
+          subject: {
+            id: 23080,
+            name: 'A',
+            name_cn: 'A CN',
+            summary: '',
+            date: '',
+            eps: 12,
+            total_episodes: 12,
+            images: { common: 'https://img.example/common.jpg', large: 'https://img.example/large.jpg' },
+          },
+        }],
+      })
     }
     if (text.endsWith('/calendar')) {
       return Response.json([{
@@ -308,17 +332,23 @@ test('scheduled sync preserves existing calendar snapshot when subject detail en
   }) as typeof globalThis.fetch
 
   try {
-    await assert.rejects(
-      worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
-        AIRING_CAL_KV: kv,
-        MEDIA_QUEUE: { send: async () => {} },
-        BANGUMI_TOKEN: 'token-a',
-        BANGUMI_USERS: 'alice',
-        SYNC_MODE: 'merge',
-      } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any),
-      /Failed to load subject details/,
-    )
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async () => {} },
+      BANGUMI_TOKEN: 'token-a',
+      BANGUMI_USERS: 'alice',
+      SYNC_MODE: 'merge',
+    } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+
+    const watched = kv.values.get('snapshot:collections:watched') as any[]
+    const meta = kv.values.get('sync:meta') as any
+
+    assert.equal(watched[0].subject_id, 23080)
     assert.deepEqual(kv.values.get('snapshot:calendar'), existingCalendar)
+    assert.equal(meta.cron.last.status, 'ok')
+    assert.equal(meta.cron.last.warnings[0].stage, 'subject_details')
+    assert.equal(meta.cron.last.warnings[0].subject_ids[0], 456080)
+    assert.equal(meta.cron.last.warnings[0].errors[0].upstream_status, 503)
   } finally {
     globalThis.fetch = originalFetch
   }
