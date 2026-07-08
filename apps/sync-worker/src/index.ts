@@ -438,6 +438,11 @@ async function scheduled(event: { scheduledTime?: number }, env: SyncEnv, ctx: {
 async function queue(batch: QueueBatch, env: SyncEnv): Promise<void> {
   for (const message of batch.messages) {
     const triggeredAt = Math.floor(Date.now() / 1000)
+    await recordCronStatus(env, 'last', {
+      status: 'running',
+      source: 'queue',
+      triggered_at: triggeredAt,
+    })
     try {
       await runScheduledSync(env)
       await recordCronStatus(env, 'last', {

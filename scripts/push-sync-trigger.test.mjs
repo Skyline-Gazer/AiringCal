@@ -4,6 +4,8 @@ import test from 'node:test'
 import {
   calendarSubjectIds,
   ensureSyncConsumer,
+  syncMetaQueueStatus,
+  syncMetaQueueStatusFresh,
   syncConsumerNeedsUpdate,
   syncMetaFresh,
   syncSnapshotReady,
@@ -24,6 +26,21 @@ test('sync trigger readiness requires sync metadata written after the trigger wa
   assert.equal(syncMetaFresh({ synced_at: Math.floor(sinceMs / 1000) - 1 }, sinceMs), false)
   assert.equal(syncMetaFresh({ synced_at: 'bad' }, sinceMs), false)
   assert.equal(syncMetaFresh(null, sinceMs), false)
+})
+
+test('sync trigger detects fresh queue consumption status separately from finished snapshots', () => {
+  const sinceMs = Date.UTC(2026, 6, 8, 4, 0, 0) + 900
+  const freshRunning = { cron: { last: { status: 'running', source: 'queue', triggered_at: Math.floor(sinceMs / 1000) } } }
+  const freshError = { cron: { last: { status: 'error', source: 'queue', triggered_at: Math.floor(sinceMs / 1000), message: 'boom' } } }
+  const staleRunning = { cron: { last: { status: 'running', source: 'queue', triggered_at: Math.floor(sinceMs / 1000) - 1 } } }
+  const scheduled = { cron: { last: { status: 'ok', source: 'scheduled', triggered_at: Math.floor(sinceMs / 1000) } } }
+
+  assert.equal(syncMetaQueueStatusFresh(freshRunning, sinceMs), true)
+  assert.equal(syncMetaQueueStatusFresh(freshError, sinceMs), true)
+  assert.equal(syncMetaQueueStatusFresh(staleRunning, sinceMs), false)
+  assert.equal(syncMetaQueueStatusFresh(scheduled, sinceMs), false)
+  assert.equal(syncMetaQueueStatus(freshRunning).status, 'running')
+  assert.equal(syncMetaQueueStatus(freshError).status, 'error')
 })
 
 test('calendarSubjectIds extracts ids from raw and transformed calendar snapshots', () => {

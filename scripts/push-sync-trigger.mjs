@@ -5,8 +5,9 @@ const accountId = process.env.CLOUDFLARE_ACCOUNT_ID
 const queueName = process.env.SYNC_TRIGGER_QUEUE_NAME || 'airing-cal-sync-trigger'
 const syncConsumerScriptName = process.env.SYNC_TRIGGER_CONSUMER_SCRIPT || 'airing-cal-sync'
 const namespaceId = process.env.AIRING_CAL_KV_NAMESPACE_ID
-const pollTimeoutMs = Number.parseInt(process.env.SYNC_TRIGGER_TIMEOUT_MS || '120000', 10)
+const pollTimeoutMs = Number.parseInt(process.env.SYNC_TRIGGER_TIMEOUT_MS || '600000', 10)
 const pollIntervalMs = Number.parseInt(process.env.SYNC_TRIGGER_POLL_INTERVAL_MS || '5000', 10)
+const consumeTimeoutMs = Number.parseInt(process.env.SYNC_TRIGGER_CONSUME_TIMEOUT_MS || '60000', 10)
 const summaryKey = 'snapshot:summary'
 const calendarKey = 'snapshot:calendar'
 const syncMetaKey = 'sync:meta'
@@ -24,6 +25,18 @@ export function syncMetaFresh(meta, queuedAtMs) {
     Number.isFinite(meta.synced_at) &&
     meta.synced_at >= queuedAtSeconds,
   )
+}
+
+export function syncMetaQueueStatus(meta) {
+  const last = meta?.cron?.last
+  if (!last || typeof last !== 'object') return null
+  return last.source === 'queue' ? last : null
+}
+
+export function syncMetaQueueStatusFresh(meta, queuedAtMs) {
+  const status = syncMetaQueueStatus(meta)
+  const queuedAtSeconds = Math.floor(queuedAtMs / 1000)
+  return Boolean(status && Number.isFinite(status.triggered_at) && status.triggered_at >= queuedAtSeconds)
 }
 
 export function calendarSubjectIds(calendar) {
@@ -90,6 +103,7 @@ async function kvJson(key) {
 
 async function waitForSyncSnapshot(queuedAtMs) {
   const deadline = Date.now() + pollTimeoutMs
+  const consumeDeadline = Date.now() + consumeTimeoutMs
   let lastSummary = null
   let lastCalendar = null
   let lastMeta = null
@@ -108,6 +122,13 @@ async function waitForSyncSnapshot(queuedAtMs) {
     if (syncTriggerReady(lastSummary, lastCalendar, lastImageStatusesBySubject, lastMeta, queuedAtMs)) {
       console.log(`Fresh sync snapshot and calendar image pipeline status are ready: ${summaryKey} _total=${lastSummary._total}, calendar_subjects=${subjectIds.length}, synced_at=${lastMeta.synced_at}`)
       return
+    }
+    const queueStatus = syncMetaQueueStatus(lastMeta)
+    if (syncMetaQueueStatusFresh(lastMeta, queuedAtMs) && queueStatus?.status === 'error') {
+      throw new Error(`sync-worker queue trigger failed before publishing a fresh snapshot: ${JSON.stringify(queueStatus)}`)
+    }
+    if (!syncMetaQueueStatusFresh(lastMeta, queuedAtMs) && Date.now() > consumeDeadline) {
+      throw new Error(`Timed out waiting for sync-worker queue consumer to start. Last meta: ${JSON.stringify(lastMeta)}`)
     }
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs))
   }

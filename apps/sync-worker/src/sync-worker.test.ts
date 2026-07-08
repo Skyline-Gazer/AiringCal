@@ -814,3 +814,33 @@ test('queue trigger runs sync immediately without cron hour gating', async () =>
     globalThis.fetch = originalFetch
   }
 })
+
+test('queue trigger records running status before long sync work finishes', async () => {
+  const kv = new MockKV()
+  const originalFetch = globalThis.fetch
+  const upstream = mockFetch()
+  globalThis.fetch = upstream.fetch as typeof globalThis.fetch
+
+  try {
+    await assert.rejects(
+      worker.queue?.({
+        messages: [{ body: { type: 'deploy-sync' }, ack: () => {} }],
+      } as any, {
+        AIRING_CAL_KV: kv,
+        MEDIA_QUEUE: { send: async () => { throw new Error('queue unavailable') } },
+        BANGUMI_TOKEN: 'token-a',
+        BANGUMI_USERS: 'alice',
+        SYNC_MODE: 'merge',
+      } as any),
+      /queue unavailable/,
+    )
+
+    const cronPuts = kv.puts
+      .filter((put) => put.key === 'sync:meta')
+      .map((put) => (put.value as any).cron?.last?.status)
+      .filter(Boolean)
+    assert.deepEqual(cronPuts, ['running', 'error'])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
