@@ -119,6 +119,27 @@ test('sync trigger updates stale queue worker consumer settings before pushing m
   assert.equal(calls[1].body.settings.max_retries, 3)
 })
 
+test('sync trigger accepts Cloudflare consumer list responses that use script instead of script_name', async () => {
+  const calls = []
+  const existingConsumer = {
+    consumer_id: '797bffdb36f74afcace968b07573b1fb',
+    script: 'airing-cal-sync',
+    type: 'worker',
+    queue_name: 'airing-cal-sync-trigger',
+    settings: { batch_size: 1, max_retries: 3, max_wait_time_ms: 5000, retry_delay: 0 },
+  }
+
+  assert.equal(syncConsumerNeedsUpdate(existingConsumer), false)
+  await ensureSyncConsumer('queue-1', async (path, init = {}) => {
+    calls.push({ path, method: init.method ?? 'GET' })
+    return { result: [existingConsumer] }
+  }, 'account-1', () => {})
+
+  assert.deepEqual(calls, [
+    { path: '/accounts/account-1/queues/queue-1/consumers', method: 'GET' },
+  ])
+})
+
 test('sync trigger fails fast when another queue consumer owns the trigger queue', async () => {
   await assert.rejects(
     ensureSyncConsumer('queue-1', async () => ({

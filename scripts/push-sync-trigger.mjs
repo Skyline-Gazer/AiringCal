@@ -153,8 +153,12 @@ function syncConsumerBody() {
   }
 }
 
+function consumerScriptName(consumer) {
+  return consumer?.script_name ?? consumer?.script ?? ''
+}
+
 function isExpectedSyncConsumer(consumer) {
-  return consumer?.type === 'worker' && consumer?.script_name === syncConsumerScriptName
+  return consumer?.type === 'worker' && consumerScriptName(consumer) === syncConsumerScriptName
 }
 
 export function syncConsumerNeedsUpdate(consumer) {
