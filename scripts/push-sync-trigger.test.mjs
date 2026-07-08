@@ -23,7 +23,9 @@ test('sync trigger readiness requires sync metadata written after the trigger wa
   const sinceMs = Date.UTC(2026, 6, 8, 4, 0, 0) + 900
 
   assert.equal(syncMetaFresh({ synced_at: Math.floor(sinceMs / 1000) }, sinceMs), true)
+  assert.equal(syncMetaFresh({ calendar_synced_at: Math.floor(sinceMs / 1000) }, sinceMs), true)
   assert.equal(syncMetaFresh({ synced_at: Math.floor(sinceMs / 1000) - 1 }, sinceMs), false)
+  assert.equal(syncMetaFresh({ synced_at: Math.floor(sinceMs / 1000) - 1, calendar_synced_at: Math.floor(sinceMs / 1000) }, sinceMs), true)
   assert.equal(syncMetaFresh({ synced_at: 'bad' }, sinceMs), false)
   assert.equal(syncMetaFresh(null, sinceMs), false)
 })

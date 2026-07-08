@@ -19,11 +19,12 @@ export function syncSnapshotReady(summary) {
 
 export function syncMetaFresh(meta, queuedAtMs) {
   const queuedAtSeconds = Math.floor(queuedAtMs / 1000)
+  const syncedAt = Number.isFinite(meta?.calendar_synced_at) ? meta.calendar_synced_at : meta?.synced_at
   return Boolean(
     meta &&
     typeof meta === 'object' &&
-    Number.isFinite(meta.synced_at) &&
-    meta.synced_at >= queuedAtSeconds,
+    Number.isFinite(syncedAt) &&
+    syncedAt >= queuedAtSeconds,
   )
 }
 

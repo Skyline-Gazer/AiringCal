@@ -34,6 +34,10 @@ interface SubjectInput {
   images: { common?: string; large?: string }
 }
 
+function isDeploySyncMessage(body: unknown): boolean {
+  return Boolean(body && typeof body === 'object' && (body as { type?: unknown }).type === 'deploy-sync')
+}
+
 interface SyncOperationLog {
   id: string
   event: 'sync_operation'
@@ -366,6 +370,29 @@ async function runScheduledSync(env: SyncEnv): Promise<void> {
   }
 }
 
+async function runDeployCalendarWarmup(env: SyncEnv): Promise<void> {
+  const storage = new KVStorage(env.AIRING_CAL_KV)
+  const client = new BgmClient(env.BANGUMI_TOKEN)
+  const now = Math.floor(Date.now() / 1000)
+
+  const rawCalendar = await client.getCalendar() as any[]
+  const calendarDetails = await loadSubjectDetails(storage, client, calendarSubjectIds(rawCalendar), now)
+  const calendar = enrichCalendarWithSubjectDetails(rawCalendar, calendarDetails)
+  const subjectInputs = collectSubjectInputs([], calendar as any[], calendarDetails)
+  await enqueueCalendarMediaEarly(env, storage, subjectInputs, calendar as any[], now)
+  const subjectIds = [...subjectInputs.keys()]
+  const [imageMap, subjectMetaMap] = await Promise.all([
+    loadImageMap(storage, subjectIds),
+    loadSubjectMetaMap(storage, subjectIds),
+  ])
+  await storage.put(snapshotCalendarKey(), transformCalendar(calendar as any[], imageMap, subjectMetaMap))
+  const current = await storage.get<Record<string, unknown>>(syncMetaKey()) ?? {}
+  await storage.put(syncMetaKey(), {
+    ...current,
+    calendar_synced_at: Math.floor(Date.now() / 1000),
+  })
+}
+
 async function fetch(request: Request, env: SyncEnv): Promise<Response> {
   const url = new URL(request.url)
   if (url.pathname === '/internal/sync/compare' && request.method === 'POST') {
@@ -473,18 +500,25 @@ async function scheduled(event: { scheduledTime?: number }, env: SyncEnv, ctx: {
 async function queue(batch: QueueBatch, env: SyncEnv): Promise<void> {
   for (const message of batch.messages) {
     const triggeredAt = Math.floor(Date.now() / 1000)
+    const deploySync = isDeploySyncMessage(message.body)
     await recordCronStatus(env, 'last', {
       status: 'running',
       source: 'queue',
       triggered_at: triggeredAt,
+      ...(deploySync ? { mode: 'deploy-calendar' } : {}),
     })
     try {
-      await runScheduledSync(env)
+      if (deploySync) {
+        await runDeployCalendarWarmup(env)
+      } else {
+        await runScheduledSync(env)
+      }
       await recordCronStatus(env, 'last', {
         status: 'ok',
         source: 'queue',
         triggered_at: triggeredAt,
         completed_at: Math.floor(Date.now() / 1000),
+        ...(deploySync ? { mode: 'deploy-calendar' } : {}),
       })
       message.ack?.()
     } catch (error) {
@@ -493,6 +527,7 @@ async function queue(batch: QueueBatch, env: SyncEnv): Promise<void> {
         source: 'queue',
         triggered_at: triggeredAt,
         completed_at: Math.floor(Date.now() / 1000),
+        ...(deploySync ? { mode: 'deploy-calendar' } : {}),
         message: error instanceof Error ? error.message : String(error),
       })
       throw error

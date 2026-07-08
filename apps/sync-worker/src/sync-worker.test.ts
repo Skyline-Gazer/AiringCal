@@ -996,7 +996,7 @@ test('queue trigger runs sync immediately without cron hour gating', async () =>
 
   try {
     await worker.queue?.({
-      messages: [{ body: { type: 'deploy-sync' }, ack: () => {} }],
+      messages: [{ body: { type: 'manual-sync' }, ack: () => {} }],
     } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
@@ -1012,6 +1012,81 @@ test('queue trigger runs sync immediately without cron hour gating', async () =>
     assert.equal((kv.values.get('sync:meta') as any).cron.last.source, 'queue')
     assert.equal(queueMessages.length, 1)
     assert.equal(upstream.calls.some((url) => url.includes('/collections?')), true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('deploy queue trigger warms calendar without full collection sync', async () => {
+  const kv = new MockKV()
+  kv.values.set('snapshot:summary', { want: 0, watched: 0, watching: 1, on_hold: 0, dropped: 0, _total: 1 })
+  kv.values.set('sync:meta', {
+    synced_at: 1782650300,
+    mode: 'merge',
+    users: ['alice'],
+  })
+  const queueMessages: unknown[] = []
+  const originalFetch = globalThis.fetch
+  const calls: string[] = []
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    calls.push(text)
+    if (text.includes('/collections?')) {
+      throw new Error('deploy sync should not fetch collections')
+    }
+    if (text.endsWith('/calendar')) {
+      return Response.json([{
+        weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+        items: [{
+          id: 456080,
+          type: 2,
+          name: 'Calendar Only',
+          name_cn: '日历限定',
+          images: { common: 'https://img.example/calendar-common.jpg', large: 'https://img.example/calendar-large.jpg' },
+          rating: { score: 0, rank: 0, total: 0 },
+        }],
+      }])
+    }
+    if (text.endsWith('/v0/subjects/456080')) {
+      return Response.json({
+        id: 456080,
+        type: 2,
+        name: 'Calendar Full',
+        name_cn: '日历详情',
+        summary: '',
+        nsfw: false,
+        date: '2026-07-01',
+        eps: 12,
+        total_episodes: 12,
+        images: { common: 'https://img.example/calendar-common.jpg', large: 'https://img.example/calendar-large.jpg' },
+        rating: { score: 7.8, rank: 0, total: 12 },
+      })
+    }
+    throw new Error(`unexpected upstream fetch: ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await worker.queue?.({
+      messages: [{ body: { type: 'deploy-sync' }, ack: () => {} }],
+    } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
+      BANGUMI_TOKEN: 'token-a',
+      BANGUMI_USERS: 'alice',
+      SYNC_MODE: 'merge',
+    } as any)
+
+    const meta = kv.values.get('sync:meta') as any
+    const calendar = kv.values.get('snapshot:calendar') as any[]
+    assert.equal(calls.some((url) => url.includes('/collections?')), false)
+    assert.equal(calls.some((url) => url.endsWith('/calendar')), true)
+    assert.equal(meta.synced_at, 1782650300)
+    assert.equal(typeof meta.calendar_synced_at, 'number')
+    assert.equal(meta.cron.last.status, 'ok')
+    assert.equal(meta.cron.last.mode, 'deploy-calendar')
+    assert.equal(calendar[0].items[0].name_cn, '日历详情')
+    assert.equal(calendar[0].items[0].rating.score, 7.8)
+    assert.equal(queueMessages.length, 1)
   } finally {
     globalThis.fetch = originalFetch
   }
