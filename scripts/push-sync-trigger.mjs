@@ -19,7 +19,7 @@ export function syncSnapshotReady(summary) {
 
 export function syncMetaFresh(meta, queuedAtMs) {
   const queuedAtSeconds = Math.floor(queuedAtMs / 1000)
-  const syncedAt = Number.isFinite(meta?.calendar_synced_at) ? meta.calendar_synced_at : meta?.synced_at
+  const syncedAt = meta?.synced_at
   return Boolean(
     meta &&
     typeof meta === 'object' &&
@@ -214,6 +214,17 @@ export async function ensureSyncConsumer(queueIdValue, apiImpl = api, accountIdV
   }
 }
 
+export function syncTriggerMessageBody(queuedAtMs, env = process.env) {
+  return {
+    type: 'full-sync',
+    source: 'github-actions',
+    ref: env.ref ?? env.GITHUB_REF_NAME ?? null,
+    sha: env.sha ?? env.GITHUB_SHA ?? null,
+    run_id: env.runId ?? env.GITHUB_RUN_ID ?? null,
+    queued_at: new Date(queuedAtMs).toISOString(),
+  }
+}
+
 async function main() {
   if (!token || !accountId || !namespaceId) {
     console.error('CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, and AIRING_CAL_KV_NAMESPACE_ID are required')
@@ -237,19 +248,12 @@ async function main() {
   await api(`/accounts/${accountId}/queues/${encodeURIComponent(id)}/messages`, {
     method: 'POST',
     body: JSON.stringify({
-      body: {
-        type: 'deploy-sync',
-        source: 'github-actions',
-        ref: process.env.GITHUB_REF_NAME || null,
-        sha: process.env.GITHUB_SHA || null,
-        run_id: process.env.GITHUB_RUN_ID || null,
-        queued_at: new Date(queuedAtMs).toISOString(),
-      },
+      body: syncTriggerMessageBody(queuedAtMs),
       content_type: 'json',
     }),
   })
 
-  console.log(`Queued deploy sync trigger on ${queueName}`)
+  console.log(`Queued full sync trigger on ${queueName}`)
   await waitForSyncSnapshot(queuedAtMs)
 }
 

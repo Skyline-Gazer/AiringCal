@@ -10,6 +10,7 @@ import {
   syncMetaFresh,
   syncSnapshotReady,
   syncTriggerReady,
+  syncTriggerMessageBody,
 } from './push-sync-trigger.mjs'
 
 test('sync trigger readiness requires a non-empty snapshot summary', () => {
@@ -23,9 +24,9 @@ test('sync trigger readiness requires sync metadata written after the trigger wa
   const sinceMs = Date.UTC(2026, 6, 8, 4, 0, 0) + 900
 
   assert.equal(syncMetaFresh({ synced_at: Math.floor(sinceMs / 1000) }, sinceMs), true)
-  assert.equal(syncMetaFresh({ calendar_synced_at: Math.floor(sinceMs / 1000) }, sinceMs), true)
   assert.equal(syncMetaFresh({ synced_at: Math.floor(sinceMs / 1000) - 1 }, sinceMs), false)
-  assert.equal(syncMetaFresh({ synced_at: Math.floor(sinceMs / 1000) - 1, calendar_synced_at: Math.floor(sinceMs / 1000) }, sinceMs), true)
+  assert.equal(syncMetaFresh({ calendar_synced_at: Math.floor(sinceMs / 1000) }, sinceMs), false)
+  assert.equal(syncMetaFresh({ synced_at: Math.floor(sinceMs / 1000) - 1, calendar_synced_at: Math.floor(sinceMs / 1000) }, sinceMs), false)
   assert.equal(syncMetaFresh({ synced_at: 'bad' }, sinceMs), false)
   assert.equal(syncMetaFresh(null, sinceMs), false)
 })
@@ -85,6 +86,20 @@ test('sync trigger readiness does not require raw calendar snapshots to include 
   assert.equal(syncTriggerReady(summary, [{ items: [{ id: 23080 }, { id: 456080 }] }], statuses, meta, sinceMs), true)
   assert.equal(syncTriggerReady(summary, [{ items: [{ id: 23080, total_episodes: 12 }, { id: 456080 }] }], statuses, meta, sinceMs), true)
   assert.equal(syncTriggerReady(summary, [{ items: [{ id: 23080, eps_count: 12 }, { id: 456080, totalEpisodes: 24 }] }], statuses, meta, sinceMs), true)
+})
+
+test('deploy sync trigger requests a full collection snapshot refresh', () => {
+  const body = syncTriggerMessageBody(Date.UTC(2026, 6, 8, 4, 0, 0), {
+    ref: 'dev',
+    sha: 'abc123',
+    runId: '42',
+  })
+
+  assert.equal(body.type, 'full-sync')
+  assert.equal(body.source, 'github-actions')
+  assert.equal(body.ref, 'dev')
+  assert.equal(body.sha, 'abc123')
+  assert.equal(body.run_id, '42')
 })
 
 test('sync trigger repairs missing queue worker consumer before pushing messages', async () => {

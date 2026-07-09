@@ -106,7 +106,7 @@ id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 
 CI 仍然不会上传运行时 secret，也不会手写 `curl` 去改 cron schedule。Cron schedule 只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers]`；部署 `airing-cal-sync` 时，Wrangler 会自动把这个配置同步到 Cloudflare Cron Triggers。
 
-内部 Worker 部署完成后，CI 会向 `airing-cal-sync-trigger` 自动投递一次同步消息，并等待这次触发之后写入新的 `sync:meta.synced_at`、`snapshot:calendar` 和可观测 common 图片管线状态。首次部署如果页面暂时显示“KV 无数据”，检查这一步是否完成，或在 widget 的动画同步视图中使用两个 bgm.tv access token 手动执行同步。
+内部 Worker 部署完成后，CI 会向 `airing-cal-sync-trigger` 自动投递一次完整同步消息，并等待这次触发之后写入新的 `sync:meta.synced_at`、收藏 snapshot、`snapshot:calendar` 和可观测 common 图片管线状态。`calendar_synced_at` 只代表部署后的日历预热完成，不能替代收藏快照刷新。首次部署如果页面暂时显示“KV 无数据”，检查这一步是否完成，或在 widget 的动画同步视图中使用两个 bgm.tv access token 手动执行同步。
 
 ## 最小配置
 
@@ -306,7 +306,7 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 3. `pnpm test`
 4. `pnpm build:check`
 5. 用 matrix 部署 `airing-cal-read`、`airing-cal-media`、`airing-cal-sync`
-6. 确认 `airing-cal-sync-trigger` 绑定到 `airing-cal-sync` worker consumer（缺失或 batch/retry 配置漂移会在触发前修复），再推送一次同步触发，先确认 queue consumer 写入本次 `running` 状态，再等待本次触发后写入新的 `sync:meta.synced_at`，且 `snapshot:calendar` 中的 subject 都有可观测 common 图片管线状态（`queued` / `cached` / `failed` / `missing_source`）
+6. 确认 `airing-cal-sync-trigger` 绑定到 `airing-cal-sync` worker consumer（缺失或 batch/retry 配置漂移会在触发前修复），再推送一次完整同步触发，先确认 queue consumer 写入本次 `running` 状态，再等待本次触发后写入新的 `sync:meta.synced_at`、收藏 snapshot，且 `snapshot:calendar` 中的 subject 都有可观测 common 图片管线状态（`queued` / `cached` / `failed` / `missing_source`）
 7. 注入当前 commit/repository build vars，最后部署 `airing-cal-frontend`
 
 部署步骤直接运行 `pnpm exec wrangler deploy`，不再通过 `cloudflare/wrangler-action` 包装。CI 会设置 `WRANGLER_LOG=debug` 和 `WRANGLER_LOG_PATH`；如果部署失败，会打印脱敏后的 Wrangler debug log，便于看到 Cloudflare API 返回的真实错误。
