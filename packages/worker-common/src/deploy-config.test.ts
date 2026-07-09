@@ -103,7 +103,7 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['Some triggers failed to deploy for airing-cal-sync', '/workers/scripts/airing-cal-sync/schedules', 'Workers Scripts` 是 `Edit`', 'Node 20 deprecation 提示不是这次失败原因']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document sync-worker cron trigger permission troubleshooting: ${fragment}`)
   }
-  for (const fragment of ['稳定的 checked-in `wrangler.toml`', 'CI 会自动获取实际 KV namespace ID', '自动投递一次同步消息', '新的 `sync:meta.synced_at`']) {
+  for (const fragment of ['稳定的 checked-in `wrangler.toml`', 'CI 会自动获取实际 KV namespace ID', '自动投递一次完整同步消息', '新的 `sync:meta.synced_at`', '收藏 snapshot', '`calendar_synced_at` 只代表部署后的日历预热完成']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document routine deploy boundaries: ${fragment}`)
   }
   for (const fragment of ['https://next.bgm.tv/demo/access-token', 'https://bgm.tv/user/sai', 'sai,another_user', '只配置在 `airing-cal-sync`']) {
