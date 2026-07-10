@@ -23,13 +23,13 @@
 
 ## 4. 实现 shadow Workflow 编排
 
-- [ ] 4.1 建立 fake Workflow step 测试，覆盖确定性 step 名、step 小输出、401/403 不重试、429/5xx/timeout 重试
-- [ ] 4.2 补充 100 个同时到期 subject 的 25 条规划分组、sendBatch 上限、重复 enqueue job_id 去重测试
-- [ ] 4.3 实现 `SyncWorkflow` initialize、收藏分页、calendar staging 与运行状态/heartbeat
-- [ ] 4.4 实现五类收藏/calendar 的 shadow/live 发布与失败保留旧 snapshot
-- [ ] 4.5 实现 refresh plan/enqueue/finalize，确保 Workflow 不调用 subject detail API
-- [ ] 4.6 在 Wrangler 配置注册无 schedule 的 Workflow binding，生成并核对 Worker 类型
-- [ ] 4.7 更新 Workflow 架构、key、状态与手动 shadow 运维文档，完整验证后原子 commit/push
+- [x] 4.1 建立 fake Workflow step 测试，覆盖确定性 step 名、step 小输出、401/403 不重试、429/5xx/timeout 重试
+- [x] 4.2 补充 100 个同时到期 subject 的 25 条规划分组、sendBatch 上限、重复 enqueue job_id 去重测试
+- [x] 4.3 实现 `SyncWorkflow` initialize、收藏分页、calendar staging 与运行状态/heartbeat
+- [x] 4.4 实现五类收藏/calendar 的 shadow/live 发布与失败保留旧 snapshot
+- [x] 4.5 实现 refresh plan/enqueue/finalize，确保 Workflow 不调用 subject detail API
+- [x] 4.6 在 Wrangler 配置注册无 schedule 的 Workflow binding，生成并核对 Worker 类型
+- [x] 4.7 更新 Workflow 架构、key、状态与手动 shadow 运维文档，完整验证后原子 commit/push
 
 ## 5. 收敛读取 API 与健康状态
 

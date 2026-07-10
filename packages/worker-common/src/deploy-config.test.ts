@@ -9,7 +9,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const appConfigs = [
   ['frontend-worker', ['[[services]]', 'READ_WORKER', 'SYNC_WORKER']],
   ['read-worker', ['[[kv_namespaces]]', '[[r2_buckets]]']],
-  ['sync-worker', ['[[queues.producers]]', '[[queues.consumers]]', '[triggers]', '0 * * * *']],
+  ['sync-worker', ['[[queues.producers]]', '[[queues.consumers]]', '[triggers]', '0 * * * *', '[[workflows]]', 'binding = "SYNC_WORKFLOW"', 'class_name = "SyncWorkflow"']],
   ['media-worker', ['[[queues.consumers]]', '[[kv_namespaces]]', '[[r2_buckets]]']],
 ] as const
 
@@ -50,6 +50,15 @@ test('media queue consumer uses Free Plan concurrency limits', () => {
   assert.match(config, /^max_retries = 3$/m)
 })
 
+test('sync workflow is registered in shadow mode without a schedule', () => {
+  const config = readFileSync(resolve(root, 'apps/sync-worker/wrangler.toml'), 'utf8')
+  assert.match(config, /^main = "src\/production\.ts"$/m)
+  assert.match(config, /^name = "airing-cal-sync"$/m)
+  assert.match(config, /^binding = "SYNC_WORKFLOW"$/m)
+  assert.match(config, /^class_name = "SyncWorkflow"$/m)
+  assert.doesNotMatch(config, /^schedules =/m)
+})
+
 test('deploy workflow resolves existing resources without waiting for business sync', () => {
   const workflow = readFileSync(resolve(root, '.github/workflows/deploy.yml'), 'utf8')
   assert.match(workflow, /push:\s*\n\s+branches:\s*\[dev\]/, 'only dev should deploy automatically')
@@ -64,10 +73,13 @@ test('deploy workflow resolves existing resources without waiting for business s
   assert.match(workflow, /resolve_cloudflare:/, 'workflow should resolve existing Cloudflare resources before deploy')
   assert.match(workflow, /node scripts\/resolve-cloudflare-resources\.mjs/, 'workflow should use the read-only resource resolver')
   assert.match(workflow, /kv_namespace_id:\s*\$\{\{ steps\.resolve\.outputs\.kv_namespace_id \}\}/, 'workflow should expose the resolved KV namespace id as a job output')
-  assert.match(workflow, /deploy_internal_workers:/, 'workflow should deploy internal workers through a matrix job')
+  assert.match(workflow, /deploy_read_media_workers:/, 'workflow should deploy read and media workers through a matrix job')
+  assert.match(workflow, /deploy_sync_worker:/, 'workflow should deploy sync worker after read and media workers')
+  assert.match(workflow, /deploy_sync_worker:[\s\S]*?needs:\s*\[validate, resolve_cloudflare, deploy_read_media_workers\]/, 'sync worker should wait for read and media workers')
+  assert.match(workflow, /pnpm exec wrangler workflows describe airing-cal-sync/, 'workflow should verify the deployed Workflow control plane')
   assert.match(workflow, /deploy_frontend_worker:/, 'workflow should deploy the public frontend after internal workers')
-  assert.match(workflow, /deploy_frontend_worker:[\s\S]*?needs:\s*\[validate, resolve_cloudflare, deploy_internal_workers\]/, 'frontend should depend on deployment control-plane checks only')
-  for (const job of ['validate', 'resolve_cloudflare', 'deploy_internal_workers', 'deploy_frontend_worker']) {
+  assert.match(workflow, /deploy_frontend_worker:[\s\S]*?needs:\s*\[validate, resolve_cloudflare, deploy_sync_worker\]/, 'frontend should wait for the Workflow control-plane check')
+  for (const job of ['validate', 'resolve_cloudflare', 'deploy_read_media_workers', 'deploy_sync_worker', 'deploy_frontend_worker']) {
     assert.match(workflow, new RegExp(`${job}:[\\s\\S]*?timeout-minutes:`), `${job} should have a timeout`)
   }
   assert.match(workflow, /BANGUMI_GIT_COMMIT_SHA:\s*\$\{\{ github\.sha \}\}/, 'frontend deploy should stamp the current commit sha')
@@ -140,6 +152,9 @@ test('README documents the multi-worker deployment without legacy cron instructi
   }
   for (const fragment of ['`subject:refresh:{subject_id}`', '`job_id`', '6 至 8 天', '`max_concurrency = 4`', '`image:status:{subject_id}` 只描述真实图片缓存结果']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document media refresh lifecycle: ${fragment}`)
+  }
+  for (const fragment of ['Workflow 已注册但没有 schedule', '旧 Cron 仍是正式触发源', '`sync:run:{instanceId}`', '`sync:staging:{instanceId}:*`', '`snapshot:shadow:{instanceId}:*`', 'workflows trigger airing-cal-sync', 'workflows instances describe', 'workflows instances restart', 'workflows instances terminate']) {
+    assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document shadow Workflow operations: ${fragment}`)
   }
   for (const fragment of ['BANGUMI_GIT_COMMIT_SHA', 'BANGUMI_GIT_REPOSITORY_URL', '绑定自定义域名不需要改任何 repository URL 变量']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document optional frontend build metadata: ${fragment}`)

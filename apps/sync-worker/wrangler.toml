@@ -1,5 +1,5 @@
 name = "airing-cal-sync"
-main = "src/index.ts"
+main = "src/production.ts"
 compatibility_date = "2026-06-17"
 keep_vars = true
 
@@ -16,6 +16,11 @@ id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 [[queues.producers]]
 binding = "MEDIA_QUEUE"
 queue = "airing-cal-media"
+
+[[workflows]]
+name = "airing-cal-sync"
+binding = "SYNC_WORKFLOW"
+class_name = "SyncWorkflow"
 
 [[queues.consumers]]
 queue = "airing-cal-sync-trigger"

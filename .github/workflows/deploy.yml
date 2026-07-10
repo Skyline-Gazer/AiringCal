@@ -65,7 +65,7 @@ jobs:
         name: Resolve existing Cloudflare resources
         run: node scripts/resolve-cloudflare-resources.mjs
 
-  deploy_internal_workers:
+  deploy_read_media_workers:
     timeout-minutes: 20
     needs: [validate, resolve_cloudflare]
     runs-on: ubuntu-latest
@@ -77,8 +77,6 @@ jobs:
             config: apps/read-worker/wrangler.toml
           - app: media-worker
             config: apps/media-worker/wrangler.toml
-          - app: sync-worker
-            config: apps/sync-worker/wrangler.toml
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -122,9 +120,58 @@ jobs:
             echo "Wrangler log not found: $WRANGLER_LOG_PATH"
           fi
 
+  deploy_sync_worker:
+    timeout-minutes: 20
+    needs: [validate, resolve_cloudflare, deploy_read_media_workers]
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      AIRING_CAL_KV_NAMESPACE_ID: ${{ needs.resolve_cloudflare.outputs.kv_namespace_id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Materialize Wrangler config
+        run: node scripts/materialize-wrangler-config.mjs apps/sync-worker/wrangler.toml ${{ runner.temp }}/wrangler-sync-worker.toml
+      - name: Build Check
+        env:
+          WRANGLER_LOG: debug
+          WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-sync-worker-dry-run.log
+        run: pnpm exec wrangler deploy --dry-run --outdir apps/sync-worker/dist --config ${{ runner.temp }}/wrangler-sync-worker.toml
+      - name: Deploy sync-worker and Workflow
+        env:
+          WRANGLER_LOG: debug
+          WRANGLER_LOG_SANITIZE: "false"
+          WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-sync-worker.log
+        run: pnpm exec wrangler deploy --config ${{ runner.temp }}/wrangler-sync-worker.toml
+      - name: Verify Workflow control plane
+        run: pnpm exec wrangler workflows describe airing-cal-sync --config ${{ runner.temp }}/wrangler-sync-worker.toml
+      - name: Print Wrangler debug log on failure
+        if: failure()
+        env:
+          WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-sync-worker.log
+        run: |
+          if [ -f "$WRANGLER_LOG_PATH" ]; then
+            sed -E \
+              -e 's/(Authorization: Bearer )[A-Za-z0-9._-]+/\1[redacted]/g' \
+              -e 's/("authorization": ?"Bearer )[A-Za-z0-9._-]+/\1[redacted]/gi' \
+              "$WRANGLER_LOG_PATH"
+          else
+            echo "Wrangler log not found: $WRANGLER_LOG_PATH"
+          fi
+
   deploy_frontend_worker:
     timeout-minutes: 20
-    needs: [validate, resolve_cloudflare, deploy_internal_workers]
+    needs: [validate, resolve_cloudflare, deploy_sync_worker]
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

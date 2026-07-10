@@ -170,28 +170,28 @@ Expected: PASS。更新缓存文档，commit `refactor: add idempotent media ref
 - Produces: exported `SyncWorkflow extends WorkflowEntrypoint<SyncEnv, SyncWorkflowParams>`。
 - Produces: `SyncRun`, run/staging/shadow key helpers，`planRefreshJobs(subjectIds, instanceId)`。
 
-- [ ] **Step 1: 写 fake-step Workflow 失败测试**
+- [x] **Step 1: 写 fake-step Workflow 失败测试**
 
 覆盖 549 条 11 页、确定性 step 名、输出小于 1 MiB、Workflow 不请求 `/v0/subjects/*`、401/403 非重试、429/5xx/timeout retry、失败保留旧 snapshot。
 
-- [ ] **Step 2: 写 publish/enqueue 失败测试**
+- [x] **Step 2: 写 publish/enqueue 失败测试**
 
 覆盖 shadow 正式 key 隔离且零 Queue 消息、live publish、100 个 subject 按 25 规划、sendBatch 不超过 100、重放 job_id 去重。
 
-- [ ] **Step 3: 运行测试确认 RED**
+- [x] **Step 3: 运行测试确认 RED**
 
 Run: `CI=true pnpm -F @airing-cal/sync-worker test`
 Expected: FAIL，Workflow class 和类型不存在。
 
-- [ ] **Step 4: 实现 staging、publish、plan、finalize**
+- [x] **Step 4: 实现 staging、publish、plan、finalize**
 
 每个 `step.do` 写固定 staging key并仅返回 `{ key, count, digest }`；publish 使用 mode 选择 shadow/live；finalize 更新 run 与兼容 `sync:meta`。首发 `[[workflows]]` 不写 schedules，旧 Cron 暂留。
 
-- [ ] **Step 5: 验证配置与类型**
+- [x] **Step 5: 验证配置与类型**
 
 先运行 `pnpm exec wrangler types --help` 和 `pnpm exec wrangler deploy --help` 核对命令，再生成类型并执行 dry-run。Run: `CI=true pnpm -F @airing-cal/sync-worker test && CI=true pnpm typecheck && CI=true pnpm build:check`。
 
-- [ ] **Step 6: 文档与发布**
+- [x] **Step 6: 文档与发布**
 
 记录 shadow trigger/describe/restart/terminate 的已验证命令形态和回退步骤。commit `feat: add shadow sync workflow` 并 push。
 

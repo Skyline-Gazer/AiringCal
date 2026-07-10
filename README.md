@@ -64,6 +64,22 @@ crons = ["0 * * * *"]
 
 Cloudflare 免费计划对 Cron Trigger 数量有限制，所以这里只配置 1 个每小时触发器；`sync-worker` 会在代码里只允许 UTC 0/4/8/12/16/20 点真正同步，其余小时直接跳过。
 
+当前迁移状态：Cloudflare Workflow 已注册但没有 schedule，旧 Cron 仍是正式触发源。第一阶段只允许显式创建 shadow instance；shadow 会写隔离快照和审计结果，不覆盖正式 snapshot，也不投递 Media Queue：
+
+```bash
+pnpm exec wrangler workflows trigger airing-cal-sync '{"mode":"shadow","source":"manual"}' --id shadow-<commit> --config apps/sync-worker/wrangler.toml
+pnpm exec wrangler workflows instances describe airing-cal-sync shadow-<commit> --config apps/sync-worker/wrangler.toml
+```
+
+instance 运维命令形态：
+
+```bash
+pnpm exec wrangler workflows instances restart airing-cal-sync <instance-id> --config apps/sync-worker/wrangler.toml
+pnpm exec wrangler workflows instances terminate airing-cal-sync <instance-id> --config apps/sync-worker/wrangler.toml
+```
+
+Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都使用确定性 step 名；大 payload 写 staging KV，step 只返回 key、数量和 SHA-256 摘要。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为 read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
+
 收藏页读取的是 `snapshot:collections:*` 快照，不会在每次浏览页面时实时请求 bgm.tv。每次有效 cron/queue 同步会先读取 `GET /v0/users/{username}/collections?subject_type=2`，再按 bgm.tv `type` 字段写入 `want`、`watched`、`watching`、`on_hold`、`dropped` 快照。日历 subject detail 补全使用 `GET /v0/subjects/{subject_id}`；如果某些详情请求失败且没有可用缓存，同步会保留上一版 calendar snapshot，但仍会发布新的 collection snapshots，避免一个日历补全失败阻断收藏状态刷新。
 
 collections 使用 bgm.tv OpenAPI 允许的 `limit=50` 分页，并受 120 秒整体预算约束。bgm.tv JSON GET 请求单次 timeout 为 10 秒；429、5xx、timeout 和网络错误最多重试 2 次，401/403 不重试，POST/PATCH 写请求也不会被 client 隐式重试。
@@ -254,6 +270,10 @@ KV key：
 | `snapshot:calendar` | `airing-cal-sync` | 日历 snapshot |
 | `snapshot:summary` | `airing-cal-sync` | 数量摘要 |
 | `sync:meta` | `airing-cal-sync` | 最近同步元信息 |
+| `sync:run:{instanceId}` | `SyncWorkflow` | instance stage、heartbeat、计数与错误，TTL 3 天 |
+| `sync:staging:{instanceId}:*` | `SyncWorkflow` | step 间 payload，TTL 24 小时 |
+| `snapshot:shadow:{instanceId}:*` | `SyncWorkflow` | shadow 快照与审计数据，不参与正式读取 |
+| `snapshot:version:{instanceId}:*` | `SyncWorkflow` | live 的版本化 snapshot；全部写完后由 `snapshot:active` 原子切换 |
 | `subject:meta:{subject_id}` | `airing-cal-media` | subject detail 与 NSFW 判定 |
 | `subject:refresh:{subject_id}` | `airing-cal-sync`, `airing-cal-media` | V2 媒体任务的 queued/running/ok/partial/failed 状态与 `job_id` |
 | `image:status:{subject_id}` | `airing-cal-media` | subject 的 common/large 缓存状态 |
