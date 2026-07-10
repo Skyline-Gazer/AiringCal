@@ -25,7 +25,8 @@ import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 const COLLECTION_TYPES: CollectionType[] = ['want', 'watched', 'watching', 'on_hold', 'dropped']
 const PAGE_LIMIT = 50
-const REFRESH_CHUNK_SIZE = 25
+const REFRESH_CHUNK_SIZE = 10
+const ENQUEUE_CHUNKS_PER_STEP = 3
 const NETWORK_STEP = { retries: { limit: 3, delay: 1_000, backoff: 'exponential' as const }, timeout: 45_000 }
 const STORAGE_STEP = { retries: { limit: 3, delay: 500, backoff: 'exponential' as const }, timeout: 45_000 }
 
@@ -61,6 +62,8 @@ interface StepOutput {
   total?: number
   keys?: string[]
   snapshotKeys?: Partial<Record<CollectionType, string>>
+  refreshInputKey?: string
+  refreshChunks?: number
 }
 
 interface RefreshInput {
@@ -255,21 +258,17 @@ export async function runSyncWorkflow(
       const ids = [...new Set([...collections.map((entry) => entry.subject_id), ...calendarSubjectIds(calendar)])]
       const titles = sourceTitles(collections, calendar)
       const images = sourceImages(collections, calendar)
-      const keys: string[] = []
-      for (let index = 0; index < ids.length; index += REFRESH_CHUNK_SIZE) {
-        const chunkIndex = index / REFRESH_CHUNK_SIZE
-        const inputs = ids.slice(index, index + REFRESH_CHUNK_SIZE).map((subjectId): RefreshInput => ({
-          subject_id: subjectId,
-          title: titles.get(subjectId) ?? String(subjectId),
-          images: images.get(subjectId),
-        }))
-        const key = syncStagingKey(event.instanceId, `refresh-input:${chunkIndex}`)
-        await putJson(env.AIRING_CAL_KV, key, inputs, SYNC_STAGING_TTL_SECONDS)
-        keys.push(key)
-      }
+      const refreshInputs = ids.map((subjectId): RefreshInput => ({
+        subject_id: subjectId,
+        title: titles.get(subjectId) ?? String(subjectId),
+        images: images.get(subjectId),
+      }))
+      const refreshInputKey = syncStagingKey(event.instanceId, 'refresh-inputs')
+      await putJson(env.AIRING_CAL_KV, refreshInputKey, refreshInputs, SYNC_STAGING_TTL_SECONDS)
+      const refreshChunks = Math.ceil(ids.length / REFRESH_CHUNK_SIZE)
       const key = syncStagingKey(event.instanceId, 'prepared')
-      await putJson(env.AIRING_CAL_KV, key, { snapshotKeys, refreshKeys: keys }, SYNC_STAGING_TTL_SECONDS)
-      return { key, keys, snapshotKeys, count: ids.length, digest: await digest(ids) }
+      await putJson(env.AIRING_CAL_KV, key, { snapshotKeys, refreshInputKey, refreshChunks }, SYNC_STAGING_TTL_SECONDS)
+      return { key, snapshotKeys, refreshInputKey, refreshChunks, count: ids.length, digest: await digest(ids) }
     })
     const summary: Record<string, number> = {}
 
@@ -307,10 +306,10 @@ export async function runSyncWorkflow(
 
     const planOutputs: StepOutput[] = []
     let refreshJobs = 0
-    for (let chunkIndex = 0; chunkIndex < (prepared.keys?.length ?? 0); chunkIndex++) {
-      const inputKey = prepared.keys![chunkIndex]
+    for (let chunkIndex = 0; chunkIndex < (prepared.refreshChunks ?? 0); chunkIndex++) {
       const output = await step.do(`plan-refresh-${chunkIndex}`, STORAGE_STEP, async () => {
-        const inputs = await getJson<RefreshInput[]>(env.AIRING_CAL_KV, inputKey) ?? []
+        const allInputs = await getJson<RefreshInput[]>(env.AIRING_CAL_KV, prepared.refreshInputKey ?? '') ?? []
+        const inputs = allInputs.slice(chunkIndex * REFRESH_CHUNK_SIZE, (chunkIndex + 1) * REFRESH_CHUNK_SIZE)
         const jobs: MediaRefreshJobV2[] = []
         const now = nowSeconds()
         for (const input of inputs) {
@@ -350,9 +349,9 @@ export async function runSyncWorkflow(
     }
 
     if (mode === 'live') {
-      for (let index = 0; index < planOutputs.length; index += 4) {
-        const batchIndex = index / 4
-        const outputs = planOutputs.slice(index, index + 4)
+      for (let index = 0; index < planOutputs.length; index += ENQUEUE_CHUNKS_PER_STEP) {
+        const batchIndex = index / ENQUEUE_CHUNKS_PER_STEP
+        const outputs = planOutputs.slice(index, index + ENQUEUE_CHUNKS_PER_STEP)
         await step.do(`enqueue-refresh-${batchIndex}`, STORAGE_STEP, async () => {
           const groups = await Promise.all(outputs.map((output) => getJson<MediaRefreshJobV2[]>(env.AIRING_CAL_KV, output.key)))
           const jobs = groups.flatMap((group) => group ?? [])

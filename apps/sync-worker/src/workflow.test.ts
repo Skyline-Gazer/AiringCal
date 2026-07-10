@@ -5,19 +5,29 @@ import { runSyncWorkflow, type SyncWorkflowEnv, type WorkflowStepLike } from './
 class MockKV {
   values = new Map<string, unknown>()
   puts: Array<{ key: string; value: unknown; options?: { expirationTtl?: number } }> = []
+  activeStep: string | null = null
+  apiCallsByStep = new Map<string, number>()
+
+  private recordCall() {
+    if (!this.activeStep) return
+    this.apiCallsByStep.set(this.activeStep, (this.apiCallsByStep.get(this.activeStep) ?? 0) + 1)
+  }
 
   async get(key: string, type: 'json') {
+    this.recordCall()
     assert.equal(type, 'json')
     return this.values.get(key) ?? null
   }
 
   async put(key: string, value: string, options?: { expirationTtl?: number }) {
+    this.recordCall()
     const parsed = JSON.parse(value)
     this.values.set(key, parsed)
     this.puts.push({ key, value: parsed, options })
   }
 
   async delete(key: string) {
+    this.recordCall()
     this.values.delete(key)
   }
 }
@@ -35,6 +45,8 @@ class FakeStep implements WorkflowStepLike {
   outputSizes: number[] = []
   cache = new Map<string, unknown>()
 
+  constructor(private kv?: MockKV) {}
+
   async do<T>(name: string, config: any, callback: () => Promise<T>): Promise<T> {
     this.names.push(name)
     if (this.cache.has(name)) return this.cache.get(name) as T
@@ -42,12 +54,15 @@ class FakeStep implements WorkflowStepLike {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       this.attempts.set(name, attempt)
       try {
+        if (this.kv) this.kv.activeStep = name
         const output = await callback()
         this.cache.set(name, output)
         this.outputSizes.push(new TextEncoder().encode(JSON.stringify(output)).byteLength)
         return output
       } catch (error) {
         if (error instanceof TestNonRetryableError || attempt === maxAttempts) throw error
+      } finally {
+        if (this.kv) this.kv.activeStep = null
       }
     }
     throw new Error('unreachable')
@@ -97,7 +112,7 @@ test('shadow workflow fetches 549 collections in 11 deterministic page steps wit
   const kv = new MockKV()
   kv.values.set('snapshot:collections:watching', [{ subject_id: 999, title: 'live' }])
   const queueMessages: unknown[] = []
-  const step = new FakeStep()
+  const step = new FakeStep(kv)
   const originalFetch = globalThis.fetch
   const calls: string[] = []
   globalThis.fetch = (async (url: string | URL | Request) => {
@@ -134,7 +149,7 @@ test('shadow workflow fetches 549 collections in 11 deterministic page steps wit
 test('workflow classifies authentication as non-retryable and retries transient HTTP failures', async () => {
   for (const status of [401, 403, 429, 500, 503]) {
     const kv = new MockKV()
-    const step = new FakeStep()
+    const step = new FakeStep(kv)
     const originalFetch = globalThis.fetch
     globalThis.fetch = (async () => new Response('upstream', { status, headers: status === 429 ? { 'Retry-After': '0' } : undefined })) as typeof globalThis.fetch
     try {
@@ -157,7 +172,7 @@ test('workflow retries timeout and network failures at the step boundary', async
     new TypeError('network unavailable'),
   ]) {
     const kv = new MockKV()
-    const step = new FakeStep()
+    const step = new FakeStep(kv)
     const originalFetch = globalThis.fetch
     globalThis.fetch = (async () => { throw upstreamError }) as typeof globalThis.fetch
     try {
@@ -174,10 +189,10 @@ test('workflow retries timeout and network failures at the step boundary', async
   }
 })
 
-test('live workflow publishes snapshot before planning one refresh step per 25 subjects', async () => {
+test('live workflow keeps refresh planning and enqueue below the 50-call Free Plan budget', async () => {
   const kv = new MockKV()
   const queueMessages: unknown[] = []
-  const step = new FakeStep()
+  const step = new FakeStep(kv)
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async (url: string | URL | Request) => {
     const text = String(url)
@@ -193,7 +208,15 @@ test('live workflow publishes snapshot before planning one refresh step per 25 s
       schedule: undefined,
     }, step, (message) => new TestNonRetryableError(message))
 
-    assert.deepEqual(step.names.filter((name) => name.startsWith('plan-refresh-')), ['plan-refresh-0', 'plan-refresh-1', 'plan-refresh-2', 'plan-refresh-3'])
+    assert.deepEqual(step.names.filter((name) => name.startsWith('plan-refresh-')), Array.from({ length: 10 }, (_, index) => `plan-refresh-${index}`))
+    assert.deepEqual(step.names.filter((name) => name.startsWith('enqueue-refresh-')), Array.from({ length: 4 }, (_, index) => `enqueue-refresh-${index}`))
+    const refreshInputs = [...kv.values.entries()]
+      .filter(([key]) => key.includes(':refresh-inputs'))
+      .flatMap(([, value]) => value as unknown[])
+    assert.equal(refreshInputs.length, 100)
+    const queuedBatches = step.names.filter((name) => name.startsWith('enqueue-refresh-')).length
+    assert.equal(queuedBatches, 4)
+    assert.equal([...kv.apiCallsByStep.values()].every((calls) => calls <= 50), true)
     assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'live-1')
     assert.equal(queueMessages.length, 100)
     assert.equal(new Set((queueMessages as any[]).map((job) => job.job_id)).size, 100)

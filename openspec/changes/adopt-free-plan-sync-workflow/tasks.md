@@ -24,7 +24,7 @@
 ## 4. 实现 shadow Workflow 编排
 
 - [x] 4.1 建立 fake Workflow step 测试，覆盖确定性 step 名、step 小输出、401/403 不重试、429/5xx/timeout 重试
-- [x] 4.2 补充 100 个同时到期 subject 的 25 条规划分组、sendBatch 上限、重复 enqueue job_id 去重测试
+- [x] 4.2 补充 100 个同时到期 subject 的 Free Plan 有界规划分组、sendBatch 上限、重复 enqueue job_id 去重测试
 - [x] 4.3 实现 `SyncWorkflow` initialize、收藏分页、calendar staging 与运行状态/heartbeat
 - [x] 4.4 实现五类收藏/calendar 的 shadow/live 发布与失败保留旧 snapshot
 - [x] 4.5 实现 refresh plan/enqueue/finalize，确保 Workflow 不调用 subject detail API

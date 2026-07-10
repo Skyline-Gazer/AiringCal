@@ -176,7 +176,7 @@ Expected: PASS。更新缓存文档，commit `refactor: add idempotent media ref
 
 - [x] **Step 2: 写 publish/enqueue 失败测试**
 
-覆盖 shadow 正式 key 隔离且零 Queue 消息、live publish、100 个 subject 按 25 规划、sendBatch 不超过 100、重放 job_id 去重。
+覆盖 shadow 正式 key 隔离且零 Queue 消息、live publish、100 个 subject 按 10 规划、每 step API 调用不超过 50、sendBatch 不超过 100、重放 job_id 去重。
 
 - [x] **Step 3: 运行测试确认 RED**
 
