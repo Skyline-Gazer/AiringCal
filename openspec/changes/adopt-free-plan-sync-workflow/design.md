@@ -28,7 +28,7 @@ Cloudflare Workflows 在 Free Plan 下提供持久化 step、重试和 instance 
 
 新增 `SyncWorkflow`，参数为 `mode: shadow | live` 与 `source: manual`；schedule instance 默认 `live/schedule`。`event.instanceId` 作为 run ID，应用状态写入 `sync:run:{instanceId}`（3 天 TTL），暂存数据写入 `sync:staging:{instanceId}:*`（24 小时 TTL）。`sync:meta` 保留兼容字段并增加 Workflow instance 与 stage。
 
-收藏第一页用 OpenAPI 最大 `limit=50` 取得 total，后续每页各一个 step；每页立即规范化后写 staging。calendar 单独获取并写 staging。五类收藏和 calendar 分别发布，subject ID 每 10 个规划一次 refresh，避免 4 类缓存状态读取超过每 invocation 50 次 API 调用；enqueue 每 step 合并最多 3 个规划块。step 只返回 key、count 和摘要，不返回完整 payload。
+收藏第一页用 OpenAPI 最大 `limit=50` 取得 total，后续每页各一个 step；每页立即规范化后写 staging。calendar 单独获取并写 staging。五类收藏和 calendar 分别发布，subject ID 每 10 个生成一次候选 refresh job，enqueue 每 step 合并最多 3 个规划块。Workflow 不逐 subject 读取或写入 refresh/detail/meta/image 状态；Media consumer 在单消息 invocation 内用 SWR 与图片状态决定实际工作。step 只返回 key、count 和摘要，不返回完整 payload。
 
 选择该边界是因为快照发布需要持久化编排，而 subject detail、图片下载和 R2 更适合 Queue 的并发与延迟重试。替代方案是每个 subject 一个 Workflow step，但会突破每日 step 预算并放大恢复成本。
 
@@ -73,7 +73,7 @@ Cloudflare Workflows 在 Free Plan 下提供持久化 step、重试和 instance 
 - [Queue 至少一次投递会产生重复消息] → `job_id` 与 `subject:refresh:*` 共同去重，每个写入都按重复执行设计。
 - [旧 Cron 与新 schedule 迁移时可能重叠] → 首发不启用 schedule，切换提交同时增新 schedule、删旧 Cron，并检查现有 instance。
 - [降低 media 并发会延长图片最终收敛时间] → snapshot 先发布并继续服务 stale 内容，健康状态分别报告 Workflow 与 refresh backlog。
-- [Free Plan 限额或计费规则变化] → step 数量和运行频率在测试与运维文档中显式记录，激活前使用官方控制面核对。首个生产 shadow 已确认 25 subject 规划会触发 50 次 API 调用上限，因此实现固定为 10 subject 并由测试统计每 step KV 调用数。
+- [Free Plan 限额或计费规则变化] → step 数量和运行频率在测试与运维文档中显式记录，激活前使用官方控制面核对。前两个生产 shadow 证明多个快速 step 会在同一 Worker invocation 内累计 KV API 调用，因此 Workflow 不再执行逐 subject cache 查询；测试同时约束单 step 与整次 Workflow 的 KV 调用预算。
 
 ## Migration Plan
 

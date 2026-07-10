@@ -87,7 +87,7 @@ pnpm exec wrangler workflows instances restart airing-cal-sync <instance-id> --c
 pnpm exec wrangler workflows instances terminate airing-cal-sync <instance-id> --config apps/sync-worker/wrangler.toml
 ```
 
-Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都使用确定性 step 名；大 payload 写 staging KV，step 只返回 key、数量和 SHA-256 摘要。refresh planning 每 10 个 subject 一个 step，enqueue 每 step 最多合并 3 个规划块，确保 4 类缓存状态读取仍低于 Free Plan 单 invocation 50 次 API 调用。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为 read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
+Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都使用确定性 step 名；大 payload 写 staging KV，step 只返回 key、数量和 SHA-256 摘要。refresh planning 每 10 个 subject 生成幂等候选 V2 job，enqueue 每 step 最多合并 3 个规划块。Workflow 不逐 subject 读取或写入 refresh/detail/meta/image 状态；Media consumer 在单消息 invocation 内复用 fresh detail 与已缓存图片，只对实际过期或缺失内容访问上游。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为 read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
 
 收藏页不会在每次浏览页面时实时请求 bgm.tv。读取端优先跟随 `snapshot:active` 读取同一个 Workflow instance 的版本化 collections、calendar 和 summary；active pointer 不存在或目标 key 缺失时才回退 `snapshot:collections:*`、`snapshot:calendar`、`snapshot:summary` 兼容快照。旧 cron/queue 同步会先读取 `GET /v0/users/{username}/collections?subject_type=2`，再按 bgm.tv `type` 字段写入 `want`、`watched`、`watching`、`on_hold`、`dropped` 快照。日历 subject detail 补全使用 `GET /v0/subjects/{subject_id}`；如果某些详情请求失败且没有可用缓存，同步会保留上一版 calendar snapshot，但仍会发布新的 collection snapshots，避免一个日历补全失败阻断收藏状态刷新。
 

@@ -1,13 +1,8 @@
 import { BgmClient, BgmHttpError, type BgmCollection } from '@airing-cal/bgm-api'
 import { mergeCollections, subjectDetailImages, transformCalendar } from '@airing-cal/domain'
 import {
-  imageStatusKey,
-  nextSubjectRefreshAt,
   snapshotActiveKey,
   snapshotVersionKey,
-  subjectDetailKey,
-  subjectMetaKey,
-  subjectRefreshKey,
   syncMetaKey,
   syncRunKey,
   syncShadowKey,
@@ -16,8 +11,6 @@ import {
   SYNC_STAGING_TTL_SECONDS,
   type CollectionType,
   type MediaRefreshJobV2,
-  type SubjectDetailCacheEntry,
-  type SubjectRefreshState,
   type SyncRun,
   type SyncWorkflowParams,
 } from '@airing-cal/storage'
@@ -310,33 +303,14 @@ export async function runSyncWorkflow(
       const output = await step.do(`plan-refresh-${chunkIndex}`, STORAGE_STEP, async () => {
         const allInputs = await getJson<RefreshInput[]>(env.AIRING_CAL_KV, prepared.refreshInputKey ?? '') ?? []
         const inputs = allInputs.slice(chunkIndex * REFRESH_CHUNK_SIZE, (chunkIndex + 1) * REFRESH_CHUNK_SIZE)
-        const jobs: MediaRefreshJobV2[] = []
-        const now = nowSeconds()
-        for (const input of inputs) {
-          const subjectId = input.subject_id
-          const [detail, meta, image, refresh] = await Promise.all([
-            getJson<SubjectDetailCacheEntry>(env.AIRING_CAL_KV, subjectDetailKey(subjectId)),
-            getJson<unknown>(env.AIRING_CAL_KV, subjectMetaKey(subjectId)),
-            getJson<any>(env.AIRING_CAL_KV, imageStatusKey(subjectId)),
-            getJson<SubjectRefreshState>(env.AIRING_CAL_KV, subjectRefreshKey(subjectId)),
-          ])
-          if (refresh && (refresh.status === 'queued' || refresh.status === 'running')) continue
-          const detailDue = !detail || nextSubjectRefreshAt(subjectId, detail.cached_at) <= now
-          const components: MediaRefreshJobV2['components'] = []
-          if (detailDue) components.push('detail')
-          if (detailDue || !meta) components.push('meta')
-          if (detailDue || image?.common?.status !== 'cached') components.push('image_common')
-          if (detailDue || image?.large?.status !== 'cached') components.push('image_large')
-          if (!components.length) continue
-          jobs.push({
+        const jobs: MediaRefreshJobV2[] = inputs.map((input) => ({
             version: 2,
-            job_id: `${event.instanceId}:${subjectId}`,
-            subject_id: subjectId,
+            job_id: `${event.instanceId}:${input.subject_id}`,
+            subject_id: input.subject_id,
             title: input.title,
-            components,
+            components: ['detail', 'meta', 'image_common', 'image_large'],
             images: input.images,
-          })
-        }
+          }))
         const key = syncStagingKey(event.instanceId, `refresh:${chunkIndex}`)
         await putJson(env.AIRING_CAL_KV, key, jobs, SYNC_STAGING_TTL_SECONDS)
         run = { ...run, stage: 'refresh_plan', heartbeat_at: nowSeconds() }
@@ -355,18 +329,6 @@ export async function runSyncWorkflow(
         await step.do(`enqueue-refresh-${batchIndex}`, STORAGE_STEP, async () => {
           const groups = await Promise.all(outputs.map((output) => getJson<MediaRefreshJobV2[]>(env.AIRING_CAL_KV, output.key)))
           const jobs = groups.flatMap((group) => group ?? [])
-          const queuedAt = nowSeconds()
-          for (const job of jobs) {
-            await putJson(env.AIRING_CAL_KV, subjectRefreshKey(job.subject_id), {
-              subject_id: job.subject_id,
-              job_id: job.job_id,
-              status: 'queued',
-              queued_at: queuedAt,
-              updated_at: queuedAt,
-              completed_at: null,
-              error: null,
-            } satisfies SubjectRefreshState)
-          }
           if (jobs.length) await env.MEDIA_QUEUE.sendBatch(jobs.map((body) => ({ body, contentType: 'json' as const })))
           run = { ...run, stage: 'enqueue', heartbeat_at: nowSeconds() }
           await writeRun(env, run)

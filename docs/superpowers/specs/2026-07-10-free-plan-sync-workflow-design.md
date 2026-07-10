@@ -20,8 +20,8 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 2. `fetch-collections-page-0` 以 `limit=50` 获取 total 与第一页；后续页按页码创建固定 step，并把规范化数据写入 `sync:staging:{instanceId}:collections:{page}`。
 3. `fetch-calendar` 写入 instance calendar staging。
 4. `publish-{collectionType}` 与 `publish-calendar` 只读取 staging 和已有 cache。shadow 写 `snapshot:shadow:{instanceId}:*`；live 通过兼容提交点更新正式 snapshot。
-5. `plan-refresh-{chunk}` 每 10 个 subject 检查 detail/meta/image/refresh 状态，生成最小刷新计划；每个 subject 的 4 次 KV 读取加 staging/run 写入仍低于单 invocation 50 次 API 调用。
-6. `enqueue-refresh-{chunk}` 每 step 合并最多 3 个规划块并使用 `Queue.sendBatch()`；shadow 跳过该阶段的副作用。
+5. `plan-refresh-{chunk}` 每 10 个 subject 生成确定性的候选 V2 job，不逐 subject 读取 refresh/detail/meta/image KV。
+6. `enqueue-refresh-{chunk}` 每 step 合并最多 3 个规划块并使用 `Queue.sendBatch()`；shadow 跳过该阶段的副作用。Media consumer 在单消息 invocation 内判断 fresh/missing 并写 refresh 状态。
 7. `finalize` 更新 summary、`sync:meta` 与最终 `SyncRun`。
 
 所有外部 fetch、KV 和 Queue 副作用都位于 `step.do()`。step 名不使用时间或随机值，返回值只包含 staging key、count 和校验摘要。401/403 抛 `NonRetryableError`；429、5xx、timeout 和 network error按 45 秒 timeout、最多 3 次指数退避处理。
@@ -60,7 +60,7 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 - 549 条收藏只产生 11 个获取 step，Workflow 不请求 subject API，step 输出小于 1 MiB。
 - step 重放不重复提交 snapshot 或产生重复 media 副作用。
 - shadow 不覆盖正式 key且不 enqueue；live 获取失败保留旧 snapshot。
-- 100 个同时过期 subject 先发布 snapshot，再按 10 个规划 refresh，测试统计每 step KV 调用数不超过 50。
+- 100 个 subject 先发布 snapshot，再按 10 个生成候选 refresh job；测试统计 plan step KV 调用不超过 3、enqueue step 不超过 4，Workflow 总 KV 调用保持在 500 以下。
 - Media consumer 单消息、并发 4、瞬态 retry、终态 ack。
 - apply 每批不调用 collections GET，超过 5 条返回 400，持久化载荷不含 token。
 - CI 不包含 post-deploy sync/KV polling，frontend 不依赖业务缓存完成。

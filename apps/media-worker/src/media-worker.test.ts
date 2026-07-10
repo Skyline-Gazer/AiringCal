@@ -395,6 +395,51 @@ test('media-worker skips a duplicate completed V2 job', async () => {
   }
 })
 
+test('media-worker handles a fresh V2 candidate without upstream or R2 work', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const now = Math.floor(Date.now() / 1000)
+  kv.values.set(subjectDetailKey(23080), {
+    cached_at: now,
+    subject: {
+      id: 23080,
+      nsfw: false,
+      images: {
+        common: 'https://img.example/common.jpg',
+        large: 'https://img.example/large.jpg',
+      },
+    },
+  })
+  kv.values.set('image:status:23080', {
+    subject_id: 23080,
+    common: { status: 'cached', source_url: 'https://img.example/common.jpg' },
+    large: { status: 'cached', source_url: 'https://img.example/large.jpg' },
+  })
+  const originalFetch = globalThis.fetch
+  let fetchCalls = 0
+  globalThis.fetch = (async () => {
+    fetchCalls++
+    throw new Error('fresh candidate must not call upstream')
+  }) as typeof globalThis.fetch
+
+  try {
+    const result = await worker.queue(batch({
+      version: 2,
+      job_id: 'instance-2:23080',
+      subject_id: 23080,
+      title: 'A CN',
+      components: ['detail', 'meta', 'image_common', 'image_large'],
+    }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+
+    assert.equal(result, undefined)
+    assert.equal(fetchCalls, 0)
+    assert.equal(r2.writes.length, 0)
+    assert.equal((kv.values.get(subjectRefreshKey(23080)) as any).status, 'ok')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('media-worker retries transient V2 failures with bounded delay', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()

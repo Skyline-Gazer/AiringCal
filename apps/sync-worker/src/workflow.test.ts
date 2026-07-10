@@ -216,7 +216,11 @@ test('live workflow keeps refresh planning and enqueue below the 50-call Free Pl
     assert.equal(refreshInputs.length, 100)
     const queuedBatches = step.names.filter((name) => name.startsWith('enqueue-refresh-')).length
     assert.equal(queuedBatches, 4)
+    assert.equal([...kv.values.keys()].some((key) => key.startsWith('subject:refresh:')), false)
     assert.equal([...kv.apiCallsByStep.values()].every((calls) => calls <= 50), true)
+    assert.equal([...kv.apiCallsByStep.entries()].filter(([name]) => name.startsWith('plan-refresh-')).every(([, calls]) => calls <= 3), true)
+    assert.equal([...kv.apiCallsByStep.entries()].filter(([name]) => name.startsWith('enqueue-refresh-')).every(([, calls]) => calls <= 4), true)
+    assert.equal([...kv.apiCallsByStep.values()].reduce((total, calls) => total + calls, 0) < 500, true)
     assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'live-1')
     assert.equal(queueMessages.length, 100)
     assert.equal(new Set((queueMessages as any[]).map((job) => job.job_id)).size, 100)
