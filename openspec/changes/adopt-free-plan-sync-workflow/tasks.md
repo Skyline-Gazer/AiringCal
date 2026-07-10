@@ -50,5 +50,5 @@
 - [x] 7.1 先更新测试要求不存在 sync trigger queue、旧 queue handler、consumer 自动修复和 `push-sync-trigger.mjs`
 - [x] 7.2 删除 `airing-cal-sync-trigger` 配置、旧 queue handler 与触发脚本，并更新 bootstrap/资源文档
 - [x] 7.3 审计 README、endpoint、环境变量、Worker、Workflow、日志事件、配置与发版文档，删除未实现或过时声明
-- [ ] 7.4 运行 `pnpm typecheck`、`pnpm test`、`pnpm build:check`、`git diff --check` 与本地 Workflow smoke test
+- [x] 7.4 运行 `pnpm typecheck`、`pnpm test`、`pnpm build:check`、`git diff --check` 与本地 Workflow smoke test
 - [ ] 7.5 核对生产控制面与健康 API，提交并 push 最终发版原子提交
