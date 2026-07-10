@@ -71,20 +71,20 @@ Expected: PASS。更新 README 后 commit `ci: decouple deploy from cache sync` 
 - Produces: `fetchAllCollections(client, username, options?)`，默认 50 条分页和 120 秒总预算。
 - Produces: GET-only retry helper，写方法沿用单次请求。
 
-- [ ] **Step 1: 写 GET retry 与 549 条分页失败测试**
+- [x] **Step 1: 写 GET retry 与 549 条分页失败测试**
 
 覆盖 401/403 不重试、429/5xx/network/timeout 最多两次重试、Retry-After 上限、POST/PATCH 不重试，以及 total=549 时 offsets 为 `0..500` 共 11 次且 limit 全为 50。
 
-- [ ] **Step 2: 运行测试确认 RED**
+- [x] **Step 2: 运行测试确认 RED**
 
 Run: `CI=true pnpm -F @airing-cal/bgm-api test`
 Expected: FAIL，当前 limit 为 30 且无 GET retry。
 
-- [ ] **Step 3: 实现最小请求策略**
+- [x] **Step 3: 实现最小请求策略**
 
 在 `BgmClient.fetchJson` 中基于 `init.method ?? 'GET'` 选择策略；每次 GET 使用 10 秒 signal，重试 429/5xx/`BgmTimeoutError`/`BgmNetworkError`，写请求只执行一次。`fetchAllCollections` 用 deadline 检查总预算并删除固定 200 ms 页间 sleep。
 
-- [ ] **Step 4: 验证并发布原子提交**
+- [x] **Step 4: 验证并发布原子提交**
 
 Run: `CI=true pnpm -F @airing-cal/bgm-api test && CI=true pnpm typecheck && git diff --check`
 Expected: PASS。commit `fix: bound bgm collection requests` 并 push。

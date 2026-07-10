@@ -7,8 +7,8 @@
 
 ## 2. 约束 bgm.tv 请求与账号 apply
 
-- [ ] 2.1 先为 GET timeout、两次有限重试、Retry-After、写请求不重试和 549 条收藏 11 页补失败测试
-- [ ] 2.2 实现 `BgmClient` GET 10 秒 timeout、可重试错误分类和 `fetchAllCollections` 50 条分页/120 秒总预算
+- [x] 2.1 先为 GET timeout、两次有限重试、Retry-After、写请求不重试和 549 条收藏 11 页补失败测试
+- [x] 2.2 实现 `BgmClient` GET 10 秒 timeout、可重试错误分类和 `fetchAllCollections` 50 条分页/120 秒总预算
 - [ ] 2.3 先为 apply items 上限、旧 subject_ids 兼容、零 collections 重拉与 no-store/脱敏日志补失败测试
 - [ ] 2.4 实现 compare items 直接 apply、最多 5 条、一个版本的旧输入兼容和 operation log 终态更新
 - [ ] 2.5 同步账号 API 文档并运行 bgm-api/frontend-worker 测试后原子 commit/push

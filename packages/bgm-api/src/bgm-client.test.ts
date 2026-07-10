@@ -69,16 +69,101 @@ test('fetchAllCollections paginates collection API through BgmClient', async () 
   const client = {
     getCollections: async (_username: string, offset: number, limit: number) => {
       calls.push({ offset, limit })
-      return offset === 0
-        ? { total: 31, data: [{ subject_id: 1 }] }
-        : { total: 31, data: [{ subject_id: 2 }] }
+      return { total: 549, data: [{ subject_id: offset + 1 }] }
     },
   } as unknown as BgmClient
 
   const result = await fetchAllCollections(client, 'alice')
 
-  assert.deepEqual(calls, [{ offset: 0, limit: 30 }, { offset: 30, limit: 30 }])
-  assert.deepEqual(result.map((entry) => entry.subject_id), [1, 2])
+  assert.equal(calls.length, 11)
+  assert.deepEqual(calls, Array.from({ length: 11 }, (_, index) => ({ offset: index * 50, limit: 50 })))
+  assert.deepEqual(result.map((entry) => entry.subject_id), Array.from({ length: 11 }, (_, index) => index * 50 + 1))
+})
+
+test('GET retries 429 and 5xx responses at most twice', async () => {
+  const originalFetch = globalThis.fetch
+  const statuses = [429, 503, 200]
+  let calls = 0
+  globalThis.fetch = async () => {
+    const status = statuses[calls++]
+    return new Response(JSON.stringify(status === 200 ? [] : { title: 'retry' }), {
+      status,
+      headers: status === 429 ? { 'Retry-After': '0' } : undefined,
+    })
+  }
+  try {
+    const client = new BgmClient(undefined, { retryBaseDelayMs: 0 })
+    assert.deepEqual(await client.getCalendar(), [])
+    assert.equal(calls, 3)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('GET retries timeout and network failures', async () => {
+  for (const failure of [new DOMException('timed out', 'TimeoutError'), new TypeError('network down')]) {
+    const originalFetch = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = async () => {
+      calls++
+      if (calls === 1) throw failure
+      return new Response(JSON.stringify([]), { status: 200 })
+    }
+    try {
+      const client = new BgmClient(undefined, { retryBaseDelayMs: 0 })
+      assert.deepEqual(await client.getCalendar(), [])
+      assert.equal(calls, 2)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+})
+
+test('GET does not retry 401 or 403 responses', async () => {
+  for (const status of [401, 403]) {
+    const originalFetch = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = async () => {
+      calls++
+      return new Response(JSON.stringify({ title: 'denied' }), { status })
+    }
+    try {
+      await assert.rejects(() => new BgmClient(undefined, { retryBaseDelayMs: 0 }).getCalendar(), BgmHttpError)
+      assert.equal(calls, 1)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+})
+
+test('write requests are never retried implicitly', async () => {
+  const originalFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async () => {
+    calls++
+    return new Response(JSON.stringify({ title: 'unavailable' }), { status: 503 })
+  }
+  try {
+    await assert.rejects(() => new BgmClient(undefined, { retryBaseDelayMs: 0 }).patchCollection('token', 1, { type: 3 }), BgmHttpError)
+    assert.equal(calls, 1)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchAllCollections stops when its total budget is exhausted', async () => {
+  let now = 0
+  const client = {
+    getCollections: async () => {
+      now += 121_000
+      return { total: 100, data: [{ subject_id: 1 }] }
+    },
+  } as unknown as BgmClient
+
+  await assert.rejects(
+    () => fetchAllCollections(client, 'alice', { now: () => now, budgetMs: 120_000 }),
+    /120s/,
+  )
 })
 
 test('fetchJson classifies non-404 upstream errors as BgmHttpError', async () => {

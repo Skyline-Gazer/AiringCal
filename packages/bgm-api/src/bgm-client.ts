@@ -75,8 +75,27 @@ export interface BgmEpisodeCollection {
   updated_at: number
 }
 
+export interface BgmClientOptions {
+  requestTimeoutMs?: number
+  maxGetRetries?: number
+  retryBaseDelayMs?: number
+  maxRetryAfterMs?: number
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
 export class BgmClient {
-  constructor(private token?: string) {}
+  private readonly requestTimeoutMs: number
+  private readonly maxGetRetries: number
+  private readonly retryBaseDelayMs: number
+  private readonly maxRetryAfterMs: number
+
+  constructor(private token?: string, options: BgmClientOptions = {}) {
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 10_000
+    this.maxGetRetries = options.maxGetRetries ?? 2
+    this.retryBaseDelayMs = options.retryBaseDelayMs ?? 250
+    this.maxRetryAfterMs = options.maxRetryAfterMs ?? 10_000
+  }
 
   private headers(): Record<string, string> {
     const h: Record<string, string> = { 'User-Agent': UA }
@@ -84,47 +103,75 @@ export class BgmClient {
     return h
   }
 
-  /** 统一 fetch 包装：按异常类型分类错误、返回中文错误消息。非 2xx 时附上响应体原文便于排障。 */
-  private async fetchJson(url: string, init?: RequestInit): Promise<any> {
-    let res: Response
-    try {
-      res = await fetch(url, init)
-    } catch (err: any) {
-      if (err.name === 'TimeoutError' || err.name === 'AbortError') {
-        throw new BgmTimeoutError(`请求 bgm.tv 超时 (30s): ${url}`)
-      }
-      throw new BgmNetworkError(`无法连接 bgm.tv: ${err.message || String(err)}`)
+  private retryDelay(response: Response | null, attempt: number): number {
+    const retryAfter = response?.headers.get('retry-after')
+    if (retryAfter) {
+      const seconds = Number(retryAfter)
+      if (Number.isFinite(seconds)) return Math.min(this.maxRetryAfterMs, Math.max(0, seconds * 1000))
+      const at = Date.parse(retryAfter)
+      if (Number.isFinite(at)) return Math.min(this.maxRetryAfterMs, Math.max(0, at - Date.now()))
     }
-    if (res.status === 401) {
-      const body = await res.text().catch(() => '')
-      throw new BgmHttpError(401, `bgm.tv 认证失败：token 无效或已过期 (body: ${body.slice(0, 200)})`)
-    }
-    if (res.status === 403) {
-      const body = await res.text().catch(() => '')
-      throw new BgmHttpError(403, `bgm.tv 拒绝访问：token 权限不足或 scope 缺失 (body: ${body.slice(0, 200)})`)
-    }
-    if (res.status === 404) {
-      throw new BgmHttpError(404, `bgm.tv 资源不存在：${url}`)
-    }
-    if (!res.ok) {
-      const body = await res.text().catch(() => '')
-      throw new BgmHttpError(res.status, `bgm.tv 返回错误 (${res.status}): ${body.slice(0, 300)}`)
-    }
-    if (res.status === 204) return undefined
-    const body = await res.text()
-    if (!body.trim()) return undefined
-    return JSON.parse(body)
+    return this.retryBaseDelayMs * 2 ** attempt
   }
 
-  async getCollections(username: string, offset = 0, limit = 30): Promise<{ data: BgmCollection[]; total: number }> {
+  /** 统一 fetch 包装：GET 有界重试，写请求单次执行；异常按类型返回中文错误。 */
+  private async fetchJson(url: string, init?: RequestInit): Promise<any> {
+    const method = (init?.method ?? 'GET').toUpperCase()
+    const maxAttempts = method === 'GET' ? this.maxGetRetries + 1 : 1
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      let res: Response
+      try {
+        res = await fetch(url, {
+          ...init,
+          signal: init?.signal ?? AbortSignal.timeout(this.requestTimeoutMs),
+        })
+      } catch (err: any) {
+        const error = err.name === 'TimeoutError' || err.name === 'AbortError'
+          ? new BgmTimeoutError(`请求 bgm.tv 超时 (${this.requestTimeoutMs}ms): ${url}`)
+          : new BgmNetworkError(`无法连接 bgm.tv: ${err.message || String(err)}`)
+        if (method === 'GET' && attempt + 1 < maxAttempts) {
+          await sleep(this.retryDelay(null, attempt))
+          continue
+        }
+        throw error
+      }
+
+      if (method === 'GET' && (res.status === 429 || res.status >= 500) && attempt + 1 < maxAttempts) {
+        await sleep(this.retryDelay(res, attempt))
+        continue
+      }
+      if (res.status === 401) {
+        const body = await res.text().catch(() => '')
+        throw new BgmHttpError(401, `bgm.tv 认证失败：token 无效或已过期 (body: ${body.slice(0, 200)})`)
+      }
+      if (res.status === 403) {
+        const body = await res.text().catch(() => '')
+        throw new BgmHttpError(403, `bgm.tv 拒绝访问：token 权限不足或 scope 缺失 (body: ${body.slice(0, 200)})`)
+      }
+      if (res.status === 404) {
+        throw new BgmHttpError(404, `bgm.tv 资源不存在：${url}`)
+      }
+      if (!res.ok) {
+        const body = await res.text().catch(() => '')
+        throw new BgmHttpError(res.status, `bgm.tv 返回错误 (${res.status}): ${body.slice(0, 300)}`)
+      }
+      if (res.status === 204) return undefined
+      const body = await res.text()
+      if (!body.trim()) return undefined
+      return JSON.parse(body)
+    }
+    throw new Error('unreachable')
+  }
+
+  async getCollections(username: string, offset = 0, limit = 50): Promise<{ data: BgmCollection[]; total: number }> {
     const url = `${BGM_BASE}/v0/users/${username}/collections?subject_type=2&limit=${limit}&offset=${offset}`
-    return this.fetchJson(url, { headers: this.headers(), signal: AbortSignal.timeout(30000) })
+    return this.fetchJson(url, { headers: this.headers() })
   }
 
   async getSubject(subjectId: number): Promise<BgmSubject | null> {
     const url = `${BGM_BASE}/v0/subjects/${subjectId}`
     try {
-      return await this.fetchJson(url, { headers: this.headers(), signal: AbortSignal.timeout(30000) })
+      return await this.fetchJson(url, { headers: this.headers() })
     } catch (err) {
       if (err instanceof BgmHttpError && err.status === 404) return null
       throw err
@@ -133,7 +180,7 @@ export class BgmClient {
 
   async getCalendar(): Promise<BgmCalendarItem[]> {
     const url = `${BGM_BASE}/calendar`
-    return this.fetchJson(url, { headers: this.headers(), signal: AbortSignal.timeout(30000) })
+    return this.fetchJson(url, { headers: this.headers() })
   }
 
   async downloadImage(url: string): Promise<{ data: ArrayBuffer; contentType: string } | null> {
@@ -238,7 +285,6 @@ export class BgmClient {
     const url = `${BGM_BASE}/v0/users/-/collections/${subjectId}/episodes?limit=1000&offset=0`
     return this.fetchJson(url, {
       headers: { Authorization: `Bearer ${token}`, 'User-Agent': UA },
-      signal: AbortSignal.timeout(30000),
     })
   }
 
@@ -254,13 +300,8 @@ export class BgmClient {
 
   /** 用 access token 换取当前用户信息（username, id 等）。 */
   async getMe(token: string): Promise<{ username: string; id: number }> {
-    const res = await fetch('https://api.bgm.tv/v0/me', {
+    return this.fetchJson('https://api.bgm.tv/v0/me', {
       headers: { Authorization: `Bearer ${token}`, 'User-Agent': UA },
-      signal: AbortSignal.timeout(10000),
     })
-    if (!res.ok) {
-      throw new BgmHttpError(res.status, `bgm.tv getMe: ${res.status}`)
-    }
-    return res.json()
   }
 }
