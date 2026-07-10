@@ -130,6 +130,17 @@ test('CI validates every code push while bootstrap is manual', () => {
   assert.match(bootstrap, /node scripts\/provision-cloudflare-resources\.mjs/)
 })
 
+test('manual Workflow trigger uses GitHub secrets without exposing a public sync endpoint', () => {
+  const workflow = readFileSync(resolve(root, '.github/workflows/sync-workflow.yml'), 'utf8')
+  assert.match(workflow, /^name: Manual Sync Workflow$/m)
+  assert.match(workflow, /workflow_dispatch:/)
+  assert.match(workflow, /type: choice[\s\S]*?options:[\s\S]*?- shadow[\s\S]*?- live/)
+  assert.match(workflow, /CLOUDFLARE_API_TOKEN:\s*\$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/)
+  assert.match(workflow, /wrangler workflows trigger airing-cal-sync/)
+  assert.match(workflow, /wrangler workflows instances describe airing-cal-sync/)
+  assert.doesNotMatch(workflow, /schedule:/)
+})
+
 test('README documents the multi-worker deployment without legacy cron instructions', () => {
   const readme = readFileSync(resolve(root, 'README.md'), 'utf8')
   for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/api/cache', '/api/health', 'next cron time', 'images.common', 'images.large', 'Cloudflare 免费计划对 Cron Trigger 数量有限制', 'UTC 0/4/8/12/16/20 点真正同步', '手动 bootstrap workflow']) {

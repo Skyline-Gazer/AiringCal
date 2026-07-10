@@ -71,6 +71,15 @@ pnpm exec wrangler workflows trigger airing-cal-sync '{"mode":"shadow","source":
 pnpm exec wrangler workflows instances describe airing-cal-sync shadow-<commit> --config apps/sync-worker/wrangler.toml
 ```
 
+本机没有 Cloudflare API token 时，使用 GitHub Actions 中保存的部署 secret 手动触发，不需要把 token 下载到开发机：
+
+```bash
+gh workflow run sync-workflow.yml --ref dev -f mode=shadow -f instance_id=shadow-<commit> -f ref=dev
+gh run watch <run-id> --exit-status
+```
+
+`Manual Sync Workflow` 只创建并 describe 指定 instance；mode 只能显式选择 `shadow` 或 `live`，不会部署代码，也不会由 schedule 自动运行。
+
 instance 运维命令形态：
 
 ```bash
