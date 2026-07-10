@@ -42,26 +42,29 @@ test('Cloudflare resource names use the AiringCal prefix', () => {
   }
 })
 
-test('deploy workflow provisions resources and deploys checked-in worker configs', () => {
+test('deploy workflow resolves existing resources without waiting for business sync', () => {
   const workflow = readFileSync(resolve(root, '.github/workflows/deploy.yml'), 'utf8')
+  assert.match(workflow, /push:\s*\n\s+branches:\s*\[dev\]/, 'only dev should deploy automatically')
+  assert.doesNotMatch(workflow, /branches:\s*\[[^\]]*main/, 'main should not compete for the same workers')
+  assert.match(workflow, /concurrency:\s*\n\s+group:\s*deploy-cloudflare\s*\n\s+cancel-in-progress:\s*false/, 'deployments should be serialized without cancelling the active run')
   for (const app of ['read-worker', 'sync-worker', 'media-worker']) {
     assert.match(workflow, new RegExp(`apps/${app}/wrangler\\.toml`), `workflow should deploy checked-in ${app} config`)
   }
   assert.match(workflow, /apps\/frontend-worker\/wrangler\.toml/, 'workflow should deploy frontend config')
   assert.match(workflow, /CLOUDFLARE_API_TOKEN:\s*\$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/, 'workflow should expose CLOUDFLARE_API_TOKEN to wrangler')
   assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID:\s*\$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/, 'workflow should expose CLOUDFLARE_ACCOUNT_ID to wrangler')
-  assert.match(workflow, /provision_cloudflare:/, 'workflow should create or reuse Cloudflare resources before deploy')
-  assert.match(workflow, /node scripts\/provision-cloudflare-resources\.mjs/, 'workflow should run the provisioning script')
-  assert.match(workflow, /provision_cloudflare:[\s\S]*?uses: actions\/setup-node@v5[\s\S]*?node-version: '24'\n\s+package-manager-cache: false[\s\S]*?node scripts\/provision-cloudflare-resources\.mjs/, 'provision job should disable setup-node automatic package manager cache because it does not install pnpm')
-  assert.match(workflow, /kv_namespace_id:\s*\$\{\{ steps\.provision\.outputs\.kv_namespace_id \}\}/, 'workflow should expose the provisioned KV namespace id as a job output')
+  assert.match(workflow, /resolve_cloudflare:/, 'workflow should resolve existing Cloudflare resources before deploy')
+  assert.match(workflow, /node scripts\/resolve-cloudflare-resources\.mjs/, 'workflow should use the read-only resource resolver')
+  assert.match(workflow, /kv_namespace_id:\s*\$\{\{ steps\.resolve\.outputs\.kv_namespace_id \}\}/, 'workflow should expose the resolved KV namespace id as a job output')
   assert.match(workflow, /deploy_internal_workers:/, 'workflow should deploy internal workers through a matrix job')
   assert.match(workflow, /deploy_frontend_worker:/, 'workflow should deploy the public frontend after internal workers')
-  assert.match(workflow, /refresh_cache_after_internal_deploy:/, 'workflow should refresh snapshots and media cache after internal worker deploys')
-  assert.match(workflow, /node scripts\/push-sync-trigger\.mjs/, 'workflow should push a sync trigger after internal workers deploy')
-  assert.match(workflow, /refresh_cache_after_internal_deploy:[\s\S]*?uses: actions\/setup-node@v5[\s\S]*?node-version: '24'\n\s+package-manager-cache: false[\s\S]*?node scripts\/push-sync-trigger\.mjs/, 'refresh job should disable setup-node automatic package manager cache because it does not install pnpm')
+  assert.match(workflow, /deploy_frontend_worker:[\s\S]*?needs:\s*\[validate, resolve_cloudflare, deploy_internal_workers\]/, 'frontend should depend on deployment control-plane checks only')
+  for (const job of ['validate', 'resolve_cloudflare', 'deploy_internal_workers', 'deploy_frontend_worker']) {
+    assert.match(workflow, new RegExp(`${job}:[\\s\\S]*?timeout-minutes:`), `${job} should have a timeout`)
+  }
   assert.match(workflow, /BANGUMI_GIT_COMMIT_SHA:\s*\$\{\{ github\.sha \}\}/, 'frontend deploy should stamp the current commit sha')
   assert.match(workflow, /BANGUMI_GIT_REPOSITORY_URL:\s*https:\/\/github\.com\/\$\{\{ github\.repository \}\}/, 'frontend deploy should stamp the repository URL')
-  assert.match(workflow, /AIRING_CAL_KV_NAMESPACE_ID:\s*\$\{\{ needs\.provision_cloudflare\.outputs\.kv_namespace_id \}\}/, 'workflow should pass the provisioned KV namespace id to materialize deploy configs')
+  assert.match(workflow, /AIRING_CAL_KV_NAMESPACE_ID:\s*\$\{\{ needs\.resolve_cloudflare\.outputs\.kv_namespace_id \}\}/, 'workflow should pass the resolved KV namespace id to materialize deploy configs')
   assert.match(workflow, /node scripts\/materialize-wrangler-config\.mjs \$\{\{ matrix\.config \}\} \$\{\{ runner\.temp \}\}\/wrangler-\$\{\{ matrix\.app \}\}\.toml/, 'workflow should materialize internal worker configs before deploying')
   assert.match(workflow, /pnpm exec wrangler deploy --config \$\{\{ runner\.temp \}\}\/wrangler-\$\{\{ matrix\.app \}\}\.toml/, 'workflow should deploy internal workers with materialized Wrangler configs')
   assert.match(workflow, /WRANGLER_LOG_PATH:\s*\$\{\{ runner\.temp \}\}\/wrangler-\$\{\{ matrix\.app \}\}\.log/, 'workflow should save Wrangler debug logs for matrix deploys')
@@ -83,15 +86,33 @@ test('deploy workflow provisions resources and deploys checked-in worker configs
     'CRON_SECRET',
     'python3 -',
     '/__cron/sync',
+    'provision_cloudflare:',
+    'node scripts/provision-cloudflare-resources.mjs',
+    'refresh_cache_after_internal_deploy:',
+    'node scripts/push-sync-trigger.mjs',
+    'sync:meta.synced_at',
   ]
   for (const fragment of forbidden) {
     assert.doesNotMatch(workflow, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `workflow should not contain ${fragment}`)
   }
 })
 
+test('CI validates every code push while bootstrap is manual', () => {
+  const ci = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8')
+  assert.match(ci, /push:/)
+  assert.match(ci, /pnpm typecheck/)
+  assert.match(ci, /pnpm test/)
+  assert.match(ci, /pnpm build:check/)
+
+  const bootstrap = readFileSync(resolve(root, '.github/workflows/bootstrap-cloudflare.yml'), 'utf8')
+  assert.match(bootstrap, /workflow_dispatch:/)
+  assert.doesNotMatch(bootstrap, /\npush:/)
+  assert.match(bootstrap, /node scripts\/provision-cloudflare-resources\.mjs/)
+})
+
 test('README documents the multi-worker deployment without legacy cron instructions', () => {
   const readme = readFileSync(resolve(root, 'README.md'), 'utf8')
-  for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/api/cache', '/api/health', 'next cron time', 'images.common', 'images.large', 'Cloudflare 免费计划对 Cron Trigger 数量有限制', 'UTC 0/4/8/12/16/20 点真正同步', 'CI/CD 会创建或复用 Cloudflare 资源']) {
+  for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/api/cache', '/api/health', 'next cron time', 'images.common', 'images.large', 'Cloudflare 免费计划对 Cron Trigger 数量有限制', 'UTC 0/4/8/12/16/20 点真正同步', '手动 bootstrap workflow']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document ${fragment}`)
   }
   for (const fragment of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', '不要再创建 `CF_API_TOKEN` / `CF_ACCOUNT_ID`', 'Workers Scripts', 'Workers KV Storage', 'Workers R2 Storage', 'Queues', 'Account Settings', 'User Details', 'Workers Routes']) {
@@ -103,7 +124,7 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['Some triggers failed to deploy for airing-cal-sync', '/workers/scripts/airing-cal-sync/schedules', 'Workers Scripts` 是 `Edit`', 'Node 20 deprecation 提示不是这次失败原因']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document sync-worker cron trigger permission troubleshooting: ${fragment}`)
   }
-  for (const fragment of ['稳定的 checked-in `wrangler.toml`', 'CI 会自动获取实际 KV namespace ID', '自动投递一次完整同步消息', '新的 `sync:meta.synced_at`', '收藏 snapshot', '`calendar_synced_at` 只代表部署后的日历预热完成']) {
+  for (const fragment of ['稳定的 checked-in `wrangler.toml`', '常规 deploy 只读解析实际 KV namespace ID', '不会触发业务同步', '不会轮询 KV', '不等待媒体缓存收敛']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document routine deploy boundaries: ${fragment}`)
   }
   for (const fragment of ['https://next.bgm.tv/demo/access-token', 'https://bgm.tv/user/sai', 'sai,another_user', '只配置在 `airing-cal-sync`']) {
@@ -112,7 +133,7 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['BANGUMI_GIT_COMMIT_SHA', 'BANGUMI_GIT_REPOSITORY_URL', '绑定自定义域名不需要改任何 repository URL 变量']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document optional frontend build metadata: ${fragment}`)
   }
-  for (const fragment of ['secrets.CF_API_TOKEN', 'secrets.CF_ACCOUNT_ID', 'CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', '内联 placeholder', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets', 'PUBLIC_REPOSITORY_URL', 'wrangler.deploy.toml', 'pre-check Cloudflare 资源', '部署完成后自动投递一次']) {
+  for (const fragment of ['secrets.CF_API_TOKEN', 'secrets.CF_ACCOUNT_ID', 'CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', '内联 placeholder', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets', 'PUBLIC_REPOSITORY_URL', 'wrangler.deploy.toml', 'pre-check Cloudflare 资源', '部署完成后自动投递一次', 'CI 会向 `airing-cal-sync-trigger` 自动投递']) {
     assert.doesNotMatch(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should not mention ${fragment}`)
   }
 })

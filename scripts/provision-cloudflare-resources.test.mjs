@@ -35,6 +35,7 @@ test('provisionCloudflareResources reuses existing Cloudflare resources', async 
 
   assert.equal(result.kvNamespaceId, 'kv-id')
   assert.equal(calls.every((call) => call.init.method !== 'POST'), true)
+  assert.equal(calls.every((call) => call.init.signal instanceof AbortSignal), true)
 })
 
 test('provisionCloudflareResources creates missing resources and returns the KV namespace id', async () => {

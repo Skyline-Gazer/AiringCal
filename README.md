@@ -89,12 +89,12 @@ Cloudflare 免费计划对 Cron Trigger 数量有限制，所以这里只配置 
 | `airing-cal-sync` | `AIRING_CAL_KV`, `MEDIA_QUEUE` |
 | `airing-cal-media` | `AIRING_CAL_KV`, `AIRING_CAL_R2` |
 
-CI/CD 会创建或复用 Cloudflare 资源：
+Cloudflare 资源创建已经与常规部署分离。首次部署或资源缺失时，在 GitHub Actions 中手动运行 `Bootstrap Cloudflare Resources`（手动 bootstrap workflow）：
 
 - 创建或复用 KV namespace `airing-cal-kv`，并把实际 namespace ID 注入后续 Worker deploy config。
 - 创建或复用 R2 bucket `airing-cal-images`。
 - 创建或复用 Queue `airing-cal-media` 与 `airing-cal-sync-trigger`。
-- 确认 `airing-cal-frontend` 的 service bindings 指向 `airing-cal-read` 和 `airing-cal-sync`。
+- 后续 Wrangler deploy 会按 checked-in 配置确认 `airing-cal-frontend` 的 service bindings 指向 `airing-cal-read` 和 `airing-cal-sync`。
 
 KV 比较特殊：`wrangler.toml` 里的 `kv_namespaces.id` 不是 namespace title，而是 Cloudflare 生成的 namespace ID。仓库里的 3 个 Worker config 保留占位符：
 
@@ -102,11 +102,11 @@ KV 比较特殊：`wrangler.toml` 里的 `kv_namespaces.id` 不是 namespace tit
 id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 ```
 
-部署时 CI 会自动获取实际 KV namespace ID，注入临时 deploy config，再交给 Wrangler dry-run/deploy。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
+常规 deploy 只读解析实际 KV namespace ID，注入临时 deploy config，再交给 Wrangler dry-run/deploy；资源不存在时会明确失败并提示先运行 bootstrap，不会在发布途中创建资源。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
 
 CI 仍然不会上传运行时 secret，也不会手写 `curl` 去改 cron schedule。Cron schedule 只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers]`；部署 `airing-cal-sync` 时，Wrangler 会自动把这个配置同步到 Cloudflare Cron Triggers。
 
-内部 Worker 部署完成后，CI 会向 `airing-cal-sync-trigger` 自动投递一次完整同步消息，并等待这次触发之后写入新的 `sync:meta.synced_at`、收藏 snapshot、`snapshot:calendar` 和可观测 common 图片管线状态。`calendar_synced_at` 只代表部署后的日历预热完成，不能替代收藏快照刷新。首次部署如果页面暂时显示“KV 无数据”，检查这一步是否完成，或在 widget 的动画同步视图中使用两个 bgm.tv access token 手动执行同步。
+部署流水线只负责 typecheck/test/build、解析已有资源、部署内部 Worker 和 frontend。部署完成后不会触发业务同步、不会轮询 KV，也不等待媒体缓存收敛；收藏和 calendar 继续由当前 Cron 独立刷新，因此一次上游 API 故障不会把代码发布标记为失败。首次部署如果页面暂时显示“KV 无数据”，等待下一次有效 Cron，或在 widget 的动画同步视图中使用两个 bgm.tv access token 手动执行账号同步。
 
 ## 最小配置
 

@@ -1,9 +1,9 @@
 ## 1. 解除部署与业务同步耦合
 
-- [ ] 1.1 先更新部署配置测试，要求仅 `dev` 自动部署、全局 concurrency、job timeout、无 post-deploy sync/KV polling
-- [ ] 1.2 拆分 `ci.yml` 与 `deploy.yml`，删除缓存刷新 job，并让 frontend 只依赖内部 Worker 与 Workflow 控制面检查
-- [ ] 1.3 将 Cloudflare 资源创建迁移到手动 bootstrap workflow，常规部署只解析既有资源且 API 请求有 15 秒 timeout
-- [ ] 1.4 同步部署文档并运行部署配置测试、typecheck、build check 后原子 commit/push
+- [x] 1.1 先更新部署配置测试，要求仅 `dev` 自动部署、全局 concurrency、job timeout、无 post-deploy sync/KV polling
+- [x] 1.2 拆分 `ci.yml` 与 `deploy.yml`，删除缓存刷新 job，并让 frontend 只依赖内部 Worker 部署；Workflow 注册后再增加控制面检查
+- [x] 1.3 将 Cloudflare 资源创建迁移到手动 bootstrap workflow，常规部署只解析既有资源且 API 请求有 15 秒 timeout
+- [x] 1.4 同步部署文档并运行部署配置测试、typecheck、build check 后原子 commit/push
 
 ## 2. 约束 bgm.tv 请求与账号 apply
 

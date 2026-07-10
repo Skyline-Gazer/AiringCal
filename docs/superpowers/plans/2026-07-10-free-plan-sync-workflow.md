@@ -41,22 +41,22 @@ base-ref: 99dc51bf29098e424a0e2e257a225115512f2264
 - Produces: 常规 deploy 输出 `kv_namespace_id`，但不创建资源、不触发 sync、不轮询 KV。
 - Produces: 手动 bootstrap workflow 负责 KV/R2/Queues 的幂等创建。
 
-- [ ] **Step 1: 写失败的部署契约测试**
+- [x] **Step 1: 写失败的部署契约测试**
 
 更新 `deploy-config.test.ts`，断言 `deploy.yml` 仅监听 `dev`、包含顶层 `concurrency` 与 job `timeout-minutes`、不包含 `refresh_cache_after_internal_deploy`/`push-sync-trigger`/业务 KV polling；断言 `ci.yml` 运行 typecheck/test/build，bootstrap 单独调用 provisioning。
 
-- [ ] **Step 2: 运行测试确认 RED**
+- [x] **Step 2: 运行测试确认 RED**
 
-Run: `CI=true pnpm -F @bangumi-tv/worker-common test`
+Run: `CI=true pnpm -F @airing-cal/worker-common test`
 Expected: FAIL，指出旧 deploy 仍监听 main、仍 provision 并等待业务 sync。
 
-- [ ] **Step 3: 实现控制面部署**
+- [x] **Step 3: 实现控制面部署**
 
 拆出 `ci.yml`；为 deploy 增加 `concurrency.group: deploy-cloudflare`、`cancel-in-progress: false` 和各 job timeout；以 `resolve-cloudflare-resources.mjs` 只读查询 KV ID并用 `AbortSignal.timeout(15000)`；删除 refresh job，使 frontend 依赖内部部署与 Workflow describe 检查。
 
-- [ ] **Step 4: 验证并发布原子提交**
+- [x] **Step 4: 验证并发布原子提交**
 
-Run: `CI=true pnpm -F @bangumi-tv/worker-common test && CI=true pnpm typecheck && CI=true pnpm build:check && git diff --check`
+Run: `CI=true pnpm -F @airing-cal/worker-common test && CI=true pnpm typecheck && CI=true pnpm build:check && git diff --check`
 Expected: PASS。更新 README 后 commit `ci: decouple deploy from cache sync` 并 push `dev`。
 
 ### Task 2: BGM GET 请求边界与收藏分页
@@ -77,7 +77,7 @@ Expected: PASS。更新 README 后 commit `ci: decouple deploy from cache sync` 
 
 - [ ] **Step 2: 运行测试确认 RED**
 
-Run: `CI=true pnpm -F @bangumi-tv/bgm-api test`
+Run: `CI=true pnpm -F @airing-cal/bgm-api test`
 Expected: FAIL，当前 limit 为 30 且无 GET retry。
 
 - [ ] **Step 3: 实现最小请求策略**
@@ -86,7 +86,7 @@ Expected: FAIL，当前 limit 为 30 且无 GET retry。
 
 - [ ] **Step 4: 验证并发布原子提交**
 
-Run: `CI=true pnpm -F @bangumi-tv/bgm-api test && CI=true pnpm typecheck && git diff --check`
+Run: `CI=true pnpm -F @airing-cal/bgm-api test && CI=true pnpm typecheck && git diff --check`
 Expected: PASS。commit `fix: bound bgm collection requests` 并 push。
 
 ### Task 3: 账号 compare/apply 复用结果
@@ -108,7 +108,7 @@ Expected: PASS。commit `fix: bound bgm collection requests` 并 push。
 
 - [ ] **Step 2: 运行测试确认 RED**
 
-Run: `CI=true pnpm -F @bangumi-tv/sync-worker test && CI=true pnpm -F @bangumi-tv/domain test`
+Run: `CI=true pnpm -F @airing-cal/sync-worker test && CI=true pnpm -F @airing-cal/domain test`
 Expected: FAIL，当前 apply 仍调用 `executeSync` 重拉 collections。
 
 - [ ] **Step 3: 实现有界 apply**
@@ -117,7 +117,7 @@ Expected: FAIL，当前 apply 仍调用 `executeSync` 重拉 collections。
 
 - [ ] **Step 4: 验证并发布原子提交**
 
-Run: `CI=true pnpm -F @bangumi-tv/sync-worker test && CI=true pnpm -F @bangumi-tv/domain test && CI=true pnpm typecheck && git diff --check`
+Run: `CI=true pnpm -F @airing-cal/sync-worker test && CI=true pnpm -F @airing-cal/domain test && CI=true pnpm typecheck && git diff --check`
 Expected: PASS。更新 API 文档，commit `refactor: reuse account sync comparison items` 并 push。
 
 ### Task 4: 缓存生命周期与 Media Queue V2
@@ -141,7 +141,7 @@ Expected: PASS。更新 API 文档，commit `refactor: reuse account sync compar
 
 - [ ] **Step 2: 运行测试确认 RED**
 
-Run: `CI=true pnpm -F @bangumi-tv/storage test && CI=true pnpm -F @bangumi-tv/media-worker test`
+Run: `CI=true pnpm -F @airing-cal/storage test && CI=true pnpm -F @airing-cal/media-worker test`
 Expected: FAIL，V2 类型、refresh key 和 delay retry 尚不存在。
 
 - [ ] **Step 3: 实现 V2 与配置**
@@ -150,7 +150,7 @@ Expected: FAIL，V2 类型、refresh key 和 delay retry 尚不存在。
 
 - [ ] **Step 4: 验证并发布原子提交**
 
-Run: `CI=true pnpm -F @bangumi-tv/storage test && CI=true pnpm -F @bangumi-tv/media-worker test && CI=true pnpm typecheck && CI=true pnpm build:check && git diff --check`
+Run: `CI=true pnpm -F @airing-cal/storage test && CI=true pnpm -F @airing-cal/media-worker test && CI=true pnpm typecheck && CI=true pnpm build:check && git diff --check`
 Expected: PASS。更新缓存文档，commit `refactor: add idempotent media refresh lifecycle` 并 push。
 
 ### Task 5: 实现无 schedule 的 SyncWorkflow
@@ -180,7 +180,7 @@ Expected: PASS。更新缓存文档，commit `refactor: add idempotent media ref
 
 - [ ] **Step 3: 运行测试确认 RED**
 
-Run: `CI=true pnpm -F @bangumi-tv/sync-worker test`
+Run: `CI=true pnpm -F @airing-cal/sync-worker test`
 Expected: FAIL，Workflow class 和类型不存在。
 
 - [ ] **Step 4: 实现 staging、publish、plan、finalize**
@@ -189,7 +189,7 @@ Expected: FAIL，Workflow class 和类型不存在。
 
 - [ ] **Step 5: 验证配置与类型**
 
-先运行 `pnpm exec wrangler types --help` 和 `pnpm exec wrangler deploy --help` 核对命令，再生成类型并执行 dry-run。Run: `CI=true pnpm -F @bangumi-tv/sync-worker test && CI=true pnpm typecheck && CI=true pnpm build:check`。
+先运行 `pnpm exec wrangler types --help` 和 `pnpm exec wrangler deploy --help` 核对命令，再生成类型并执行 dry-run。Run: `CI=true pnpm -F @airing-cal/sync-worker test && CI=true pnpm typecheck && CI=true pnpm build:check`。
 
 - [ ] **Step 6: 文档与发布**
 
@@ -214,7 +214,7 @@ Expected: FAIL，Workflow class 和类型不存在。
 
 - [ ] **Step 2: 运行测试确认 RED**
 
-Run: `CI=true pnpm -F @bangumi-tv/read-worker test && CI=true pnpm -F @bangumi-tv/frontend-worker test`
+Run: `CI=true pnpm -F @airing-cal/read-worker test && CI=true pnpm -F @airing-cal/frontend-worker test`
 Expected: FAIL，当前 cache 展开全部 key，health 只显示 cron。
 
 - [ ] **Step 3: 实现 bounded read path**
@@ -223,7 +223,7 @@ Expected: FAIL，当前 cache 展开全部 key，health 只显示 cron。
 
 - [ ] **Step 4: 验证并发布原子提交**
 
-Run: `CI=true pnpm -F @bangumi-tv/read-worker test && CI=true pnpm -F @bangumi-tv/frontend-worker test && CI=true pnpm typecheck && git diff --check`
+Run: `CI=true pnpm -F @airing-cal/read-worker test && CI=true pnpm -F @airing-cal/frontend-worker test && CI=true pnpm typecheck && git diff --check`
 Expected: PASS。更新 endpoint 文档，commit `feat: expose bounded workflow cache health` 并 push。
 
 ### Task 7: 生产 shadow、schedule 切换与旧触发清理

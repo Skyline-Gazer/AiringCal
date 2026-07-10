@@ -6,6 +6,7 @@ const DEFAULT_RESOURCES = {
   r2BucketName: 'airing-cal-images',
   queueNames: ['airing-cal-media', 'airing-cal-sync-trigger'],
 }
+const API_TIMEOUT_MS = 15_000
 
 function requiredEnv(name, env = process.env) {
   const value = env[name]
@@ -16,6 +17,7 @@ function requiredEnv(name, env = process.env) {
 async function apiRequest(fetchImpl, token, path, init = {}) {
   const response = await fetchImpl(`https://api.cloudflare.com/client/v4${path}`, {
     ...init,
+    signal: init.signal ?? AbortSignal.timeout(API_TIMEOUT_MS),
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',

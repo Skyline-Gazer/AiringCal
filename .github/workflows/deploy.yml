@@ -2,21 +2,30 @@ name: Deploy to Cloudflare
 
 on:
   push:
-    branches: [dev, main]
+    branches: [dev]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'openspec/**'
   workflow_dispatch:
     inputs:
-      branch:
-        description: Branch to deploy
+      ref:
+        description: Git ref to deploy
         required: false
         default: dev
 
+concurrency:
+  group: deploy-cloudflare
+  cancel-in-progress: false
+
 jobs:
   validate:
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
 
       - uses: pnpm/action-setup@v5
         with:
@@ -28,42 +37,37 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-
       - name: TypeCheck
         run: pnpm typecheck
-
       - name: Test
         run: pnpm test
-
       - name: Build Check
         run: pnpm build:check
 
-  provision_cloudflare:
+  resolve_cloudflare:
+    timeout-minutes: 5
     needs: validate
     runs-on: ubuntu-latest
     outputs:
-      kv_namespace_id: ${{ steps.provision.outputs.kv_namespace_id }}
+      kv_namespace_id: ${{ steps.resolve.outputs.kv_namespace_id }}
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      BANGUMI_GIT_COMMIT_SHA: ${{ github.sha }}
-      BANGUMI_GIT_REPOSITORY_URL: https://github.com/${{ github.repository }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name }}
-
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
           package-manager-cache: false
-
-      - id: provision
-        name: Provision Cloudflare resources
-        run: node scripts/provision-cloudflare-resources.mjs
+      - id: resolve
+        name: Resolve existing Cloudflare resources
+        run: node scripts/resolve-cloudflare-resources.mjs
 
   deploy_internal_workers:
-    needs: [validate, provision_cloudflare]
+    timeout-minutes: 20
+    needs: [validate, resolve_cloudflare]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -78,39 +82,32 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      AIRING_CAL_KV_NAMESPACE_ID: ${{ needs.provision_cloudflare.outputs.kv_namespace_id }}
+      AIRING_CAL_KV_NAMESPACE_ID: ${{ needs.resolve_cloudflare.outputs.kv_namespace_id }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name }}
-
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
       - uses: pnpm/action-setup@v5
         with:
           version: 9.15.9
-
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
           cache: pnpm
-
       - run: pnpm install --frozen-lockfile
-
       - name: Materialize Wrangler config
         run: node scripts/materialize-wrangler-config.mjs ${{ matrix.config }} ${{ runner.temp }}/wrangler-${{ matrix.app }}.toml
-
       - name: Build Check
         env:
           WRANGLER_LOG: debug
           WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-${{ matrix.app }}-dry-run.log
         run: pnpm exec wrangler deploy --dry-run --outdir apps/${{ matrix.app }}/dist --config ${{ runner.temp }}/wrangler-${{ matrix.app }}.toml
-
       - name: Deploy ${{ matrix.app }}
         env:
           WRANGLER_LOG: debug
           WRANGLER_LOG_SANITIZE: "false"
           WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-${{ matrix.app }}.log
         run: pnpm exec wrangler deploy --config ${{ runner.temp }}/wrangler-${{ matrix.app }}.toml
-
       - name: Print Wrangler debug log on failure
         if: failure()
         env:
@@ -125,69 +122,41 @@ jobs:
             echo "Wrangler log not found: $WRANGLER_LOG_PATH"
           fi
 
-  refresh_cache_after_internal_deploy:
-    needs: [validate, provision_cloudflare, deploy_internal_workers]
-    runs-on: ubuntu-latest
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      AIRING_CAL_KV_NAMESPACE_ID: ${{ needs.provision_cloudflare.outputs.kv_namespace_id }}
-      GITHUB_REF_NAME: ${{ github.ref_name }}
-      GITHUB_SHA: ${{ github.sha }}
-      GITHUB_RUN_ID: ${{ github.run_id }}
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name }}
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '24'
-          package-manager-cache: false
-
-      - name: Trigger sync and wait for media cache status
-        run: node scripts/push-sync-trigger.mjs
-
   deploy_frontend_worker:
-    needs: [validate, refresh_cache_after_internal_deploy]
+    timeout-minutes: 20
+    needs: [validate, resolve_cloudflare, deploy_internal_workers]
     runs-on: ubuntu-latest
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       BANGUMI_GIT_COMMIT_SHA: ${{ github.sha }}
       BANGUMI_GIT_REPOSITORY_URL: https://github.com/${{ github.repository }}
+      AIRING_CAL_KV_NAMESPACE_ID: ${{ needs.resolve_cloudflare.outputs.kv_namespace_id }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref_name }}
-
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref_name }}
       - uses: pnpm/action-setup@v5
         with:
           version: 9.15.9
-
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
           cache: pnpm
-
       - run: pnpm install --frozen-lockfile
-
       - name: Materialize Wrangler config
         run: node scripts/materialize-wrangler-config.mjs apps/frontend-worker/wrangler.toml ${{ runner.temp }}/wrangler-frontend-worker.toml
-
       - name: Build Check
         env:
           WRANGLER_LOG: debug
           WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-frontend-worker-dry-run.log
         run: pnpm exec wrangler deploy --dry-run --outdir apps/frontend-worker/dist --config ${{ runner.temp }}/wrangler-frontend-worker.toml
-
       - name: Deploy Frontend Worker
         env:
           WRANGLER_LOG: debug
           WRANGLER_LOG_SANITIZE: "false"
           WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-frontend-worker.log
         run: pnpm exec wrangler deploy --config ${{ runner.temp }}/wrangler-frontend-worker.toml
-
       - name: Print Wrangler debug log on failure
         if: failure()
         env:
