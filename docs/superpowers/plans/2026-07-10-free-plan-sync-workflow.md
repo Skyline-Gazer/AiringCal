@@ -135,20 +135,20 @@ Expected: PASS。更新 API 文档，commit `refactor: reuse account sync compar
 - Produces: `subjectRefreshKey(subjectId)`, `nextSubjectRefreshAt(subjectId, cachedAt)`, `SubjectRefreshState`, `MediaRefreshJobV2`。
 - Produces: consumer 使用 `message.retry({ delaySeconds })` 并按 `job_id` 去重。
 
-- [ ] **Step 1: 写 refresh key/SWR/consumer 失败测试**
+- [x] **Step 1: 写 refresh key/SWR/consumer 失败测试**
 
 断言 100 个 subject 的刷新时间分散在 6～8 天；重复 job 不重复下载；queued/running/ok/partial/failed 与 image status 分离；503 延迟重试 30/120/300；404/missing source ack。
 
-- [ ] **Step 2: 运行测试确认 RED**
+- [x] **Step 2: 运行测试确认 RED**
 
 Run: `CI=true pnpm -F @airing-cal/storage test && CI=true pnpm -F @airing-cal/media-worker test`
 Expected: FAIL，V2 类型、refresh key 和 delay retry 尚不存在。
 
-- [ ] **Step 3: 实现 V2 与配置**
+- [x] **Step 3: 实现 V2 与配置**
 
 保留旧 MediaJob 解析兼容；V2 处理前检查 refresh job_id，写 running，组件完成后写 ok/partial/failed。将 consumer 配置设为 batch 1、timeout 5、concurrency 4、retries 3。
 
-- [ ] **Step 4: 验证并发布原子提交**
+- [x] **Step 4: 验证并发布原子提交**
 
 Run: `CI=true pnpm -F @airing-cal/storage test && CI=true pnpm -F @airing-cal/media-worker test && CI=true pnpm typecheck && CI=true pnpm build:check && git diff --check`
 Expected: PASS。更新缓存文档，commit `refactor: add idempotent media refresh lifecycle` 并 push。

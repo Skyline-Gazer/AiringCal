@@ -1,11 +1,11 @@
 export const appBoundary = 'media-worker'
 
-import { BgmClient } from '@airing-cal/bgm-api'
+import { BgmClient, BgmHttpError, BgmNetworkError, BgmTimeoutError } from '@airing-cal/bgm-api'
 import { imageRef, subjectDetailImages, subjectMetaFromDetail, subjectMetaFromNotFound } from '@airing-cal/domain'
-import { getCachedSubjectDetail, imageIndexKey, imageStatusKey, KVStorage, R2ImageStore, subjectMetaKey, type ImageSourceSize } from '@airing-cal/storage'
+import { getCachedSubjectDetail, imageIndexKey, imageStatusKey, KVStorage, R2ImageStore, subjectMetaKey, subjectRefreshKey, type ImageSourceSize, type MediaRefreshJobV2, type SubjectRefreshState } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
-interface MediaJob {
+interface LegacyMediaJob {
   subject_id: number
   title: string
   subject_meta?: boolean
@@ -15,17 +15,34 @@ interface MediaJob {
   }
 }
 
+type MediaJob = LegacyMediaJob | MediaRefreshJobV2
+
 interface MediaEnv {
   AIRING_CAL_KV: {
     get(key: string, type: 'json'): Promise<unknown>
-    put(key: string, value: string): Promise<void>
+    put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
     delete(key: string): Promise<void>
   }
   AIRING_CAL_R2: ConstructorParameters<typeof R2ImageStore>[0]
 }
 
 interface QueueBatch {
-  messages: Array<{ body: MediaJob; ack?: () => void; retry?: () => void }>
+  messages: Array<{
+    body: MediaJob
+    attempts?: number
+    ack?: () => void
+    retry?: (options?: { delaySeconds?: number }) => void
+  }>
+}
+
+function isV2Job(job: MediaJob): job is MediaRefreshJobV2 {
+  return 'version' in job && job.version === 2 && typeof job.job_id === 'string' && Array.isArray(job.components)
+}
+
+function isTransient(error: unknown): boolean {
+  return error instanceof BgmTimeoutError
+    || error instanceof BgmNetworkError
+    || error instanceof BgmHttpError && (error.status === 429 || error.status >= 500)
 }
 
 async function sha256Hex(data: ArrayBuffer): Promise<string> {
@@ -92,6 +109,7 @@ async function processImage(size: ImageSourceSize, sourceUrl: string | undefined
       source_url: sourceUrl,
     }
   } catch (error) {
+    if (isTransient(error) && !cachedImageStatus(previous)) throw error
     return cachedImageStatus(previous) ?? {
       ...emptyImageStatus(),
       status: 'failed',
@@ -122,22 +140,52 @@ async function fetchSubjectDetail(job: MediaJob, client: BgmClient, storage: KVS
         last_error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
       })
     }
+    if (isTransient(error)) throw error
     return null
   }
 }
 
-async function processJob(job: MediaJob, env: MediaEnv): Promise<void> {
+async function putRefreshState(storage: KVStorage, job: MediaRefreshJobV2, state: SubjectRefreshState['status'], now: number, error: string | null = null): Promise<void> {
+  const previous = await storage.get<SubjectRefreshState>(subjectRefreshKey(job.subject_id))
+  await storage.put(subjectRefreshKey(job.subject_id), {
+    subject_id: job.subject_id,
+    job_id: job.job_id,
+    status: state,
+    queued_at: previous?.job_id === job.job_id ? previous.queued_at : now,
+    updated_at: now,
+    completed_at: state === 'running' || state === 'queued' ? null : now,
+    error,
+  } satisfies SubjectRefreshState)
+}
+
+async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | 'duplicate'> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const imageStore = new R2ImageStore(env.AIRING_CAL_R2)
   const client = new BgmClient()
   const now = Math.floor(Date.now() / 1000)
+  if (isV2Job(job)) {
+    const refresh = await storage.get<SubjectRefreshState>(subjectRefreshKey(job.subject_id))
+    const activeDuplicate = refresh?.job_id === job.job_id
+      && (refresh.status === 'ok' || refresh.status === 'partial' || refresh.status === 'running' && now - refresh.updated_at < 600)
+    if (activeDuplicate) return 'duplicate'
+    await putRefreshState(storage, job, 'running', now)
+  }
   const previousStatus = await storage.get<any>(imageStatusKey(job.subject_id))
-  const subject = await fetchSubjectDetail(job, client, storage, now)
-  const images = subjectDetailImages(subject)
+  const refreshDetail = !isV2Job(job) || job.components.includes('detail') || job.components.includes('meta')
+  const subject = refreshDetail ? await fetchSubjectDetail(job, client, storage, now) : null
+  const detailImages = subjectDetailImages(subject)
+  const images = {
+    common: detailImages.common ?? (isV2Job(job) ? job.images?.common : undefined),
+    large: detailImages.large ?? (isV2Job(job) ? job.images?.large : undefined),
+  }
 
   const [common, large] = await Promise.all([
-    processImage('common', images.common, previousStatus?.common, job, client, imageStore, storage, now),
-    processImage('large', images.large, previousStatus?.large, job, client, imageStore, storage, now),
+    !isV2Job(job) || job.components.includes('image_common')
+      ? processImage('common', images.common, previousStatus?.common, job, client, imageStore, storage, now)
+      : previousStatus?.common ?? emptyImageStatus(),
+    !isV2Job(job) || job.components.includes('image_large')
+      ? processImage('large', images.large, previousStatus?.large, job, client, imageStore, storage, now)
+      : previousStatus?.large ?? emptyImageStatus(),
   ])
 
   await storage.put(imageStatusKey(job.subject_id), {
@@ -147,12 +195,41 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<void> {
     large,
     subject_checked_at: now,
   })
+  if (isV2Job(job)) {
+    const requestedImages = [
+      job.components.includes('image_common') ? common : null,
+      job.components.includes('image_large') ? large : null,
+    ].filter(Boolean) as any[]
+    const imageFailure = requestedImages.some((status) => status.status === 'failed')
+    const missingImage = requestedImages.some((status) => status.status === 'missing_source')
+    const refreshStatus = !subject && refreshDetail ? 'failed' : imageFailure || missingImage ? 'partial' : 'ok'
+    await putRefreshState(storage, job, refreshStatus, now)
+  }
+  return 'processed'
 }
 
 async function queue(batch: QueueBatch, env: MediaEnv): Promise<void> {
   for (const message of batch.messages) {
-    await processJob(message.body, env)
-    message.ack?.()
+    try {
+      await processJob(message.body, env)
+      message.ack?.()
+    } catch (error) {
+      if (isV2Job(message.body) && isTransient(error)) {
+        const storage = new KVStorage(env.AIRING_CAL_KV)
+        const now = Math.floor(Date.now() / 1000)
+        await putRefreshState(storage, message.body, 'failed', now, sanitizeErrorMessage(error instanceof Error ? error.message : String(error)))
+        const delays = [30, 120, 300]
+        message.retry?.({ delaySeconds: delays[Math.min(Math.max((message.attempts ?? 1) - 1, 0), delays.length - 1)] })
+        continue
+      }
+      if (isV2Job(message.body)) {
+        const storage = new KVStorage(env.AIRING_CAL_KV)
+        await putRefreshState(storage, message.body, 'failed', Math.floor(Date.now() / 1000), 'Media refresh failed')
+        message.ack?.()
+        continue
+      }
+      throw error
+    }
   }
 }
 

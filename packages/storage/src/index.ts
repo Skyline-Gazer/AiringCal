@@ -3,10 +3,58 @@ export const packageBoundary = '@airing-cal/storage'
 export type CollectionType = 'want' | 'watched' | 'watching' | 'on_hold' | 'dropped'
 export type ImageSourceSize = 'common' | 'large'
 export const SUBJECT_DETAIL_TTL_SECONDS = 60 * 60 * 24 * 7
+export const SYNC_RUN_TTL_SECONDS = 60 * 60 * 24 * 3
+export const SYNC_STAGING_TTL_SECONDS = 60 * 60 * 24
+
+export interface SyncWorkflowParams {
+  mode?: 'shadow' | 'live'
+  source?: 'manual'
+}
+
+export interface SyncRun {
+  instance_id: string
+  mode: 'shadow' | 'live'
+  source: 'schedule' | 'manual'
+  status: 'queued' | 'running' | 'retrying' | 'ok' | 'error'
+  stage: 'initialize' | 'collections' | 'calendar' | 'snapshots' | 'refresh_plan' | 'enqueue' | 'complete'
+  started_at: number
+  heartbeat_at: number
+  completed_at: number | null
+  collection_pages: number
+  subject_count: number
+  refresh_jobs: number
+  error: string | null
+}
+
+export type SubjectRefreshStatus = 'queued' | 'running' | 'ok' | 'partial' | 'failed'
+
+export interface SubjectRefreshState {
+  subject_id: number
+  job_id: string
+  status: SubjectRefreshStatus
+  queued_at: number
+  updated_at: number
+  completed_at: number | null
+  error: string | null
+}
+
+export type MediaRefreshComponent = 'detail' | 'meta' | 'image_common' | 'image_large'
+
+export interface MediaRefreshJobV2 {
+  version: 2
+  job_id: string
+  subject_id: number
+  title: string
+  components: MediaRefreshComponent[]
+  images?: {
+    common?: string
+    large?: string
+  }
+}
 
 export interface StorageAdapter {
   get<T>(key: string, validate?: (value: unknown) => value is T): Promise<T | null>
-  put<T>(key: string, value: T): Promise<void>
+  put<T>(key: string, value: T, options?: { expirationTtl?: number }): Promise<void>
   delete(key: string): Promise<void>
 }
 
@@ -79,6 +127,22 @@ export function imageStatusKey(subjectId: number): string {
   return `image:status:${subjectId}`
 }
 
+export function subjectRefreshKey(subjectId: number): string {
+  return `subject:refresh:${subjectId}`
+}
+
+export function syncRunKey(instanceId: string): string {
+  return `sync:run:${instanceId}`
+}
+
+export function syncStagingKey(instanceId: string, suffix: string): string {
+  return `sync:staging:${instanceId}:${suffix}`
+}
+
+export function syncShadowKey(instanceId: string, suffix: string): string {
+  return `snapshot:shadow:${instanceId}:${suffix}`
+}
+
 export function imageIndexKey(hash: string): string {
   return `image:index:${hash}`
 }
@@ -88,7 +152,7 @@ export function imageOriginalKey(hash: string): string {
 }
 
 export class KVStorage implements StorageAdapter {
-  constructor(private kv: { get(key: string, type: 'json'): Promise<unknown>; put(key: string, value: string): Promise<void>; delete(key: string): Promise<void> }) {}
+  constructor(private kv: { get(key: string, type: 'json'): Promise<unknown>; put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>; delete(key: string): Promise<void> }) {}
 
   async get<T>(key: string, validate?: (value: unknown) => value is T): Promise<T | null> {
     const raw = await this.kv.get(key, 'json')
@@ -97,13 +161,20 @@ export class KVStorage implements StorageAdapter {
     return raw as T
   }
 
-  async put<T>(key: string, value: T): Promise<void> {
-    await this.kv.put(key, JSON.stringify(value))
+  async put<T>(key: string, value: T, options?: { expirationTtl?: number }): Promise<void> {
+    await this.kv.put(key, JSON.stringify(value), options)
   }
 
   async delete(key: string): Promise<void> {
     await this.kv.delete(key)
   }
+}
+
+export function nextSubjectRefreshAt(subjectId: number, cachedAt: number): number {
+  const sixDays = 6 * 24 * 60 * 60
+  const twoDays = 2 * 24 * 60 * 60
+  const spread = Math.abs(Math.trunc(subjectId) * 997) % (twoDays + 1)
+  return cachedAt + sixDays + spread
 }
 
 function freshSubjectDetail<T>(entry: SubjectDetailCacheEntry<T> | null, now: number, ttlSeconds: number): T | null {

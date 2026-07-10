@@ -15,11 +15,11 @@
 
 ## 3. 建立缓存刷新生命周期
 
-- [ ] 3.1 先为 Workflow run/staging/shadow key、`subject:refresh` 状态和 6～8 天确定性刷新窗口补失败测试
-- [ ] 3.2 在 storage/domain 中实现兼容 key、`SyncRun`、refresh 状态、`MediaRefreshJobV2` 与 SWR 判断
-- [ ] 3.3 先为 Media consumer job 去重、单消息、瞬态 delay retry、404/missing source 终态 ack 补失败测试
-- [ ] 3.4 实现 Media consumer V2 幂等处理与 refresh/image 状态分离，并兼容旧消息过渡
-- [ ] 3.5 将 Media Queue 配置改为 batch 1、timeout 5、concurrency 4、retries 3，更新文档并原子 commit/push
+- [x] 3.1 先为 Workflow run/staging/shadow key、`subject:refresh` 状态和 6～8 天确定性刷新窗口补失败测试
+- [x] 3.2 在 storage/domain 中实现兼容 key、`SyncRun`、refresh 状态、`MediaRefreshJobV2` 与 SWR 判断
+- [x] 3.3 先为 Media consumer job 去重、单消息、瞬态 delay retry、404/missing source 终态 ack 补失败测试
+- [x] 3.4 实现 Media consumer V2 幂等处理与 refresh/image 状态分离，并兼容旧消息过渡
+- [x] 3.5 将 Media Queue 配置改为 batch 1、timeout 5、concurrency 4、retries 3，更新文档并原子 commit/push
 
 ## 4. 实现 shadow Workflow 编排
 

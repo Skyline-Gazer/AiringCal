@@ -27,6 +27,16 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+function assertV2MediaJob(value: unknown, subjectId: number, title: string, images: { common?: string; large?: string }) {
+  const job = value as any
+  assert.equal(job.version, 2)
+  assert.match(job.job_id, new RegExp(`:${subjectId}$`))
+  assert.equal(job.subject_id, subjectId)
+  assert.equal(job.title, title)
+  assert.deepEqual(job.components, ['detail', 'meta', 'image_common', 'image_large'])
+  assert.deepEqual(job.images, images)
+}
+
 function mockFetch() {
   const calls: string[] = []
   const fetch = async (url: string | URL | Request) => {
@@ -126,14 +136,9 @@ test('scheduled sync writes new snapshot keys and enqueues media work without im
     assert.equal((kv.values.get('sync:meta') as any).cron.last.status, 'ok')
     assert.equal((kv.values.get('sync:meta') as any).cron.last.source, 'scheduled')
     assert.equal(queueMessages.length, 1)
-    assert.deepEqual(queueMessages[0], {
-      subject_id: 23080,
-      title: 'A Full CN',
-      subject_meta: true,
-      images: {
-        common: 'https://img.example/detail-common.jpg',
-        large: 'https://img.example/detail-large.jpg',
-      },
+    assertV2MediaJob(queueMessages[0], 23080, 'A Full CN', {
+      common: 'https://img.example/detail-common.jpg',
+      large: 'https://img.example/detail-large.jpg',
     })
     assert.equal(upstream.calls.some((url) => url.includes('img.example')), false)
   } finally {
@@ -141,7 +146,7 @@ test('scheduled sync writes new snapshot keys and enqueues media work without im
   }
 })
 
-test('scheduled sync marks queued image status before media-worker caches calendar-only subjects', async () => {
+test('scheduled sync marks refresh queued without changing image status for calendar-only subjects', async () => {
   const kv = new MockKV()
   const queueMessages: unknown[] = []
   const originalFetch = globalThis.fetch
@@ -190,12 +195,11 @@ test('scheduled sync marks queued image status before media-worker caches calend
       SYNC_MODE: 'merge',
     } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
 
-    const status = kv.values.get('image:status:456080') as any
+    const refresh = kv.values.get('subject:refresh:456080') as any
     assert.equal(queueMessages.length, 1)
-    assert.equal(status.subject_id, 456080)
-    assert.equal(status.title, '日历限定')
-    assert.equal(status.common.status, 'queued')
-    assert.equal(status.large.status, 'queued')
+    assert.equal(refresh.subject_id, 456080)
+    assert.equal(refresh.status, 'queued')
+    assert.equal(kv.values.has('image:status:456080'), false)
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -254,14 +258,9 @@ test('scheduled sync enriches calendar episode totals from subject detail', asyn
     assert.equal(calendar.items[0].summary, 'from subject detail')
     assert.equal(calendar.items[0].eps, 12)
     assert.equal(calendar.items[0].total_episodes, 24)
-    assert.deepEqual(queueMessages[0], {
-      subject_id: 456080,
-      title: '日历限定',
-      subject_meta: true,
-      images: {
-        common: 'https://img.example/detail-common.jpg',
-        large: 'https://img.example/detail-large.jpg',
-      },
+    assertV2MediaJob(queueMessages[0], 456080, '日历限定', {
+      common: 'https://img.example/detail-common.jpg',
+      large: 'https://img.example/detail-large.jpg',
     })
   } finally {
     globalThis.fetch = originalFetch
@@ -426,14 +425,9 @@ test('scheduled sync reuses cached subject detail for calendar enrichment', asyn
     assert.equal(calendar.items[0].name_cn, '缓存日历限定')
     assert.equal(calendar.items[0].summary, 'from subject detail cache')
     assert.equal(calendar.items[0].total_episodes, 24)
-    assert.deepEqual(queueMessages[0], {
-      subject_id: 456080,
-      title: '缓存日历限定',
-      subject_meta: true,
-      images: {
-        common: 'https://img.example/cached-common.jpg',
-        large: 'https://img.example/cached-large.jpg',
-      },
+    assertV2MediaJob(queueMessages[0], 456080, '缓存日历限定', {
+      common: 'https://img.example/cached-common.jpg',
+      large: 'https://img.example/cached-large.jpg',
     })
   } finally {
     globalThis.fetch = originalFetch
@@ -514,7 +508,7 @@ test('scheduled sync normalizes cached subject detail episode count aliases into
   }
 })
 
-test('scheduled sync marks queued image status even when media queue send fails', async () => {
+test('scheduled sync preserves queued refresh state when media queue send fails', async () => {
   const kv = new MockKV()
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async (url: string | URL | Request) => {
@@ -565,15 +559,15 @@ test('scheduled sync marks queued image status even when media queue send fails'
       /queue unavailable/,
     )
 
-    const status = kv.values.get('image:status:456080') as any
-    assert.equal(status.common.status, 'queued')
-    assert.equal(status.large.status, 'queued')
+    const refresh = kv.values.get('subject:refresh:456080') as any
+    assert.equal(refresh.status, 'queued')
+    assert.equal(kv.values.has('image:status:456080'), false)
   } finally {
     globalThis.fetch = originalFetch
   }
 })
 
-test('scheduled sync publishes calendar image status before later KV enrichment failures', async () => {
+test('scheduled sync publishes V2 refresh job before later KV enrichment failures', async () => {
   const kv = new MockKV()
   const queueMessages: unknown[] = []
   const originalGet = kv.get.bind(kv)
@@ -630,19 +624,13 @@ test('scheduled sync publishes calendar image status before later KV enrichment 
       /late kv failure/,
     )
 
-    const status = kv.values.get('image:status:456080') as any
     assert.equal(queueMessages.length, 1)
-    assert.deepEqual(queueMessages[0], {
-      subject_id: 456080,
-      title: '日历限定',
-      subject_meta: true,
-      images: {
-        common: 'https://img.example/calendar-common.jpg',
-        large: 'https://img.example/calendar-large.jpg',
-      },
+    assertV2MediaJob(queueMessages[0], 456080, '日历限定', {
+      common: 'https://img.example/calendar-common.jpg',
+      large: 'https://img.example/calendar-large.jpg',
     })
-    assert.equal(status.common.status, 'queued')
-    assert.equal(status.large.status, 'queued')
+    assert.equal((kv.values.get('subject:refresh:456080') as any).status, 'queued')
+    assert.equal(kv.values.has('image:status:456080'), false)
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -676,15 +664,11 @@ test('scheduled sync enriches collection and calendar snapshots from existing me
     assert.equal(collection.nsfw, true)
     assert.equal(calendar.items[0].images.common.hash, 'a'.repeat(64))
     assert.equal(calendar.items[0].nsfw, true)
-    assert.deepEqual(queueMessages, [{
-      subject_id: 23080,
-      title: 'A Full CN',
-      subject_meta: true,
-      images: {
-        common: 'https://img.example/detail-common.jpg',
-        large: 'https://img.example/detail-large.jpg',
-      },
-    }])
+    assert.equal(queueMessages.length, 1)
+    assertV2MediaJob(queueMessages[0], 23080, 'A Full CN', {
+      common: 'https://img.example/detail-common.jpg',
+      large: 'https://img.example/detail-large.jpg',
+    })
   } finally {
     globalThis.fetch = originalFetch
   }

@@ -13,6 +13,7 @@ bucket_name = "airing-cal-images"
 
 [[queues.consumers]]
 queue = "airing-cal-media"
-max_batch_size = 10
-max_batch_timeout = 30
+max_batch_size = 1
+max_batch_timeout = 5
+max_concurrency = 4
 max_retries = 3

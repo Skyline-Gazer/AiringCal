@@ -42,6 +42,14 @@ test('Cloudflare resource names use the AiringCal prefix', () => {
   }
 })
 
+test('media queue consumer uses Free Plan concurrency limits', () => {
+  const config = readFileSync(resolve(root, 'apps/media-worker/wrangler.toml'), 'utf8')
+  assert.match(config, /^max_batch_size = 1$/m)
+  assert.match(config, /^max_batch_timeout = 5$/m)
+  assert.match(config, /^max_concurrency = 4$/m)
+  assert.match(config, /^max_retries = 3$/m)
+})
+
 test('deploy workflow resolves existing resources without waiting for business sync', () => {
   const workflow = readFileSync(resolve(root, '.github/workflows/deploy.yml'), 'utf8')
   assert.match(workflow, /push:\s*\n\s+branches:\s*\[dev\]/, 'only dev should deploy automatically')
@@ -129,6 +137,9 @@ test('README documents the multi-worker deployment without legacy cron instructi
   }
   for (const fragment of ['https://next.bgm.tv/demo/access-token', 'https://bgm.tv/user/sai', 'sai,another_user', '只配置在 `airing-cal-sync`']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document how to configure bgm runtime value: ${fragment}`)
+  }
+  for (const fragment of ['`subject:refresh:{subject_id}`', '`job_id`', '6 至 8 天', '`max_concurrency = 4`', '`image:status:{subject_id}` 只描述真实图片缓存结果']) {
+    assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document media refresh lifecycle: ${fragment}`)
   }
   for (const fragment of ['BANGUMI_GIT_COMMIT_SHA', 'BANGUMI_GIT_REPOSITORY_URL', '绑定自定义域名不需要改任何 repository URL 变量']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document optional frontend build metadata: ${fragment}`)

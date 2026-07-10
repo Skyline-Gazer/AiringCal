@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { getCachedSubjectDetail, KVStorage, packageBoundary, subjectDetailKey } from './index.ts'
+import { getCachedSubjectDetail, KVStorage, nextSubjectRefreshAt, packageBoundary, subjectDetailKey } from './index.ts'
 
 class MockKV {
   values = new Map<string, unknown>()
@@ -66,4 +66,14 @@ test('getCachedSubjectDetail refreshes stale cache and keeps stale data when ref
   }, 23080, 1000 + 60 * 60 * 24 * 16)
 
   assert.deepEqual(fallback, { id: 23080, name: 'Fresh', total_episodes: 24 })
+})
+
+test('nextSubjectRefreshAt deterministically spreads subjects across six to eight days', () => {
+  const cachedAt = 1_000_000
+  const refreshTimes = Array.from({ length: 100 }, (_, index) => nextSubjectRefreshAt(index + 1, cachedAt))
+
+  assert.equal(new Set(refreshTimes).size, 100)
+  assert.equal(refreshTimes.every((at) => at >= cachedAt + 6 * 86400), true)
+  assert.equal(refreshTimes.every((at) => at <= cachedAt + 8 * 86400), true)
+  assert.equal(nextSubjectRefreshAt(42, cachedAt), nextSubjectRefreshAt(42, cachedAt))
 })

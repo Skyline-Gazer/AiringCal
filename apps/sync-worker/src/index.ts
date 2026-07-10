@@ -2,7 +2,7 @@ export const appBoundary = 'sync-worker'
 
 import { BgmClient, BgmHttpError, BgmPlatformClient, fetchAllCollections } from '@airing-cal/bgm-api'
 import { compareAccounts, executeSync, imageRefsFromStatus, mergeCollections, subjectDetailImages, SyncValidationError, transformCalendar, withSubjectDetail, type SubjectDetailMap, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
-import { getCachedSubjectDetail, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectDetailKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
+import { getCachedSubjectDetail, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectDetailKey, subjectMetaKey, subjectRefreshKey, syncMetaKey, type MediaRefreshJobV2 } from '@airing-cal/storage'
 import { publicError, sanitizeErrorMessage, syncHeaders } from '@airing-cal/worker-common'
 
 interface SyncEnv {
@@ -84,24 +84,6 @@ function hasImageSource(images: { common?: string; large?: string }): boolean {
 
 function hasCachedImage(refs: SubjectImages, size: 'common' | 'large'): boolean {
   return refs[size] !== null
-}
-
-function emptyImageStatus() {
-  return {
-    status: 'pending_next_cron',
-    hash: null,
-    uri: null,
-    r2_key: null,
-    queued_at: null,
-    cached_at: null,
-    last_error: null,
-  }
-}
-
-function queuedImageStatus(sourceUrl: string | undefined, previous: any, now: number) {
-  if (previous?.status === 'cached') return previous
-  if (!sourceUrl) return { ...emptyImageStatus(), status: 'missing_source' }
-  return { ...emptyImageStatus(), status: 'queued', queued_at: now }
 }
 
 function operationLogKey(id: string): string {
@@ -323,35 +305,40 @@ async function loadImageMap(storage: KVStorage, subjectIds: Iterable<number>): P
   return map
 }
 
-async function markMediaQueued(storage: KVStorage, input: SubjectInput, now: number): Promise<void> {
-  const previousStatus = await storage.get<any>(imageStatusKey(input.subject_id))
-  await storage.put(imageStatusKey(input.subject_id), {
+async function markMediaQueued(storage: KVStorage, input: SubjectInput, now: number, jobId: string): Promise<void> {
+  await storage.put(subjectRefreshKey(input.subject_id), {
     subject_id: input.subject_id,
-    title: input.title,
-    common: queuedImageStatus(input.images.common, previousStatus?.common, now),
-    large: queuedImageStatus(input.images.large, previousStatus?.large, now),
-    subject_checked_at: previousStatus?.subject_checked_at ?? null,
+    job_id: jobId,
+    status: 'queued',
+    queued_at: now,
+    updated_at: now,
+    completed_at: null,
+    error: null,
   })
 }
 
-async function sendMediaJob(env: SyncEnv, input: SubjectInput): Promise<void> {
-  await env.MEDIA_QUEUE.send({
+async function sendMediaJob(env: SyncEnv, input: SubjectInput, jobId: string): Promise<void> {
+  const job: MediaRefreshJobV2 = {
+    version: 2,
+    job_id: jobId,
     subject_id: input.subject_id,
     title: input.title,
-    subject_meta: true,
+    components: ['detail', 'meta', 'image_common', 'image_large'],
     images: input.images,
-  })
+  }
+  await env.MEDIA_QUEUE.send(job)
 }
 
-async function enqueueCalendarMediaEarly(env: SyncEnv, storage: KVStorage, subjectInputs: Map<number, SubjectInput>, calendar: any[], now: number): Promise<Set<number>> {
+async function enqueueCalendarMediaEarly(env: SyncEnv, storage: KVStorage, subjectInputs: Map<number, SubjectInput>, calendar: any[], now: number, runId: string): Promise<Set<number>> {
   const seen = new Set<number>()
   for (const day of calendar) {
     for (const subject of day.items ?? []) {
       if (typeof subject.id !== 'number' || seen.has(subject.id)) continue
       const input = subjectInputs.get(subject.id)
       if (!input) continue
-      await markMediaQueued(storage, input, now)
-      await sendMediaJob(env, input)
+      const jobId = `${runId}:${input.subject_id}`
+      await markMediaQueued(storage, input, now, jobId)
+      await sendMediaJob(env, input, jobId)
       seen.add(subject.id)
     }
   }
@@ -377,7 +364,7 @@ function shouldQueueMedia(input: SubjectInput, images: SubjectImages | undefined
   return false
 }
 
-async function runScheduledSync(env: SyncEnv): Promise<SyncWarning[]> {
+async function runScheduledSync(env: SyncEnv, runId = `legacy:${Math.floor(Date.now() / 1000)}`): Promise<SyncWarning[]> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const client = new BgmClient(env.BANGUMI_TOKEN)
   const now = Math.floor(Date.now() / 1000)
@@ -395,7 +382,7 @@ async function runScheduledSync(env: SyncEnv): Promise<SyncWarning[]> {
   const subjectDetails = new Map([...storedCollectionDetails, ...calendarDetails])
   const calendar = enrichCalendarWithSubjectDetails(rawCalendar, subjectDetails)
   const subjectInputs = collectSubjectInputs(collections as any[], calendar as any[], subjectDetails)
-  const earlyMediaSubjectIds = await enqueueCalendarMediaEarly(env, storage, subjectInputs, calendar as any[], now)
+  const earlyMediaSubjectIds = await enqueueCalendarMediaEarly(env, storage, subjectInputs, calendar as any[], now, runId)
   const subjectIds = [...subjectInputs.keys()]
   const [imageMap, subjectMetaMap] = await Promise.all([
     loadImageMap(storage, subjectIds),
@@ -425,14 +412,15 @@ async function runScheduledSync(env: SyncEnv): Promise<SyncWarning[]> {
     if (earlyMediaSubjectIds.has(input.subject_id)) continue
     if (!hasImageSource(input.images) && subjectMetaMap.has(input.subject_id)) continue
     if (!shouldQueueMedia(input, imageMap.get(input.subject_id), subjectMetaMap.has(input.subject_id))) continue
-    await markMediaQueued(storage, input, now)
-    await sendMediaJob(env, input)
+    const jobId = `${runId}:${input.subject_id}`
+    await markMediaQueued(storage, input, now, jobId)
+    await sendMediaJob(env, input, jobId)
   }
 
   return warnings
 }
 
-async function runDeployCalendarWarmup(env: SyncEnv): Promise<SyncWarning[]> {
+async function runDeployCalendarWarmup(env: SyncEnv, runId: string): Promise<SyncWarning[]> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const client = new BgmClient(env.BANGUMI_TOKEN)
   const now = Math.floor(Date.now() / 1000)
@@ -443,7 +431,7 @@ async function runDeployCalendarWarmup(env: SyncEnv): Promise<SyncWarning[]> {
   warnings.push(...detailWarnings)
   const calendar = enrichCalendarWithSubjectDetails(rawCalendar, calendarDetails)
   const subjectInputs = collectSubjectInputs([], calendar as any[], calendarDetails)
-  await enqueueCalendarMediaEarly(env, storage, subjectInputs, calendar as any[], now)
+  await enqueueCalendarMediaEarly(env, storage, subjectInputs, calendar as any[], now, runId)
   const subjectIds = [...subjectInputs.keys()]
   const [imageMap, subjectMetaMap] = await Promise.all([
     loadImageMap(storage, subjectIds),
@@ -557,7 +545,7 @@ async function scheduled(event: { scheduledTime?: number }, env: SyncEnv, ctx: {
     return
   }
   try {
-    const promise = runScheduledSync(env)
+    const promise = runScheduledSync(env, `scheduled:${triggeredAt}`)
     ctx.waitUntil(promise)
     const warnings = await promise
     await recordCronStatus(env, 'last', {
@@ -592,9 +580,9 @@ async function queue(batch: QueueBatch, env: SyncEnv): Promise<void> {
     try {
       let warnings: SyncWarning[] = []
       if (deploySync) {
-        warnings = await runDeployCalendarWarmup(env)
+        warnings = await runDeployCalendarWarmup(env, `queue:${triggeredAt}`)
       } else {
-        warnings = await runScheduledSync(env)
+        warnings = await runScheduledSync(env, `queue:${triggeredAt}`)
       }
       await recordCronStatus(env, 'last', {
         status: 'ok',

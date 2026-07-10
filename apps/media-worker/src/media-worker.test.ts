@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { subjectDetailKey } from '@airing-cal/storage'
+import { subjectDetailKey, subjectRefreshKey } from '@airing-cal/storage'
 import worker from './index.ts'
 
 class MockKV {
@@ -35,6 +35,21 @@ class MockR2 {
 function batch(body: unknown) {
   return {
     messages: [{ body, ack: () => {}, retry: () => {} }],
+  }
+}
+
+function trackedBatch(body: unknown, attempts = 1) {
+  const state = { acked: 0, retries: [] as Array<{ delaySeconds?: number }> }
+  return {
+    state,
+    batch: {
+      messages: [{
+        body,
+        attempts,
+        ack: () => { state.acked++ },
+        retry: (options?: { delaySeconds?: number }) => { state.retries.push(options ?? {}) },
+      }],
+    },
   }
 }
 
@@ -341,5 +356,94 @@ test('media-worker processes subject metadata without image sources', async () =
     assert.equal(r2.writes.length, 0)
   } finally {
     globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker skips a duplicate completed V2 job', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  kv.values.set(subjectRefreshKey(23080), {
+    subject_id: 23080,
+    job_id: 'instance-1:23080',
+    status: 'ok',
+    queued_at: 1,
+    updated_at: 2,
+    completed_at: 2,
+    error: null,
+  })
+  const message = trackedBatch({
+    version: 2,
+    job_id: 'instance-1:23080',
+    subject_id: 23080,
+    title: 'A CN',
+    components: ['detail', 'meta', 'image_common', 'image_large'],
+  })
+  const originalFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = (async () => {
+    calls++
+    throw new Error('unexpected fetch')
+  }) as typeof globalThis.fetch
+
+  try {
+    await worker.queue(message.batch as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.equal(calls, 0)
+    assert.equal(message.state.acked, 1)
+    assert.deepEqual(message.state.retries, [])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker retries transient V2 failures with bounded delay', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const message = trackedBatch({
+    version: 2,
+    job_id: 'instance-1:23080',
+    subject_id: 23080,
+    title: 'A CN',
+    components: ['detail', 'meta'],
+  }, 1)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response('unavailable', { status: 503 })) as typeof globalThis.fetch
+
+  try {
+    await worker.queue(message.batch as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.equal(message.state.acked, 0)
+    assert.deepEqual(message.state.retries, [{ delaySeconds: 30 }])
+    assert.equal((kv.values.get(subjectRefreshKey(23080)) as any).status, 'failed')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker acks terminal 404 and missing image sources', async () => {
+  for (const responseBody of [null, { id: 23080, nsfw: false }]) {
+    const kv = new MockKV()
+    const r2 = new MockR2()
+    const message = trackedBatch({
+      version: 2,
+      job_id: `instance-${responseBody ? 'missing' : '404'}:23080`,
+      subject_id: 23080,
+      title: 'A CN',
+      components: ['detail', 'meta', 'image_common', 'image_large'],
+    })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      if (String(url).includes('/v0/subjects/23080')) {
+        return responseBody ? Response.json(responseBody) : new Response('Not found', { status: 404 })
+      }
+      throw new Error(`unexpected fetch ${url}`)
+    }) as typeof globalThis.fetch
+
+    try {
+      await worker.queue(message.batch as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+      assert.equal(message.state.acked, 1)
+      assert.deepEqual(message.state.retries, [])
+      assert.match((kv.values.get(subjectRefreshKey(23080)) as any).status, /partial|failed/)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   }
 })

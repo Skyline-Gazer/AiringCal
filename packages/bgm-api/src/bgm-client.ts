@@ -187,10 +187,15 @@ export class BgmClient {
     const normalizedUrl = url.startsWith('//') ? `https:${url}` : url
     let res: Response
     try {
-      res = await fetch(normalizedUrl, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(30000) })
-    } catch {
-      return null
+      res = await fetch(normalizedUrl, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(10000) })
+    } catch (error: any) {
+      if (error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+        throw new BgmTimeoutError(`请求 bgm.tv 图片超时 (10000ms): ${normalizedUrl}`)
+      }
+      throw new BgmNetworkError(`无法连接 bgm.tv 图片: ${error?.message || String(error)}`)
     }
+    if (res.status === 404) return null
+    if (res.status === 429 || res.status >= 500) throw new BgmHttpError(res.status, `bgm.tv 图片返回错误 (${res.status})`)
     if (!res.ok) return null
     return {
       data: await res.arrayBuffer(),

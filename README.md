@@ -240,7 +240,7 @@ Wrangler 本地权限映射把 `workers_scripts:write` 描述为可修改 Worker
 规则：
 
 - 卡片封面默认使用 `images.common.uri`
-- `image_status.common` / `image_status.large` 暴露非敏感缓存状态，便于区分 `cached`、`pending_next_cron`、`queued`、`failed` 和 `missing_source`
+- `image_status.common` / `image_status.large` 暴露非敏感缓存结果；`image:status:{subject_id}` 只描述真实图片缓存结果，不再承担 Queue 任务进度
 - 需要大图时使用 `images.large`
 - 图片 hash 是 `sha256(downloaded_image_bytes)` 的小写 hex
 - R2 key 固定为 `images/{hash}/original`
@@ -255,10 +255,13 @@ KV key：
 | `snapshot:summary` | `airing-cal-sync` | 数量摘要 |
 | `sync:meta` | `airing-cal-sync` | 最近同步元信息 |
 | `subject:meta:{subject_id}` | `airing-cal-media` | subject detail 与 NSFW 判定 |
+| `subject:refresh:{subject_id}` | `airing-cal-sync`, `airing-cal-media` | V2 媒体任务的 queued/running/ok/partial/failed 状态与 `job_id` |
 | `image:status:{subject_id}` | `airing-cal-media` | subject 的 common/large 缓存状态 |
 | `image:index:{hash}` | `airing-cal-media` | hash 到 subject/source metadata 的索引 |
 
 `subject:detail:{subject_id}` 存完整 `GET /v0/subjects/{subject_id}` 响应和 `cached_at`。代码里不要重复从 collection/calendar 的 slim subject 推导 canonical 图片或 NSFW；公共投影入口在 `@airing-cal/domain`：
+
+subject detail 使用 stale-while-revalidate：旧内容在刷新窗口后继续服务，下一次刷新时间按 subject ID 确定性分散到 6 至 8 天。`MediaRefreshJobV2` 的 `job_id` 由运行 ID 与 subject ID 组成；consumer 会跳过同一 job 的完成态或活动租约，瞬态失败按 30/120/300 秒重试，404 和缺失源图写终态后 ack。Media Queue 每次只取 1 条，`max_batch_timeout = 5`、`max_concurrency = 4`、`max_retries = 3`，避免同时压高 Workers Free Plan 与 bgm.tv 上游负载。
 
 - `subjectDetailImages(subject)`：从完整 subject detail 取 `common` / `large` 源图。
 - `subjectMetaFromDetail(subjectId, subject, checkedAt)`：从完整 subject detail 生成 `subject:meta`。
