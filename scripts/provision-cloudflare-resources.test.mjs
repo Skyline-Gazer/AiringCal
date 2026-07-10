@@ -20,10 +20,7 @@ test('provisionCloudflareResources reuses existing Cloudflare resources', async 
     if (url.includes('/storage/kv/namespaces')) return jsonResponse([{ id: 'kv-id', title: 'airing-cal-kv' }])
     if (url.includes('/r2/buckets')) return jsonResponse({ buckets: [{ name: 'airing-cal-images' }] })
     if (url.includes('/queues')) {
-      return jsonResponse([
-        { queue_name: 'airing-cal-media' },
-        { queue_name: 'airing-cal-sync-trigger' },
-      ])
+      return jsonResponse([{ queue_name: 'airing-cal-media' }])
     }
     throw new Error(`unexpected URL ${url}`)
   }
@@ -68,6 +65,5 @@ test('provisionCloudflareResources creates missing resources and returns the KV 
     { title: 'airing-cal-kv' },
     { name: 'airing-cal-images' },
     { queue_name: 'airing-cal-media' },
-    { queue_name: 'airing-cal-sync-trigger' },
   ])
 })

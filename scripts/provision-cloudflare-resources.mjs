@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url'
 const DEFAULT_RESOURCES = {
   kvNamespaceTitle: 'airing-cal-kv',
   r2BucketName: 'airing-cal-images',
-  queueNames: ['airing-cal-media', 'airing-cal-sync-trigger'],
+  queueNames: ['airing-cal-media'],
 }
 const API_TIMEOUT_MS = 15_000
 

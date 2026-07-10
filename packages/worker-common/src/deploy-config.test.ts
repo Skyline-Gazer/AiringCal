@@ -9,7 +9,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const appConfigs = [
   ['frontend-worker', ['[[services]]', 'READ_WORKER', 'SYNC_WORKER']],
   ['read-worker', ['[[kv_namespaces]]', '[[r2_buckets]]']],
-  ['sync-worker', ['[[queues.producers]]', '[[queues.consumers]]', '[triggers]', '0 * * * *', '[[workflows]]', 'binding = "SYNC_WORKFLOW"', 'class_name = "SyncWorkflow"']],
+  ['sync-worker', ['[[queues.producers]]', '[[workflows]]', 'binding = "SYNC_WORKFLOW"', 'class_name = "SyncWorkflow"', 'schedules = ["0 */4 * * *"]']],
   ['media-worker', ['[[queues.consumers]]', '[[kv_namespaces]]', '[[r2_buckets]]']],
 ] as const
 
@@ -28,7 +28,7 @@ test('Cloudflare resource names use the AiringCal prefix', () => {
   const expected = new Map([
     ['frontend-worker', ['name = "airing-cal-frontend"', 'service = "airing-cal-read"']],
     ['read-worker', ['name = "airing-cal-read"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-images"']],
-    ['sync-worker', ['name = "airing-cal-sync"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'queue = "airing-cal-media"', 'queue = "airing-cal-sync-trigger"']],
+    ['sync-worker', ['name = "airing-cal-sync"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'queue = "airing-cal-media"']],
     ['media-worker', ['name = "airing-cal-media"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-images"', 'queue = "airing-cal-media"']],
   ])
 
@@ -50,13 +50,18 @@ test('media queue consumer uses Free Plan concurrency limits', () => {
   assert.match(config, /^max_retries = 3$/m)
 })
 
-test('sync workflow is registered in shadow mode without a schedule', () => {
+test('sync workflow owns the production schedule without legacy triggers', () => {
   const config = readFileSync(resolve(root, 'apps/sync-worker/wrangler.toml'), 'utf8')
   assert.match(config, /^main = "src\/production\.ts"$/m)
   assert.match(config, /^name = "airing-cal-sync"$/m)
   assert.match(config, /^binding = "SYNC_WORKFLOW"$/m)
   assert.match(config, /^class_name = "SyncWorkflow"$/m)
-  assert.doesNotMatch(config, /^schedules =/m)
+  assert.match(config, /^schedules = \["0 \*\/4 \* \* \*"\]$/m)
+  assert.doesNotMatch(config, /^\[triggers\]$/m)
+  assert.doesNotMatch(config, /^\[\[queues\.consumers\]\]$/m)
+  assert.doesNotMatch(config, /airing-cal-sync-trigger/)
+  assert.equal(existsSync(resolve(root, 'scripts/push-sync-trigger.mjs')), false)
+  assert.equal(existsSync(resolve(root, 'scripts/push-sync-trigger.test.mjs')), false)
 })
 
 test('deploy workflow resolves existing resources without waiting for business sync', () => {
@@ -146,7 +151,7 @@ test('manual Workflow trigger uses GitHub secrets without exposing a public sync
 
 test('README documents the multi-worker deployment without legacy cron instructions', () => {
   const readme = readFileSync(resolve(root, 'README.md'), 'utf8')
-  for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/api/cache', '/api/health', 'next cron time', 'images.common', 'images.large', 'Cloudflare 免费计划对 Cron Trigger 数量有限制', 'UTC 0/4/8/12/16/20 点真正同步', '手动 bootstrap workflow']) {
+  for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/api/cache', '/api/health', 'images.common', 'images.large', 'Workflow schedule', '0 */4 * * *', '手动 bootstrap workflow']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document ${fragment}`)
   }
   for (const fragment of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', '不要再创建 `CF_API_TOKEN` / `CF_ACCOUNT_ID`', 'Workers Scripts', 'Workers KV Storage', 'Workers R2 Storage', 'Queues', 'Account Settings', 'User Details', 'Workers Routes']) {
@@ -167,13 +172,13 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['`subject:refresh:{subject_id}`', '`job_id`', '6 至 8 天', '`max_concurrency = 4`', '`image:status:{subject_id}` 只描述真实图片缓存结果']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document media refresh lifecycle: ${fragment}`)
   }
-  for (const fragment of ['Workflow 已注册但没有 schedule', '旧 Cron 仍是正式触发源', '`sync:run:{instanceId}`', '`sync:staging:{instanceId}:*`', '`snapshot:shadow:{instanceId}:*`', 'workflows trigger airing-cal-sync', 'workflows instances describe', 'workflows instances restart', 'workflows instances terminate']) {
+  for (const fragment of ['Workflow schedule', '0 */4 * * *', '`sync:run:{instanceId}`', '`sync:staging:{instanceId}:*`', '`snapshot:shadow:{instanceId}:*`', 'workflows trigger airing-cal-sync', 'workflows instances describe', 'workflows instances restart', 'workflows instances terminate']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document shadow Workflow operations: ${fragment}`)
   }
   for (const fragment of ['BANGUMI_GIT_COMMIT_SHA', 'BANGUMI_GIT_REPOSITORY_URL', '绑定自定义域名不需要改任何 repository URL 变量']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document optional frontend build metadata: ${fragment}`)
   }
-  for (const fragment of ['secrets.CF_API_TOKEN', 'secrets.CF_ACCOUNT_ID', 'CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', '内联 placeholder', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets', 'PUBLIC_REPOSITORY_URL', 'wrangler.deploy.toml', 'pre-check Cloudflare 资源', '部署完成后自动投递一次', 'CI 会向 `airing-cal-sync-trigger` 自动投递']) {
+  for (const fragment of ['secrets.CF_API_TOKEN', 'secrets.CF_ACCOUNT_ID', 'CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', '内联 placeholder', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets', 'PUBLIC_REPOSITORY_URL', 'wrangler.deploy.toml', 'pre-check Cloudflare 资源', '部署完成后自动投递一次', 'CI 会向 `airing-cal-sync-trigger` 自动投递', '旧 Cron 仍是正式触发源', 'airing-cal-sync-trigger']) {
     assert.doesNotMatch(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should not mention ${fragment}`)
   }
 })

@@ -12,7 +12,7 @@ AiringCal 是一个 Cloudflare Workers monorepo。它把公开访问、只读数
 |--------|------|------|
 | `airing-cal-frontend` | `apps/frontend-worker` | 唯一公开入口，提供页面、widget 静态资源、BFF JSON route 和 `/image/:hash` 代理 |
 | `airing-cal-read` | `apps/read-worker` | 内部只读 API，只从 KV/R2 读取 snapshot、配置、健康状态、缓存统计和图片 |
-| `airing-cal-sync` | `apps/sync-worker` | Cloudflare Cron 定时同步 collection/calendar，写 snapshot，并把媒体任务送入 Queue |
+| `airing-cal-sync` | `apps/sync-worker` | Cloudflare Workflow 持久化编排 collection/calendar、版本化 snapshot 和 Media Queue 候选任务 |
 | `airing-cal-media` | `apps/media-worker` | Queue consumer，下载 common/large 图片，写 R2，更新 image/subject meta KV |
 
 共享 package：
@@ -55,16 +55,17 @@ https://airing-cal-frontend.<你的 workers.dev 子域>.workers.dev
 
 账号 compare 返回的差异条目包含规范化 `itemA` / `itemB`。页面按方向选择源 item，并以最多 5 条一批提交给 `/api/sync/apply`；apply 直接复用这些 items，不会为每批重新拉取全部源收藏。旧 `subject_ids` 输入暂时兼容一个版本且同样限制为 5 条。用户 token 只存在于当前请求内，不写入 KV operation log、Queue 或其他异步载荷；compare、apply 和 check 响应统一使用 `Cache-Control: no-store`。
 
-`airing-cal-sync` 没有公开同步 URL；生产同步由 Cloudflare Cron 触发：
+`airing-cal-sync` 没有公开同步 URL；生产同步由 Cloudflare Workflow schedule 每 4 小时创建 live instance：
 
 ```toml
-[triggers]
-crons = ["0 * * * *"]
+[[workflows]]
+name = "airing-cal-sync"
+binding = "SYNC_WORKFLOW"
+class_name = "SyncWorkflow"
+schedules = ["0 */4 * * *"]
 ```
 
-Cloudflare 免费计划对 Cron Trigger 数量有限制，所以这里只配置 1 个每小时触发器；`sync-worker` 会在代码里只允许 UTC 0/4/8/12/16/20 点真正同步，其余小时直接跳过。
-
-当前迁移状态：Cloudflare Workflow 已注册但没有 schedule，旧 Cron 仍是正式触发源。第一阶段只允许显式创建 shadow instance；shadow 会写隔离快照和审计结果，不覆盖正式 snapshot，也不投递 Media Queue：
+旧 Worker Cron 与同步 trigger queue 已移除。部署不会自动创建业务 instance；只有 Workflow schedule 或明确的手动 control-plane 操作会触发同步。手动 shadow 会写隔离快照和审计结果，不覆盖正式 snapshot，也不投递 Media Queue：
 
 ```bash
 pnpm exec wrangler workflows trigger airing-cal-sync '{"mode":"shadow","source":"manual"}' --id shadow-<commit> --config apps/sync-worker/wrangler.toml
@@ -78,7 +79,7 @@ gh workflow run sync-workflow.yml --ref dev -f operation=trigger -f mode=shadow 
 gh run watch <run-id> --exit-status
 ```
 
-`Manual Sync Workflow` 支持 `trigger`、`describe`、`restart`、`terminate` 四种显式控制面操作；trigger 的 mode 只能显式选择 `shadow` 或 `live`。它不会部署代码，也不会由 schedule 自动运行。
+`Manual Sync Workflow` 支持 `trigger`、`describe`、`restart`、`terminate` 四种显式控制面操作；trigger 的 mode 只能显式选择 `shadow` 或 `live`。它不会部署代码；定时 live instance 由 Cloudflare Workflow schedule 独立创建。
 
 instance 运维命令形态：
 
@@ -89,15 +90,15 @@ pnpm exec wrangler workflows instances terminate airing-cal-sync <instance-id> -
 
 Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都使用确定性 step 名；大 payload 写 staging KV，step 只返回 key、数量和 SHA-256 摘要。refresh planning 每 10 个 subject 生成幂等候选 V2 job，enqueue 每 step 最多合并 3 个规划块。Workflow 不逐 subject 读取或写入 refresh/detail/meta/image 状态；Media consumer 在单消息 invocation 内复用 fresh detail 与已缓存图片，只对实际过期或缺失内容访问上游。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为 read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
 
-收藏页不会在每次浏览页面时实时请求 bgm.tv。读取端优先跟随 `snapshot:active` 读取同一个 Workflow instance 的版本化 collections、calendar 和 summary；active pointer 不存在或目标 key 缺失时才回退 `snapshot:collections:*`、`snapshot:calendar`、`snapshot:summary` 兼容快照。旧 cron/queue 同步会先读取 `GET /v0/users/{username}/collections?subject_type=2`，再按 bgm.tv `type` 字段写入 `want`、`watched`、`watching`、`on_hold`、`dropped` 快照。日历 subject detail 补全使用 `GET /v0/subjects/{subject_id}`；如果某些详情请求失败且没有可用缓存，同步会保留上一版 calendar snapshot，但仍会发布新的 collection snapshots，避免一个日历补全失败阻断收藏状态刷新。
+收藏页不会在每次浏览页面时实时请求 bgm.tv。Workflow 以 `limit=50` 获取 collections 并按 bgm.tv `type` 发布 `want`、`watched`、`watching`、`on_hold`、`dropped` 版本化快照；读取端跟随 `snapshot:active` 读取同一个 instance 的 collections、calendar 和 summary，active pointer 不存在或目标 key 缺失时才回退 legacy key。Workflow 不请求 subject detail；detail、metadata 和图片由 Media Queue 以 stale-while-revalidate 方式异步收敛。
 
 collections 使用 bgm.tv OpenAPI 允许的 `limit=50` 分页，并受 120 秒整体预算约束。bgm.tv JSON GET 请求单次 timeout 为 10 秒；429、5xx、timeout 和网络错误最多重试 2 次，401/403 不重试，POST/PATCH 写请求也不会被 client 隐式重试。
 
-`/api/health` 的 `data.cron.last` 会暴露最近一次有效同步状态。若同步完成但存在可降级问题，会带 `warnings`，例如 `stage: "subject_details"`、失败的 `subject_ids`、错误名称、错误消息和 bgm.tv 上游 HTTP 状态码（如 `upstream_status: 503`）。这些 warning 用于排查官方 API 调用失败，不包含 access token 或 refresh token。
+`/api/health` 仍保留 `data.cron.last` 作为迁移兼容字段；新的权威应用状态是 `data.workflow`，Cloudflare 控制面状态是最终依据。
 
 `/api/health` 的 `data.workflow` 暴露最近 instance 的 `instance_id`、mode、source、stage、heartbeat、完成时间、计数和脱敏错误。`queued`、`running` 或 `retrying` run 超过 20 分钟没有 heartbeat 时，应用侧返回 `status: "stale"` 与 `stale: true`；实际恢复、重启或终止仍以 Cloudflare Workflow instance 控制面状态为准。
 
-查看当前 Cloudflare account 里哪些 Worker 占用了 Cron Trigger 可以用 Cloudflare Dashboard 或 Wrangler 手动检查；routine deploy 不会自动创建、删除或迁移 schedule。
+Workflow schedule 来自 checked-in `wrangler.toml`，routine deploy 只同步配置，不触发 live instance。
 
 ## Cloudflare 资源
 
@@ -124,7 +125,7 @@ Cloudflare 资源创建已经与常规部署分离。首次部署或资源缺失
 
 - 创建或复用 KV namespace `airing-cal-kv`，并把实际 namespace ID 注入后续 Worker deploy config。
 - 创建或复用 R2 bucket `airing-cal-images`。
-- 创建或复用 Queue `airing-cal-media` 与 `airing-cal-sync-trigger`。
+- 创建或复用 Queue `airing-cal-media`。
 - 后续 Wrangler deploy 会按 checked-in 配置确认 `airing-cal-frontend` 的 service bindings 指向 `airing-cal-read` 和 `airing-cal-sync`。
 
 KV 比较特殊：`wrangler.toml` 里的 `kv_namespaces.id` 不是 namespace title，而是 Cloudflare 生成的 namespace ID。仓库里的 3 个 Worker config 保留占位符：
@@ -135,9 +136,9 @@ id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 
 常规 deploy 只读解析实际 KV namespace ID，注入临时 deploy config，再交给 Wrangler dry-run/deploy；资源不存在时会明确失败并提示先运行 bootstrap，不会在发布途中创建资源。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
 
-CI 仍然不会上传运行时 secret，也不会手写 `curl` 去改 cron schedule。Cron schedule 只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers]`；部署 `airing-cal-sync` 时，Wrangler 会自动把这个配置同步到 Cloudflare Cron Triggers。
+CI 不上传运行时 secret，也不会手写 `curl` 修改 schedule。Workflow schedule 只来自 `apps/sync-worker/wrangler.toml` 的 `[[workflows]].schedules`。
 
-部署流水线只负责 typecheck/test/build、解析已有资源、部署内部 Worker 和 frontend。部署完成后不会触发业务同步、不会轮询 KV，也不等待媒体缓存收敛；收藏和 calendar 继续由当前 Cron 独立刷新，因此一次上游 API 故障不会把代码发布标记为失败。首次部署如果页面暂时显示“KV 无数据”，等待下一次有效 Cron，或在 widget 的动画同步视图中使用两个 bgm.tv access token 手动执行账号同步。
+部署流水线只负责 typecheck/test/build、解析已有资源、按 read/media → sync + Workflow → control-plane describe → frontend 的顺序部署。部署完成后不会触发业务同步、不会轮询 KV，也不等待媒体缓存收敛；首次部署无数据时等待下一次 Workflow schedule，或显式触发 live instance。
 
 ## 最小配置
 
@@ -166,7 +167,7 @@ Cloudflare Dashboard -> My Profile -> API Tokens -> Create custom token。
 
 | 范围 | 权限组 | 级别 | 用途 |
 |------|--------|------|------|
-| Account | `Workers Scripts` | `Edit` | 部署 4 个 Worker script，并更新 `airing-cal-sync` 的 Cron Trigger |
+| Account | `Workers Scripts` | `Edit` | 部署 4 个 Worker script、Workflow 与 schedule |
 | Account | `Workers KV Storage` | `Edit` | 部署 KV binding |
 | Account | `Workers R2 Storage` | `Edit` | 部署 R2 binding |
 | Account | `Queues` | `Edit` | 部署 Queue binding |
@@ -180,13 +181,13 @@ Some triggers failed to deploy for airing-cal-sync
 /workers/scripts/airing-cal-sync/schedules
 ```
 
-说明 Worker 代码已经上传，但这个 token 不能更新 Cron Trigger。请重新创建或更新 `CLOUDFLARE_API_TOKEN`，确认：
+说明 Worker 代码已经上传，但 token 不能更新 trigger/schedule。请重新创建或更新 `CLOUDFLARE_API_TOKEN`，确认：
 
 - token 的 Account Resources 包含 `CLOUDFLARE_ACCOUNT_ID` 对应的 Cloudflare account。
 - Account 权限组 `Workers Scripts` 是 `Edit`，不是 `Read`。
 - 更新 GitHub Repository secret `CLOUDFLARE_API_TOKEN` 后重新跑 workflow。
 
-Wrangler 本地权限映射把 `workers_scripts:write` 描述为可修改 Workers scripts、subdomains、triggers 等；Cron schedule 部署走的就是 triggers/schedules 这一类权限。GitHub Actions 里的 Node 20 deprecation 提示不是这次失败原因。
+Wrangler 本地权限映射把 `workers_scripts:write` 描述为可修改 Workers scripts、subdomains、triggers 等；Workflow schedule 部署走的也是这类控制面权限。GitHub Actions 里的 Node 20 deprecation 提示不是这次失败原因。
 
 如果要让 CI 同时部署自定义域名或 route，再额外加这个可选权限：
 
@@ -343,19 +344,19 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 2. `pnpm typecheck`
 3. `pnpm test`
 4. `pnpm build:check`
-5. 用 matrix 部署 `airing-cal-read`、`airing-cal-media`、`airing-cal-sync`
-6. 确认 `airing-cal-sync-trigger` 绑定到 `airing-cal-sync` worker consumer（缺失或 batch/retry 配置漂移会在触发前修复），再推送一次完整同步触发，先确认 queue consumer 写入本次 `running` 状态，再等待本次触发后写入新的 `sync:meta.synced_at`、收藏 snapshot，且 `snapshot:calendar` 中的 subject 都有可观测 common 图片管线状态（`queued` / `cached` / `failed` / `missing_source`）
+5. 并行部署 `airing-cal-read` 与 `airing-cal-media`
+6. 部署 `airing-cal-sync` 与 `SyncWorkflow`，运行 `wrangler workflows describe` 检查控制面
 7. 注入当前 commit/repository build vars，最后部署 `airing-cal-frontend`
 
 部署步骤直接运行 `pnpm exec wrangler deploy`，不再通过 `cloudflare/wrangler-action` 包装。CI 会设置 `WRANGLER_LOG=debug` 和 `WRANGLER_LOG_PATH`；如果部署失败，会打印脱敏后的 Wrangler debug log，便于看到 Cloudflare API 返回的真实错误。
 
-这个顺序保证内部 read/media/sync Worker 先更新，部署后立刻启动一次 snapshot/media cache 收敛，最后再更新公开入口 frontend Worker。首次部署时，`airing-cal-frontend` 的 service binding 需要目标 `airing-cal-read` 和 `airing-cal-sync` 已经存在，所以 frontend 不放进并行 matrix。
+这个顺序保证内部 read/media/sync Worker 与 Workflow 控制面先更新，再更新公开入口 frontend Worker。部署不创建 live instance；业务同步由 schedule 或显式手动 trigger 独立执行。首次部署时 frontend 的 service binding 需要 read/sync Worker 已存在，所以 frontend 不放进并行 matrix。
 
 ## Cache 与 NSFW
 
 `/api/cache` 是公开且脱敏的缓存状态 JSON。它使用 KV cursor 分页，`limit` 最大 100，并以固定并发读取当前页 image status；响应中的 `cursor` 为 `null` 表示已到最后一页。它不暴露 access token、上游认证响应体或未清理的错误信息。
 
-页面 footer 不再读取完整 `/api/cache` 明细；`/src/cache.js` 只读取 `/api/health` 中的轻量 cache 摘要、next cron time 和最近一次 cron 状态，避免为了展示 footer 触发大量 KV image status 读取。
+页面 footer 不读取完整 `/api/cache` 明细；`/src/cache.js` 只读取 `/api/health` 中的轻量 cache 摘要与同步状态，避免为了展示 footer 触发大量 KV image status 读取。
 
 `airing-cal-media` 会抓取 subject detail 做 NSFW enrichment。受限或不存在的 subject 会按 NSFW 处理，避免误展示为安全内容。
 

@@ -6,9 +6,6 @@ keep_vars = true
 [vars]
 SYNC_MODE = "merge"
 
-[triggers]
-crons = ["0 * * * *"]
-
 [[kv_namespaces]]
 binding = "AIRING_CAL_KV"
 id = "<AIRING_CAL_KV_NAMESPACE_ID>"
@@ -21,9 +18,4 @@ queue = "airing-cal-media"
 name = "airing-cal-sync"
 binding = "SYNC_WORKFLOW"
 class_name = "SyncWorkflow"
-
-[[queues.consumers]]
-queue = "airing-cal-sync-trigger"
-max_batch_size = 1
-max_batch_timeout = 5
-max_retries = 3
+schedules = ["0 */4 * * *"]
