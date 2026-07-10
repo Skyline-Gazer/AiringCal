@@ -111,6 +111,14 @@ export function snapshotSummaryKey(): string {
   return 'snapshot:summary'
 }
 
+export function snapshotActiveKey(): string {
+  return 'snapshot:active'
+}
+
+export function snapshotVersionKey(instanceId: string, suffix: string): string {
+  return `snapshot:version:${instanceId}:${suffix}`
+}
+
 export function syncMetaKey(): string {
   return 'sync:meta'
 }

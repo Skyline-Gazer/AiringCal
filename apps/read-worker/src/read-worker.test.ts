@@ -4,6 +4,7 @@ import worker from './index.ts'
 
 class MockKV {
   values = new Map<string, unknown>()
+  listCalls: Array<{ prefix?: string; limit?: number; cursor?: string }> = []
 
   async get(key: string, type?: 'json') {
     const value = this.values.get(key)
@@ -19,11 +20,16 @@ class MockKV {
     this.values.delete(key)
   }
 
-  async list(options?: { prefix?: string }) {
-    const keys = [...this.values.keys()]
+  async list(options?: { prefix?: string; limit?: number; cursor?: string }) {
+    this.listCalls.push(options ?? {})
+    const allKeys = [...this.values.keys()]
       .filter((name) => !options?.prefix || name.startsWith(options.prefix))
       .map((name) => ({ name }))
-    return { keys, list_complete: true, cursor: undefined }
+    const start = Number(options?.cursor ?? 0)
+    const limit = options?.limit ?? allKeys.length
+    const keys = allKeys.slice(start, start + limit)
+    const next = start + keys.length
+    return { keys, list_complete: next >= allKeys.length, cursor: next < allKeys.length ? String(next) : undefined }
   }
 }
 
@@ -77,6 +83,21 @@ test('read-worker paginates collection snapshots by page and limit', async () =>
   assert.deepEqual(body.data.map((entry: any) => entry.subject_id), [3, 4])
 })
 
+test('read-worker serves the active versioned snapshot after a live Workflow commit', async () => {
+  const kv = new MockKV()
+  kv.values.set('snapshot:collections:watching', [{ subject_id: 515856, collection_type: 3 }])
+  kv.values.set('snapshot:active', { instance_id: 'live-status-fix' })
+  kv.values.set('snapshot:version:live-status-fix:collections:watching', [])
+  kv.values.set('snapshot:version:live-status-fix:collections:watched', [{ subject_id: 515856, collection_type: 2 }])
+  kv.values.set('snapshot:version:live-status-fix:summary', { watched: 1, watching: 0, _total: 1 })
+
+  const watching = await worker.fetch(new Request('https://read.local/collections?type=watching'), env(kv) as any)
+  const watched = await worker.fetch(new Request('https://read.local/collections?type=watched'), env(kv) as any)
+
+  assert.deepEqual((await watching.json() as any).data, [])
+  assert.equal((await watched.json() as any).data[0].subject_id, 515856)
+})
+
 test('read-worker cache stats expose sanitized image cache data only', async () => {
   const kv = new MockKV()
   kv.values.set('image:status:23080', {
@@ -94,6 +115,60 @@ test('read-worker cache stats expose sanitized image cache data only', async () 
   assert.equal(body.large.cached, 1)
   assert.equal(JSON.stringify(body).includes('secret-token'), false)
   assert.equal(JSON.stringify(body).includes('source_url'), false)
+})
+
+test('read-worker cache stats use bounded cursor pagination', async () => {
+  const kv = new MockKV()
+  for (let subjectId = 1; subjectId <= 150; subjectId++) {
+    kv.values.set(`image:status:${subjectId}`, {
+      subject_id: subjectId,
+      common: { status: 'cached' },
+      large: { status: 'cached' },
+    })
+  }
+
+  const first = await worker.fetch(new Request('https://read.local/cache?limit=100'), env(kv) as any)
+  const firstBody = await first.json() as any
+  const second = await worker.fetch(new Request(`https://read.local/cache?limit=100&cursor=${firstBody.cursor}`), env(kv) as any)
+  const secondBody = await second.json() as any
+
+  assert.equal(firstBody.items.length, 100)
+  assert.equal(firstBody.cursor, '100')
+  assert.equal(secondBody.items.length, 50)
+  assert.equal(secondBody.cursor, null)
+  assert.deepEqual(kv.listCalls, [
+    { prefix: 'image:status:', limit: 100, cursor: undefined },
+    { prefix: 'image:status:', limit: 100, cursor: '100' },
+  ])
+})
+
+test('read-worker bounds cache status hydration concurrency', async () => {
+  class ConcurrentKV extends MockKV {
+    activeGets = 0
+    maxActiveGets = 0
+
+    override async get(key: string, type?: 'json') {
+      if (!key.startsWith('image:status:')) return super.get(key, type)
+      this.activeGets++
+      this.maxActiveGets = Math.max(this.maxActiveGets, this.activeGets)
+      await new Promise((resolve) => setTimeout(resolve, 2))
+      try {
+        return await super.get(key, type)
+      } finally {
+        this.activeGets--
+      }
+    }
+  }
+
+  const kv = new ConcurrentKV()
+  for (let subjectId = 1; subjectId <= 32; subjectId++) {
+    kv.values.set(`image:status:${subjectId}`, { subject_id: subjectId })
+  }
+
+  await worker.fetch(new Request('https://read.local/cache?limit=32'), env(kv) as any)
+
+  assert.equal(kv.maxActiveGets <= 8, true)
+  assert.equal(kv.maxActiveGets > 1, true)
 })
 
 test('read-worker serves images from R2 by hash', async () => {
@@ -174,6 +249,41 @@ test('read-worker health ignores skipped cron status for footer last status', as
   assert.equal(body.data.cron.last.status, 'synced')
   assert.equal(body.data.cron.last.source, 'snapshot')
   assert.equal(body.data.cron.last.completed_at, 1782650300)
+})
+
+test('read-worker health exposes the latest Workflow run and marks stale heartbeat', async () => {
+  const kv = new MockKV()
+  const heartbeat = Math.floor(Date.now() / 1000) - 21 * 60
+  kv.values.set('snapshot:summary', { watched: 1, _total: 1 })
+  kv.values.set('sync:meta', {
+    synced_at: 1782650300,
+    users: ['alice'],
+    workflow_instance_id: 'live-stale',
+    workflow_stage: 'enqueue',
+  })
+  kv.values.set('sync:run:live-stale', {
+    instance_id: 'live-stale',
+    mode: 'live',
+    source: 'schedule',
+    status: 'running',
+    stage: 'enqueue',
+    started_at: heartbeat - 60,
+    heartbeat_at: heartbeat,
+    completed_at: null,
+    collection_pages: 11,
+    subject_count: 549,
+    refresh_jobs: 100,
+    error: 'Bearer secret-token upstream failed',
+  })
+
+  const response = await worker.fetch(new Request('https://read.local/health'), env(kv) as any)
+  const workflow = (await response.json() as any).data.workflow
+
+  assert.equal(workflow.instance_id, 'live-stale')
+  assert.equal(workflow.stage, 'enqueue')
+  assert.equal(workflow.status, 'stale')
+  assert.equal(workflow.stale, true)
+  assert.equal(JSON.stringify(workflow).includes('secret-token'), false)
 })
 
 test('read-worker does not call upstream fetch for read requests', async () => {

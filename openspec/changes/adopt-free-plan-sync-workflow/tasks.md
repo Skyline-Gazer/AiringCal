@@ -33,10 +33,10 @@
 
 ## 5. 收敛读取 API 与健康状态
 
-- [ ] 5.1 先为 `/api/health` 最近 instance/stale 状态和 `/api/cache` cursor/limit/有界 hydration 补失败测试
-- [ ] 5.2 实现健康 API 的 Workflow 摘要与 20 分钟 stale 判定
-- [ ] 5.3 实现 cache cursor pagination、`limit <= 100` 和 calendar 有界 hydration
-- [ ] 5.4 更新 endpoint 文档并运行 read/frontend 测试后原子 commit/push
+- [x] 5.1 先为 `/api/health` 最近 instance/stale 状态和 `/api/cache` cursor/limit/有界 hydration 补失败测试
+- [x] 5.2 实现健康 API 的 Workflow 摘要与 20 分钟 stale 判定
+- [x] 5.3 实现 cache cursor pagination、`limit <= 100` 和 calendar 有界 hydration
+- [x] 5.4 更新 endpoint 文档并运行 read/frontend 测试后原子 commit/push
 
 ## 6. Shadow 生产验证与 schedule 切换
 

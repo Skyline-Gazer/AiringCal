@@ -1,6 +1,6 @@
 export const appBoundary = 'read-worker'
 
-import { imageOriginalKey, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectDetailKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
+import { imageOriginalKey, imageStatusKey, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncMetaKey, syncRunKey, type SyncRun } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 interface ReadEnv {
@@ -8,7 +8,7 @@ interface ReadEnv {
     get(key: string, type: 'json'): Promise<unknown>
     put(key: string, value: string): Promise<void>
     delete(key: string): Promise<void>
-    list?(options?: { prefix?: string }): Promise<{ keys: Array<{ name: string }> }>
+    list?(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<{ keys: Array<{ name: string }>; list_complete?: boolean; cursor?: string }>
   }
   AIRING_CAL_R2: {
     get(key: string): Promise<{
@@ -22,6 +22,12 @@ interface ReadEnv {
 
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
 const CRON_INTERVAL_HOURS = 4
+const HYDRATION_CONCURRENCY = 8
+const WORKFLOW_STALE_SECONDS = 20 * 60
+
+function nowSeconds(): number {
+  return Math.floor(Date.now() / 1000)
+}
 
 function json(data: unknown, init?: ResponseInit): Response {
   return Response.json(data, {
@@ -52,9 +58,35 @@ function sanitizeStatus(value: any): any {
   const sanitized: Record<string, unknown> = {}
   for (const [key, item] of Object.entries(value)) {
     if (key === 'source_url') continue
-    sanitized[key] = key === 'last_error' && item ? sanitizeErrorMessage(item) : sanitizeStatus(item)
+    sanitized[key] = (key === 'last_error' || key === 'error') && item ? sanitizeErrorMessage(item) : sanitizeStatus(item)
   }
   return sanitized
+}
+
+async function mapConcurrent<T, R>(values: Iterable<T>, concurrency: number, mapper: (value: T) => Promise<R>): Promise<R[]> {
+  const items = [...values]
+  const results = new Array<R>(items.length)
+  let index = 0
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (index < items.length) {
+      const current = index++
+      results[current] = await mapper(items[current])
+    }
+  }))
+  return results
+}
+
+async function activeSnapshotInstance(storage: KVStorage): Promise<string | null> {
+  const active = await storage.get<{ instance_id?: unknown }>(snapshotActiveKey())
+  return typeof active?.instance_id === 'string' && active.instance_id ? active.instance_id : null
+}
+
+async function readSnapshot<T>(storage: KVStorage, activeInstance: string | null, suffix: string, legacyKey: string): Promise<T | null> {
+  if (activeInstance) {
+    const versioned = await storage.get<T>(snapshotVersionKey(activeInstance, suffix))
+    if (versioned !== null) return versioned
+  }
+  return storage.get<T>(legacyKey)
 }
 
 function cachedImageRef(status: any) {
@@ -97,7 +129,7 @@ function positiveEpisodeCount(...values: unknown[]): number | undefined {
 }
 
 async function hydrateCollectionImages(data: unknown[], env: ReadEnv): Promise<unknown[]> {
-  return Promise.all(data.map(async (entry: any) => {
+  return mapConcurrent(data, HYDRATION_CONCURRENCY, async (entry: any) => {
     if (!entry || typeof entry !== 'object' || typeof entry.subject_id !== 'number') return entry
     const status = await env.AIRING_CAL_KV.get(imageStatusKey(entry.subject_id), 'json')
     if (!status) return entry
@@ -112,13 +144,17 @@ async function hydrateCollectionImages(data: unknown[], env: ReadEnv): Promise<u
         large: imageStatus((status as any).large),
       },
     }
-  }))
+  })
 }
 
 async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unknown[]> {
-  return Promise.all(days.map(async (day: any) => {
-    if (!day || typeof day !== 'object' || !Array.isArray(day.items)) return day
-    const items = await Promise.all(day.items.map(async (entry: any) => {
+  const hydrated: unknown[] = []
+  for (const day of days as any[]) {
+    if (!day || typeof day !== 'object' || !Array.isArray(day.items)) {
+      hydrated.push(day)
+      continue
+    }
+    const items = await mapConcurrent(day.items, HYDRATION_CONCURRENCY, async (entry: any) => {
       if (!entry || typeof entry !== 'object') return entry
       const subjectId = typeof entry.subject_id === 'number' ? entry.subject_id : entry.id
       if (typeof subjectId !== 'number') return entry
@@ -150,36 +186,41 @@ async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unk
           : entry.image_status,
         nsfw: (meta as any)?.nsfw ?? entry.nsfw,
       }
-    }))
-    return { ...day, items }
-  }))
+    })
+    hydrated.push({ ...day, items })
+  }
+  return hydrated
 }
 
 async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const type = validCollectionType(url.searchParams.get('type'))
-  const data = await storage.get<unknown[]>(snapshotCollectionsKey(type)) ?? []
+  const activeInstance = await activeSnapshotInstance(storage)
+  const data = await readSnapshot<unknown[]>(storage, activeInstance, `collections:${type}`, snapshotCollectionsKey(type)) ?? []
   const page = positiveInteger(url.searchParams.get('page'), 1)
   const limit = collectionLimit(url.searchParams.get('limit'))
   const start = (page - 1) * limit
   const pageData = data.slice(start, start + limit)
-  const types = await storage.get<Record<string, number>>(snapshotSummaryKey()) ?? {}
+  const types = await readSnapshot<Record<string, number>>(storage, activeInstance, 'summary', snapshotSummaryKey()) ?? {}
   const hydrated = await hydrateCollectionImages(pageData, env)
   return json({ data: hydrated, total: data.length, page, limit, types })
 }
 
 async function handleCalendar(env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
-  const data = await storage.get<unknown[]>(snapshotCalendarKey()) ?? []
+  const activeInstance = await activeSnapshotInstance(storage)
+  const data = await readSnapshot<unknown[]>(storage, activeInstance, 'calendar', snapshotCalendarKey()) ?? []
   return json(await hydrateCalendarImages(data, env))
 }
 
-async function handleCache(env: ReadEnv): Promise<Response> {
-  const list = await env.AIRING_CAL_KV.list?.({ prefix: 'image:status:' })
-  const entries = (await Promise.all((list?.keys ?? []).map(async (key) => {
+async function handleCache(url: URL, env: ReadEnv): Promise<Response> {
+  const limit = collectionLimit(url.searchParams.get('limit'))
+  const cursor = url.searchParams.get('cursor') ?? undefined
+  const list = await env.AIRING_CAL_KV.list?.({ prefix: 'image:status:', limit, cursor })
+  const entries = (await mapConcurrent(list?.keys ?? [], HYDRATION_CONCURRENCY, async (key) => {
     const status = await env.AIRING_CAL_KV.get(key.name, 'json')
     return status ? sanitizeStatus(status) : null
-  }))).filter(Boolean)
+  })).filter(Boolean)
   const counts = {
     cached: 0,
     pending_next_cron: 0,
@@ -198,13 +239,25 @@ async function handleCache(env: ReadEnv): Promise<Response> {
     common,
     large,
     items: entries,
+    cursor: list?.list_complete === false && list.cursor ? list.cursor : null,
   })
 }
 
 async function handleHealth(env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
-  const types = await storage.get<Record<string, number>>(snapshotSummaryKey())
-  const meta = await storage.get<{ synced_at?: number; users?: string[]; cron?: { last?: unknown } }>(syncMetaKey())
+  const activeInstance = await activeSnapshotInstance(storage)
+  const types = await readSnapshot<Record<string, number>>(storage, activeInstance, 'summary', snapshotSummaryKey())
+  const meta = await storage.get<{ synced_at?: number; users?: string[]; cron?: { last?: unknown }; workflow_instance_id?: string; workflow_stage?: string }>(syncMetaKey())
+  const workflowInstanceId = meta?.workflow_instance_id ?? activeInstance
+  const workflowRun = workflowInstanceId ? await storage.get<SyncRun>(syncRunKey(workflowInstanceId)) : null
+  const workflowStale = Boolean(workflowRun && ['queued', 'running', 'retrying'].includes(workflowRun.status) && nowSeconds() - workflowRun.heartbeat_at > WORKFLOW_STALE_SECONDS)
+  const workflow = workflowRun
+    ? sanitizeStatus({
+        ...workflowRun,
+        status: workflowStale ? 'stale' : workflowRun.status,
+        stale: workflowStale,
+      })
+    : null
   return json({
     ok: true,
     worker: 'read-worker',
@@ -223,6 +276,7 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
             next_at: nextCronAt(),
             last: cronLastStatus(meta),
           },
+          workflow,
         }
       : null,
   })
@@ -248,7 +302,7 @@ async function fetch(request: Request, env: ReadEnv): Promise<Response> {
   if (url.pathname === '/calendar') return handleCalendar(env)
   if (url.pathname === '/config') return json({ nsfw: env.NSFW_SHOW !== 'false' })
   if (url.pathname === '/health') return handleHealth(env)
-  if (url.pathname === '/cache') return handleCache(env)
+  if (url.pathname === '/cache') return handleCache(url, env)
   if (url.pathname.startsWith('/image/')) return handleImage(url.pathname, env)
   return new Response('Not found', { status: 404 })
 }

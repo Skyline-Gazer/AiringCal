@@ -46,8 +46,8 @@ https://airing-cal-frontend.<你的 workers.dev 子域>.workers.dev
 | `/api/collections?type=watching` | 通过 `READ_WORKER` 读取 collection snapshot |
 | `/api/calendar` | 通过 `READ_WORKER` 读取 calendar snapshot |
 | `/api/config?key=nsfw` | 通过 `READ_WORKER` 读取公开配置 |
-| `/api/health` | 通过 `READ_WORKER` 读取健康状态、轻量 cache 摘要和 cron 状态 |
-| `/api/cache` | 通过 `READ_WORKER` 读取脱敏缓存 JSON |
+| `/api/health` | 通过 `READ_WORKER` 读取健康状态、轻量 cache 摘要、cron 兼容状态和最近 Workflow run |
+| `/api/cache?limit=100&cursor=<opaque>` | 通过 `READ_WORKER` 分页读取脱敏缓存 JSON；`limit` 最大 100 |
 | `/api/sync/compare` | 通过 `SYNC_WORKER` 执行动画收藏对比 |
 | `/api/sync/apply` | 通过 `SYNC_WORKER` 执行动画收藏同步并写操作日志 |
 | `/api/check/:id` | 通过 `SYNC_WORKER` 查询 24 小时内的同步操作日志 |
@@ -80,11 +80,13 @@ pnpm exec wrangler workflows instances terminate airing-cal-sync <instance-id> -
 
 Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都使用确定性 step 名；大 payload 写 staging KV，step 只返回 key、数量和 SHA-256 摘要。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为 read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
 
-收藏页读取的是 `snapshot:collections:*` 快照，不会在每次浏览页面时实时请求 bgm.tv。每次有效 cron/queue 同步会先读取 `GET /v0/users/{username}/collections?subject_type=2`，再按 bgm.tv `type` 字段写入 `want`、`watched`、`watching`、`on_hold`、`dropped` 快照。日历 subject detail 补全使用 `GET /v0/subjects/{subject_id}`；如果某些详情请求失败且没有可用缓存，同步会保留上一版 calendar snapshot，但仍会发布新的 collection snapshots，避免一个日历补全失败阻断收藏状态刷新。
+收藏页不会在每次浏览页面时实时请求 bgm.tv。读取端优先跟随 `snapshot:active` 读取同一个 Workflow instance 的版本化 collections、calendar 和 summary；active pointer 不存在或目标 key 缺失时才回退 `snapshot:collections:*`、`snapshot:calendar`、`snapshot:summary` 兼容快照。旧 cron/queue 同步会先读取 `GET /v0/users/{username}/collections?subject_type=2`，再按 bgm.tv `type` 字段写入 `want`、`watched`、`watching`、`on_hold`、`dropped` 快照。日历 subject detail 补全使用 `GET /v0/subjects/{subject_id}`；如果某些详情请求失败且没有可用缓存，同步会保留上一版 calendar snapshot，但仍会发布新的 collection snapshots，避免一个日历补全失败阻断收藏状态刷新。
 
 collections 使用 bgm.tv OpenAPI 允许的 `limit=50` 分页，并受 120 秒整体预算约束。bgm.tv JSON GET 请求单次 timeout 为 10 秒；429、5xx、timeout 和网络错误最多重试 2 次，401/403 不重试，POST/PATCH 写请求也不会被 client 隐式重试。
 
 `/api/health` 的 `data.cron.last` 会暴露最近一次有效同步状态。若同步完成但存在可降级问题，会带 `warnings`，例如 `stage: "subject_details"`、失败的 `subject_ids`、错误名称、错误消息和 bgm.tv 上游 HTTP 状态码（如 `upstream_status: 503`）。这些 warning 用于排查官方 API 调用失败，不包含 access token 或 refresh token。
+
+`/api/health` 的 `data.workflow` 暴露最近 instance 的 `instance_id`、mode、source、stage、heartbeat、完成时间、计数和脱敏错误。`queued`、`running` 或 `retrying` run 超过 20 分钟没有 heartbeat 时，应用侧返回 `status: "stale"` 与 `stale: true`；实际恢复、重启或终止仍以 Cloudflare Workflow instance 控制面状态为准。
 
 查看当前 Cloudflare account 里哪些 Worker 占用了 Cron Trigger 可以用 Cloudflare Dashboard 或 Wrangler 手动检查；routine deploy 不会自动创建、删除或迁移 schedule。
 
@@ -273,7 +275,7 @@ KV key：
 | `sync:run:{instanceId}` | `SyncWorkflow` | instance stage、heartbeat、计数与错误，TTL 3 天 |
 | `sync:staging:{instanceId}:*` | `SyncWorkflow` | step 间 payload，TTL 24 小时 |
 | `snapshot:shadow:{instanceId}:*` | `SyncWorkflow` | shadow 快照与审计数据，不参与正式读取 |
-| `snapshot:version:{instanceId}:*` | `SyncWorkflow` | live 的版本化 snapshot；全部写完后由 `snapshot:active` 原子切换 |
+| `snapshot:version:{instanceId}:*` | `SyncWorkflow` | live 的版本化 snapshot；全部写完后由 `snapshot:active` 原子切换，read-worker 优先读取该版本 |
 | `subject:meta:{subject_id}` | `airing-cal-media` | subject detail 与 NSFW 判定 |
 | `subject:refresh:{subject_id}` | `airing-cal-sync`, `airing-cal-media` | V2 媒体任务的 queued/running/ok/partial/failed 状态与 `job_id` |
 | `image:status:{subject_id}` | `airing-cal-media` | subject 的 common/large 缓存状态 |
@@ -342,7 +344,7 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 
 ## Cache 与 NSFW
 
-`/api/cache` 是公开且脱敏的缓存状态 JSON。它只展示聚合后的缓存状态，不暴露 access token、上游认证响应体或未清理的错误信息。
+`/api/cache` 是公开且脱敏的缓存状态 JSON。它使用 KV cursor 分页，`limit` 最大 100，并以固定并发读取当前页 image status；响应中的 `cursor` 为 `null` 表示已到最后一页。它不暴露 access token、上游认证响应体或未清理的错误信息。
 
 页面 footer 不再读取完整 `/api/cache` 明细；`/src/cache.js` 只读取 `/api/health` 中的轻量 cache 摘要、next cron time 和最近一次 cron 状态，避免为了展示 footer 触发大量 KV image status 读取。
 

@@ -208,20 +208,20 @@ Expected: FAIL，Workflow class 和类型不存在。
 - Produces: `/cache?cursor=<opaque>&limit<=100` 返回 `cursor` 与有界 items。
 - Produces: `/health` 返回最近 Workflow instance/stage/heartbeat/completion/error 和 stale。
 
-- [ ] **Step 1: 写 pagination/stale/并发失败测试**
+- [x] **Step 1: 写 pagination/stale/并发失败测试**
 
 模拟 KV list cursor；断言 limit 101 被限制或拒绝、单页不读取全部 key、calendar hydration 同时在途读取不超过固定上限、20 分钟未 heartbeat 显示 stale。
 
-- [ ] **Step 2: 运行测试确认 RED**
+- [x] **Step 2: 运行测试确认 RED**
 
 Run: `CI=true pnpm -F @airing-cal/read-worker test && CI=true pnpm -F @airing-cal/frontend-worker test`
 Expected: FAIL，当前 cache 展开全部 key，health 只显示 cron。
 
-- [ ] **Step 3: 实现 bounded read path**
+- [x] **Step 3: 实现 bounded read path**
 
 把 URL 传给 cache handler，向 KV list 透传 limit/cursor；用共享 `mapConcurrent` 或局部有界 mapper hydration；读取 `sync:meta.workflow_instance_id` 和对应 run key并脱敏错误。
 
-- [ ] **Step 4: 验证并发布原子提交**
+- [x] **Step 4: 验证并发布原子提交**
 
 Run: `CI=true pnpm -F @airing-cal/read-worker test && CI=true pnpm -F @airing-cal/frontend-worker test && CI=true pnpm typecheck && git diff --check`
 Expected: PASS。更新 endpoint 文档，commit `feat: expose bounded workflow cache health` 并 push。

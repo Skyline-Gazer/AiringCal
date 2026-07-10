@@ -3,6 +3,8 @@ import { mergeCollections, subjectDetailImages, transformCalendar } from '@airin
 import {
   imageStatusKey,
   nextSubjectRefreshAt,
+  snapshotActiveKey,
+  snapshotVersionKey,
   subjectDetailKey,
   subjectMetaKey,
   subjectRefreshKey,
@@ -95,12 +97,8 @@ function pageStepName(userIndex: number, page: number): string {
   return userIndex === 0 ? `fetch-collections-page-${page}` : `fetch-collections-user-${userIndex}-page-${page}`
 }
 
-function versionSnapshotKey(instanceId: string, suffix: string): string {
-  return `snapshot:version:${instanceId}:${suffix}`
-}
-
 function targetSnapshotKey(mode: 'shadow' | 'live', instanceId: string, suffix: string): string {
-  return mode === 'shadow' ? syncShadowKey(instanceId, suffix) : versionSnapshotKey(instanceId, suffix)
+  return mode === 'shadow' ? syncShadowKey(instanceId, suffix) : snapshotVersionKey(instanceId, suffix)
 }
 
 function calendarSubjectIds(calendar: any[]): number[] {
@@ -301,7 +299,7 @@ export async function runSyncWorkflow(
       return { key, count: calendarSubjectIds(calendar).length, digest: await digest(snapshot) }
     })
     await step.do(mode === 'live' ? 'commit-live-snapshot' : 'publish-shadow-audit', STORAGE_STEP, async () => {
-      const key = mode === 'live' ? 'snapshot:active' : syncShadowKey(event.instanceId, 'audit')
+      const key = mode === 'live' ? snapshotActiveKey() : syncShadowKey(event.instanceId, 'audit')
       const value = { instance_id: event.instanceId, mode, subject_count: summary._total, published_at: nowSeconds() }
       await putJson(env.AIRING_CAL_KV, key, value, mode === 'shadow' ? SYNC_RUN_TTL_SECONDS : undefined)
       return { key, count: 1, digest: await digest(value) }
