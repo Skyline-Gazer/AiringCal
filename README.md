@@ -53,6 +53,8 @@ https://airing-cal-frontend.<你的 workers.dev 子域>.workers.dev
 | `/api/check/:id` | 通过 `SYNC_WORKER` 查询 24 小时内的同步操作日志 |
 | `/image/:hash` | 通过 `READ_WORKER` 读取 R2 图片 |
 
+账号 compare 返回的差异条目包含规范化 `itemA` / `itemB`。页面按方向选择源 item，并以最多 5 条一批提交给 `/api/sync/apply`；apply 直接复用这些 items，不会为每批重新拉取全部源收藏。旧 `subject_ids` 输入暂时兼容一个版本且同样限制为 5 条。用户 token 只存在于当前请求内，不写入 KV operation log、Queue 或其他异步载荷；compare、apply 和 check 响应统一使用 `Cache-Control: no-store`。
+
 `airing-cal-sync` 没有公开同步 URL；生产同步由 Cloudflare Cron 触发：
 
 ```toml

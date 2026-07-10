@@ -115,6 +115,13 @@ test('widgetJs includes animation sync UI and public sync endpoints', () => {
   assert.match(widgetJs, /\/api\/check\//)
 })
 
+test('widgetJs sends compare items to apply in bounded batches', () => {
+  assert.match(widgetJs, /function buildSyncItems\(dir, ids\)/)
+  assert.match(widgetJs, /payload\.items = items/)
+  assert.match(widgetJs, /items\.length === chunk\.length/)
+  assert.match(widgetJs, /SYNC_BATCH_SIZE = 5/)
+})
+
 test('pages load cacheJs which fills the footer runtime status slot from health', () => {
   assert.match(renderIndexPage(), /<script src="\/src\/cache\.js"><\/script>/)
   assert.match(cacheJs, /\/api\/health/)

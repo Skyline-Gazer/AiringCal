@@ -102,20 +102,20 @@ Expected: PASS。commit `fix: bound bgm collection requests` 并 push。
 - Consumes: compare item shape from `compareAccounts`。
 - Produces: `/internal/sync/apply` 支持 `items` 最多 5 条，旧 `subject_ids` 最多 5 条且 deprecated。
 
-- [ ] **Step 1: 写 apply 输入与零重拉失败测试**
+- [x] **Step 1: 写 apply 输入与零重拉失败测试**
 
 测试 6 条返回 400、5 个 items 直接执行且 `fetchCollections` 调用为 0、旧 subject_ids 仍工作、operation log 先 running 后终态、响应 `Cache-Control: no-store`、KV 与日志不含 token。
 
-- [ ] **Step 2: 运行测试确认 RED**
+- [x] **Step 2: 运行测试确认 RED**
 
 Run: `CI=true pnpm -F @airing-cal/sync-worker test && CI=true pnpm -F @airing-cal/domain test`
 Expected: FAIL，当前 apply 仍调用 `executeSync` 重拉 collections。
 
-- [ ] **Step 3: 实现有界 apply**
+- [x] **Step 3: 实现有界 apply**
 
 增加 compare item 校验和直接 apply 路径；请求开始即持久化脱敏 running log，finally 更新 ok/partial/error；所有 sync 管理响应覆盖 `no-store`。
 
-- [ ] **Step 4: 验证并发布原子提交**
+- [x] **Step 4: 验证并发布原子提交**
 
 Run: `CI=true pnpm -F @airing-cal/sync-worker test && CI=true pnpm -F @airing-cal/domain test && CI=true pnpm typecheck && git diff --check`
 Expected: PASS。更新 API 文档，commit `refactor: reuse account sync comparison items` 并 push。

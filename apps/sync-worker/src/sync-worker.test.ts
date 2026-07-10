@@ -977,6 +977,124 @@ test('internal sync apply persists a 24h operation log and check returns it', as
   }
 })
 
+test('internal sync apply reuses at most five items without refetching collections', async () => {
+  const kv = new MockKV()
+  const originalFetch = globalThis.fetch
+  const calls: string[] = []
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    calls.push(text)
+    if (text.endsWith('/v0/users/-/collections/23080')) return Response.json({})
+    if (text.includes('/collections/23080/episodes?')) {
+      return Response.json({ total: 1, data: [{ episode: { id: 1 }, type: 2 }] })
+    }
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    const apply = await worker.fetch?.(new Request('https://sync.local/internal/sync/apply', {
+      method: 'POST',
+      body: JSON.stringify({
+        platformA: 'bgm',
+        platformB: 'bgm',
+        tokenA: 'source-secret-token',
+        tokenB: 'target-secret-token',
+        mode: 'partial',
+        from: 'Source',
+        to: 'Target',
+        items: [{
+          externalId: '23080',
+          title: 'A CN',
+          status: 'completed',
+          progress: 1,
+          totalEpisodes: 12,
+          score: 9,
+          platform: 'bgm',
+        }],
+      }),
+    }), { AIRING_CAL_KV: kv } as any)
+
+    assert.equal(apply?.status, 200)
+    assert.equal(apply?.headers.get('Cache-Control'), 'no-store')
+    assert.equal(calls.some((url) => url.endsWith('/v0/me') || url.includes('/collections?')), false)
+    const operationPuts = kv.puts.filter((put) => put.key.startsWith('sync:operation:'))
+    assert.deepEqual(operationPuts.map((put) => (put.value as any).status), ['running', 'ok'])
+    assert.doesNotMatch(JSON.stringify(operationPuts), /source-secret-token|target-secret-token/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('internal sync apply rejects more than five items before upstream work', async () => {
+  const kv = new MockKV()
+  const originalFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = (async () => {
+    calls++
+    throw new Error('unexpected fetch')
+  }) as typeof globalThis.fetch
+
+  try {
+    const apply = await worker.fetch?.(new Request('https://sync.local/internal/sync/apply', {
+      method: 'POST',
+      body: JSON.stringify({
+        platformA: 'bgm',
+        platformB: 'bgm',
+        tokenA: 'source-token',
+        tokenB: 'target-token',
+        mode: 'partial',
+        from: 'Source',
+        to: 'Target',
+        items: Array.from({ length: 6 }, (_, index) => ({
+          externalId: String(index + 1),
+          title: `Anime ${index + 1}`,
+          status: 'watching',
+          progress: 1,
+          totalEpisodes: 12,
+          score: 7,
+          platform: 'bgm',
+        })),
+      }),
+    }), { AIRING_CAL_KV: kv } as any)
+
+    assert.equal(apply?.status, 400)
+    assert.equal(apply?.headers.get('Cache-Control'), 'no-store')
+    assert.equal(calls, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('internal sync apply rejects missing tokens before upstream work', async () => {
+  const kv = new MockKV()
+  const originalFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = (async () => {
+    calls++
+    throw new Error('unexpected fetch')
+  }) as typeof globalThis.fetch
+
+  try {
+    const apply = await worker.fetch?.(new Request('https://sync.local/internal/sync/apply', {
+      method: 'POST',
+      body: JSON.stringify({
+        tokenA: '',
+        tokenB: 'target-token',
+        mode: 'partial',
+        from: 'Source',
+        to: 'Target',
+        items: [{ externalId: '1', title: 'A', status: 'watching', progress: 1, totalEpisodes: 12, score: 7, platform: 'bgm' }],
+      }),
+    }), { AIRING_CAL_KV: kv } as any)
+
+    assert.equal(apply?.status, 400)
+    assert.equal(calls, 0)
+    assert.equal(kv.puts.some((put) => JSON.stringify(put.value).includes('target-token')), false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('scheduled sync skips non-four-hour cron ticks without upstream work', async () => {
   const kv = new MockKV()
   kv.values.set('sync:meta', {

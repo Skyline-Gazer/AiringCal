@@ -651,6 +651,17 @@
       })
     }
 
+    function buildSyncItems(dir, ids) {
+      var wanted = {}
+      ids.forEach(function(id) { wanted[String(id)] = true })
+      var sourceKey = dir === 'A->B' ? 'itemA' : 'itemB'
+      return (getFilteredEntries(syncState.filter, syncState.search) || []).filter(function(entry) {
+        return wanted[String(getEntryId(entry) || '')]
+      }).map(function(entry) {
+        return entry[sourceKey]
+      }).filter(Boolean)
+    }
+
     function renderInlineSyncLog(results, operationLinks) {
       var rows = results.map(function(r) {
         var cls = r.status === 'ok' ? 'ok' : 'error'
@@ -698,10 +709,14 @@
         for (var start = 0; start < ids.length; start += SYNC_BATCH_SIZE) {
           var chunk = ids.slice(start, start + SYNC_BATCH_SIZE)
           var baseline = buildSyncBaseline(dir, chunk)
+          var items = buildSyncItems(dir, chunk)
+          var payload = { tokenA: fromToken, platformA: platformA, from: fromUser, tokenB: toToken, platformB: platformB, to: toUser, mode: 'partial', baseline: baseline }
+          if (items.length === chunk.length) payload.items = items
+          else payload.subject_ids = chunk
           var res = await fetch(API + '/api/sync/apply', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tokenA: fromToken, platformA: platformA, from: fromUser, tokenB: toToken, platformB: platformB, to: toUser, mode: 'partial', subject_ids: chunk, baseline: baseline }),
+            body: JSON.stringify(payload),
           })
           var operationId = res.headers.get('X-Sync-Operation-Id')
           if (operationId) operationLinks.push('/api/check/' + operationId)

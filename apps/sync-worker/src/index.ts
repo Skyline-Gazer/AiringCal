@@ -1,8 +1,9 @@
 export const appBoundary = 'sync-worker'
 
 import { BgmClient, BgmHttpError, BgmPlatformClient, fetchAllCollections } from '@airing-cal/bgm-api'
-import { compareAccounts, executeSync, imageRefsFromStatus, mergeCollections, subjectDetailImages, transformCalendar, withSubjectDetail, type SubjectDetailMap, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
+import { compareAccounts, executeSync, imageRefsFromStatus, mergeCollections, subjectDetailImages, SyncValidationError, transformCalendar, withSubjectDetail, type SubjectDetailMap, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
 import { getCachedSubjectDetail, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectDetailKey, subjectMetaKey, syncMetaKey } from '@airing-cal/storage'
+import { publicError, sanitizeErrorMessage, syncHeaders } from '@airing-cal/worker-common'
 
 interface SyncEnv {
   AIRING_CAL_KV: {
@@ -52,6 +53,7 @@ function isDeploySyncMessage(body: unknown): boolean {
 interface SyncOperationLog {
   id: string
   event: 'sync_operation'
+  status: 'running' | 'ok' | 'partial' | 'error'
   mode: string
   requested_count: number
   returned_count: number
@@ -59,6 +61,7 @@ interface SyncOperationLog {
   errors: number
   duration_ms: number
   at: string
+  error: string | null
   items: Array<{
     externalId: string
     title: string
@@ -149,17 +152,12 @@ function json(data: unknown, init?: ResponseInit): Response {
 }
 
 function errorJson(error: unknown, status = 500): Response {
-  return json({
-    ok: false,
-    error: {
-      code: status === 400 ? 'INVALID_REQUEST' : 'REQUEST_FAILED',
-      message: error instanceof Error ? error.message : String(error),
-    },
-  }, { status })
+  return publicError(status, status === 400 ? 'INVALID_REQUEST' : 'REQUEST_FAILED', error)
 }
 
 function syncOperationHeaders(id: string): Headers {
-  const headers = new Headers({ 'Content-Type': 'application/json; charset=utf-8' })
+  const headers = syncHeaders()
+  headers.set('Content-Type', 'application/json; charset=utf-8')
   headers.set('X-Sync-Operation-Id', id)
   headers.set('X-Sync-Operation-Url', `/api/check/${id}`)
   return headers
@@ -171,6 +169,7 @@ function createSyncOperationLog(id: string, mode: string, requestedCount: number
   return {
     id,
     event: 'sync_operation',
+    status: errors === 0 ? 'ok' : ok === 0 ? 'error' : 'partial',
     mode,
     requested_count: requestedCount,
     returned_count: results.length,
@@ -178,6 +177,7 @@ function createSyncOperationLog(id: string, mode: string, requestedCount: number
     errors,
     duration_ms: durationMs,
     at: new Date().toISOString(),
+    error: null,
     items: results.map((result) => ({
       externalId: result.externalId,
       title: result.title,
@@ -191,13 +191,46 @@ function createSyncOperationLog(id: string, mode: string, requestedCount: number
   }
 }
 
+function createRunningSyncOperationLog(id: string, mode: string, requestedCount: number): SyncOperationLog {
+  return {
+    id,
+    event: 'sync_operation',
+    status: 'running',
+    mode,
+    requested_count: requestedCount,
+    returned_count: 0,
+    ok: 0,
+    errors: 0,
+    duration_ms: 0,
+    at: new Date().toISOString(),
+    error: null,
+    items: [],
+  }
+}
+
+function createFailedSyncOperationLog(id: string, mode: string, requestedCount: number, durationMs: number, error: unknown): SyncOperationLog {
+  return {
+    ...createRunningSyncOperationLog(id, mode, requestedCount),
+    status: 'error',
+    errors: 1,
+    duration_ms: durationMs,
+    error: error instanceof SyncValidationError ? sanitizeErrorMessage(error.message) : 'Request failed',
+  }
+}
+
 async function persistSyncOperationLog(env: SyncEnv, log: SyncOperationLog): Promise<void> {
   await env.AIRING_CAL_KV.put(operationLogKey(log.id), JSON.stringify(log), { expirationTtl: SYNC_OPERATION_TTL_SECONDS })
 }
 
 function getPlatformClient(platform: string): BgmPlatformClient {
   if (platform === 'bgm' || !platform) return new BgmPlatformClient()
-  throw new Error(`Unsupported platform: ${platform}`)
+  throw new SyncValidationError(`Unsupported platform: ${platform}`)
+}
+
+function requireSyncTokens(body: Record<string, unknown>): void {
+  if (typeof body.tokenA !== 'string' || !body.tokenA.trim() || typeof body.tokenB !== 'string' || !body.tokenB.trim()) {
+    throw new SyncValidationError('Missing source/target token')
+  }
 }
 
 function collectSubjectInputs(collections: any[], calendar: any[], subjectDetails?: SubjectDetailMap): Map<number, SubjectInput> {
@@ -432,33 +465,47 @@ async function fetch(request: Request, env: SyncEnv): Promise<Response> {
   if (url.pathname === '/internal/sync/compare' && request.method === 'POST') {
     try {
       const body = await request.json() as any
+      requireSyncTokens(body)
       const clientA = getPlatformClient(body.platformA || 'bgm')
       const clientB = getPlatformClient(body.platformB || 'bgm')
-      return json(await compareAccounts(clientA, body.tokenA || '', clientB, body.tokenB || ''))
+      return json(await compareAccounts(clientA, body.tokenA || '', clientB, body.tokenB || ''), { headers: syncHeaders() })
     } catch (error) {
-      return errorJson(error, error instanceof SyntaxError ? 400 : 500)
+      return errorJson(error, error instanceof SyntaxError || error instanceof SyncValidationError ? 400 : 500)
     }
   }
 
   if (url.pathname === '/internal/sync/apply' && request.method === 'POST') {
     const startedAt = Date.now()
+    const operationId = createOperationId()
+    let mode = 'unknown'
+    let requestedCount = 0
+    let operationStarted = false
     try {
       const body = await request.json() as any
-      const operationId = createOperationId()
+      requireSyncTokens(body)
+      mode = typeof body.mode === 'string' ? body.mode : 'unknown'
+      requestedCount = Array.isArray(body.items)
+        ? body.items.length
+        : Array.isArray(body.subject_ids) ? body.subject_ids.length : 0
       const clientA = getPlatformClient(body.platformA || 'bgm')
       const clientB = getPlatformClient(body.platformB || 'bgm')
+      await persistSyncOperationLog(env, createRunningSyncOperationLog(operationId, mode, requestedCount))
+      operationStarted = true
       const results = await executeSync(clientA, body.tokenA || '', clientB, body.tokenB || '', {
         mode: body.mode,
         from: body.from,
         to: body.to,
+        items: body.items,
         subject_ids: body.subject_ids,
         baseline: body.baseline,
       })
-      const requestedCount = Array.isArray(body.subject_ids) ? body.subject_ids.length : results.length
-      await persistSyncOperationLog(env, createSyncOperationLog(operationId, body.mode, requestedCount, results, Date.now() - startedAt))
+      await persistSyncOperationLog(env, createSyncOperationLog(operationId, body.mode, requestedCount || results.length, results, Date.now() - startedAt))
       return json(results, { headers: syncOperationHeaders(operationId) })
     } catch (error) {
-      return errorJson(error, error instanceof SyntaxError ? 400 : 500)
+      if (operationStarted) {
+        await persistSyncOperationLog(env, createFailedSyncOperationLog(operationId, mode, requestedCount, Date.now() - startedAt, error))
+      }
+      return errorJson(error, error instanceof SyntaxError || error instanceof SyncValidationError ? 400 : 500)
     }
   }
 
@@ -468,9 +515,9 @@ async function fetch(request: Request, env: SyncEnv): Promise<Response> {
     const storage = new KVStorage(env.AIRING_CAL_KV)
     const operation = await storage.get<SyncOperationLog>(operationLogKey(id))
     if (!operation) return errorJson(new Error('Operation log not found or expired'), 404)
-    if (request.headers.get('accept')?.includes('application/json')) return json({ ok: true, operation })
+    if (request.headers.get('accept')?.includes('application/json')) return json({ ok: true, operation }, { headers: syncHeaders() })
     return new Response(`<h1>同步操作日志</h1><pre>${JSON.stringify(operation, null, 2)}</pre>`, {
-      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY' },
     })
   }
 

@@ -132,6 +132,8 @@ export interface Difference {
   progressB: number
   scoreA: number
   scoreB: number
+  itemA?: ComparisonItem
+  itemB?: ComparisonItem
 }
 
 export interface SameEntry {
@@ -165,6 +167,7 @@ export interface SyncRequest {
   mode: 'full' | 'partial'
   from: string
   to: string
+  items?: ComparisonItem[]
   subject_ids?: string[]
   baseline?: SyncBaseline[]
 }
@@ -187,6 +190,13 @@ export interface SyncResult {
     total: number
   }
   error?: string
+}
+
+export class SyncValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SyncValidationError'
+  }
 }
 
 export interface BgmCalendarSubjectLike {
@@ -505,12 +515,14 @@ export async function compareAccounts(
           progressB: b.progress,
           scoreA: a.score,
           scoreB: b.score,
+          itemA: a,
+          itemB: b,
         })
       }
     } else if (a) {
-      onlyA.push({ externalId: id, title: a.title, statusA: statusLabel(a.status), statusB: '—', progressA: a.progress, progressB: 0, scoreA: a.score, scoreB: 0 })
+      onlyA.push({ externalId: id, title: a.title, statusA: statusLabel(a.status), statusB: '—', progressA: a.progress, progressB: 0, scoreA: a.score, scoreB: 0, itemA: a })
     } else if (b) {
-      onlyB.push({ externalId: id, title: b.title, statusA: '—', statusB: statusLabel(b.status), progressA: 0, progressB: b.progress, scoreA: 0, scoreB: b.score })
+      onlyB.push({ externalId: id, title: b.title, statusA: '—', statusB: statusLabel(b.status), progressA: 0, progressB: b.progress, scoreA: 0, scoreB: b.score, itemB: b })
     }
   }
 
@@ -539,11 +551,16 @@ export async function executeSync(
   request: SyncRequest,
 ): Promise<SyncResult[]> {
   validateSyncRequest(request)
-  const sourceAccount = await clientA.getMe(fromToken)
-  const sourceCollections = await clientA.fetchCollections(fromToken, sourceAccount.username)
-  const targets = request.mode === 'full'
-    ? sourceCollections
-    : sourceCollections.filter((item) => new Set(request.subject_ids ?? []).has(item.externalId))
+  let targets: ComparisonItem[]
+  if (request.items) {
+    targets = request.items
+  } else {
+    const sourceAccount = await clientA.getMe(fromToken)
+    const sourceCollections = await clientA.fetchCollections(fromToken, sourceAccount.username)
+    targets = request.mode === 'full'
+      ? sourceCollections
+      : sourceCollections.filter((item) => new Set(request.subject_ids ?? []).has(item.externalId))
+  }
   const baselineMap = new Map((request.baseline ?? []).map((entry) => [entry.externalId, entry]))
   const results: SyncResult[] = []
 
@@ -574,9 +591,40 @@ export async function executeSync(
 }
 
 function validateSyncRequest(request: SyncRequest): void {
-  if (request.mode !== 'full' && request.mode !== 'partial') throw new Error('Invalid sync mode')
-  if (!request.from?.trim() || !request.to?.trim()) throw new Error('Missing source/target user')
-  if (request.mode === 'partial' && (!Array.isArray(request.subject_ids) || request.subject_ids.length === 0)) {
-    throw new Error('Partial sync requires subject_ids')
+  if (request.mode !== 'full' && request.mode !== 'partial') throw new SyncValidationError('Invalid sync mode')
+  if (!request.from?.trim() || !request.to?.trim()) throw new SyncValidationError('Missing source/target user')
+  if (request.items !== undefined) {
+    if (!Array.isArray(request.items) || request.items.length === 0) throw new SyncValidationError('Sync requires at least one item')
+    if (request.items.length > 5) throw new SyncValidationError('Sync accepts at most 5 items')
+    if (!request.items.every(isComparisonItem)) throw new SyncValidationError('Invalid sync item')
   }
+  if (request.subject_ids !== undefined) {
+    if (!Array.isArray(request.subject_ids) || request.subject_ids.some((id) => typeof id !== 'string' || !id.trim())) {
+      throw new SyncValidationError('Invalid subject_ids')
+    }
+    if (request.subject_ids.length > 5) throw new SyncValidationError('Sync accepts at most 5 subject_ids')
+  }
+  if (request.mode === 'partial' && !request.items?.length && !request.subject_ids?.length) {
+    throw new SyncValidationError('Partial sync requires items or subject_ids')
+  }
+}
+
+function isComparisonItem(value: unknown): value is ComparisonItem {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Record<string, unknown>
+  return typeof item.externalId === 'string'
+    && item.externalId.trim().length > 0
+    && typeof item.title === 'string'
+    && Object.values(WatchStatus).includes(item.status as WatchStatus)
+    && typeof item.progress === 'number'
+    && Number.isFinite(item.progress)
+    && item.progress >= 0
+    && typeof item.totalEpisodes === 'number'
+    && Number.isFinite(item.totalEpisodes)
+    && item.totalEpisodes >= 0
+    && typeof item.score === 'number'
+    && Number.isFinite(item.score)
+    && item.score >= 0
+    && item.score <= 10
+    && item.platform === 'bgm'
 }
