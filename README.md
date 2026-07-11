@@ -79,7 +79,9 @@ gh workflow run sync-workflow.yml --ref dev -f operation=trigger -f mode=shadow 
 gh run watch <run-id> --exit-status
 ```
 
-`Manual Sync Workflow` 支持 `trigger`、`describe`、`restart`、`terminate` 四种显式控制面操作；trigger 的 mode 只能显式选择 `shadow` 或 `live`。它不会部署代码；定时 live instance 由 Cloudflare Workflow schedule 独立创建。
+`Manual Sync Workflow` 支持 `trigger`、`describe`、`restart`、`terminate` 四种日常控制面操作；trigger 的 mode 只能显式选择 `shadow` 或 `live`。它不会部署代码；定时 live instance 由 Cloudflare Workflow schedule 独立创建。
+
+从旧 Queue 架构首次切换时，如果 Cloudflare 仍保留历史 consumer 关联，使用一次性 `cleanup-legacy-consumer` 操作解除关联后再部署；它不会删除 Queue 数据或 Media Queue。
 
 instance 运维命令形态：
 

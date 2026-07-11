@@ -13,6 +13,7 @@ on:
           - describe
           - restart
           - terminate
+          - cleanup-legacy-consumer
       mode:
         description: Workflow publish mode
         required: true
@@ -68,6 +69,9 @@ jobs:
       - name: Terminate Workflow instance
         if: inputs.operation == 'terminate'
         run: pnpm exec wrangler workflows instances terminate airing-cal-sync "$INSTANCE_ID" --config apps/sync-worker/wrangler.toml
+      - name: Remove legacy Queue consumer
+        if: inputs.operation == 'cleanup-legacy-consumer'
+        run: pnpm exec wrangler queues consumer remove airing-cal-sync-trigger airing-cal-sync --config apps/sync-worker/wrangler.toml
       - name: Describe Workflow instance
         if: always() && (inputs.operation == 'trigger' || inputs.operation == 'describe')
         run: pnpm exec wrangler workflows instances describe airing-cal-sync "$INSTANCE_ID" --config apps/sync-worker/wrangler.toml
