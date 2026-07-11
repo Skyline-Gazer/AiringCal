@@ -43,7 +43,7 @@
 - [x] 6.1 使用已验证的 Wrangler CLI 显式创建生产 shadow instance 并核对 instance、step、retry、输出与正式 key 隔离
 - [x] 6.2 修复 shadow 发现的问题并重新执行全量 typecheck/test/build/diff-check
 - [x] 6.3 启用 `0 */4 * * *` Worker Cron 桥接并删除旧业务 Cron，更新运行与回退文档后原子 commit/push
-- [ ] 6.4 观察至少一个完整 live instance，确认正式 snapshot 更新、media backlog 异步收敛且无永久 running
+- [x] 6.4 观察至少一个完整 live instance，确认正式 snapshot 更新、media backlog 异步收敛且无永久 running（`live-f0547ac` 于 2026-07-11 完成，651 个 refresh job 已异步投递）
 
 ## 7. 移除旧触发路径并完成发版
 
@@ -51,4 +51,4 @@
 - [x] 7.2 删除 `airing-cal-sync-trigger` 配置、旧 queue handler 与触发脚本，并更新 bootstrap/资源文档
 - [x] 7.3 审计 README、endpoint、环境变量、Worker、Workflow、日志事件、配置与发版文档，删除未实现或过时声明
 - [x] 7.4 运行 `pnpm typecheck`、`pnpm test`、`pnpm build:check`、`git diff --check` 与本地 Workflow smoke test
-- [ ] 7.5 核对生产控制面与健康 API，提交并 push 最终发版原子提交
+- [x] 7.5 核对生产控制面与健康 API，提交并 push 最终发版原子提交（部署 run `29135720957` 成功；健康 API 报告 `live-f0547ac` 为 `ok/complete`）
