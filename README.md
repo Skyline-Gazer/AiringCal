@@ -55,17 +55,19 @@ https://airing-cal-frontend.<你的 workers.dev 子域>.workers.dev
 
 账号 compare 返回的差异条目包含规范化 `itemA` / `itemB`。页面按方向选择源 item，并以最多 5 条一批提交给 `/api/sync/apply`；apply 直接复用这些 items，不会为每批重新拉取全部源收藏。旧 `subject_ids` 输入暂时兼容一个版本且同样限制为 5 条。用户 token 只存在于当前请求内，不写入 KV operation log、Queue 或其他异步载荷；compare、apply 和 check 响应统一使用 `Cache-Control: no-store`。
 
-`airing-cal-sync` 没有公开同步 URL；生产同步由 Cloudflare Workflow schedule 每 4 小时创建 live instance：
+`airing-cal-sync` 没有公开同步 URL。Cloudflare Workflows Free Plan 不支持原生 Workflow schedule，因此生产定时入口是同一个 sync Worker 的轻量 Cron；Cron 每 4 小时只创建一个 live Workflow instance，不拉取 bgm.tv、不读写业务缓存：
 
 ```toml
 [[workflows]]
 name = "airing-cal-sync"
 binding = "SYNC_WORKFLOW"
 class_name = "SyncWorkflow"
-schedules = ["0 */4 * * *"]
+
+[triggers]
+crons = ["0 */4 * * *"]
 ```
 
-旧 Worker Cron 与同步 trigger queue 已移除。部署不会自动创建业务 instance；只有 Workflow schedule 或明确的手动 control-plane 操作会触发同步。手动 shadow 会写隔离快照和审计结果，不覆盖正式 snapshot，也不投递 Media Queue：
+旧的业务同步 Cron 实现与同步 trigger queue 已移除；当前 Cron 只调用 `SYNC_WORKFLOW.create()`。部署不会自动创建业务 instance；只有 Worker Cron 或明确的手动 control-plane 操作会触发同步。手动 shadow 会写隔离快照和审计结果，不覆盖正式 snapshot，也不投递 Media Queue：
 
 ```bash
 pnpm exec wrangler workflows trigger airing-cal-sync '{"mode":"shadow","source":"manual"}' --id shadow-<commit> --config apps/sync-worker/wrangler.toml
@@ -79,7 +81,7 @@ gh workflow run sync-workflow.yml --ref dev -f operation=trigger -f mode=shadow 
 gh run watch <run-id> --exit-status
 ```
 
-`Manual Sync Workflow` 支持 `trigger`、`describe`、`restart`、`terminate` 四种日常控制面操作；trigger 的 mode 只能显式选择 `shadow` 或 `live`。它不会部署代码；定时 live instance 由 Cloudflare Workflow schedule 独立创建。
+`Manual Sync Workflow` 支持 `trigger`、`describe`、`restart`、`terminate` 四种日常控制面操作；trigger 的 mode 只能显式选择 `shadow` 或 `live`。它不会部署代码；定时 live instance 由 Worker Cron 创建。
 
 从旧 Queue 架构首次切换时，如果 Cloudflare 仍保留历史 consumer 关联，使用一次性 `cleanup-legacy-consumer` 操作解除关联后再部署；它不会删除 Queue 数据或 Media Queue。
 
@@ -100,7 +102,7 @@ collections 使用 bgm.tv OpenAPI 允许的 `limit=50` 分页，并受 120 秒�
 
 `/api/health` 的 `data.workflow` 暴露最近 instance 的 `instance_id`、mode、source、stage、heartbeat、完成时间、计数和脱敏错误。`queued`、`running` 或 `retrying` run 超过 20 分钟没有 heartbeat 时，应用侧返回 `status: "stale"` 与 `stale: true`；实际恢复、重启或终止仍以 Cloudflare Workflow instance 控制面状态为准。
 
-Workflow schedule 来自 checked-in `wrangler.toml`，routine deploy 只同步配置，不触发 live instance。
+Worker Cron 来自 checked-in `wrangler.toml`；routine deploy 只同步代码与配置，不主动触发 live instance。
 
 ## Cloudflare 资源
 
@@ -138,9 +140,9 @@ id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 
 常规 deploy 只读解析实际 KV namespace ID，注入临时 deploy config，再交给 Wrangler dry-run/deploy；资源不存在时会明确失败并提示先运行 bootstrap，不会在发布途中创建资源。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
 
-CI 不上传运行时 secret，也不会手写 `curl` 修改 schedule。Workflow schedule 只来自 `apps/sync-worker/wrangler.toml` 的 `[[workflows]].schedules`。
+CI 不上传运行时 secret，也不会手写 `curl` 修改 schedule。定时配置只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers].crons`；Cron handler 只创建 Workflow instance。
 
-部署流水线只负责 typecheck/test/build、解析已有资源、按 read/media → sync + Workflow → control-plane describe → frontend 的顺序部署。部署完成后不会触发业务同步、不会轮询 KV，也不等待媒体缓存收敛；首次部署无数据时等待下一次 Workflow schedule，或显式触发 live instance。
+部署流水线只负责 typecheck/test/build、解析已有资源、按 read/media → sync + Workflow → control-plane describe → frontend 的顺序部署。部署完成后不会触发业务同步、不会轮询 KV，也不等待媒体缓存收敛；首次部署无数据时等待下一次 Worker Cron，或显式触发 live instance。
 
 ## 最小配置
 
@@ -169,7 +171,7 @@ Cloudflare Dashboard -> My Profile -> API Tokens -> Create custom token。
 
 | 范围 | 权限组 | 级别 | 用途 |
 |------|--------|------|------|
-| Account | `Workers Scripts` | `Edit` | 部署 4 个 Worker script、Workflow 与 schedule |
+| Account | `Workers Scripts` | `Edit` | 部署 4 个 Worker script、Workflow binding 与 Worker Cron trigger |
 | Account | `Workers KV Storage` | `Edit` | 部署 KV binding |
 | Account | `Workers R2 Storage` | `Edit` | 部署 R2 binding |
 | Account | `Queues` | `Edit` | 部署 Queue binding |
@@ -183,13 +185,13 @@ Some triggers failed to deploy for airing-cal-sync
 /workers/scripts/airing-cal-sync/schedules
 ```
 
-说明 Worker 代码已经上传，但 token 不能更新 trigger/schedule。请重新创建或更新 `CLOUDFLARE_API_TOKEN`，确认：
+说明 Worker 代码已经上传，但 token 不能更新 Worker Cron trigger。请重新创建或更新 `CLOUDFLARE_API_TOKEN`，确认：
 
 - token 的 Account Resources 包含 `CLOUDFLARE_ACCOUNT_ID` 对应的 Cloudflare account。
 - Account 权限组 `Workers Scripts` 是 `Edit`，不是 `Read`。
 - 更新 GitHub Repository secret `CLOUDFLARE_API_TOKEN` 后重新跑 workflow。
 
-Wrangler 本地权限映射把 `workers_scripts:write` 描述为可修改 Workers scripts、subdomains、triggers 等；Workflow schedule 部署走的也是这类控制面权限。GitHub Actions 里的 Node 20 deprecation 提示不是这次失败原因。
+Wrangler 本地权限映射把 `workers_scripts:write` 描述为可修改 Workers scripts、subdomains、triggers 等，当前 Worker Cron 走这类控制面权限。若日志返回 `workflow.cron_requires_paid_plan`，说明误用了付费的原生 Workflow schedule；仓库配置不得出现 `[[workflows]].schedules`。GitHub Actions 里的 Node 20 deprecation 提示不是这次失败原因。
 
 如果要让 CI 同时部署自定义域名或 route，再额外加这个可选权限：
 

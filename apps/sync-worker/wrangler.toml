@@ -3,6 +3,9 @@ main = "src/production.ts"
 compatibility_date = "2026-06-17"
 keep_vars = true
 
+[triggers]
+crons = ["0 */4 * * *"]
+
 [vars]
 SYNC_MODE = "merge"
 
@@ -18,4 +21,3 @@ queue = "airing-cal-media"
 name = "airing-cal-sync"
 binding = "SYNC_WORKFLOW"
 class_name = "SyncWorkflow"
-schedules = ["0 */4 * * *"]

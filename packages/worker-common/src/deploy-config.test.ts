@@ -9,7 +9,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const appConfigs = [
   ['frontend-worker', ['[[services]]', 'READ_WORKER', 'SYNC_WORKER']],
   ['read-worker', ['[[kv_namespaces]]', '[[r2_buckets]]']],
-  ['sync-worker', ['[[queues.producers]]', '[[workflows]]', 'binding = "SYNC_WORKFLOW"', 'class_name = "SyncWorkflow"', 'schedules = ["0 */4 * * *"]']],
+  ['sync-worker', ['[[queues.producers]]', '[[workflows]]', 'binding = "SYNC_WORKFLOW"', 'class_name = "SyncWorkflow"', '[triggers]', 'crons = ["0 */4 * * *"]']],
   ['media-worker', ['[[queues.consumers]]', '[[kv_namespaces]]', '[[r2_buckets]]']],
 ] as const
 
@@ -50,14 +50,15 @@ test('media queue consumer uses Free Plan concurrency limits', () => {
   assert.match(config, /^max_retries = 3$/m)
 })
 
-test('sync workflow owns the production schedule without legacy triggers', () => {
+test('Free Plan Cron only triggers the Workflow without a legacy Queue consumer', () => {
   const config = readFileSync(resolve(root, 'apps/sync-worker/wrangler.toml'), 'utf8')
   assert.match(config, /^main = "src\/production\.ts"$/m)
   assert.match(config, /^name = "airing-cal-sync"$/m)
   assert.match(config, /^binding = "SYNC_WORKFLOW"$/m)
   assert.match(config, /^class_name = "SyncWorkflow"$/m)
-  assert.match(config, /^schedules = \["0 \*\/4 \* \* \*"\]$/m)
-  assert.doesNotMatch(config, /^\[triggers\]$/m)
+  assert.match(config, /^\[triggers\]$/m)
+  assert.match(config, /^crons = \["0 \*\/4 \* \* \*"\]$/m)
+  assert.doesNotMatch(config, /^schedules =/m)
   assert.doesNotMatch(config, /^\[\[queues\.consumers\]\]$/m)
   assert.doesNotMatch(config, /airing-cal-sync-trigger/)
   assert.equal(existsSync(resolve(root, 'scripts/push-sync-trigger.mjs')), false)
@@ -150,9 +151,9 @@ test('manual Workflow trigger uses GitHub secrets without exposing a public sync
   assert.doesNotMatch(workflow, /schedule:/)
 })
 
-test('README documents the multi-worker deployment without legacy cron instructions', () => {
+test('README documents the Free Plan Cron bridge without a native Workflow schedule', () => {
   const readme = readFileSync(resolve(root, 'README.md'), 'utf8')
-  for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/api/cache', '/api/health', 'images.common', 'images.large', 'Workflow schedule', '0 */4 * * *', '手动 bootstrap workflow']) {
+  for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/api/cache', '/api/health', 'images.common', 'images.large', 'Worker Cron', '0 */4 * * *', '手动 bootstrap workflow']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document ${fragment}`)
   }
   for (const fragment of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', '不要再创建 `CF_API_TOKEN` / `CF_ACCOUNT_ID`', 'Workers Scripts', 'Workers KV Storage', 'Workers R2 Storage', 'Queues', 'Account Settings', 'User Details', 'Workers Routes']) {
@@ -173,9 +174,10 @@ test('README documents the multi-worker deployment without legacy cron instructi
   for (const fragment of ['`subject:refresh:{subject_id}`', '`job_id`', '6 至 8 天', '`max_concurrency = 4`', '`image:status:{subject_id}` 只描述真实图片缓存结果']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document media refresh lifecycle: ${fragment}`)
   }
-  for (const fragment of ['Workflow schedule', '0 */4 * * *', '`sync:run:{instanceId}`', '`sync:staging:{instanceId}:*`', '`snapshot:shadow:{instanceId}:*`', 'workflows trigger airing-cal-sync', 'workflows instances describe', 'workflows instances restart', 'workflows instances terminate']) {
+  for (const fragment of ['Cloudflare Workflows Free Plan 不支持原生 Workflow schedule', 'Cron handler 只创建 Workflow instance', '0 */4 * * *', '`sync:run:{instanceId}`', '`sync:staging:{instanceId}:*`', '`snapshot:shadow:{instanceId}:*`', 'workflows trigger airing-cal-sync', 'workflows instances describe', 'workflows instances restart', 'workflows instances terminate']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document shadow Workflow operations: ${fragment}`)
   }
+  assert.doesNotMatch(readme, /^schedules\s*=/m)
   for (const fragment of ['BANGUMI_GIT_COMMIT_SHA', 'BANGUMI_GIT_REPOSITORY_URL', '绑定自定义域名不需要改任何 repository URL 变量']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document optional frontend build metadata: ${fragment}`)
   }

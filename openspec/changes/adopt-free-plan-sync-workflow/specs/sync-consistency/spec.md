@@ -12,7 +12,7 @@
 - **THEN** 读取端继续使用上一次已提交 snapshot
 
 ### Requirement: 同步执行不得重叠
-系统 MUST 防止旧 Cron、Workflow schedule 与手动 live instance 同时刷新同一 token 或提交同一正式快照；shadow instance 不得产生正式副作用。
+系统 MUST 防止旧业务 Cron、Worker Cron 创建的 Workflow 与手动 live instance 同时刷新同一 token 或提交同一正式快照；shadow instance 不得产生正式副作用。
 
 #### Scenario: 已有 live 同步正在执行
 - **WHEN** 第二个 live 同步在活动 instance 仍运行时到达
@@ -44,4 +44,3 @@
 #### Scenario: 账号同步结束
 - **WHEN** compare 或 apply 请求完成
 - **THEN** operation log 和所有异步消息不包含源或目标 token
-

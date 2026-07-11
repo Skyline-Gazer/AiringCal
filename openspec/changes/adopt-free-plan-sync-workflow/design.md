@@ -42,7 +42,7 @@ Cloudflare Workflows 在 Free Plan 下提供持久化 step、重试和 instance 
 
 ### 3. shadow 与 live 使用隔离的发布语义
 
-`shadow` 写 `snapshot:shadow:{instanceId}:*` 和审计摘要，不覆盖 live key，也不投递 Media Queue。`live` 才更新正式 snapshot 和 enqueue refresh jobs。第一轮只注册 Workflow binding，保留旧 Cron；shadow 生产验证通过后，在同一原子提交中启用 `0 */4 * * *` Workflow schedule 并删除旧 `[triggers]` Cron，避免双重触发。
+`shadow` 写 `snapshot:shadow:{instanceId}:*` 和审计摘要，不覆盖 live key，也不投递 Media Queue。`live` 才更新正式 snapshot 和 enqueue refresh jobs。原生 Workflow schedule 需要付费计划；Free Plan 使用 `0 */4 * * *` Worker Cron，但 handler 只以确定性 ID 创建 live Workflow instance，不执行同步业务。
 
 已激活 instance 使用的 step 名与返回结构在兼容窗口内冻结。破坏性变更通过新 step 名或 Workflow 版本演进。
 
@@ -71,7 +71,7 @@ Cloudflare Workflows 在 Free Plan 下提供持久化 step、重试和 instance 
 - [KV 不是事务数据库，多 key publish 可能中途失败] → publish 使用 instance staging 与最终 summary/manifest 提交点；read path 只读取已提交版本或保留兼容 live key，失败测试验证不暴露部分结果。
 - [Workflow step 的 10 ms CPU 预算较紧] → 每页即时规范化，组合拆到收藏类型/chunk，step 输出只含摘要；生产 shadow 检查 CPU 与输出大小。
 - [Queue 至少一次投递会产生重复消息] → `job_id` 与 `subject:refresh:*` 共同去重，每个写入都按重复执行设计。
-- [旧 Cron 与新 schedule 迁移时可能重叠] → 首发不启用 schedule，切换提交同时增新 schedule、删旧 Cron，并检查现有 instance。
+- [旧业务 Cron 与新触发器迁移时可能重叠] → 切换时删除旧业务 handler 与 trigger queue，只保留创建 Workflow instance 的轻量 Worker Cron，并检查现有 instance。
 - [降低 media 并发会延长图片最终收敛时间] → snapshot 先发布并继续服务 stale 内容，健康状态分别报告 Workflow 与 refresh backlog。
 - [Free Plan 限额或计费规则变化] → step 数量和运行频率在测试与运维文档中显式记录，激活前使用官方控制面核对。前两个生产 shadow 证明多个快速 step 会在同一 Worker invocation 内累计 KV API 调用，因此 Workflow 不再执行逐 subject cache 查询；测试同时约束单 step 与整次 Workflow 的 KV 调用预算。
 
@@ -80,9 +80,9 @@ Cloudflare Workflows 在 Free Plan 下提供持久化 step、重试和 instance 
 1. 先移除 CI post-deploy sync/KV polling，拆分 CI/deploy 并保持旧 Cron 业务路径可用。
 2. 增加共享类型、缓存 key、BGM 请求边界与 Media Queue V2，保持旧 job 可兼容消费。
 3. 部署无 schedule 的 Workflow binding，以显式 `shadow` instance 验证分页、step、retry、状态与输出。
-4. 验证通过后独立提交 schedule 切换：启用每 4 小时 Workflow schedule并删除旧 Cron。
+4. 验证通过后独立提交触发器切换：启用每 4 小时 Worker Cron 桥接并删除旧业务 Cron。
 5. 观察至少一个完整 live instance 和 media backlog 收敛，再删除 trigger queue、旧 queue handler 与触发脚本。
-6. 紧急回退时先移除 schedule、terminate 异常 instance，再部署上一稳定 commit；不删除 KV、R2、Queue 或 Workflow 资源，并保持新旧 key 兼容。
+6. 紧急回退时先移除 Worker Cron、terminate 异常 instance，再部署上一稳定 commit；不删除 KV、R2、Queue 或 Workflow 资源，并保持新旧 key 兼容。
 
 ## Open Questions
 

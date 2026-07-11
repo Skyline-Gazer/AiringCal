@@ -38,11 +38,11 @@
 - [x] 5.3 实现 cache cursor pagination、`limit <= 100` 和 calendar 有界 hydration
 - [x] 5.4 更新 endpoint 文档并运行 read/frontend 测试后原子 commit/push
 
-## 6. Shadow 生产验证与 schedule 切换
+## 6. Shadow 生产验证与 Free Plan 定时触发切换
 
 - [x] 6.1 使用已验证的 Wrangler CLI 显式创建生产 shadow instance 并核对 instance、step、retry、输出与正式 key 隔离
 - [x] 6.2 修复 shadow 发现的问题并重新执行全量 typecheck/test/build/diff-check
-- [x] 6.3 启用 `0 */4 * * *` Workflow schedule 并同时删除旧 Worker Cron，更新运行与回退文档后原子 commit/push
+- [x] 6.3 启用 `0 */4 * * *` Worker Cron 桥接并删除旧业务 Cron，更新运行与回退文档后原子 commit/push
 - [ ] 6.4 观察至少一个完整 live instance，确认正式 snapshot 更新、media backlog 异步收敛且无永久 running
 
 ## 7. 移除旧触发路径并完成发版

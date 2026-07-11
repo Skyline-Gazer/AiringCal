@@ -169,7 +169,8 @@ export async function runSyncWorkflow(
   const scheduled = Boolean(event.schedule)
   const mode = scheduled ? 'live' : event.payload?.mode
   if (mode !== 'shadow' && mode !== 'live') throw nonRetryable('Manual workflow requires mode shadow or live')
-  const source = scheduled ? 'schedule' : 'manual'
+  const source = scheduled || event.payload?.source === 'schedule' ? 'schedule' : 'manual'
+  if (source === 'schedule' && mode !== 'live') throw nonRetryable('Scheduled workflow requires live mode')
   const users = env.BANGUMI_USERS.split(',').map((user) => user.trim()).filter(Boolean)
   if (!users.length) throw nonRetryable('BANGUMI_USERS is empty')
   if (!env.BANGUMI_TOKEN) throw nonRetryable('BANGUMI_TOKEN is empty')

@@ -8,7 +8,7 @@ export const SYNC_STAGING_TTL_SECONDS = 60 * 60 * 24
 
 export interface SyncWorkflowParams {
   mode?: 'shadow' | 'live'
-  source?: 'manual'
+  source?: 'manual' | 'schedule'
 }
 
 export interface SyncRun {

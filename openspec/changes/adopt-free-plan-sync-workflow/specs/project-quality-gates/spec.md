@@ -15,11 +15,11 @@
 - **THEN** 类型、bundle 或控制面检查失败且 frontend 不继续部署
 
 ### Requirement: 文档必须通过实现核对
-README 和技术设计 MUST 与当前路由、绑定、同步行为、Workflow 运维命令及部署流程一致，且不得声明未启用的 schedule 或已删除的 trigger queue。
+README 和技术设计 MUST 与当前路由、绑定、同步行为、Workflow 运维命令及部署流程一致，且不得声明 Free Plan 未启用的原生 Workflow schedule 或已删除的 trigger queue。
 
-#### Scenario: schedule 已激活
-- **WHEN** 生产 shadow 已通过且 Workflow schedule 完成切换
-- **THEN** 文档明确 `0 */4 * * *` 是唯一正式定时触发源，且不再声明旧 Cron、trigger queue 或 post-deploy sync
+#### Scenario: Free Plan 定时触发已激活
+- **WHEN** 生产 shadow 已通过且 Worker Cron 桥接完成切换
+- **THEN** 文档明确 `0 */4 * * *` 只创建 live Workflow instance，且不再声明旧业务 Cron、trigger queue、原生 Workflow schedule 或 post-deploy sync
 
 ## ADDED Requirements
 

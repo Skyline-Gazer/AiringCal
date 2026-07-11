@@ -241,7 +241,7 @@ Expected: PASS。更新 endpoint 文档，commit `feat: expose bounded workflow 
 
 **Interfaces:**
 - Consumes: deployed shadow Workflow and production Cloudflare credentials。
-- Produces: Workflow schedule `0 */4 * * *`，无旧 `[triggers]` Cron 和 sync-trigger consumer。
+- Produces: Free Plan Worker Cron `0 */4 * * *`，handler 只创建 Workflow instance，无旧业务 Cron 和 sync-trigger consumer。
 
 - [ ] **Step 1: 本地 smoke 与生产 shadow**
 
@@ -249,11 +249,11 @@ Expected: PASS。更新 endpoint 文档，commit `feat: expose bounded workflow 
 
 - [ ] **Step 2: 切换 schedule 的失败测试**
 
-更新部署契约，要求 `[[workflows]].schedules = ["0 */4 * * *"]`，禁止 `[triggers]`、sync-trigger queue/handler/script。
+更新部署契约，要求 `[triggers].crons = ["0 */4 * * *"]`，禁止 `[[workflows]].schedules`、sync-trigger queue/旧业务 handler/script。
 
 - [ ] **Step 3: 原子切换触发源**
 
-启用 Workflow schedule并删除旧 Cron；部署后 describe，观察至少一个 live instance 成功更新 snapshot 且 media backlog 收敛。
+启用 Worker Cron 桥接并删除旧业务 Cron；部署后 describe，观察至少一个 live instance 成功更新 snapshot 且 media backlog 收敛。
 
 - [ ] **Step 4: 清理旧资源声明**
 

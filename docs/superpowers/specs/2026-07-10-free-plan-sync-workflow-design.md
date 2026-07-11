@@ -50,7 +50,7 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 1. 第一批提交先移除部署后的 sync trigger 与 KV polling，拆分 CI/deploy，保留旧 Cron。
 2. 上线 BGM 请求边界、缓存 refresh 状态和 Media Queue V2。
 3. 注册不带 schedule 的 Workflow binding，手动运行生产 shadow instance。
-4. shadow 核对 step 数、重试、输出、正式 key 隔离后，独立提交启用 `0 */4 * * *` 并删除旧 Cron。
+4. shadow 核对 step 数、重试、输出、正式 key 隔离后，独立提交启用 `0 */4 * * *` Worker Cron 桥接并删除旧业务 Cron。
 5. 至少观察一个完整 live 周期和 media backlog 收敛后，删除旧 trigger queue/handler/script。
 
 回退顺序为移除 schedule、终止异常 instance、部署上一稳定 commit；不删除 Workflow、KV、R2 或 Queue 资源。
