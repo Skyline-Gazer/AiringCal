@@ -70,6 +70,9 @@ test('deploy workflow resolves existing resources without waiting for business s
   assert.match(workflow, /push:\s*\n\s+branches:\s*\[dev\]/, 'only dev should deploy automatically')
   assert.doesNotMatch(workflow, /branches:\s*\[[^\]]*main/, 'main should not compete for the same workers')
   assert.match(workflow, /concurrency:\s*\n\s+group:\s*deploy-cloudflare\s*\n\s+cancel-in-progress:\s*false/, 'deployments should be serialized without cancelling the active run')
+  assert.match(workflow, /resolve_ref:[\s\S]*?outputs:[\s\S]*?sha:\s*\$\{\{ steps\.resolve\.outputs\.sha \}\}/, 'a no-secret job should resolve one immutable deployment SHA')
+  assert.match(workflow, /git merge-base --is-ancestor "\$sha" origin\/dev/, 'manual refs must already be ancestors of dev')
+  assert.doesNotMatch(workflow.match(/resolve_ref:[\s\S]*?\n  validate:/)?.[0] ?? '', /secrets\./, 'ref validation must not receive production secrets')
   for (const app of ['read-worker', 'sync-worker', 'media-worker']) {
     assert.match(workflow, new RegExp(`apps/${app}/wrangler\\.toml`), `workflow should deploy checked-in ${app} config`)
   }
@@ -81,20 +84,24 @@ test('deploy workflow resolves existing resources without waiting for business s
   assert.match(workflow, /kv_namespace_id:\s*\$\{\{ steps\.resolve\.outputs\.kv_namespace_id \}\}/, 'workflow should expose the resolved KV namespace id as a job output')
   assert.match(workflow, /deploy_read_media_workers:/, 'workflow should deploy read and media workers through a matrix job')
   assert.match(workflow, /deploy_sync_worker:/, 'workflow should deploy sync worker after read and media workers')
-  assert.match(workflow, /deploy_sync_worker:[\s\S]*?needs:\s*\[validate, resolve_cloudflare, deploy_read_media_workers\]/, 'sync worker should wait for read and media workers')
+  assert.match(workflow, /deploy_sync_worker:[\s\S]*?needs:\s*\[resolve_ref, validate, resolve_cloudflare, deploy_read_media_workers\]/, 'sync worker should wait for ref validation, resource resolution, read and media workers')
   assert.match(workflow, /pnpm exec wrangler workflows describe airing-cal-sync/, 'workflow should verify the deployed Workflow control plane')
   assert.match(workflow, /deploy_frontend_worker:/, 'workflow should deploy the public frontend after internal workers')
-  assert.match(workflow, /deploy_frontend_worker:[\s\S]*?needs:\s*\[validate, resolve_cloudflare, deploy_sync_worker\]/, 'frontend should wait for the Workflow control-plane check')
-  for (const job of ['validate', 'resolve_cloudflare', 'deploy_read_media_workers', 'deploy_sync_worker', 'deploy_frontend_worker']) {
+  assert.match(workflow, /deploy_frontend_worker:[\s\S]*?needs:\s*\[resolve_ref, validate, resolve_cloudflare, deploy_sync_worker\]/, 'frontend should wait for the Workflow control-plane check')
+  for (const job of ['resolve_ref', 'validate', 'resolve_cloudflare', 'deploy_read_media_workers', 'deploy_sync_worker', 'deploy_frontend_worker']) {
     assert.match(workflow, new RegExp(`${job}:[\\s\\S]*?timeout-minutes:`), `${job} should have a timeout`)
   }
-  assert.match(workflow, /BANGUMI_GIT_COMMIT_SHA:\s*\$\{\{ github\.sha \}\}/, 'frontend deploy should stamp the current commit sha')
+  assert.match(workflow, /BANGUMI_GIT_COMMIT_SHA:\s*\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/, 'frontend deploy should stamp the resolved deployment sha')
   assert.match(workflow, /BANGUMI_GIT_REPOSITORY_URL:\s*https:\/\/github\.com\/\$\{\{ github\.repository \}\}/, 'frontend deploy should stamp the repository URL')
   assert.match(workflow, /AIRING_CAL_KV_NAMESPACE_ID:\s*\$\{\{ needs\.resolve_cloudflare\.outputs\.kv_namespace_id \}\}/, 'workflow should pass the resolved KV namespace id to materialize deploy configs')
   assert.match(workflow, /node scripts\/materialize-wrangler-config\.mjs \$\{\{ matrix\.config \}\} \$\{\{ runner\.temp \}\}\/wrangler-\$\{\{ matrix\.app \}\}\.toml/, 'workflow should materialize internal worker configs before deploying')
   assert.match(workflow, /pnpm exec wrangler deploy --config \$\{\{ runner\.temp \}\}\/wrangler-\$\{\{ matrix\.app \}\}\.toml/, 'workflow should deploy internal workers with materialized Wrangler configs')
   assert.match(workflow, /WRANGLER_LOG_PATH:\s*\$\{\{ runner\.temp \}\}\/wrangler-\$\{\{ matrix\.app \}\}\.log/, 'workflow should save Wrangler debug logs for matrix deploys')
   assert.match(workflow, /WRANGLER_LOG_SANITIZE:\s*"false"/, 'workflow should include unsanitized Wrangler response bodies for failed deploy diagnosis')
+  assert.match(workflow, /node scripts\/list-cloudflare-crons\.mjs/, 'cron quota must be checked before deploying any worker')
+  assert.ok(workflow.indexOf('node scripts/list-cloudflare-crons.mjs') < workflow.indexOf('pnpm exec wrangler deploy --config'), 'cron quota preflight must run before the first worker upload')
+  const checkoutRefs = [...workflow.matchAll(/ref:\s*\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/g)]
+  assert.equal(checkoutRefs.length, 5, 'every post-resolution job must checkout the same immutable SHA')
   assert.match(workflow, /s\/\(Authorization: Bearer \)\[A-Za-z0-9\._-\]\+\/\\1\[redacted\]\/g/, 'workflow should redact bearer tokens in header-like Wrangler logs')
   assert.match(workflow, /s\/\("authorization": \?"Bearer \)\[A-Za-z0-9\._-\]\+\/\\1\[redacted\]\/gi/, 'workflow should redact bearer tokens in JSON-like Wrangler logs')
 
@@ -106,7 +113,6 @@ test('deploy workflow resolves existing resources without waiting for business s
     'secrets.CF_ACCOUNT_ID',
     'trigger_deploy_sync:',
     'wrangler.deploy.toml',
-    'node scripts/list-cloudflare-crons.mjs',
     'replaceAll(',
     'wrangler secret put',
     'CRON_SECRET',

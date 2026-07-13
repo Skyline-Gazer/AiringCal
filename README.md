@@ -347,13 +347,14 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 
 `.github/workflows/deploy.yml` 会按顺序执行：
 
-1. `pnpm install --frozen-lockfile`
-2. `pnpm typecheck`
-3. `pnpm test`
-4. `pnpm build:check`
-5. 并行部署 `airing-cal-read` 与 `airing-cal-media`
-6. 部署 `airing-cal-sync` 与 `SyncWorkflow`，运行 `wrangler workflows describe` 检查控制面
-7. 注入当前 commit/repository build vars，最后部署 `airing-cal-frontend`
+1. 在不接触 production secrets 的 `resolve_ref` job 中把 push SHA 或手动 ref 解析为完整 commit SHA，并验证它已是 `origin/dev` 的 ancestor
+2. 所有后续 job checkout 同一个解析 SHA，运行 `pnpm install --frozen-lockfile`、typecheck、test、build check
+3. 解析既有 Cloudflare 资源，并在任何 Worker 上传前运行 Worker Cron 配额 preflight
+4. 并行部署 `airing-cal-read` 与 `airing-cal-media`
+5. 部署 `airing-cal-sync`、`SyncWorkflow` 与 Durable Object migrations，运行 `wrangler workflows describe` 检查控制面
+6. 以解析 SHA 注入 commit/repository build vars，最后部署 `airing-cal-frontend`
+
+手动部署输入可以是 SHA、branch 或 tag，但解析出的 commit 必须已经进入 `dev` 历史；未进入 `dev` 的 ref 会在 secrets 和 Cloudflare job 启动前失败。`dev` 在部署期间继续前进不会改变本次 revision，页面 footer SHA 与实际 checkout/deploy SHA保持一致。Cron trigger 已达到 Free Plan 上限且 `airing-cal-sync` 没有可复用 trigger 时，preflight 会在首个 upload 前终止，避免部分部署。
 
 部署步骤直接运行 `pnpm exec wrangler deploy`，不再通过 `cloudflare/wrangler-action` 包装。CI 会设置 `WRANGLER_LOG=debug` 和 `WRANGLER_LOG_PATH`；如果部署失败，会打印脱敏后的 Wrangler debug log，便于看到 Cloudflare API 返回的真实错误。
 
