@@ -92,7 +92,7 @@ pnpm exec wrangler workflows instances restart airing-cal-sync <instance-id> --c
 pnpm exec wrangler workflows instances terminate airing-cal-sync <instance-id> --config apps/sync-worker/wrangler.toml
 ```
 
-Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都使用确定性 step 名；大 payload 写 staging KV，step 只返回 key、数量和 SHA-256 摘要。refresh planning 每 10 个 subject 生成幂等候选 V2 job，enqueue 每 step 最多合并 3 个规划块。Workflow 不逐 subject 读取或写入 refresh/detail/meta/image 状态；Media consumer 在单消息 invocation 内复用 fresh detail 与已缓存图片，只对实际过期或缺失内容访问上游。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为 read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
+Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都使用确定性 step 名；大 payload 写 staging KV，step 只返回 key、数量和 SHA-256 摘要。live initialize 通过 `SNAPSHOT_COORDINATOR` 分配单调 generation 并立即写 `sync:current`；refresh planning 每 10 个 subject 生成携带该 generation 的幂等候选 V3 job，enqueue 每 step 最多合并 3 个规划块。全部 versioned key 写入且全部 V3 job 入队成功后，coordinator 才提交包含 required keys/digests 的 `snapshot:active` manifest；较旧 Workflow 晚完成不能覆盖较新 generation。Workflow 不逐 subject 读取或写入 refresh/detail/meta/image 状态。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为 read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
 
 收藏页不会在每次浏览页面时实时请求 bgm.tv。Workflow 以 `limit=50` 获取 collections 并按 bgm.tv `type` 发布 `want`、`watched`、`watching`、`on_hold`、`dropped` 版本化快照；读取端跟随 `snapshot:active` 读取同一个 instance 的 collections、calendar 和 summary，active pointer 不存在或目标 key 缺失时才回退 legacy key。Workflow 不请求 subject detail；detail、metadata 和图片由 Media Queue 以 stale-while-revalidate 方式异步收敛。
 
@@ -288,12 +288,13 @@ KV key：
 | `snapshot:calendar` | `airing-cal-sync` | 日历 snapshot |
 | `snapshot:summary` | `airing-cal-sync` | 数量摘要 |
 | `sync:meta` | `airing-cal-sync` | 最近同步元信息 |
+| `sync:current` | `SyncWorkflow` | initialize 阶段写入的当前 live instance 与 generation 指针 |
 | `sync:run:{instanceId}` | `SyncWorkflow` | instance stage、heartbeat、计数与错误，TTL 3 天 |
 | `sync:staging:{instanceId}:*` | `SyncWorkflow` | step 间 payload，TTL 24 小时 |
 | `snapshot:shadow:{instanceId}:*` | `SyncWorkflow` | shadow 快照与审计数据，不参与正式读取 |
 | `snapshot:version:{instanceId}:*` | `SyncWorkflow` | live 的版本化 snapshot；全部写完后由 `snapshot:active` 原子切换，read-worker 优先读取该版本 |
 | `subject:meta:{subject_id}` | `airing-cal-media` | subject detail 与 NSFW 判定 |
-| `subject:refresh:{subject_id}` | `airing-cal-sync`, `airing-cal-media` | V2 媒体任务的 queued/running/ok/partial/failed 状态与 `job_id` |
+| `subject:refresh:{subject_id}` | `airing-cal-sync`, `airing-cal-media` | V2/V3 媒体任务的 queued/running/ok/partial/failed 状态、`job_id` 与 generation 兼容状态 |
 | `image:status:{subject_id}` | `airing-cal-media` | subject 的 common/large 缓存状态 |
 | `image:index:{hash}` | `airing-cal-media` | hash 到 subject/source metadata 的索引 |
 

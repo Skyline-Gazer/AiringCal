@@ -69,9 +69,32 @@ class FakeStep implements WorkflowStepLike {
   }
 }
 
-function workflowEnv(kv: MockKV, queueMessages: unknown[]): SyncWorkflowEnv {
+class MockSnapshotCoordinator {
+  commits: any[] = []
+  constructor(private kv: MockKV, readonly generation = 7) {}
+
+  binding() {
+    return {
+      getByName: (name: string) => {
+        assert.equal(name, 'snapshot-global')
+        return {
+          fetch: async (request: Request) => {
+            const body = await request.json() as any
+            if (new URL(request.url).pathname === '/allocate') return Response.json({ generation: this.generation })
+            this.commits.push(body.manifest)
+            this.kv.values.set('snapshot:active', body.manifest)
+            return Response.json({ status: 'committed', generation: body.generation })
+          },
+        }
+      },
+    }
+  }
+}
+
+function workflowEnv(kv: MockKV, queueMessages: unknown[], coordinator = new MockSnapshotCoordinator(kv)): SyncWorkflowEnv {
   return {
     AIRING_CAL_KV: kv,
+    SNAPSHOT_COORDINATOR: coordinator.binding(),
     MEDIA_QUEUE: {
       sendBatch: async (messages) => { queueMessages.push(...messages.map((message) => message.body)) },
     },
@@ -222,8 +245,12 @@ test('live workflow keeps refresh planning and enqueue below the 50-call Free Pl
     assert.equal([...kv.apiCallsByStep.entries()].filter(([name]) => name.startsWith('enqueue-refresh-')).every(([, calls]) => calls <= 4), true)
     assert.equal([...kv.apiCallsByStep.values()].reduce((total, calls) => total + calls, 0) < 500, true)
     assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'live-1')
+    assert.equal((kv.values.get('snapshot:active') as any).generation, 7)
     assert.equal(queueMessages.length, 100)
     assert.equal(new Set((queueMessages as any[]).map((job) => job.job_id)).size, 100)
+    assert.equal((queueMessages as any[]).every((job) => job.version === 3 && job.generation === 7), true)
+    assert.equal(step.names.indexOf('commit-live-snapshot') > step.names.indexOf('enqueue-refresh-3'), true)
+    assert.equal((kv.values.get('sync:current') as any).instance_id, 'live-1')
 
     const putCount = kv.puts.length
     await runSyncWorkflow(workflowEnv(kv, queueMessages), {
@@ -233,6 +260,32 @@ test('live workflow keeps refresh planning and enqueue below the 50-call Free Pl
     }, step, (message) => new TestNonRetryableError(message))
     assert.equal(kv.puts.length, putCount)
     assert.equal(queueMessages.length, 100)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('live workflow does not commit active snapshot when enqueue fails', async () => {
+  const kv = new MockKV()
+  const coordinator = new MockSnapshotCoordinator(kv, 8)
+  const env = workflowEnv(kv, [], coordinator)
+  env.MEDIA_QUEUE.sendBatch = async () => { throw new Error('queue unavailable') }
+  const step = new FakeStep(kv)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) return Response.json({ total: 1, data: [collection(1)] })
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await assert.rejects(() => runSyncWorkflow(env, {
+      instanceId: 'live-enqueue-failure',
+      payload: { mode: 'live', source: 'manual' },
+    }, step, (message) => new TestNonRetryableError(message)), /queue unavailable/)
+    assert.equal(coordinator.commits.length, 0)
+    assert.equal(kv.values.has('snapshot:active'), false)
   } finally {
     globalThis.fetch = originalFetch
   }

@@ -13,6 +13,7 @@ export interface SyncWorkflowParams {
 
 export interface SyncRun {
   instance_id: string
+  generation?: number
   mode: 'shadow' | 'live'
   source: 'schedule' | 'manual'
   status: 'queued' | 'running' | 'retrying' | 'ok' | 'error'

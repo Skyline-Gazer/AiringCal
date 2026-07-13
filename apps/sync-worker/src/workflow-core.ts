@@ -3,6 +3,7 @@ import { mergeCollections, subjectDetailImages, transformCalendar } from '@airin
 import {
   snapshotActiveKey,
   snapshotVersionKey,
+  syncCurrentKey,
   syncMetaKey,
   syncRunKey,
   syncShadowKey,
@@ -10,7 +11,8 @@ import {
   SYNC_RUN_TTL_SECONDS,
   SYNC_STAGING_TTL_SECONDS,
   type CollectionType,
-  type MediaRefreshJobV2,
+  type MediaRefreshJobV3,
+  type SnapshotManifest,
   type SyncRun,
   type SyncWorkflowParams,
 } from '@airing-cal/storage'
@@ -32,7 +34,10 @@ interface KVNamespaceLike {
 export interface SyncWorkflowEnv {
   AIRING_CAL_KV: KVNamespaceLike
   MEDIA_QUEUE: {
-    sendBatch(messages: Array<{ body: MediaRefreshJobV2; contentType?: 'json' }>): Promise<void>
+    sendBatch(messages: Array<{ body: MediaRefreshJobV3; contentType?: 'json' }>): Promise<void>
+  }
+  SNAPSHOT_COORDINATOR: {
+    getByName(name: string): { fetch(request: Request): Promise<Response> }
   }
   BANGUMI_TOKEN: string
   BANGUMI_USERS: string
@@ -87,6 +92,16 @@ async function putJson(kv: KVNamespaceLike, key: string, value: unknown, expirat
 
 async function writeRun(env: SyncWorkflowEnv, run: SyncRun): Promise<void> {
   await putJson(env.AIRING_CAL_KV, syncRunKey(run.instance_id), run, SYNC_RUN_TTL_SECONDS)
+}
+
+async function coordinatorRequest<T>(env: SyncWorkflowEnv, path: string, body: unknown): Promise<T> {
+  const response = await env.SNAPSHOT_COORDINATOR.getByName('snapshot-global').fetch(new Request(`https://snapshot-coordinator${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }))
+  if (!response.ok) throw new Error(`Snapshot coordinator ${path} failed (${response.status})`)
+  return await response.json() as T
 }
 
 function pageStepName(userIndex: number, page: number): string {
@@ -192,11 +207,22 @@ export async function runSyncWorkflow(
 
   try {
     await step.do('initialize', STORAGE_STEP, async () => {
-      run = { ...run, status: 'running', heartbeat_at: nowSeconds() }
+      const generation = mode === 'live'
+        ? (await coordinatorRequest<{ generation: number }>(env, '/allocate', { instance_id: event.instanceId })).generation
+        : undefined
+      run = { ...run, generation, status: 'running', heartbeat_at: nowSeconds() }
       await writeRun(env, run)
+      if (mode === 'live') {
+        await putJson(env.AIRING_CAL_KV, syncCurrentKey(), {
+          instance_id: event.instanceId,
+          generation,
+          updated_at: run.heartbeat_at,
+        })
+      }
       return { key: syncRunKey(run.instance_id), count: 1, digest: await digest(run) }
     })
-    run = { ...run, status: 'running' }
+    const initializedRun = await getJson<SyncRun>(env.AIRING_CAL_KV, syncRunKey(run.instance_id))
+    run = { ...run, ...initializedRun, status: 'running' }
 
     const client = new BgmClient(env.BANGUMI_TOKEN, { maxGetRetries: 0 })
     const pageOutputs: StepOutput[] = []
@@ -265,6 +291,7 @@ export async function runSyncWorkflow(
       return { key, snapshotKeys, refreshInputKey, refreshChunks, count: ids.length, digest: await digest(ids) }
     })
     const summary: Record<string, number> = {}
+    const publishedOutputs: StepOutput[] = []
 
     for (const type of COLLECTION_TYPES) {
       const published = await step.do(`publish-${type}`, STORAGE_STEP, async () => {
@@ -277,24 +304,25 @@ export async function runSyncWorkflow(
       })
       run = { ...run, stage: 'snapshots' }
       summary[type] = published.count
+      publishedOutputs.push(published)
     }
     summary._total = COLLECTION_TYPES.reduce((total, type) => total + (summary[type] ?? 0), 0)
-    await step.do('publish-summary', STORAGE_STEP, async () => {
+    publishedOutputs.push(await step.do('publish-summary', STORAGE_STEP, async () => {
       const key = targetSnapshotKey(mode, event.instanceId, 'summary')
       await putJson(env.AIRING_CAL_KV, key, summary, mode === 'shadow' ? SYNC_RUN_TTL_SECONDS : undefined)
       return { key, count: summary._total, digest: await digest(summary) }
-    })
-    await step.do('publish-calendar', STORAGE_STEP, async () => {
+    }))
+    publishedOutputs.push(await step.do('publish-calendar', STORAGE_STEP, async () => {
       const calendar = await getJson<any[]>(env.AIRING_CAL_KV, calendarOutput.key) ?? []
       const snapshot = transformCalendar(calendar)
       const key = targetSnapshotKey(mode, event.instanceId, 'calendar')
       await putJson(env.AIRING_CAL_KV, key, snapshot, mode === 'shadow' ? SYNC_RUN_TTL_SECONDS : undefined)
       return { key, count: calendarSubjectIds(calendar).length, digest: await digest(snapshot) }
-    })
-    await step.do(mode === 'live' ? 'commit-live-snapshot' : 'publish-shadow-audit', STORAGE_STEP, async () => {
-      const key = mode === 'live' ? snapshotActiveKey() : syncShadowKey(event.instanceId, 'audit')
+    }))
+    if (mode === 'shadow') await step.do('publish-shadow-audit', STORAGE_STEP, async () => {
+      const key = syncShadowKey(event.instanceId, 'audit')
       const value = { instance_id: event.instanceId, mode, subject_count: summary._total, published_at: nowSeconds() }
-      await putJson(env.AIRING_CAL_KV, key, value, mode === 'shadow' ? SYNC_RUN_TTL_SECONDS : undefined)
+      await putJson(env.AIRING_CAL_KV, key, value, SYNC_RUN_TTL_SECONDS)
       return { key, count: 1, digest: await digest(value) }
     })
 
@@ -304,8 +332,9 @@ export async function runSyncWorkflow(
       const output = await step.do(`plan-refresh-${chunkIndex}`, STORAGE_STEP, async () => {
         const allInputs = await getJson<RefreshInput[]>(env.AIRING_CAL_KV, prepared.refreshInputKey ?? '') ?? []
         const inputs = allInputs.slice(chunkIndex * REFRESH_CHUNK_SIZE, (chunkIndex + 1) * REFRESH_CHUNK_SIZE)
-        const jobs: MediaRefreshJobV2[] = inputs.map((input) => ({
-            version: 2,
+        const jobs: MediaRefreshJobV3[] = inputs.map((input) => ({
+            version: 3,
+            generation: run.generation ?? 0,
             job_id: `${event.instanceId}:${input.subject_id}`,
             subject_id: input.subject_id,
             title: input.title,
@@ -328,7 +357,7 @@ export async function runSyncWorkflow(
         const batchIndex = index / ENQUEUE_CHUNKS_PER_STEP
         const outputs = planOutputs.slice(index, index + ENQUEUE_CHUNKS_PER_STEP)
         await step.do(`enqueue-refresh-${batchIndex}`, STORAGE_STEP, async () => {
-          const groups = await Promise.all(outputs.map((output) => getJson<MediaRefreshJobV2[]>(env.AIRING_CAL_KV, output.key)))
+          const groups = await Promise.all(outputs.map((output) => getJson<MediaRefreshJobV3[]>(env.AIRING_CAL_KV, output.key)))
           const jobs = groups.flatMap((group) => group ?? [])
           if (jobs.length) await env.MEDIA_QUEUE.sendBatch(jobs.map((body) => ({ body, contentType: 'json' as const })))
           run = { ...run, stage: 'enqueue', heartbeat_at: nowSeconds() }
@@ -337,6 +366,20 @@ export async function runSyncWorkflow(
         })
         run = { ...run, stage: 'enqueue' }
       }
+
+      await step.do('commit-live-snapshot', STORAGE_STEP, async () => {
+        const manifest: SnapshotManifest = {
+          instance_id: event.instanceId,
+          generation: run.generation ?? 0,
+          mode: 'live',
+          published_at: nowSeconds(),
+          subject_count: prepared.count,
+          required_keys: publishedOutputs.map((output) => output.key),
+          digests: Object.fromEntries(publishedOutputs.map((output) => [output.key, output.digest])),
+        }
+        await coordinatorRequest(env, '/commit', { generation: manifest.generation, manifest })
+        return { key: snapshotActiveKey(), count: 1, digest: await digest(manifest) }
+      })
     }
 
     await step.do('finalize', STORAGE_STEP, async () => {
