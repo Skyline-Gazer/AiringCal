@@ -122,8 +122,8 @@ Worker Cron 来自 checked-in `wrangler.toml`；routine deploy 只同步代码�
 |--------|---------|
 | `airing-cal-frontend` | `READ_WORKER`, `SYNC_WORKER` |
 | `airing-cal-read` | `AIRING_CAL_KV`, `AIRING_CAL_R2` |
-| `airing-cal-sync` | `AIRING_CAL_KV`, `MEDIA_QUEUE` |
-| `airing-cal-media` | `AIRING_CAL_KV`, `AIRING_CAL_R2` |
+| `airing-cal-sync` | `AIRING_CAL_KV`, `MEDIA_QUEUE`, `SYNC_WORKFLOW`, `SNAPSHOT_COORDINATOR` |
+| `airing-cal-media` | `AIRING_CAL_KV`, `AIRING_CAL_R2`, `SUBJECT_REFRESH_COORDINATOR` |
 
 Cloudflare 资源创建已经与常规部署分离。首次部署或资源缺失时，在 GitHub Actions 中手动运行 `Bootstrap Cloudflare Resources`（手动 bootstrap workflow）：
 
@@ -139,6 +139,8 @@ id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 ```
 
 常规 deploy 只读解析实际 KV namespace ID，注入临时 deploy config，再交给 Wrangler dry-run/deploy；资源不存在时会明确失败并提示先运行 bootstrap，不会在发布途中创建资源。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
+
+`SNAPSHOT_COORDINATOR` 与 `SUBJECT_REFRESH_COORDINATOR` 是 SQLite-backed Durable Object binding，migration tag 分别为 `snapshot-coordinator-v1` 与 `subject-refresh-coordinator-v1`。migration 只新增 class，不在自动部署或回退中删除；当前批次先保证 class/binding 可部署，Workflow 与 Media 的 generation 调用路径由后续兼容切换启用。
 
 CI 不上传运行时 secret，也不会手写 `curl` 修改 schedule。定时配置只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers].crons`；Cron handler 只创建 Workflow instance。
 

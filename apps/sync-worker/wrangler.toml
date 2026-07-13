@@ -21,3 +21,11 @@ queue = "airing-cal-media"
 name = "airing-cal-sync"
 binding = "SYNC_WORKFLOW"
 class_name = "SyncWorkflow"
+
+[[durable_objects.bindings]]
+name = "SNAPSHOT_COORDINATOR"
+class_name = "SnapshotCoordinator"
+
+[[migrations]]
+tag = "snapshot-coordinator-v1"
+new_sqlite_classes = ["SnapshotCoordinator"]

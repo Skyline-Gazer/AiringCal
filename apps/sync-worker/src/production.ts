@@ -8,3 +8,4 @@ export default {
   },
 }
 export { SyncWorkflow } from './workflow.ts'
+export { SnapshotCoordinator } from './snapshot-coordinator.ts'

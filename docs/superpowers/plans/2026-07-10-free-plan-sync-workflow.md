@@ -272,9 +272,9 @@ commit `release: activate durable sync workflow` 并 push。核对 GitHub Action
 
 **Files:** `packages/storage/src/index.ts`、`apps/sync-worker/src/snapshot-coordinator.ts`、`apps/media-worker/src/subject-refresh-coordinator.ts`、对应测试与 Wrangler 配置。
 
-- [ ] **Step 1: RED** — 为 generation 幂等分配、T2 先 commit/T1 后 commit、同 subject 旧 generation obsolete 与 legacy generation 0 写失败测试并确认按预期失败。
-- [ ] **Step 2: GREEN** — 增加 `SnapshotManifest`、`MediaRefreshJobV3`、`sync:current` key 与两个 SQLite Durable Object class/binding/migration；使用本地 types/schema 核对 API 与配置。
-- [ ] **Step 3: VERIFY** — 运行 storage/sync/media 定向测试、typecheck、Wrangler dry-run 与 diff check；更新 tasks，commit `feat: add durable coordination primitives` 并 push。
+- [x] **Step 1: RED** — 为 generation 幂等分配、T2 先 commit/T1 后 commit、同 subject 旧 generation obsolete 与 legacy generation 0 写失败测试并确认按预期失败。
+- [x] **Step 2: GREEN** — 增加 `SnapshotManifest`、`MediaRefreshJobV3`、`sync:current` key 与两个 SQLite Durable Object class/binding/migration；使用本地 types/schema 核对 API 与配置。
+- [x] **Step 3: VERIFY** — 运行 storage/sync/media 定向测试、typecheck、Wrangler dry-run 与 diff check；更新 tasks，commit `feat: add durable coordination primitives` 并 push。
 
 ### Task 9: 审计补救——Workflow 与 Media generation 协议
 

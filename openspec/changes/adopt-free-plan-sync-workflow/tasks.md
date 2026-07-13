@@ -57,7 +57,7 @@
 ## 8. 修复审计发现的耐久一致性与部署门禁
 
 - [x] 8.1 更新设计、delta spec 与实施计划，明确 generation、严格 manifest、当前运行指针、不可变部署 revision、Cron 配额和回退契约，review 后原子 commit/push
-- [ ] 8.2 先写失败测试，再新增共享 manifest/V3 类型和两个 SQLite Durable Object coordination primitives，验证配置与幂等分配/提交后原子 commit/push
+- [x] 8.2 先写失败测试，再新增共享 manifest/V3 类型和两个 SQLite Durable Object coordination primitives，验证配置与幂等分配/提交后原子 commit/push
 - [ ] 8.3 先写失败测试，再将 live Workflow 调整为 enqueue 全部 V3 job 后单调提交 active manifest，验证旧 Workflow 与失败路径不会覆盖后原子 commit/push
 - [ ] 8.4 先写失败测试，再让 Media Worker 在 per-subject coordinator 内串行副作用并拒绝旧 generation，验证 retry/legacy 兼容后原子 commit/push
 - [ ] 8.5 先写失败测试，再实现严格 active snapshot 读取、`sync:current` health 与统一 effective stale 状态，更新 API 文档后原子 commit/push

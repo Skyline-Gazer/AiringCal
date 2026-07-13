@@ -234,4 +234,5 @@ async function queue(batch: QueueBatch, env: MediaEnv): Promise<void> {
 }
 
 export { processJob }
+export { SubjectRefreshCoordinator } from './subject-refresh-coordinator.ts'
 export default { queue }

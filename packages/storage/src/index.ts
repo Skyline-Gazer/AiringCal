@@ -26,6 +26,16 @@ export interface SyncRun {
   error: string | null
 }
 
+export interface SnapshotManifest {
+  instance_id: string
+  generation: number
+  mode: 'live'
+  published_at: number
+  subject_count: number
+  required_keys: string[]
+  digests: Record<string, string>
+}
+
 export type SubjectRefreshStatus = 'queued' | 'running' | 'ok' | 'partial' | 'failed'
 
 export interface SubjectRefreshState {
@@ -50,6 +60,11 @@ export interface MediaRefreshJobV2 {
     common?: string
     large?: string
   }
+}
+
+export interface MediaRefreshJobV3 extends Omit<MediaRefreshJobV2, 'version'> {
+  version: 3
+  generation: number
 }
 
 export interface StorageAdapter {
@@ -121,6 +136,10 @@ export function snapshotVersionKey(instanceId: string, suffix: string): string {
 
 export function syncMetaKey(): string {
   return 'sync:meta'
+}
+
+export function syncCurrentKey(): string {
+  return 'sync:current'
 }
 
 export function subjectMetaKey(subjectId: number): string {
