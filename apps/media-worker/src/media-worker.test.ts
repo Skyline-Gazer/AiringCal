@@ -238,6 +238,58 @@ test('media-worker treats subject detail 404 as restricted NSFW', async () => {
   }
 })
 
+test('media-worker routes V3 jobs to the per-subject coordinator and acks obsolete work', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const routed: Array<{ name: string; body: any }> = []
+  let acked = 0
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => { throw new Error('obsolete V3 job must not access upstream') }
+
+  try {
+    await worker.queue({
+      messages: [{
+        body: {
+          version: 3,
+          generation: 4,
+          job_id: 'workflow-4:23080',
+          subject_id: 23080,
+          title: 'A CN',
+          components: ['detail', 'meta', 'image_common', 'image_large'],
+        },
+        ack: () => { acked++ },
+      }],
+    } as any, {
+      AIRING_CAL_KV: kv,
+      AIRING_CAL_R2: r2,
+      SUBJECT_REFRESH_COORDINATOR: {
+        getByName(name: string) {
+          return {
+            async fetch(request: Request) {
+              routed.push({ name, body: await request.json() })
+              return Response.json({ status: 'obsolete', generation: 4 })
+            },
+          }
+        },
+      },
+    } as any)
+
+    assert.equal(acked, 1)
+    assert.deepEqual(routed, [{ name: '23080', body: {
+      version: 3,
+      generation: 4,
+      job_id: 'workflow-4:23080',
+      subject_id: 23080,
+      title: 'A CN',
+      components: ['detail', 'meta', 'image_common', 'image_large'],
+    } }])
+    assert.equal(r2.writes.length, 0)
+    assert.equal(kv.values.size, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('media-worker preserves existing cached image status when a later download fails', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()

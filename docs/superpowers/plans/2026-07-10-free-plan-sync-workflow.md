@@ -280,9 +280,9 @@ commit `release: activate durable sync workflow` 并 push。核对 GitHub Action
 
 **Files:** `apps/sync-worker/src/workflow-core.ts`、`apps/sync-worker/src/workflow.ts`、`apps/media-worker/src/index.ts`、对应测试与文档。
 
-- [ ] **Step 1: RED** — 覆盖 version key/enqueue 失败不 commit、旧 Workflow 晚完成 obsolete、新 media job 后旧 retry 不覆盖。
-- [ ] **Step 2: GREEN** — Workflow 按 initialize → version publish → enqueue V3 → coordinator commit → finalize 执行；Media 全部 subject 副作用进入 coordinator 串行路径。
-- [ ] **Step 3: VERIFY** — 运行 sync/media/worker-common 定向测试、typecheck/build/diff；更新 tasks，分别按 Workflow 与 Media 原子边界 commit/push。
+- [x] **Step 1: RED** — 覆盖 version key/enqueue 失败不 commit、旧 Workflow 晚完成 obsolete、新 media job 后旧 retry 不覆盖。
+- [x] **Step 2: GREEN** — Workflow 按 initialize → version publish → enqueue V3 → coordinator commit → finalize 执行；Media 全部 subject 副作用进入 coordinator 串行路径。
+- [x] **Step 3: VERIFY** — 运行 sync/media/worker-common 定向测试、typecheck/build/diff；更新 tasks，分别按 Workflow 与 Media 原子边界 commit/push。
 
 ### Task 10: 审计补救——严格读取与当前运行 health
 

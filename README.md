@@ -140,7 +140,7 @@ id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 
 常规 deploy 只读解析实际 KV namespace ID，注入临时 deploy config，再交给 Wrangler dry-run/deploy；资源不存在时会明确失败并提示先运行 bootstrap，不会在发布途中创建资源。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
 
-`SNAPSHOT_COORDINATOR` 与 `SUBJECT_REFRESH_COORDINATOR` 是 SQLite-backed Durable Object binding，migration tag 分别为 `snapshot-coordinator-v1` 与 `subject-refresh-coordinator-v1`。migration 只新增 class，不在自动部署或回退中删除；当前批次先保证 class/binding 可部署，Workflow 与 Media 的 generation 调用路径由后续兼容切换启用。
+`SNAPSHOT_COORDINATOR` 与 `SUBJECT_REFRESH_COORDINATOR` 是 SQLite-backed Durable Object binding，migration tag 分别为 `snapshot-coordinator-v1` 与 `subject-refresh-coordinator-v1`。migration 只新增 class，不在自动部署或回退中删除。live Workflow 通过前者分配/提交 generation；Media Queue 按 subject ID 路由到后者，并在单次 Durable Object 请求内完成 generation gate、detail/meta/image/R2 副作用与完成标记。V2/legacy 消息按 generation 0 兼容，不能覆盖已经完成的更高 V3 generation。
 
 CI 不上传运行时 secret，也不会手写 `curl` 修改 schedule。定时配置只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers].crons`；Cron handler 只创建 Workflow instance。
 
