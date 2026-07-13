@@ -52,3 +52,4 @@
 - [x] 7.3 审计 README、endpoint、环境变量、Worker、Workflow、日志事件、配置与发版文档，删除未实现或过时声明
 - [x] 7.4 运行 `pnpm typecheck`、`pnpm test`、`pnpm build:check`、`git diff --check` 与本地 Workflow smoke test
 - [x] 7.5 核对生产控制面与健康 API，提交并 push 最终发版原子提交（部署 run `29135720957` 成功；健康 API 报告 `live-f0547ac` 为 `ok/complete`）
+- [x] 7.6 修复健康 API 混用旧 Queue cron 状态与旧 snapshot 时间，验证顶部运行状态后原子 commit/push

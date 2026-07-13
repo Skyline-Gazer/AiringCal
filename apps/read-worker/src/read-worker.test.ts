@@ -286,6 +286,54 @@ test('read-worker health exposes the latest Workflow run and marks stale heartbe
   assert.equal(JSON.stringify(workflow).includes('secret-token'), false)
 })
 
+test('read-worker health derives snapshot time and last cron from the scheduled Workflow', async () => {
+  const kv = new MockKV()
+  kv.values.set('snapshot:active', {
+    instance_id: 'scheduled-current',
+    mode: 'live',
+    subject_count: 42,
+    published_at: 1783929651,
+  })
+  kv.values.set('snapshot:version:scheduled-current:summary', { watching: 20, _total: 42 })
+  kv.values.set('sync:meta', {
+    synced_at: 1782650300,
+    users: ['alice'],
+    workflow_instance_id: 'scheduled-current',
+    cron: {
+      last: {
+        status: 'running',
+        source: 'queue',
+        triggered_at: 1783693028,
+      },
+    },
+  })
+  kv.values.set('sync:run:scheduled-current', {
+    instance_id: 'scheduled-current',
+    mode: 'live',
+    source: 'schedule',
+    status: 'ok',
+    stage: 'complete',
+    started_at: 1783929651,
+    heartbeat_at: 1783929700,
+    completed_at: 1783929700,
+    collection_pages: 12,
+    subject_count: 655,
+    refresh_jobs: 655,
+    error: null,
+  })
+
+  const response = await worker.fetch(new Request('https://read.local/health'), env(kv) as any)
+  const health = (await response.json() as any).data
+
+  assert.equal(health.collections.updated_at, '2026-07-13T08:00:51.000Z')
+  assert.deepEqual(health.cron.last, {
+    status: 'ok',
+    source: 'workflow',
+    triggered_at: 1783929651,
+    completed_at: 1783929700,
+  })
+})
+
 test('read-worker does not call upstream fetch for read requests', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = async () => {

@@ -76,9 +76,21 @@ async function mapConcurrent<T, R>(values: Iterable<T>, concurrency: number, map
   return results
 }
 
-async function activeSnapshotInstance(storage: KVStorage): Promise<string | null> {
-  const active = await storage.get<{ instance_id?: unknown }>(snapshotActiveKey())
+interface ActiveSnapshot {
+  instance_id?: unknown
+  published_at?: unknown
+}
+
+async function activeSnapshot(storage: KVStorage): Promise<ActiveSnapshot | null> {
+  return storage.get<ActiveSnapshot>(snapshotActiveKey())
+}
+
+function activeSnapshotInstanceFrom(active: ActiveSnapshot | null): string | null {
   return typeof active?.instance_id === 'string' && active.instance_id ? active.instance_id : null
+}
+
+async function activeSnapshotInstance(storage: KVStorage): Promise<string | null> {
+  return activeSnapshotInstanceFrom(await activeSnapshot(storage))
 }
 
 async function readSnapshot<T>(storage: KVStorage, activeInstance: string | null, suffix: string, legacyKey: string): Promise<T | null> {
@@ -120,6 +132,16 @@ function cronLastStatus(meta: { synced_at?: number; cron?: { last?: unknown } } 
     }
   }
   return null
+}
+
+function scheduledWorkflowCronStatus(workflow: SyncRun | null, fallback: unknown): unknown {
+  if (!workflow || workflow.source !== 'schedule') return fallback
+  return {
+    status: workflow.status,
+    source: 'workflow',
+    triggered_at: workflow.started_at,
+    ...(workflow.completed_at ? { completed_at: workflow.completed_at } : {}),
+  }
 }
 
 function positiveEpisodeCount(...values: unknown[]): number | undefined {
@@ -245,7 +267,8 @@ async function handleCache(url: URL, env: ReadEnv): Promise<Response> {
 
 async function handleHealth(env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
-  const activeInstance = await activeSnapshotInstance(storage)
+  const active = await activeSnapshot(storage)
+  const activeInstance = activeSnapshotInstanceFrom(active)
   const types = await readSnapshot<Record<string, number>>(storage, activeInstance, 'summary', snapshotSummaryKey())
   const meta = await storage.get<{ synced_at?: number; users?: string[]; cron?: { last?: unknown }; workflow_instance_id?: string; workflow_stage?: string }>(syncMetaKey())
   const workflowInstanceId = meta?.workflow_instance_id ?? activeInstance
@@ -265,7 +288,9 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
       ? {
           collections: {
             types,
-            updated_at: meta?.synced_at ? new Date(meta.synced_at * 1000).toISOString() : null,
+            updated_at: typeof active?.published_at === 'number'
+              ? new Date(active.published_at * 1000).toISOString()
+              : meta?.synced_at ? new Date(meta.synced_at * 1000).toISOString() : null,
             users: meta?.users ?? [],
           },
           cache: {
@@ -274,7 +299,7 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
           },
           cron: {
             next_at: nextCronAt(),
-            last: cronLastStatus(meta),
+            last: scheduledWorkflowCronStatus(workflowRun, cronLastStatus(meta)),
           },
           workflow,
         }

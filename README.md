@@ -98,7 +98,7 @@ Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都�
 
 collections 使用 bgm.tv OpenAPI 允许的 `limit=50` 分页，并受 120 秒整体预算约束。bgm.tv JSON GET 请求单次 timeout 为 10 秒；429、5xx、timeout 和网络错误最多重试 2 次，401/403 不重试，POST/PATCH 写请求也不会被 client 隐式重试。
 
-`/api/health` 仍保留 `data.cron.last` 作为迁移兼容字段；新的权威应用状态是 `data.workflow`，Cloudflare 控制面状态是最终依据。
+`/api/health` 仍保留 `data.cron.last` 作为迁移兼容字段；最近 instance 来自 schedule 时，该字段由对应 Workflow run 派生，不再返回旧 Queue 遗留状态。`data.collections.updated_at` 优先使用当前 active snapshot 的发布时间。新的权威应用状态仍是 `data.workflow`，Cloudflare 控制面状态是最终依据。
 
 `/api/health` 的 `data.workflow` 暴露最近 instance 的 `instance_id`、mode、source、stage、heartbeat、完成时间、计数和脱敏错误。`queued`、`running` 或 `retrying` run 超过 20 分钟没有 heartbeat 时，应用侧返回 `status: "stale"` 与 `stale: true`；实际恢复、重启或终止仍以 Cloudflare Workflow instance 控制面状态为准。
 
