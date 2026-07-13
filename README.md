@@ -94,11 +94,11 @@ pnpm exec wrangler workflows instances terminate airing-cal-sync <instance-id> -
 
 Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都使用确定性 step 名；大 payload 写 staging KV，step 只返回 key、数量和 SHA-256 摘要。live initialize 通过 `SNAPSHOT_COORDINATOR` 分配单调 generation 并立即写 `sync:current`；refresh planning 每 10 个 subject 生成携带该 generation 的幂等候选 V3 job，enqueue 每 step 最多合并 3 个规划块。全部 versioned key 写入且全部 V3 job 入队成功后，coordinator 才提交包含 required keys/digests 的 `snapshot:active` manifest；较旧 Workflow 晚完成不能覆盖较新 generation。Workflow 不逐 subject 读取或写入 refresh/detail/meta/image 状态。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为 read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
 
-收藏页不会在每次浏览页面时实时请求 bgm.tv。Workflow 以 `limit=50` 获取 collections 并按 bgm.tv `type` 发布 `want`、`watched`、`watching`、`on_hold`、`dropped` 版本化快照；读取端跟随 `snapshot:active` 读取同一个 instance 的 collections、calendar 和 summary，active pointer 不存在或目标 key 缺失时才回退 legacy key。Workflow 不请求 subject detail；detail、metadata 和图片由 Media Queue 以 stale-while-revalidate 方式异步收敛。
+收藏页不会在每次浏览页面时实时请求 bgm.tv。Workflow 以 `limit=50` 获取 collections 并按 bgm.tv `type` 发布 `want`、`watched`、`watching`、`on_hold`、`dropped` 版本化快照；读取端跟随 `snapshot:active` 读取同一个 instance 的 collections、calendar 和 summary，并在返回数据前验证 manifest 中全部 required key 与 SHA-256 digest。active 存在但 manifest、key 或 digest 不完整时返回 HTTP 503 `SNAPSHOT_INCOMPLETE`，绝不逐 key 混入 legacy 数据；只有 active 完全不存在时才整套读取 legacy snapshot。Workflow 不请求 subject detail；detail、metadata 和图片由 Media Queue 以 stale-while-revalidate 方式异步收敛。
 
 collections 使用 bgm.tv OpenAPI 允许的 `limit=50` 分页，并受 120 秒整体预算约束。bgm.tv JSON GET 请求单次 timeout 为 10 秒；429、5xx、timeout 和网络错误最多重试 2 次，401/403 不重试，POST/PATCH 写请求也不会被 client 隐式重试。
 
-`/api/health` 仍保留 `data.cron.last` 作为迁移兼容字段；最近 instance 来自 schedule 时，该字段由对应 Workflow run 派生，不再返回旧 Queue 遗留状态。`data.collections.updated_at` 优先使用当前 active snapshot 的发布时间。新的权威应用状态仍是 `data.workflow`，Cloudflare 控制面状态是最终依据。
+`/api/health` 仍保留 `data.cron.last` 作为迁移兼容字段；最近 instance 优先来自 initialize 阶段写入的 `sync:current`，因此 running 或硬中断实例不必等待 finalize 才可见。最近 instance 来自 schedule 时，cron 字段由对应 Workflow run 的同一个 effective status 派生，不再返回旧 Queue 遗留状态或出现 `stale/running` 分裂。`data.collections.updated_at` 优先使用当前 active snapshot 的发布时间。新的权威应用状态仍是 `data.workflow`，Cloudflare 控制面状态是最终依据。
 
 `/api/health` 的 `data.workflow` 暴露最近 instance 的 `instance_id`、mode、source、stage、heartbeat、完成时间、计数和脱敏错误。`queued`、`running` 或 `retrying` run 超过 20 分钟没有 heartbeat 时，应用侧返回 `status: "stale"` 与 `stale: true`；实际恢复、重启或终止仍以 Cloudflare Workflow instance 控制面状态为准。
 

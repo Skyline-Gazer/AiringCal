@@ -119,8 +119,15 @@ test('calendar hydrates cached image refs and subject metadata like collections'
 test('calendar reads the active Workflow snapshot version', async () => {
   const kv = new MockKV()
   kv.values.set('snapshot:calendar', [{ weekday: { id: 1 }, items: [{ id: 1, name: 'legacy' }] }])
-  kv.values.set('snapshot:active', { instance_id: 'live-calendar' })
-  kv.values.set('snapshot:version:live-calendar:calendar', [{ weekday: { id: 1 }, items: [{ id: 2, name: 'workflow' }] }])
+  const calendar = [{ weekday: { id: 1 }, items: [{ id: 2, name: 'workflow' }] }]
+  const key = 'snapshot:version:live-calendar:calendar'
+  kv.values.set(key, calendar)
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(calendar)))
+  kv.values.set('snapshot:active', {
+    instance_id: 'live-calendar', generation: 1, mode: 'live', published_at: 1, subject_count: 1,
+    required_keys: [key],
+    digests: { [key]: [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('') },
+  })
 
   const response = await worker.fetch(new Request('https://read.local/calendar'), {
     AIRING_CAL_KV: kv,

@@ -52,6 +52,26 @@ function env(kv = new MockKV()) {
   }
 }
 
+async function setActiveSnapshot(kv: MockKV, instanceId: string, values: Record<string, unknown>, publishedAt = 1783929651) {
+  const digests: Record<string, string> = {}
+  for (const [suffix, value] of Object.entries(values)) {
+    const key = `snapshot:version:${instanceId}:${suffix}`
+    kv.values.set(key, value)
+    const bytes = new TextEncoder().encode(JSON.stringify(value))
+    const hash = await crypto.subtle.digest('SHA-256', bytes)
+    digests[key] = [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
+  }
+  kv.values.set('snapshot:active', {
+    instance_id: instanceId,
+    generation: 1,
+    mode: 'live',
+    published_at: publishedAt,
+    subject_count: 1,
+    required_keys: Object.keys(digests),
+    digests,
+  })
+}
+
 test('read-worker returns collection snapshot by type from KV', async () => {
   const kv = new MockKV()
   kv.values.set('snapshot:collections:watching', [{ subject_id: 1, title: 'A' }])
@@ -86,16 +106,45 @@ test('read-worker paginates collection snapshots by page and limit', async () =>
 test('read-worker serves the active versioned snapshot after a live Workflow commit', async () => {
   const kv = new MockKV()
   kv.values.set('snapshot:collections:watching', [{ subject_id: 515856, collection_type: 3 }])
-  kv.values.set('snapshot:active', { instance_id: 'live-status-fix' })
-  kv.values.set('snapshot:version:live-status-fix:collections:watching', [])
-  kv.values.set('snapshot:version:live-status-fix:collections:watched', [{ subject_id: 515856, collection_type: 2 }])
-  kv.values.set('snapshot:version:live-status-fix:summary', { watched: 1, watching: 0, _total: 1 })
+  await setActiveSnapshot(kv, 'live-status-fix', {
+    'collections:watching': [],
+    'collections:watched': [{ subject_id: 515856, collection_type: 2 }],
+    summary: { watched: 1, watching: 0, _total: 1 },
+  })
 
   const watching = await worker.fetch(new Request('https://read.local/collections?type=watching'), env(kv) as any)
   const watched = await worker.fetch(new Request('https://read.local/collections?type=watched'), env(kv) as any)
 
   assert.deepEqual((await watching.json() as any).data, [])
   assert.equal((await watched.json() as any).data[0].subject_id, 515856)
+})
+
+test('read-worker returns 503 instead of mixing legacy data when active manifest is incomplete', async () => {
+  const kv = new MockKV()
+  kv.values.set('snapshot:collections:watching', [{ subject_id: 999, title: 'legacy' }])
+  kv.values.set('snapshot:version:live-incomplete:collections:watching', [{ subject_id: 1, title: 'new' }])
+  kv.values.set('snapshot:active', {
+    instance_id: 'live-incomplete',
+    generation: 2,
+    mode: 'live',
+    published_at: 1783929651,
+    subject_count: 1,
+    required_keys: [
+      'snapshot:version:live-incomplete:collections:watching',
+      'snapshot:version:live-incomplete:calendar',
+    ],
+    digests: {
+      'snapshot:version:live-incomplete:collections:watching': 'ignored-for-missing-key-test',
+      'snapshot:version:live-incomplete:calendar': 'missing',
+    },
+  })
+
+  const response = await worker.fetch(new Request('https://read.local/collections?type=watching'), env(kv) as any)
+  assert.equal(response.status, 503)
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    error: { code: 'SNAPSHOT_INCOMPLETE', message: 'Active snapshot is incomplete' },
+  })
 })
 
 test('read-worker cache stats expose sanitized image cache data only', async () => {
@@ -261,6 +310,7 @@ test('read-worker health exposes the latest Workflow run and marks stale heartbe
     workflow_instance_id: 'live-stale',
     workflow_stage: 'enqueue',
   })
+  kv.values.set('sync:current', { instance_id: 'live-stale', generation: 3, updated_at: heartbeat })
   kv.values.set('sync:run:live-stale', {
     instance_id: 'live-stale',
     mode: 'live',
@@ -277,24 +327,20 @@ test('read-worker health exposes the latest Workflow run and marks stale heartbe
   })
 
   const response = await worker.fetch(new Request('https://read.local/health'), env(kv) as any)
-  const workflow = (await response.json() as any).data.workflow
+  const health = (await response.json() as any).data
+  const workflow = health.workflow
 
   assert.equal(workflow.instance_id, 'live-stale')
   assert.equal(workflow.stage, 'enqueue')
   assert.equal(workflow.status, 'stale')
   assert.equal(workflow.stale, true)
+  assert.equal(health.cron.last.status, 'stale')
   assert.equal(JSON.stringify(workflow).includes('secret-token'), false)
 })
 
 test('read-worker health derives snapshot time and last cron from the scheduled Workflow', async () => {
   const kv = new MockKV()
-  kv.values.set('snapshot:active', {
-    instance_id: 'scheduled-current',
-    mode: 'live',
-    subject_count: 42,
-    published_at: 1783929651,
-  })
-  kv.values.set('snapshot:version:scheduled-current:summary', { watching: 20, _total: 42 })
+  await setActiveSnapshot(kv, 'scheduled-current', { summary: { watching: 20, _total: 42 } })
   kv.values.set('sync:meta', {
     synced_at: 1782650300,
     users: ['alice'],

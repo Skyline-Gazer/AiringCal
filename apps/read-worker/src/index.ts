@@ -1,6 +1,6 @@
 export const appBoundary = 'read-worker'
 
-import { imageOriginalKey, imageStatusKey, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncMetaKey, syncRunKey, type SyncRun } from '@airing-cal/storage'
+import { imageOriginalKey, imageStatusKey, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncCurrentKey, syncMetaKey, syncRunKey, type SnapshotManifest, type SyncRun } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 interface ReadEnv {
@@ -76,17 +76,32 @@ async function mapConcurrent<T, R>(values: Iterable<T>, concurrency: number, map
   return results
 }
 
-interface ActiveSnapshot {
-  instance_id?: unknown
-  published_at?: unknown
+type ActiveSnapshot = SnapshotManifest
+
+class SnapshotIncompleteError extends Error {}
+
+async function digest(value: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(value))
+  const hash = await crypto.subtle.digest('SHA-256', bytes)
+  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 async function activeSnapshot(storage: KVStorage): Promise<ActiveSnapshot | null> {
-  return storage.get<ActiveSnapshot>(snapshotActiveKey())
+  const active = await storage.get<ActiveSnapshot>(snapshotActiveKey())
+  if (!active) return null
+  if (typeof active.instance_id !== 'string' || !active.instance_id || typeof active.generation !== 'number'
+    || active.mode !== 'live' || !Array.isArray(active.required_keys) || !active.required_keys.length
+    || !active.digests || typeof active.digests !== 'object') throw new SnapshotIncompleteError()
+  for (const key of active.required_keys) {
+    if (typeof key !== 'string' || typeof active.digests[key] !== 'string') throw new SnapshotIncompleteError()
+    const value = await storage.get(key)
+    if (value === null || await digest(value) !== active.digests[key]) throw new SnapshotIncompleteError()
+  }
+  return active
 }
 
 function activeSnapshotInstanceFrom(active: ActiveSnapshot | null): string | null {
-  return typeof active?.instance_id === 'string' && active.instance_id ? active.instance_id : null
+  return active?.instance_id ?? null
 }
 
 async function activeSnapshotInstance(storage: KVStorage): Promise<string | null> {
@@ -96,7 +111,8 @@ async function activeSnapshotInstance(storage: KVStorage): Promise<string | null
 async function readSnapshot<T>(storage: KVStorage, activeInstance: string | null, suffix: string, legacyKey: string): Promise<T | null> {
   if (activeInstance) {
     const versioned = await storage.get<T>(snapshotVersionKey(activeInstance, suffix))
-    if (versioned !== null) return versioned
+    if (versioned === null) throw new SnapshotIncompleteError()
+    return versioned
   }
   return storage.get<T>(legacyKey)
 }
@@ -134,10 +150,10 @@ function cronLastStatus(meta: { synced_at?: number; cron?: { last?: unknown } } 
   return null
 }
 
-function scheduledWorkflowCronStatus(workflow: SyncRun | null, fallback: unknown): unknown {
+function scheduledWorkflowCronStatus(workflow: SyncRun | null, fallback: unknown, effectiveStatus?: string): unknown {
   if (!workflow || workflow.source !== 'schedule') return fallback
   return {
-    status: workflow.status,
+    status: effectiveStatus ?? workflow.status,
     source: 'workflow',
     triggered_at: workflow.started_at,
     ...(workflow.completed_at ? { completed_at: workflow.completed_at } : {}),
@@ -271,13 +287,17 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
   const activeInstance = activeSnapshotInstanceFrom(active)
   const types = await readSnapshot<Record<string, number>>(storage, activeInstance, 'summary', snapshotSummaryKey())
   const meta = await storage.get<{ synced_at?: number; users?: string[]; cron?: { last?: unknown }; workflow_instance_id?: string; workflow_stage?: string }>(syncMetaKey())
-  const workflowInstanceId = meta?.workflow_instance_id ?? activeInstance
+  const current = await storage.get<{ instance_id?: unknown }>(syncCurrentKey())
+  const workflowInstanceId = typeof current?.instance_id === 'string' && current.instance_id
+    ? current.instance_id
+    : meta?.workflow_instance_id ?? activeInstance
   const workflowRun = workflowInstanceId ? await storage.get<SyncRun>(syncRunKey(workflowInstanceId)) : null
   const workflowStale = Boolean(workflowRun && ['queued', 'running', 'retrying'].includes(workflowRun.status) && nowSeconds() - workflowRun.heartbeat_at > WORKFLOW_STALE_SECONDS)
+  const effectiveWorkflowStatus = workflowRun ? workflowStale ? 'stale' : workflowRun.status : undefined
   const workflow = workflowRun
     ? sanitizeStatus({
         ...workflowRun,
-        status: workflowStale ? 'stale' : workflowRun.status,
+        status: effectiveWorkflowStatus,
         stale: workflowStale,
       })
     : null
@@ -299,7 +319,7 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
           },
           cron: {
             next_at: nextCronAt(),
-            last: scheduledWorkflowCronStatus(workflowRun, cronLastStatus(meta)),
+            last: scheduledWorkflowCronStatus(workflowRun, cronLastStatus(meta), effectiveWorkflowStatus),
           },
           workflow,
         }
@@ -322,14 +342,21 @@ async function handleImage(pathname: string, env: ReadEnv): Promise<Response> {
 }
 
 async function fetch(request: Request, env: ReadEnv): Promise<Response> {
-  const url = new URL(request.url)
-  if (url.pathname === '/collections') return handleCollections(url, env)
-  if (url.pathname === '/calendar') return handleCalendar(env)
-  if (url.pathname === '/config') return json({ nsfw: env.NSFW_SHOW !== 'false' })
-  if (url.pathname === '/health') return handleHealth(env)
-  if (url.pathname === '/cache') return handleCache(url, env)
-  if (url.pathname.startsWith('/image/')) return handleImage(url.pathname, env)
-  return new Response('Not found', { status: 404 })
+  try {
+    const url = new URL(request.url)
+    if (url.pathname === '/collections') return await handleCollections(url, env)
+    if (url.pathname === '/calendar') return await handleCalendar(env)
+    if (url.pathname === '/config') return json({ nsfw: env.NSFW_SHOW !== 'false' })
+    if (url.pathname === '/health') return await handleHealth(env)
+    if (url.pathname === '/cache') return await handleCache(url, env)
+    if (url.pathname.startsWith('/image/')) return await handleImage(url.pathname, env)
+    return new Response('Not found', { status: 404 })
+  } catch (error) {
+    if (error instanceof SnapshotIncompleteError) {
+      return json({ ok: false, error: { code: 'SNAPSHOT_INCOMPLETE', message: 'Active snapshot is incomplete' } }, { status: 503 })
+    }
+    throw error
+  }
 }
 
 export default { fetch }

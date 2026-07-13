@@ -288,9 +288,9 @@ commit `release: activate durable sync workflow` 并 push。核对 GitHub Action
 
 **Files:** `apps/read-worker/src/index.ts`、对应测试、README。
 
-- [ ] **Step 1: RED** — 覆盖 active 缺 key/digest 返回 503 且不 legacy fallback、initialize 即可见、21 分钟后 workflow/cron 同时 stale。
-- [ ] **Step 2: GREEN** — 实现严格 manifest 读取、`sync:current` 定位与唯一 effective status。
-- [ ] **Step 3: VERIFY** — 运行 read/frontend 定向测试、typecheck/build/diff；更新文档与 tasks，commit `fix: enforce strict snapshot and health contracts` 并 push。
+- [x] **Step 1: RED** — 覆盖 active 缺 key/digest 返回 503 且不 legacy fallback、initialize 即可见、21 分钟后 workflow/cron 同时 stale。
+- [x] **Step 2: GREEN** — 实现严格 manifest 读取、`sync:current` 定位与唯一 effective status。
+- [x] **Step 3: VERIFY** — 运行 read/frontend 定向测试、typecheck/build/diff；更新文档与 tasks，commit `fix: enforce strict snapshot and health contracts` 并 push。
 
 ### Task 11: 审计补救——不可变部署、Cron 配额与回退
 
