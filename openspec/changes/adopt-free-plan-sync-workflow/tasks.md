@@ -53,3 +53,13 @@
 - [x] 7.4 运行 `pnpm typecheck`、`pnpm test`、`pnpm build:check`、`git diff --check` 与本地 Workflow smoke test
 - [x] 7.5 核对生产控制面与健康 API，提交并 push 最终发版原子提交（部署 run `29135720957` 成功；健康 API 报告 `live-f0547ac` 为 `ok/complete`）
 - [x] 7.6 修复健康 API 混用旧 Queue cron 状态与旧 snapshot 时间，验证顶部运行状态后原子 commit/push
+
+## 8. 修复审计发现的耐久一致性与部署门禁
+
+- [x] 8.1 更新设计、delta spec 与实施计划，明确 generation、严格 manifest、当前运行指针、不可变部署 revision、Cron 配额和回退契约，review 后原子 commit/push
+- [ ] 8.2 先写失败测试，再新增共享 manifest/V3 类型和两个 SQLite Durable Object coordination primitives，验证配置与幂等分配/提交后原子 commit/push
+- [ ] 8.3 先写失败测试，再将 live Workflow 调整为 enqueue 全部 V3 job 后单调提交 active manifest，验证旧 Workflow 与失败路径不会覆盖后原子 commit/push
+- [ ] 8.4 先写失败测试，再让 Media Worker 在 per-subject coordinator 内串行副作用并拒绝旧 generation，验证 retry/legacy 兼容后原子 commit/push
+- [ ] 8.5 先写失败测试，再实现严格 active snapshot 读取、`sync:current` health 与统一 effective stale 状态，更新 API 文档后原子 commit/push
+- [ ] 8.6 先写失败测试，再实现无 secrets 的 immutable SHA 解析、`dev` ancestor 校验、部署前 Cron quota gate 与统一 checkout SHA，更新部署文档后原子 commit/push
+- [ ] 8.7 补齐正式 rollback runbook，执行全量测试/typecheck/build/diff/audit、thorough review 与生产 shadow/smoke，纠正任务状态后原子 commit/push

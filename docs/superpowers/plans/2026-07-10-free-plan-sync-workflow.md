@@ -243,27 +243,59 @@ Expected: PASS。更新 endpoint 文档，commit `feat: expose bounded workflow 
 - Consumes: deployed shadow Workflow and production Cloudflare credentials。
 - Produces: Free Plan Worker Cron `0 */4 * * *`，handler 只创建 Workflow instance，无旧业务 Cron 和 sync-trigger consumer。
 
-- [ ] **Step 1: 本地 smoke 与生产 shadow**
+- [x] **Step 1: 本地 smoke 与生产 shadow**
 
 先核对 `wrangler workflows trigger/instances describe` 帮助，再运行 local smoke；显式创建 `shadow-<commit>`，确认完成、正式 snapshot 未变、Queue 无新 job、step/CPU/output 在预算内。
 
-- [ ] **Step 2: 切换 schedule 的失败测试**
+- [x] **Step 2: 切换 schedule 的失败测试**
 
 更新部署契约，要求 `[triggers].crons = ["0 */4 * * *"]`，禁止 `[[workflows]].schedules`、sync-trigger queue/旧业务 handler/script。
 
-- [ ] **Step 3: 原子切换触发源**
+- [x] **Step 3: 原子切换触发源**
 
 启用 Worker Cron 桥接并删除旧业务 Cron；部署后 describe，观察至少一个 live instance 成功更新 snapshot 且 media backlog 收敛。
 
-- [ ] **Step 4: 清理旧资源声明**
+- [x] **Step 4: 清理旧资源声明**
 
 删除旧 queue handler、脚本与 bootstrap queue name；保留实际 Cloudflare queue 资源到稳定观察完成后再从控制面手动删除。
 
-- [ ] **Step 5: 全量文档与验证**
+- [x] **Step 5: 全量文档与验证**
 
 Run: `CI=true pnpm typecheck && CI=true pnpm test && CI=true pnpm build:check && git diff --check`
 Expected: PASS。审计 README 的 endpoint、变量、Worker、Workflow、事件、配置、发布和回退说明。
 
-- [ ] **Step 6: 最终发布**
+- [x] **Step 6: 最终发布**
 
 commit `release: activate durable sync workflow` 并 push。核对 GitHub Actions、Workflow instance 与 `/api/health` 均正常，无永久 running。
+
+### Task 8: 审计补救——Durable coordination primitives
+
+**Files:** `packages/storage/src/index.ts`、`apps/sync-worker/src/snapshot-coordinator.ts`、`apps/media-worker/src/subject-refresh-coordinator.ts`、对应测试与 Wrangler 配置。
+
+- [ ] **Step 1: RED** — 为 generation 幂等分配、T2 先 commit/T1 后 commit、同 subject 旧 generation obsolete 与 legacy generation 0 写失败测试并确认按预期失败。
+- [ ] **Step 2: GREEN** — 增加 `SnapshotManifest`、`MediaRefreshJobV3`、`sync:current` key 与两个 SQLite Durable Object class/binding/migration；使用本地 types/schema 核对 API 与配置。
+- [ ] **Step 3: VERIFY** — 运行 storage/sync/media 定向测试、typecheck、Wrangler dry-run 与 diff check；更新 tasks，commit `feat: add durable coordination primitives` 并 push。
+
+### Task 9: 审计补救——Workflow 与 Media generation 协议
+
+**Files:** `apps/sync-worker/src/workflow-core.ts`、`apps/sync-worker/src/workflow.ts`、`apps/media-worker/src/index.ts`、对应测试与文档。
+
+- [ ] **Step 1: RED** — 覆盖 version key/enqueue 失败不 commit、旧 Workflow 晚完成 obsolete、新 media job 后旧 retry 不覆盖。
+- [ ] **Step 2: GREEN** — Workflow 按 initialize → version publish → enqueue V3 → coordinator commit → finalize 执行；Media 全部 subject 副作用进入 coordinator 串行路径。
+- [ ] **Step 3: VERIFY** — 运行 sync/media/worker-common 定向测试、typecheck/build/diff；更新 tasks，分别按 Workflow 与 Media 原子边界 commit/push。
+
+### Task 10: 审计补救——严格读取与当前运行 health
+
+**Files:** `apps/read-worker/src/index.ts`、对应测试、README。
+
+- [ ] **Step 1: RED** — 覆盖 active 缺 key/digest 返回 503 且不 legacy fallback、initialize 即可见、21 分钟后 workflow/cron 同时 stale。
+- [ ] **Step 2: GREEN** — 实现严格 manifest 读取、`sync:current` 定位与唯一 effective status。
+- [ ] **Step 3: VERIFY** — 运行 read/frontend 定向测试、typecheck/build/diff；更新文档与 tasks，commit `fix: enforce strict snapshot and health contracts` 并 push。
+
+### Task 11: 审计补救——不可变部署、Cron 配额与回退
+
+**Files:** `.github/workflows/deploy.yml`、部署契约测试、Cron preflight script/tests、README。
+
+- [ ] **Step 1: RED** — 覆盖非 `dev` ancestor ref 拒绝、所有 job 使用同一 SHA、配额不足时 deploy 前失败、footer SHA 等于 checkout HEAD。
+- [ ] **Step 2: GREEN** — 增加无 secrets `resolve_ref`、唯一 SHA output、部署前 quota preflight、失败恢复输出与正式 rollback runbook。
+- [ ] **Step 3: VERIFY** — 运行部署配置测试与全量 `pnpm test`、`pnpm typecheck`、`pnpm build:check`、`git diff --check`、`pnpm audit --prod`；完成 thorough review 和生产 shadow/smoke 后更新 tasks 并原子 commit/push。

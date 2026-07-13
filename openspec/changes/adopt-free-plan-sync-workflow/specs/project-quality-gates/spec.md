@@ -37,6 +37,28 @@ CI/CD MUST 只部署代码、解析既有资源并验证控制面，不得触发
 - **WHEN** 当前部署运行中又有多个 dev push 到达
 - **THEN** 当前部署完成且 pending 只保留最新一次，不出现 dev/main 并行竞争同一 Worker
 
+#### Scenario: 手动 ref 未进入 dev
+- **WHEN** 手动部署 ref 解析出的完整 SHA 不是 `origin/dev` 的 ancestor
+- **THEN** 无 secrets 的 ref 解析 job 拒绝部署，后续 production job 不启动
+
+#### Scenario: dev 在部署期间前进
+- **WHEN** resolve job 完成后 `dev` 又产生新提交
+- **THEN** 所有后续 job 仍 checkout 同一解析 SHA，footer SHA 与实际部署 revision 一致
+
+### Requirement: 部署前必须完成 Cron 配额预检
+部署 workflow MUST 在任何 Worker 上传前核对目标账号 Cron trigger 配额；不足时不得产生部分部署。
+
+#### Scenario: Cron 已达上限且目标无 trigger
+- **WHEN** 账号已有 5 个 Cron trigger 且目标 Worker 尚无 trigger
+- **THEN** workflow 在任何 deploy 命令前失败并报告配额原因
+
+### Requirement: 回退步骤必须可执行且保留 Durable Object migration
+README MUST 记录基于不可变 `dev` ancestor SHA 的正式回退流程；回退不得自动删除 Durable Object migration，旧代码必须保持新 binding/class 可加载。
+
+#### Scenario: live generation 异常
+- **WHEN** 运维需要回退到稳定 SHA
+- **THEN** runbook 指导先暂停 Cron 与 terminate 异常 Workflow，再部署并验证 binding、migration、health 与 active generation 后恢复 Cron
+
 ### Requirement: 公开缓存读取必须有界
 公开 cache API MUST 使用 cursor pagination、限制 `limit <= 100`，calendar hydration MUST 使用有界并发且不得单次展开全部 KV key。
 

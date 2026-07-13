@@ -46,3 +46,17 @@ collections 或 calendar 获取最终失败时，系统 MUST 记录错误状态�
 - **WHEN** 应用记录超过 20 分钟没有 heartbeat 且未完成
 - **THEN** 健康 API 将应用状态标记为 stale 并保留 Cloudflare instance ID 供控制面核对
 
+#### Scenario: initialize 后尚未 finalize
+- **WHEN** Workflow 已完成 initialize 但尚未写最终 `sync:meta`
+- **THEN** 健康 API 通过 `sync:current` 定位该 instance，且 Workflow 与兼容 cron 状态使用同一 effective status
+
+### Requirement: live generation 必须单调提交
+系统 MUST 通过 SQLite Durable Object 原子分配 generation 并串行提交 active manifest；较旧 generation 不得覆盖较新的已提交快照。
+
+#### Scenario: 较旧 Workflow 晚完成
+- **WHEN** generation 2 先提交而 generation 1 随后请求提交
+- **THEN** generation 1 返回 obsolete，`snapshot:active` 仍指向 generation 2
+
+#### Scenario: enqueue 中途失败
+- **WHEN** 任一 V3 refresh job 未成功入队
+- **THEN** 本次 generation 不得成为 active snapshot

@@ -39,3 +39,13 @@ consumer MUST 对 timeout、network、429 与 5xx 使用有界延迟重试，对
 - **WHEN** subject detail 返回 404
 - **THEN** consumer 写入不存在终态并 ack 消息
 
+### Requirement: subject 副作用必须按 generation 串行
+系统 MUST 使用每 subject 一个 SQLite Durable Object 串行执行 detail、metadata、图片、R2 与 refresh 状态副作用，并拒绝低于已处理 generation 的消息。
+
+#### Scenario: 旧 job 晚到达
+- **WHEN** 同一 subject 的新 generation 已完成后旧 generation 消息才到达
+- **THEN** 旧消息以 obsolete ack，且不得覆盖 KV、R2 或刷新状态
+
+#### Scenario: legacy job 与 V3 共存
+- **WHEN** generation 0 的 V2/legacy job 在更高 V3 generation 已处理后到达
+- **THEN** legacy job 以 obsolete ack 且不执行刷新副作用

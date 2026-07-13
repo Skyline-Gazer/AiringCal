@@ -66,9 +66,24 @@ Cloudflare Workflows 在 Free Plan 下提供持久化 step、重试和 instance 
 
 `/api/cache` 改为 cursor pagination 且 `limit <= 100`；calendar hydration 使用有界并发，公开请求不得展开全部 KV key。
 
+### 7. 正式快照提交必须由 Durable Object 串行化
+
+审计确认 KV 的读后写检查无法阻止较旧 Workflow 晚完成并覆盖较新快照。新增 SQLite-backed `SnapshotCoordinator`，全局使用固定实例名 `snapshot-global`。`allocate(instanceId)` 原子分配单调递增的 `generation`，相同 instance 重放返回原 generation；initialize 同时写独立 `sync:current` 指针，使尚未 finalize 或硬中断的运行仍可被 health 定位。`commit(generation, manifest)` 只接受大于 `lastCommittedGeneration` 的 generation，并在 Durable Object 串行区内更新完整 `snapshot:active` manifest。
+
+live Workflow 的顺序固定为 initialize generation/current run → fetch/staging → publish versioned keys → build refresh plan → enqueue 全部 V3 jobs → coordinator commit → finalize run/meta。任一 versioned key 写入或 enqueue 失败时不得提交 active pointer；较旧 Workflow 晚到时得到 `obsolete`，不得覆盖新 active snapshot。active manifest 存在时，read path 必须校验 required keys 与摘要，缺失时返回 `SNAPSHOT_INCOMPLETE` 503，禁止逐 key legacy fallback；只有 active 不存在时才允许整套 legacy 兼容读取。
+
+### 8. Media 刷新必须按 subject 和 generation 串行化
+
+新增 SQLite-backed `SubjectRefreshCoordinator`，每个 subject 使用 `idFromName(String(subjectId))`。`MediaRefreshJobV3` 在 V2 字段上增加 Workflow generation；同一 subject 的 detail/meta/image/R2 与刷新状态副作用都在对应 Durable Object 的串行路径内完成。小于已处理 generation 的消息直接返回 `obsolete` 并 ack，不得写 KV/R2；同 generation 的重放保持幂等。V2/legacy 消息按 generation `0` 兼容，且只允许在没有更高 V3 generation 时执行。
+
+### 9. 部署 revision、配额与回退必须可证明
+
+部署 workflow 增加不接触 production secrets 的 `resolve_ref` job。自动 push 固定使用事件完整 commit SHA；手动 ref 解析成完整 SHA 后，必须通过 `git merge-base --is-ancestor <sha> origin/dev`。所有后续 job 只 checkout 该唯一 SHA，`BANGUMI_GIT_COMMIT_SHA` 也使用它。在任何 Worker 上传前运行 Cron 配额 preflight；失败时不得产生部分部署。README 提供正式 rollback runbook，按暂停 Cron、terminate 异常 Workflow、选择 `dev` ancestor 稳定 SHA、不可变 SHA 部署、验证 binding/migration/health/generation、恢复 Cron 的顺序执行。SQLite migration 不自动删除，回退代码保持新 binding/class 可加载。
+
 ## Risks / Trade-offs
 
 - [KV 不是事务数据库，多 key publish 可能中途失败] → publish 使用 instance staging 与最终 summary/manifest 提交点；read path 只读取已提交版本或保留兼容 live key，失败测试验证不暴露部分结果。
+- [KV 也不能提供跨 Workflow 的原子 compare-and-set] → generation 分配与 active pointer 提交移入全局 SQLite Durable Object；KV 只保存 versioned payload 与可观测指针。
 - [Workflow step 的 10 ms CPU 预算较紧] → 每页即时规范化，组合拆到收藏类型/chunk，step 输出只含摘要；生产 shadow 检查 CPU 与输出大小。
 - [Queue 至少一次投递会产生重复消息] → `job_id` 与 `subject:refresh:*` 共同去重，每个写入都按重复执行设计。
 - [旧业务 Cron 与新触发器迁移时可能重叠] → 切换时删除旧业务 handler 与 trigger queue，只保留创建 Workflow instance 的轻量 Worker Cron，并检查现有 instance。
@@ -82,7 +97,8 @@ Cloudflare Workflows 在 Free Plan 下提供持久化 step、重试和 instance 
 3. 部署无 schedule 的 Workflow binding，以显式 `shadow` instance 验证分页、step、retry、状态与输出。
 4. 验证通过后独立提交触发器切换：启用每 4 小时 Worker Cron 桥接并删除旧业务 Cron。
 5. 观察至少一个完整 live instance 和 media backlog 收敛，再删除 trigger queue、旧 queue handler 与触发脚本。
-6. 紧急回退时先移除 Worker Cron、terminate 异常 instance，再部署上一稳定 commit；不删除 KV、R2、Queue 或 Workflow 资源，并保持新旧 key 兼容。
+6. 先部署两个 SQLite Durable Object class/binding 并验证可加载，再切换 Workflow 与 Media 调用路径；migration 不自动删除。
+7. 紧急回退时先移除 Worker Cron、terminate 异常 instance，再以已进入 `dev` 历史的不可变稳定 SHA 部署；不删除 Durable Object、KV、R2、Queue 或 Workflow 资源，并保持新 binding/class 可加载。
 
 ## Open Questions
 

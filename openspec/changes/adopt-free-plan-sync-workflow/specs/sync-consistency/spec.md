@@ -11,6 +11,14 @@
 - **WHEN** 部分 staging 数据已写入但最终提交点失败
 - **THEN** 读取端继续使用上一次已提交 snapshot
 
+#### Scenario: active manifest 不完整
+- **WHEN** `snapshot:active` 存在但任一 required versioned key 缺失或 digest 不匹配
+- **THEN** 读取端返回 503 `SNAPSHOT_INCOMPLETE` 且不得逐 key 回退到 legacy 数据
+
+#### Scenario: 尚无 active manifest
+- **WHEN** 系统处于迁移期且 `snapshot:active` 不存在
+- **THEN** 读取端只允许整套 legacy snapshot 兼容读取
+
 ### Requirement: 同步执行不得重叠
 系统 MUST 防止旧业务 Cron、Worker Cron 创建的 Workflow 与手动 live instance 同时刷新同一 token 或提交同一正式快照；shadow instance 不得产生正式副作用。
 
