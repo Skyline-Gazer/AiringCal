@@ -1,6 +1,8 @@
 (function () {
   const config = window.bgmConfig || { apiUrl: '', quote: '' }
   const API = (config.apiUrl || window.location.origin).replace(/\/$/, '')
+  sessionStorage.removeItem('sync-tokenA')
+  sessionStorage.removeItem('sync-tokenB')
   const container = document.querySelector('.bgm-container')
   if (!container) return
 
@@ -27,6 +29,11 @@
   function safeNumber(value, fallback) {
     var number = Number(value)
     return Number.isFinite(number) ? number : (fallback || 0)
+  }
+
+  function safeScore(value) {
+    var score = Number(value)
+    return Number.isFinite(score) && score >= 0 && score <= 10 ? score : 0
   }
 
   container.addEventListener('click', function(event) {
@@ -102,7 +109,8 @@
       '<div class="bgm-card-info">' +
         '<h3>' + escapeHtml(card.name) + '</h3>'
     if (card.progress > 0) html += '<div class="bgm-progress"><span style="width:' + Math.min(100, Math.max(0, safeNumber(card.progress, 0))) + '%"></span></div>'
-    if (card.score) html += '<span class="bgm-score">★ ' + Number(card.score).toFixed(1) + '</span>'
+    var score = safeScore(card.score)
+    if (score > 0) html += '<span class="bgm-score">★ ' + score.toFixed(1) + '</span>'
     if (card.meta) html += '<span class="bgm-ep">' + escapeHtml(card.meta) + '</span>'
     html += '</div>' +
     '</a>'
@@ -324,10 +332,12 @@
       '<p class="muted" style="font-size:12px;margin-bottom:8px;">粘贴 <a href="https://bgm.tv/dev" target="_blank" rel="noopener noreferrer">bgm.tv Access Token</a>，两个账号各一个；同步动画条目、状态、评分和章节进度</p>'
     view.appendChild(tok)
 
+    var syncState = { tokenA: '', tokenB: '', data: null, page: 1, filter: 'all', search: '' }
+
     function buildTokenRow(side, idSuffix) {
       var row = document.createElement('div')
       row.className = 'sync-token-row'
-      var saved = sessionStorage.getItem('sync-token' + idSuffix) || ''
+      var saved = syncState['token' + idSuffix]
       if (saved) {
         row.innerHTML = '<span class="sync-token-ok">\u2713 ' + escapeHtml(side) + ' token 已就绪</span>' +
           ' <button class="sync-token-clear" data-side="' + escapeAttribute(idSuffix) + '">清除</button>'
@@ -359,14 +369,13 @@
     view.appendChild(resultArea)
 
     var loaded = false
-    var syncState = { tokenA: '', tokenB: '', data: null, page: 1, filter: 'all', search: '' }
     var SYNC_BATCH_SIZE = 5
 
     // ── Token clear handler ──
     tok.addEventListener('click', function(e) {
       if (e.target.classList.contains('sync-token-clear')) {
         var side = e.target.dataset.side
-        sessionStorage.removeItem('sync-token' + side)
+        syncState['token' + side] = ''
         var row = e.target.closest('.sync-token-row')
         var newRow = buildTokenRow(side === 'A' ? 'Account A' : 'Account B', side)
         row.parentNode.replaceChild(newRow, row)
@@ -441,12 +450,12 @@
           h += '<div class="sync-card" style="' + (borderColor ? 'border-left:4px solid ' + borderColor : '') + '">'
 
           // Title row
-          var scoreA = safeNumber(d.scoreA, 0)
-          var scoreB = safeNumber(d.scoreB, 0)
+          var scoreA = safeScore(d.scoreA)
+          var scoreB = safeScore(d.scoreB)
           var progressA = safeNumber(d.progressA, 0)
           var progressB = safeNumber(d.progressB, 0)
           var totalEpisodes = safeNumber(d.totalEpisodes, 0)
-          var highScore = Math.max(scoreA, scoreB, safeNumber(d.score, 0))
+          var highScore = Math.max(scoreA, scoreB, safeScore(d.score))
           var highEp = Math.max(totalEpisodes || progressA || progressB || safeNumber(d.progress, 0))
           var titleExtras = ''
           if (highEp > 0 || highScore > 0) {
@@ -672,7 +681,7 @@
         return {
           externalId: String(getEntryId(entry) || ''),
           status: targetIsB ? entry.statusB : entry.statusA,
-          score: targetIsB ? entry.scoreB : entry.scoreA,
+          score: safeScore(targetIsB ? entry.scoreB : entry.scoreA),
           progress: targetIsB ? entry.progressB : entry.progressA,
           totalEpisodes: entry.totalEpisodes || Math.max(entry.progressA || 0, entry.progressB || 0),
         }
@@ -791,8 +800,8 @@
           var selB = tok.querySelector('.sync-platform[data-side="B"]')
           var ta = inputA ? inputA.value.trim() : ''
           var tb = inputB ? inputB.value.trim() : ''
-          if (!ta && sessionStorage.getItem('sync-tokenA')) ta = sessionStorage.getItem('sync-tokenA')
-          if (!tb && sessionStorage.getItem('sync-tokenB')) tb = sessionStorage.getItem('sync-tokenB')
+          if (!ta) ta = syncState.tokenA
+          if (!tb) tb = syncState.tokenB
           if (!ta || !tb) return alert('\u8bf7\u586b\u5199\u4e24\u4e2a\u8d26\u53f7\u7684 Access Token')
 
           syncState.tokenA = ta; syncState.tokenB = tb
@@ -809,9 +818,6 @@
             var data = await res.json()
             if (!res.ok) throw new Error(data.error || '\u8bf7\u6c42\u5931\u8d25')
 
-            // Save tokens
-            sessionStorage.setItem('sync-tokenA', ta)
-            sessionStorage.setItem('sync-tokenB', tb)
             // Update token row display
             var rows = tok.querySelectorAll('.sync-token-row')
             if (rows[0]) { var nrA = buildTokenRow('Account A', 'A'); rows[0].parentNode.replaceChild(nrA, rows[0]) }
@@ -827,10 +833,11 @@
   }
   function statusLabel(s) {
   var map = { watching: '在看', completed: '看过', plan_to_watch: '想看', on_hold: '搁置', dropped: '抛弃' }
-  return map[s] || s || '—'
+  return Object.prototype.hasOwnProperty.call(map, s) ? map[s] : '—'
 }
 function statusBadgeColor(s) {
-  return { watching: '#00a1d6', completed: '#4caf50', plan_to_watch: '#9b59b6', on_hold: '#f39c12', dropped: '#e74c3c' }[s] || '#666'
+  var map = { watching: '#00a1d6', completed: '#4caf50', plan_to_watch: '#9b59b6', on_hold: '#f39c12', dropped: '#e74c3c' }
+  return Object.prototype.hasOwnProperty.call(map, s) ? map[s] : '#666'
 }
 
   // ---------------------------------------------------------------
