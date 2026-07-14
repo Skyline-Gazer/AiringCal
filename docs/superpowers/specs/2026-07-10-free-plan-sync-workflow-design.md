@@ -2,6 +2,8 @@
 comet_change: adopt-free-plan-sync-workflow
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-14-adopt-free-plan-sync-workflow
+status: final
 ---
 
 # Free Plan Cloudflare Workflow 同步技术设计
