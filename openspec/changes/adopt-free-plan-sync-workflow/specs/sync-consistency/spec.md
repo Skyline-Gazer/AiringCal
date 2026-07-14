@@ -16,7 +16,7 @@
 - **THEN** 读取端返回 503 `SNAPSHOT_INCOMPLETE` 且不得逐 key 回退到 legacy 数据
 
 #### Scenario: 尚无 active manifest
-- **WHEN** 系统处于迁移期且 `snapshot:active` 不存在
+- **WHEN** 系统处于迁移期且 `snapshot:active` 不存在，或 pointer 恰好是合法的 instance/mode/published_at/subject_count 旧四字段结构
 - **THEN** 读取端只允许整套 legacy snapshot 兼容读取
 
 ### Requirement: 同步执行不得重叠

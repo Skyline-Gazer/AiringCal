@@ -62,4 +62,4 @@
 - [x] 8.4 先写失败测试，再让 Media Worker 在 per-subject coordinator 内串行副作用并拒绝旧 generation，验证 retry/legacy 兼容后原子 commit/push
 - [x] 8.5 先写失败测试，再实现严格 active snapshot 读取、`sync:current` health 与统一 effective stale 状态，更新 API 文档后原子 commit/push
 - [x] 8.6 先写失败测试，再实现无 secrets 的 immutable SHA 解析、`dev` ancestor 校验、部署前 Cron quota gate 与统一 checkout SHA，更新部署文档后原子 commit/push
-- [ ] 8.7 补齐正式 rollback runbook，执行全量测试/typecheck/build/diff/audit、thorough review 与生产 shadow/smoke，纠正任务状态后原子 commit/push
+- [x] 8.7 补齐正式 rollback runbook，执行全量测试/typecheck/build/diff/audit、thorough review 与生产 shadow/smoke，纠正任务状态后原子 commit/push

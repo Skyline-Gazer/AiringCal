@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { SnapshotManifest } from '@airing-cal/storage'
-import { SnapshotCoordinatorCore } from './snapshot-coordinator.ts'
+import { SnapshotCoordinator, SnapshotCoordinatorCore } from './snapshot-coordinator.ts'
 
 class MemoryState {
   values = new Map<string, unknown>()
@@ -49,4 +49,34 @@ test('replaying the committed instance is idempotent', async () => {
   const generation = await coordinator.allocate('workflow-1')
   assert.equal((await coordinator.commit(generation, manifest('workflow-1', generation))).status, 'committed')
   assert.equal((await coordinator.commit(generation, manifest('workflow-1', generation))).status, 'committed')
+})
+
+test('concurrent commit requests cannot interleave while the older KV write is awaiting', async () => {
+  const state = new MemoryState()
+  let releaseOld!: () => void
+  let oldWriteStarted!: () => void
+  const oldWrite = new Promise<void>((resolve) => { releaseOld = resolve })
+  const started = new Promise<void>((resolve) => { oldWriteStarted = resolve })
+  const kv = new MemoryKV()
+  kv.put = async (key: string, value: string) => {
+    const parsed = JSON.parse(value)
+    if (parsed.generation === 1) {
+      oldWriteStarted()
+      await oldWrite
+    }
+    kv.values.set(key, parsed)
+  }
+  const coordinator = new SnapshotCoordinator({ storage: state } as any, { AIRING_CAL_KV: kv })
+  const request = (generation: number) => new Request('https://snapshot-coordinator/commit', {
+    method: 'POST',
+    body: JSON.stringify({ generation, manifest: manifest(`workflow-${generation}`, generation) }),
+  })
+
+  const older = coordinator.fetch(request(1))
+  await started
+  const newer = coordinator.fetch(request(2))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  releaseOld()
+  await Promise.all([older, newer])
+  assert.deepEqual(kv.values.get('snapshot:active'), manifest('workflow-2', 2))
 })

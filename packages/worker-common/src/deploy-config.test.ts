@@ -101,7 +101,13 @@ test('deploy workflow resolves existing resources without waiting for business s
   assert.match(workflow, /node scripts\/list-cloudflare-crons\.mjs/, 'cron quota must be checked before deploying any worker')
   assert.ok(workflow.indexOf('node scripts/list-cloudflare-crons.mjs') < workflow.indexOf('pnpm exec wrangler deploy --config'), 'cron quota preflight must run before the first worker upload')
   const checkoutRefs = [...workflow.matchAll(/ref:\s*\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/g)]
-  assert.equal(checkoutRefs.length, 5, 'every post-resolution job must checkout the same immutable SHA')
+  assert.equal(checkoutRefs.length, 6, 'every post-resolution job, including recovery reporting, must checkout the same immutable SHA')
+  assert.match(workflow, /recovery_report:[\s\S]*?if:\s*\$\{\{ always\(\) &&/, 'partial failures should produce an always-evaluated recovery report')
+  for (const worker of ['airing-cal-read', 'airing-cal-media', 'airing-cal-sync', 'airing-cal-frontend']) {
+    assert.match(workflow, new RegExp(`for worker in [^\n]*${worker}`), `recovery report should include ${worker}`)
+  }
+  assert.match(workflow, /wrangler deployments list --name "\$worker" --json/, 'recovery report should query each deployed worker version')
+  assert.match(workflow, /gh workflow run deploy\.yml --ref dev -f ref=\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/, 'recovery report should provide an exact immutable convergence command')
   assert.match(workflow, /s\/\(Authorization: Bearer \)\[A-Za-z0-9\._-\]\+\/\\1\[redacted\]\/g/, 'workflow should redact bearer tokens in header-like Wrangler logs')
   assert.match(workflow, /s\/\("authorization": \?"Bearer \)\[A-Za-z0-9\._-\]\+\/\\1\[redacted\]\/gi/, 'workflow should redact bearer tokens in JSON-like Wrangler logs')
 

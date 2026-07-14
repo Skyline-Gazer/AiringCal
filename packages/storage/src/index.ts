@@ -42,6 +42,7 @@ export type SubjectRefreshStatus = 'queued' | 'running' | 'ok' | 'partial' | 'fa
 export interface SubjectRefreshState {
   subject_id: number
   job_id: string
+  generation?: number
   status: SubjectRefreshStatus
   queued_at: number
   updated_at: number

@@ -87,17 +87,41 @@ async function digest(value: unknown): Promise<string> {
 }
 
 async function activeSnapshot(storage: KVStorage): Promise<ActiveSnapshot | null> {
-  const active = await storage.get<ActiveSnapshot>(snapshotActiveKey())
+  const active = await storage.get<Record<string, unknown>>(snapshotActiveKey())
   if (!active) return null
+  const hasManifestFields = 'generation' in active || 'required_keys' in active || 'digests' in active
+  if (!hasManifestFields) {
+    const legacyKeys = ['instance_id', 'mode', 'published_at', 'subject_count']
+    const isLegacyPointer = Object.keys(active).length === legacyKeys.length
+      && legacyKeys.every((key) => key in active)
+      && typeof active.instance_id === 'string' && active.instance_id.length > 0
+      && active.mode === 'live'
+      && typeof active.published_at === 'number' && Number.isFinite(active.published_at)
+      && typeof active.subject_count === 'number' && Number.isInteger(active.subject_count) && active.subject_count >= 0
+    if (isLegacyPointer) return null
+    throw new SnapshotIncompleteError()
+  }
   if (typeof active.instance_id !== 'string' || !active.instance_id || typeof active.generation !== 'number'
     || active.mode !== 'live' || !Array.isArray(active.required_keys) || !active.required_keys.length
-    || !active.digests || typeof active.digests !== 'object') throw new SnapshotIncompleteError()
-  for (const key of active.required_keys) {
-    if (typeof key !== 'string' || typeof active.digests[key] !== 'string') throw new SnapshotIncompleteError()
+    || active.required_keys.some((key) => typeof key !== 'string')
+    || !active.digests || typeof active.digests !== 'object' || Array.isArray(active.digests)) throw new SnapshotIncompleteError()
+  const instanceId = active.instance_id
+  const requiredKeys = active.required_keys as string[]
+  const digests = active.digests as Record<string, unknown>
+  const expectedKeys = [
+    ...COLLECTION_TYPES.map((type) => snapshotVersionKey(instanceId, `collections:${type}`)),
+    snapshotVersionKey(instanceId, 'summary'),
+    snapshotVersionKey(instanceId, 'calendar'),
+  ]
+  if (requiredKeys.length !== expectedKeys.length
+    || new Set(requiredKeys).size !== expectedKeys.length
+    || expectedKeys.some((key) => !requiredKeys.includes(key))) throw new SnapshotIncompleteError()
+  for (const key of expectedKeys) {
+    if (typeof digests[key] !== 'string') throw new SnapshotIncompleteError()
     const value = await storage.get(key)
-    if (value === null || await digest(value) !== active.digests[key]) throw new SnapshotIncompleteError()
+    if (value === null || await digest(value) !== digests[key]) throw new SnapshotIncompleteError()
   }
-  return active
+  return active as unknown as ActiveSnapshot
 }
 
 function activeSnapshotInstanceFrom(active: ActiveSnapshot | null): string | null {

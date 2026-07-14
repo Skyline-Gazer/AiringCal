@@ -31,6 +31,37 @@ test('the same completed job is a duplicate instead of being processed twice', a
   assert.equal((await coordinator.begin(4, 'job-4')).status, 'duplicate')
 })
 
+test('a failed newer generation still makes an older retry obsolete', async () => {
+  const state = new MemoryState()
+  const kv = {
+    values: new Map<string, unknown>(),
+    async get(key: string) { return this.values.get(key) ?? null },
+    async put(key: string, value: string) { this.values.set(key, JSON.parse(value)) },
+    async delete(key: string) { this.values.delete(key) },
+  }
+  const coordinator = new SubjectRefreshCoordinator({ storage: state } as any, {
+    AIRING_CAL_KV: kv,
+    AIRING_CAL_R2: { async get() { return null }, async put() { return {} } },
+  } as any)
+  const request = (generation: number, components: string[]) => new Request('https://subject-refresh-coordinator/process', {
+    method: 'POST',
+    body: JSON.stringify({
+      version: 3, generation, job_id: `job-${generation}`, subject_id: 23080, title: `Job ${generation}`,
+      components, images: { common: 'https://img.example/fail.jpg' },
+    }),
+  })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => { throw new Error('new generation failed') }
+  try {
+    assert.equal((await coordinator.fetch(request(2, ['image_common']))).status, 503)
+    const obsolete = await coordinator.fetch(request(1, []))
+    assert.deepEqual(await obsolete.json(), { status: 'obsolete', generation: 1 })
+    assert.equal((kv.values.get('subject:refresh:23080') as any).generation, 2)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('the Durable Object rejects an old retry before media state can be overwritten', async () => {
   const state = new MemoryState()
   const kv = {
@@ -61,4 +92,51 @@ test('the Durable Object rejects an old retry before media state can be overwrit
   const obsolete = await coordinator.fetch(request(2))
   assert.deepEqual(await obsolete.json(), { status: 'obsolete', generation: 2 })
   assert.equal(kv.puts, putsAfterNewJob)
+})
+
+test('concurrent process requests stay serialized across image download awaits', async () => {
+  const state = new MemoryState()
+  const kv = {
+    values: new Map<string, unknown>(),
+    async get(key: string) { return this.values.get(key) ?? null },
+    async put(key: string, value: string) { this.values.set(key, JSON.parse(value)) },
+    async delete(key: string) { this.values.delete(key) },
+  }
+  const coordinator = new SubjectRefreshCoordinator({ storage: state } as any, {
+    AIRING_CAL_KV: kv,
+    AIRING_CAL_R2: { async get() { return null }, async put() { return {} } },
+  } as any)
+  let releaseOld!: () => void
+  let oldStarted!: () => void
+  const oldDownload = new Promise<void>((resolve) => { releaseOld = resolve })
+  const started = new Promise<void>((resolve) => { oldStarted = resolve })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('old.jpg')) {
+      oldStarted()
+      await oldDownload
+      return new Response('old')
+    }
+    if (String(url).includes('new.jpg')) return new Response('new')
+    throw new Error(`unexpected fetch ${url}`)
+  }
+  const request = (generation: number, image: string) => new Request('https://subject-refresh-coordinator/process', {
+    method: 'POST',
+    body: JSON.stringify({
+      version: 3, generation, job_id: `job-${generation}`, subject_id: 23080, title: `Job ${generation}`,
+      components: ['image_common'], images: { common: `https://img.example/${image}` },
+    }),
+  })
+
+  try {
+    const older = coordinator.fetch(request(1, 'old.jpg'))
+    await started
+    const newer = coordinator.fetch(request(2, 'new.jpg'))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    releaseOld()
+    await Promise.all([older, newer])
+    assert.equal((kv.values.get('image:status:23080') as any).title, 'Job 2')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })

@@ -92,9 +92,9 @@ pnpm exec wrangler workflows instances restart airing-cal-sync <instance-id> --c
 pnpm exec wrangler workflows instances terminate airing-cal-sync <instance-id> --config apps/sync-worker/wrangler.toml
 ```
 
-Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都使用确定性 step 名；大 payload 写 staging KV，step 只返回 key、数量和 SHA-256 摘要。live initialize 通过 `SNAPSHOT_COORDINATOR` 分配单调 generation 并立即写 `sync:current`；refresh planning 每 10 个 subject 生成携带该 generation 的幂等候选 V3 job，enqueue 每 step 最多合并 3 个规划块。全部 versioned key 写入且全部 V3 job 入队成功后，coordinator 才提交包含 required keys/digests 的 `snapshot:active` manifest；较旧 Workflow 晚完成不能覆盖较新 generation。Workflow 不逐 subject 读取或写入 refresh/detail/meta/image 状态。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为 read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
+Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都使用确定性 step 名；大 payload 写 staging KV，step 只返回 key、数量和 SHA-256 摘要。live initialize 通过 `SNAPSHOT_COORDINATOR` 分配单调 generation 并立即写 `sync:current`；refresh planning 每 10 个 subject 生成携带该 generation 的幂等候选 V3 job，enqueue 每 step 最多合并 3 个规划块。全部 versioned key 写入且全部 V3 job 入队成功后，coordinator 才提交包含 required keys/digests 的 `snapshot:active` manifest；coordinator 使用覆盖整个外部 KV await 的串行互斥区，较旧 Workflow 晚完成不能覆盖较新 generation。Workflow 不逐 subject 读取或写入 refresh/detail/meta/image 状态。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为 read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
 
-收藏页不会在每次浏览页面时实时请求 bgm.tv。Workflow 以 `limit=50` 获取 collections 并按 bgm.tv `type` 发布 `want`、`watched`、`watching`、`on_hold`、`dropped` 版本化快照；读取端跟随 `snapshot:active` 读取同一个 instance 的 collections、calendar 和 summary，并在返回数据前验证 manifest 中全部 required key 与 SHA-256 digest。active 存在但 manifest、key 或 digest 不完整时返回 HTTP 503 `SNAPSHOT_INCOMPLETE`，绝不逐 key 混入 legacy 数据；只有 active 完全不存在时才整套读取 legacy snapshot。Workflow 不请求 subject detail；detail、metadata 和图片由 Media Queue 以 stale-while-revalidate 方式异步收敛。
+收藏页不会在每次浏览页面时实时请求 bgm.tv。Workflow 以 `limit=50` 获取 collections 并按 bgm.tv `type` 发布 `want`、`watched`、`watching`、`on_hold`、`dropped` 版本化快照；读取端跟随 `snapshot:active` 读取同一个 instance 的五类 collections、calendar 和 summary，并在返回数据前验证 manifest 恰好列出这 7 个 required key 及其 SHA-256 digest。带有任一 V3 字段（`generation`、`required_keys`、`digests`）的 active manifest、key 或 digest 不完整时返回 HTTP 503 `SNAPSHOT_INCOMPLETE`，绝不逐 key 混入 legacy 数据；active 完全不存在，或旧 active pointer 同时不含上述三个 V3 字段时，才整套读取 legacy snapshot。Workflow 不请求 subject detail；detail、metadata 和图片由 Media Queue 以 stale-while-revalidate 方式异步收敛。
 
 collections 使用 bgm.tv OpenAPI 允许的 `limit=50` 分页，并受 120 秒整体预算约束。bgm.tv JSON GET 请求单次 timeout 为 10 秒；429、5xx、timeout 和网络错误最多重试 2 次，401/403 不重试，POST/PATCH 写请求也不会被 client 隐式重试。
 
@@ -140,7 +140,7 @@ id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 
 常规 deploy 只读解析实际 KV namespace ID，注入临时 deploy config，再交给 Wrangler dry-run/deploy；资源不存在时会明确失败并提示先运行 bootstrap，不会在发布途中创建资源。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
 
-`SNAPSHOT_COORDINATOR` 与 `SUBJECT_REFRESH_COORDINATOR` 是 SQLite-backed Durable Object binding，migration tag 分别为 `snapshot-coordinator-v1` 与 `subject-refresh-coordinator-v1`。migration 只新增 class，不在自动部署或回退中删除。live Workflow 通过前者分配/提交 generation；Media Queue 按 subject ID 路由到后者，并在单次 Durable Object 请求内完成 generation gate、detail/meta/image/R2 副作用与完成标记。V2/legacy 消息按 generation 0 兼容，不能覆盖已经完成的更高 V3 generation。
+`SNAPSHOT_COORDINATOR` 与 `SUBJECT_REFRESH_COORDINATOR` 是 SQLite-backed Durable Object binding，migration tag 分别为 `snapshot-coordinator-v1` 与 `subject-refresh-coordinator-v1`。migration 只新增 class，不在自动部署或回退中删除。live Workflow 通过前者分配/提交 generation；Media Queue 按 subject ID 路由到后者，并在覆盖 bgm.tv、KV 与 R2 await 的串行互斥区内完成 generation gate、detail/meta/image/R2 副作用、失败状态与完成标记。最高已接受 generation 在任何副作用前持久化，即使新任务失败，迟到旧任务也只能返回 obsolete。V2/legacy 消息按 generation 0 兼容，不能覆盖已经接受的更高 V3 generation。
 
 CI 不上传运行时 secret，也不会手写 `curl` 修改 schedule。定时配置只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers].crons`；Cron handler 只创建 Workflow instance。
 
@@ -356,9 +356,20 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 
 手动部署输入可以是 SHA、branch 或 tag，但解析出的 commit 必须已经进入 `dev` 历史；未进入 `dev` 的 ref 会在 secrets 和 Cloudflare job 启动前失败。`dev` 在部署期间继续前进不会改变本次 revision，页面 footer SHA 与实际 checkout/deploy SHA保持一致。Cron trigger 已达到 Free Plan 上限且 `airing-cal-sync` 没有可复用 trigger 时，preflight 会在首个 upload 前终止，避免部分部署。
 
-部署步骤直接运行 `pnpm exec wrangler deploy`，不再通过 `cloudflare/wrangler-action` 包装。CI 会设置 `WRANGLER_LOG=debug` 和 `WRANGLER_LOG_PATH`；如果部署失败，会打印脱敏后的 Wrangler debug log，便于看到 Cloudflare API 返回的真实错误。
+部署步骤直接运行 `pnpm exec wrangler deploy`，不再通过 `cloudflare/wrangler-action` 包装。CI 会设置 `WRANGLER_LOG=debug` 和 `WRANGLER_LOG_PATH`；如果部署失败，会打印脱敏后的 Wrangler debug log。随后 `recovery_report` 查询四个 Worker 当前 deployment JSON、汇总各部署 job 结果，并输出使用本次已解析完整 SHA 的精确收敛命令 `gh workflow run deploy.yml --ref dev -f ref=<resolved-sha>`；需要回退时按下方 runbook 操作。
 
 这个顺序保证内部 read/media/sync Worker 与 Workflow 控制面先更新，再更新公开入口 frontend Worker。部署不创建 live instance；业务同步由 schedule 或显式手动 trigger 独立执行。首次部署时 frontend 的 service binding 需要 read/sync Worker 已存在，所以 frontend 不放进并行 matrix。
+
+### 正式回退 runbook
+
+1. 在 Cloudflare Dashboard 暂停 `airing-cal-sync` 的 Worker Cron trigger，防止回退期间创建新的 live instance。
+2. 用 `pnpm exec wrangler workflows instances describe airing-cal-sync <instance-id> --config apps/sync-worker/wrangler.toml` 核对异常实例；确认后执行 `pnpm exec wrangler workflows instances terminate airing-cal-sync <instance-id> --config apps/sync-worker/wrangler.toml`。这两个命令只操作 Workflow instance，不删除 KV、R2、Queue 或 Durable Object。
+3. 从 `dev` 历史选择已知稳定的完整 40 位 commit SHA。不要使用尚未进入 `dev` 的分支、tag 或可移动 ref；部署 workflow 会再次执行 ancestor 校验。
+4. 在 GitHub Actions 手动运行 `Deploy to Cloudflare`，把 `ref` 填为该完整 SHA。所有 job 会 checkout 同一 SHA，Cron quota preflight 通过后按既定顺序部署。
+5. 核对 deploy log 中 `SnapshotCoordinator`、`SubjectRefreshCoordinator` binding 与 `snapshot-coordinator-v1`、`subject-refresh-coordinator-v1` migration 可加载；再检查 `workflows describe`、公开 `/api/health`、`sync:current` 与 `snapshot:active.generation`。generation 不得倒退，active manifest 必须能完整读取。
+6. 确认公开页面 footer SHA等于所选稳定 SHA、health 与 active snapshot 正常后，再在 Cloudflare Dashboard 恢复 Worker Cron trigger。
+
+回退不得删除或回滚 SQLite Durable Object migration。稳定 SHA中的 Worker module 必须继续导出两个 class 并保留 binding，使已经创建的 namespace 可加载；若某个旧 SHA早于 coordinator 引入提交，不得直接部署它，应先制作一个保留新 class/binding 的兼容回退提交并进入 `dev`。
 
 ## Cache 与 NSFW
 

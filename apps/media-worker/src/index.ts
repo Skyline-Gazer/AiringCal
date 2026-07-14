@@ -153,6 +153,7 @@ async function putRefreshState(storage: KVStorage, job: MediaRefreshJobV2 | Medi
   await storage.put(subjectRefreshKey(job.subject_id), {
     subject_id: job.subject_id,
     job_id: job.job_id,
+    ...('generation' in job ? { generation: job.generation } : {}),
     status: state,
     queued_at: previous?.job_id === job.job_id ? previous.queued_at : now,
     updated_at: now,
@@ -227,16 +228,20 @@ async function queue(batch: QueueBatch, env: MediaEnv): Promise<void> {
       message.ack?.()
     } catch (error) {
       if (isVersionedJob(message.body) && isTransient(error)) {
-        const storage = new KVStorage(env.AIRING_CAL_KV)
-        const now = Math.floor(Date.now() / 1000)
-        await putRefreshState(storage, message.body, 'failed', now, sanitizeErrorMessage(error instanceof Error ? error.message : String(error)))
+        if (!env.SUBJECT_REFRESH_COORDINATOR) {
+          const storage = new KVStorage(env.AIRING_CAL_KV)
+          const now = Math.floor(Date.now() / 1000)
+          await putRefreshState(storage, message.body, 'failed', now, sanitizeErrorMessage(error instanceof Error ? error.message : String(error)))
+        }
         const delays = [30, 120, 300]
         message.retry?.({ delaySeconds: delays[Math.min(Math.max((message.attempts ?? 1) - 1, 0), delays.length - 1)] })
         continue
       }
       if (isVersionedJob(message.body)) {
-        const storage = new KVStorage(env.AIRING_CAL_KV)
-        await putRefreshState(storage, message.body, 'failed', Math.floor(Date.now() / 1000), 'Media refresh failed')
+        if (!env.SUBJECT_REFRESH_COORDINATOR) {
+          const storage = new KVStorage(env.AIRING_CAL_KV)
+          await putRefreshState(storage, message.body, 'failed', Math.floor(Date.now() / 1000), 'Media refresh failed')
+        }
         message.ack?.()
         continue
       }

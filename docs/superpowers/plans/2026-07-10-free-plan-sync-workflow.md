@@ -296,6 +296,6 @@ commit `release: activate durable sync workflow` 并 push。核对 GitHub Action
 
 **Files:** `.github/workflows/deploy.yml`、部署契约测试、Cron preflight script/tests、README。
 
-- [ ] **Step 1: RED** — 覆盖非 `dev` ancestor ref 拒绝、所有 job 使用同一 SHA、配额不足时 deploy 前失败、footer SHA 等于 checkout HEAD。
-- [ ] **Step 2: GREEN** — 增加无 secrets `resolve_ref`、唯一 SHA output、部署前 quota preflight、失败恢复输出与正式 rollback runbook。
-- [ ] **Step 3: VERIFY** — 运行部署配置测试与全量 `pnpm test`、`pnpm typecheck`、`pnpm build:check`、`git diff --check`、`pnpm audit --prod`；完成 thorough review 和生产 shadow/smoke 后更新 tasks 并原子 commit/push。
+- [x] **Step 1: RED** — 覆盖非 `dev` ancestor ref 拒绝、所有 job 使用同一 SHA、配额不足时 deploy 前失败、footer SHA 等于 checkout HEAD。
+- [x] **Step 2: GREEN** — 增加无 secrets `resolve_ref`、唯一 SHA output、部署前 quota preflight、失败恢复输出与正式 rollback runbook。
+- [x] **Step 3: VERIFY** — 运行部署配置测试与全量 `pnpm test`、`pnpm typecheck`、`pnpm build:check`、`git diff --check`、`pnpm audit --prod`；完成 thorough review 和生产 shadow/smoke 后更新 tasks 并原子 commit/push。

@@ -10,7 +10,7 @@ canonical_spec: openspec
 
 `SyncWorkflow` 是快照数据面的耐久编排器。它分页获取 collections 与 calendar，将规范化 payload 写入 instance staging KV，发布 shadow 或 live snapshot，规划 subject refresh jobs，并记录 `SyncRun`。它不调用 subject detail API，也不等待 Media Queue。
 
-`airing-cal-media` 是 subject detail、metadata、图片与 R2 的唯一刷新执行器。Queue message 使用带 Workflow generation 的 `MediaRefreshJobV3`，以 `${instanceId}:${subjectId}` 为 `job_id`；每个 subject 的 `SubjectRefreshCoordinator` SQLite Durable Object 串行化副作用并拒绝旧 generation。旧 V2/legacy job 按 generation 0 兼容。旧缓存继续服务，下一刷新时间按 subject ID 分散到 6 至 8 天。
+`airing-cal-media` 是 subject detail、metadata、图片与 R2 的唯一刷新执行器。Queue message 使用带 Workflow generation 的 `MediaRefreshJobV3`，以 `${instanceId}:${subjectId}` 为 `job_id`；每个 subject 的 `SubjectRefreshCoordinator` SQLite Durable Object 使用覆盖 bgm.tv、KV 与 R2 await 的互斥区串行化全部副作用和失败状态，并在副作用前持久化最高已接受 generation，因此新任务失败后迟到旧任务仍会被拒绝。旧 V2/legacy job 按 generation 0 兼容。旧缓存继续服务，下一刷新时间按 subject ID 分散到 6 至 8 天。
 
 CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、部署 Worker/Workflow、检查 Workflow 注册状态并部署 frontend，不触发业务同步、不轮询 KV，也不等待 media backlog。
 
@@ -22,7 +22,7 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 4. `publish-{collectionType}` 与 `publish-calendar` 只读取 staging 和已有 cache。shadow 写 `snapshot:shadow:{instanceId}:*`；live 写 generation-scoped versioned keys，但此时不改变 active pointer。
 5. `plan-refresh-{chunk}` 每 10 个 subject 生成确定性的候选 V3 job，不逐 subject 读取 refresh/detail/meta/image KV。
 6. `enqueue-refresh-{chunk}` 每 step 合并最多 3 个规划块并使用 `Queue.sendBatch()`；shadow 跳过该阶段的副作用。Media consumer 在单消息 invocation 内判断 fresh/missing 并写 refresh 状态。
-7. 全部 versioned key 和 V3 job enqueue 成功后，`SnapshotCoordinator.commit()` 原子接受最新 generation 的完整 manifest；较旧 Workflow 返回 `obsolete`。
+7. 全部 versioned key 和 V3 job enqueue 成功后，`SnapshotCoordinator.commit()` 在覆盖外部 KV await 的互斥区内原子接受最新 generation 的完整 manifest；较旧 Workflow 返回 `obsolete`。
 8. `finalize` 更新 summary、`sync:meta` 与最终 `SyncRun`。
 
 所有外部 fetch、KV 和 Queue 副作用都位于 `step.do()`。step 名不使用时间或随机值，返回值只包含 staging key、count 和校验摘要。401/403 抛 `NonRetryableError`；429、5xx、timeout 和 network error按 45 秒 timeout、最多 3 次指数退避处理。
@@ -32,13 +32,13 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 - `sync:run:{instanceId}`：3 天 TTL，保存 Workflow 应用状态。
 - `sync:staging:{instanceId}:*`：24 小时 TTL，保存 step 间大 payload。
 - `snapshot:shadow:{instanceId}:*`：shadow 审计数据，不影响正式读取。
-- `snapshot:active`：包含 instance、generation、required keys 与 digests 的完整 manifest；存在时禁止逐 key legacy fallback。
+- `snapshot:active`：包含 instance、generation、恰好五类 collection + summary + calendar keys 与 digests 的完整 manifest；V3 manifest 存在时禁止逐 key legacy fallback。
 - `sync:current`：initialize 阶段即写入的当前运行指针，供 running/hard-interrupt/stale health 定位。
 - `subject:refresh:{subjectId}`：queued/running/ok/partial/failed 与 `job_id`。
 - `image:status:{subjectId}`：仅保存真实图片缓存结果。
 - `sync:meta`：保留现有字段，增加 `workflow_instance_id` 和 `workflow_stage`。
 
-迁移期间仅在 `snapshot:active` 不存在时整套读取旧 key；active 存在但任一 required key 缺失或摘要不匹配时返回 503 `SNAPSHOT_INCOMPLETE`。consumer 兼容旧 job，但 generation 0 不得覆盖已处理的 V3 generation。已激活 instance 的 step 名和输出 shape 不原地修改；不兼容行为使用新 step 名或 Workflow 版本。
+迁移期间仅在 `snapshot:active` 不存在，或 pointer 恰好是合法的 `instance_id`、`mode: live`、`published_at`、`subject_count` 旧四字段结构时整套读取旧 key；截断旧 pointer 返回 503。出现任一 V3 字段后，manifest 不是准确七个 required key、任一 key 缺失或摘要不匹配也返回 503 `SNAPSHOT_INCOMPLETE`。consumer 兼容旧 job，但 generation 0 不得覆盖已接受的 V3 generation。已激活 instance 的 step 名和输出 shape 不原地修改；不兼容行为使用新 step 名或 Workflow 版本。
 
 ## API 与请求边界
 
@@ -55,7 +55,7 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 3. 注册不带 schedule 的 Workflow binding，手动运行生产 shadow instance。
 4. shadow 核对 step 数、重试、输出、正式 key 隔离后，独立提交启用 `0 */4 * * *` Worker Cron 桥接并删除旧业务 Cron。
 5. 至少观察一个完整 live 周期和 media backlog 收敛后，删除旧 trigger queue/handler/script。
-6. 增加 `resolve_ref` job，将自动或手动 ref 固定成 `dev` ancestor 的完整 SHA；所有部署 job checkout 同一 SHA，并在任何上传前完成 Cron 配额 preflight。
+6. 增加 `resolve_ref` job，将自动或手动 ref 固定成 `dev` ancestor 的完整 SHA；所有部署 job checkout 同一 SHA，并在任何上传前完成 Cron 配额 preflight。任一部署 job 失败时，`recovery_report` 查询四个 Worker 当前 deployment JSON、汇总 job 结果并输出使用该完整 SHA 的精确收敛命令。
 
 回退顺序为移除 schedule、终止异常 instance、以已进入 `dev` 的不可变稳定 SHA 部署、验证 Workflow/DO/health/active generation、恢复 schedule；不删除 Workflow、Durable Object、KV、R2 或 Queue 资源。
 

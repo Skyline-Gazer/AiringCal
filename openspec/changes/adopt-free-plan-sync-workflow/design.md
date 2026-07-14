@@ -68,13 +68,13 @@ Cloudflare Workflows 在 Free Plan 下提供持久化 step、重试和 instance 
 
 ### 7. 正式快照提交必须由 Durable Object 串行化
 
-审计确认 KV 的读后写检查无法阻止较旧 Workflow 晚完成并覆盖较新快照。新增 SQLite-backed `SnapshotCoordinator`，全局使用固定实例名 `snapshot-global`。`allocate(instanceId)` 原子分配单调递增的 `generation`，相同 instance 重放返回原 generation；initialize 同时写独立 `sync:current` 指针，使尚未 finalize 或硬中断的运行仍可被 health 定位。`commit(generation, manifest)` 只接受大于 `lastCommittedGeneration` 的 generation，并在 Durable Object 串行区内更新完整 `snapshot:active` manifest。
+审计确认 KV 的读后写检查无法阻止较旧 Workflow 晚完成并覆盖较新快照。新增 SQLite-backed `SnapshotCoordinator`，全局使用固定实例名 `snapshot-global`。`allocate(instanceId)` 原子分配单调递增的 `generation`，相同 instance 重放返回原 generation；initialize 同时写独立 `sync:current` 指针，使尚未 finalize 或硬中断的运行仍可被 health 定位。`commit(generation, manifest)` 只接受大于 `lastCommittedGeneration` 的 generation，并通过显式实例 mutex 将 Durable Object storage 与外部 KV await 包在同一串行临界区内更新完整 `snapshot:active` manifest。
 
-live Workflow 的顺序固定为 initialize generation/current run → fetch/staging → publish versioned keys → build refresh plan → enqueue 全部 V3 jobs → coordinator commit → finalize run/meta。任一 versioned key 写入或 enqueue 失败时不得提交 active pointer；较旧 Workflow 晚到时得到 `obsolete`，不得覆盖新 active snapshot。active manifest 存在时，read path 必须校验 required keys 与摘要，缺失时返回 `SNAPSHOT_INCOMPLETE` 503，禁止逐 key legacy fallback；只有 active 不存在时才允许整套 legacy 兼容读取。
+live Workflow 的顺序固定为 initialize generation/current run → fetch/staging → publish versioned keys → build refresh plan → enqueue 全部 V3 jobs → coordinator commit → finalize run/meta。任一 versioned key 写入或 enqueue 失败时不得提交 active pointer；较旧 Workflow 晚到时得到 `obsolete`，不得覆盖新 active snapshot。V3 active manifest 存在时，read path 必须校验五类 collection、summary、calendar 的精确 key 集合与摘要，缺失时返回 `SNAPSHOT_INCOMPLETE` 503，禁止逐 key legacy fallback；active 不存在或仅为不含任何 V3 字段的迁移前 pointer 时，才允许整套 legacy 兼容读取。
 
 ### 8. Media 刷新必须按 subject 和 generation 串行化
 
-新增 SQLite-backed `SubjectRefreshCoordinator`，每个 subject 使用 `idFromName(String(subjectId))`。`MediaRefreshJobV3` 在 V2 字段上增加 Workflow generation；同一 subject 的 detail/meta/image/R2 与刷新状态副作用都在对应 Durable Object 的串行路径内完成。小于已处理 generation 的消息直接返回 `obsolete` 并 ack，不得写 KV/R2；同 generation 的重放保持幂等。V2/legacy 消息按 generation `0` 兼容，且只允许在没有更高 V3 generation 时执行。
+新增 SQLite-backed `SubjectRefreshCoordinator`，每个 subject 使用 `idFromName(String(subjectId))`。`MediaRefreshJobV3` 在 V2 字段上增加 Workflow generation；显式实例 mutex 保持跨 bgm、KV、R2 await 的整个 `/process` 请求串行，同一 subject 的 detail/meta/image/R2 与成功或失败刷新状态副作用都在该临界区内完成。coordinator 在副作用开始前持久化最高已接受 generation，因此新 generation 失败后，小于它的消息仍直接返回 `obsolete` 并 ack，不得写 KV/R2；同 generation 的重放保持幂等。V2/legacy 消息按 generation `0` 兼容，且只允许在没有更高 V3 generation 时执行。
 
 ### 9. 部署 revision、配额与回退必须可证明
 

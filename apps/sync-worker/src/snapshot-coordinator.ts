@@ -52,20 +52,35 @@ export class SnapshotCoordinatorCore {
 
 export class SnapshotCoordinator {
   private core: SnapshotCoordinatorCore
+  private tail: Promise<void> = Promise.resolve()
 
   constructor(state: DurableObjectState, env: SnapshotCoordinatorEnv) {
     this.core = new SnapshotCoordinatorCore(state.storage, env.AIRING_CAL_KV)
   }
 
+  private async serialized<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.tail
+    let release!: () => void
+    this.tail = new Promise<void>((resolve) => { release = resolve })
+    await previous
+    try {
+      return await operation()
+    } finally {
+      release()
+    }
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
     const body = await request.json<Record<string, unknown>>()
-    if (url.pathname === '/allocate' && typeof body.instance_id === 'string') {
-      return Response.json({ generation: await this.core.allocate(body.instance_id) })
-    }
-    if (url.pathname === '/commit' && typeof body.generation === 'number' && body.manifest) {
-      return Response.json(await this.core.commit(body.generation, body.manifest as SnapshotManifest))
-    }
-    return Response.json({ error: 'Invalid coordinator request' }, { status: 400 })
+    return this.serialized(async () => {
+      if (url.pathname === '/allocate' && typeof body.instance_id === 'string') {
+        return Response.json({ generation: await this.core.allocate(body.instance_id) })
+      }
+      if (url.pathname === '/commit' && typeof body.generation === 'number' && body.manifest) {
+        return Response.json(await this.core.commit(body.generation, body.manifest as SnapshotManifest))
+      }
+      return Response.json({ error: 'Invalid coordinator request' }, { status: 400 })
+    })
   }
 }

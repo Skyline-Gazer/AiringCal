@@ -53,8 +53,18 @@ function env(kv = new MockKV()) {
 }
 
 async function setActiveSnapshot(kv: MockKV, instanceId: string, values: Record<string, unknown>, publishedAt = 1783929651) {
+  const completeValues = {
+    'collections:want': [],
+    'collections:watched': [],
+    'collections:watching': [],
+    'collections:on_hold': [],
+    'collections:dropped': [],
+    summary: { _total: 0 },
+    calendar: [],
+    ...values,
+  }
   const digests: Record<string, string> = {}
-  for (const [suffix, value] of Object.entries(values)) {
+  for (const [suffix, value] of Object.entries(completeValues)) {
     const key = `snapshot:version:${instanceId}:${suffix}`
     kv.values.set(key, value)
     const bytes = new TextEncoder().encode(JSON.stringify(value))
@@ -145,6 +155,46 @@ test('read-worker returns 503 instead of mixing legacy data when active manifest
     ok: false,
     error: { code: 'SNAPSHOT_INCOMPLETE', message: 'Active snapshot is incomplete' },
   })
+})
+
+test('read-worker treats the pre-manifest active pointer as a whole legacy migration snapshot', async () => {
+  const kv = new MockKV()
+  kv.values.set('snapshot:active', { instance_id: 'old-live', mode: 'live', published_at: 1783929651, subject_count: 1 })
+  kv.values.set('snapshot:version:old-live:collections:watching', [{ subject_id: 1, title: 'partial version' }])
+  kv.values.set('snapshot:collections:watching', [{ subject_id: 2, title: 'legacy set' }])
+  kv.values.set('snapshot:summary', { watching: 1, _total: 1 })
+
+  const response = await worker.fetch(new Request('https://read.local/collections?type=watching'), env(kv) as any)
+  assert.equal(response.status, 200)
+  assert.equal((await response.json() as any).data[0].subject_id, 2)
+})
+
+test('read-worker rejects a truncated pre-manifest active pointer', async () => {
+  const kv = new MockKV()
+  kv.values.set('snapshot:active', { instance_id: 'truncated' })
+  kv.values.set('snapshot:collections:watching', [{ subject_id: 2, title: 'legacy set' }])
+
+  const response = await worker.fetch(new Request('https://read.local/collections?type=watching'), env(kv) as any)
+  assert.equal(response.status, 503)
+  assert.deepEqual(await response.json(), {
+    ok: false,
+    error: { code: 'SNAPSHOT_INCOMPLETE', message: 'Active snapshot is incomplete' },
+  })
+})
+
+test('read-worker rejects a manifest that omits required collection suffixes', async () => {
+  const kv = new MockKV()
+  const summary = { _total: 0 }
+  const key = 'snapshot:version:live-summary-only:summary'
+  kv.values.set(key, summary)
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(summary)))
+  kv.values.set('snapshot:active', {
+    instance_id: 'live-summary-only', generation: 1, mode: 'live', published_at: 1, subject_count: 0,
+    required_keys: [key],
+    digests: { [key]: [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('') },
+  })
+  const response = await worker.fetch(new Request('https://read.local/health'), env(kv) as any)
+  assert.equal(response.status, 503)
 })
 
 test('read-worker cache stats expose sanitized image cache data only', async () => {
