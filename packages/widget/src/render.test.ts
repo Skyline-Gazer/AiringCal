@@ -15,6 +15,29 @@ import {
 
 const widgetRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
+function extractFunction(source: string, name: string): string {
+  const start = source.indexOf(`function ${name}(`)
+  assert.notEqual(start, -1, `${name} should exist in the packaged asset`)
+  const bodyStart = source.indexOf('{', start)
+  let depth = 0
+  for (let index = bodyStart; index < source.length; index++) {
+    if (source[index] === '{') depth++
+    if (source[index] === '}' && --depth === 0) return source.slice(start, index + 1)
+  }
+  throw new Error(`could not extract ${name}`)
+}
+
+function loadWidgetSecurityHelpers() {
+  return Function(
+    'location',
+    `${extractFunction(widgetJs, 'escapeHtml')}\n${extractFunction(widgetJs, 'escapeAttribute')}\n${extractFunction(widgetJs, 'safeUrl')}\nreturn { escapeHtml, escapeAttribute, safeUrl }`,
+  )({ origin: 'https://widget.example' }) as {
+    escapeHtml(value: unknown): string
+    escapeAttribute(value: unknown): string
+    safeUrl(value: unknown, fallback?: string): string
+  }
+}
+
 test('renderFooter omits cache page link and links commit when SHA and repository are present', () => {
   const footer = renderFooter({
     commitSha: '0123456789abcdef',
@@ -113,6 +136,28 @@ test('widgetJs includes animation sync UI and public sync endpoints', () => {
   assert.match(widgetJs, /\/api\/sync\/compare/)
   assert.match(widgetJs, /\/api\/sync\/apply/)
   assert.match(widgetJs, /\/api\/check\//)
+})
+
+test('widget templates encode hostile API text with the production security helpers', () => {
+  const { escapeHtml, escapeAttribute } = loadWidgetSecurityHelpers()
+  for (const payload of ['<img src=x onerror=alert(1)>', '" onmouseover=alert(1) x="', '</pre><script>alert(1)</script>']) {
+    const fixture = '<h3>' + escapeHtml(payload) + '</h3><input data-id="' + escapeAttribute(payload) + '">'
+    assert.doesNotMatch(fixture, /<script|<img|["']\s(?:onerror|onmouseover)=/i)
+  }
+  assert.match(widgetJs, /escapeHtml\(card\.name\)/)
+  assert.match(widgetJs, /escapeHtml\(wd\.cn/)
+  assert.match(widgetJs, /escapeAttribute\(cid\)/)
+  assert.match(widgetJs, /escapeHtml\(statusLabel\(d\.statusA\)\)/)
+  assert.match(widgetJs, /safeNumber\(d\.progressA/)
+})
+
+test('widget rejects dangerous URLs and contains no inline click handlers', () => {
+  const { safeUrl } = loadWidgetSecurityHelpers()
+  const fixture = '<a href="' + safeUrl('javascript:alert(1)', '#') + '">link</a>'
+  assert.doesNotMatch(fixture, /(?:href|src)=["']javascript:/i)
+  assert.doesNotMatch(widgetJs, /\sonclick\s*=/i)
+  assert.doesNotMatch(widgetJs, /\.onclick\s*=/)
+  assert.match(widgetJs, /addEventListener\(['"]click['"]/)
 })
 
 test('widgetJs sends compare items to apply in bounded batches', () => {
