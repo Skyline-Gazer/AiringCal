@@ -7,6 +7,10 @@
 - **WHEN** 上游报告 1001 个章节收藏
 - **THEN** compare/apply 使用全部 1001 个结果而不是只使用第一页
 
+#### Scenario: 未达到 total 时上游返回空页
+- **WHEN** 已累计结果少于 `total` 且下一页 `data` 为空
+- **THEN** 系统以明确上游分页错误终止，不得无限循环或返回截断成功结果
+
 ### Requirement: 章节写入必须分批并报告部分失败
 系统 MUST 将 episode ID 按每批最多 100 个执行 PATCH，并在任一批失败时报告 partial/error 与失败批次，不得宣称静默成功。
 

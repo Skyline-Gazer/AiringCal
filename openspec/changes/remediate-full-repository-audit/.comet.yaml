@@ -10,7 +10,7 @@ isolation: null
 verify_mode: null
 auto_transition: true
 base_ref: 21a9c4e1a326b17469f96a6621ee97cece20608a
-design_doc: null
+design_doc: docs/superpowers/specs/2026-07-14-full-repository-audit-remediation-design.md
 plan: null
 verify_result: pending
 verification_report: null
@@ -18,3 +18,5 @@ branch_status: pending
 created_at: 2026-07-14
 verified_at: null
 archived: false
+handoff_context: openspec/changes/remediate-full-repository-audit/.comet/handoff/design-context.json
+handoff_hash: 3719cf168cba611e881e0771f482da3c823992ef4897ff8dd5a6ef7e8c30e57a

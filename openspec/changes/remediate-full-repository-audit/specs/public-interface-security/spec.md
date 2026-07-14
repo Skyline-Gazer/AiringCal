@@ -7,6 +7,10 @@
 - **WHEN** API 数据包含 `<img onerror>`、引号属性注入或 `</pre><script>`
 - **THEN** 响应只显示文本且不得包含可执行 payload
 
+#### Scenario: 动态 URL 使用危险协议
+- **WHEN** API 数据或配置提供 `javascript:` 等非允许协议 URL
+- **THEN** 系统拒绝该 URL 或回退安全值，不得仅做 HTML 编码后输出
+
 ### Requirement: 浏览器 Token 不得持久化
 同步 Token MUST 仅保存在当前页面内存，页面初始化 MUST 清除历史 `sync-tokenA` 与 `sync-tokenB` sessionStorage 项。
 

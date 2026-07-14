@@ -1,0 +1,18 @@
+{
+  "change": "remediate-full-repository-audit",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "3719cf168cba611e881e0771f482da3c823992ef4897ff8dd5a6ef7e8c30e57a",
+  "files": [
+    { "path": "openspec/changes/remediate-full-repository-audit/proposal.md", "sha256": "955ca9cb79802f11483581337374913d3b32f57cd8dc5679514d3330c114a3a5" },
+    { "path": "openspec/changes/remediate-full-repository-audit/design.md", "sha256": "44172c77b7bd38abd11332fe97f603d5514fbd53b68015b7cf705dfd2dd6a539" },
+    { "path": "openspec/changes/remediate-full-repository-audit/tasks.md", "sha256": "27239c4557e914b912f775617f666202f5be5c68af250a14e2e4f83c66ea18d6" },
+    { "path": "openspec/changes/remediate-full-repository-audit/specs/cache-refresh-lifecycle/spec.md", "sha256": "b45e852dd9d0df50bc267601194e6234ce313fb2927717e7062a0f54ab5d685a" },
+    { "path": "openspec/changes/remediate-full-repository-audit/specs/project-quality-gates/spec.md", "sha256": "2e5b439c5570ddc3127b97d6e55f7cc4bf25f30d4d53d61637d3f918250a910a" },
+    { "path": "openspec/changes/remediate-full-repository-audit/specs/public-interface-security/spec.md", "sha256": "ec219c7443fc732c2f08d61b8cafe2e910de41a79161714456318652489afcae" },
+    { "path": "openspec/changes/remediate-full-repository-audit/specs/public-read-contracts/spec.md", "sha256": "e2d4737edaa2179ae887812b5a9199fb12912de1b934d5331d52e28dcba006cd" },
+    { "path": "openspec/changes/remediate-full-repository-audit/specs/sync-consistency/spec.md", "sha256": "0c5ff1f3f268a02d07f213114ba38a6033b1f1aa041cd0936844cf27dec88201" }
+  ]
+}

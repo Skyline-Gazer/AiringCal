@@ -63,4 +63,4 @@ subject detail 404 删除或屏蔽旧 detail，写 `exists: false`、`nsfw: true
 
 ## Open Questions
 
-- tombstone 的最终 TTL 在实施时依据现有 refresh 常量与测试时钟选择，必须短于常规 6～8 天刷新窗口并写入公开类型。
+- 无。tombstone TTL 已确认采用 24 小时。
