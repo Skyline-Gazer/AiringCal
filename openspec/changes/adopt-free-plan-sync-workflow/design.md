@@ -104,3 +104,9 @@ live Workflow 的顺序固定为 initialize generation/current run → fetch/sta
 
 - 正式 schedule 激活前，需要用生产 shadow 数据确认 549 条收藏的实际页数、step CPU 和 KV 写入规模没有超过 Free Plan 限额。
 - trigger queue 的删除必须等待至少一个稳定 schedule 周期；具体删除提交由生产观察结果决定。
+
+## Implementation Divergence
+
+### 迁移前 active pointer 必须验证完整旧结构
+
+最初设计允许在 `snapshot:active` 不含任何 V3 字段时整套回退 legacy snapshot。实现阶段的边界审查发现，这会把仅含 `instance_id` 等截断或损坏对象误判为迁移前 pointer，并静默隐藏 active 数据损坏。最终实现因此收紧为：只有 `snapshot:active` 不存在，或对象恰好包含合法的 `instance_id`、`mode: live`、有限 `published_at` 与非负整数 `subject_count` 四字段时才允许整套 legacy 回退；其他非 V3 active 对象返回 503 `SNAPSHOT_INCOMPLETE`。该收紧与 delta spec 和技术设计保持一致，并由截断 pointer 回归测试覆盖。
