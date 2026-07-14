@@ -64,7 +64,7 @@ for (const payload of ['<img src=x onerror=alert(1)>', '\" onmouseover=alert(1) 
 assert.doesNotMatch(widgetJs, /\sonclick\s*=/i)
 assert.doesNotMatch(widgetJs, /\.onclick\s*=/)
 assert.match(widgetJs, /addEventListener\(['"]click['"]/)
-assert.match(widgetJs, /javascript:/)
+assert.doesNotMatch(renderUrlFixture('javascript:alert(1)'), /(?:href|src)=["']javascript:/i)
 ```
 
 测试 helper 应执行或抽取真实模板路径，不能只测试一个与生产代码无关的复制函数；危险 URL 用 `javascript:alert(1)` 并断言不会进入 `href`/`src`。
@@ -260,7 +260,7 @@ git push
 
 **Interfaces:**
 - Produces: `getSubjectEpisodeCollections(...): Promise<{data; total}>` 完整集合；每次 PATCH `episodeIds.length <= 100`。
-- Produces: `PatchEntryResult` 中明确的成功数量、失败批次和 `partial`/error 信息，供 sync operation log 返回。
+- Produces: `BgmEpisodePatchError`，包含 `code: 'EPISODE_PATCH_PARTIAL'`、`succeeded: number`、`failedBatch: { index: number; episodeIds: number[] }` 与原始 cause，供 Sync Worker 映射为 partial/error 响应。
 
 - [ ] **Step 1: 按规则核对本地 OpenAPI fixture**
 
@@ -294,7 +294,7 @@ do {
 return { data, total }
 ```
 
-Platform 以 `ids.slice(index, index + 100)` 分批；catch 时保留已成功数量并返回/抛出带结构化 partial evidence 的领域错误，sync 层可稳定序列化且不得包含 Token。
+Platform 以 `ids.slice(index, index + 100)` 分批；catch 时抛出 `BgmEpisodePatchError`，保留已成功数量和失败批次。Sync Worker 将该错误稳定序列化为非完整成功的 partial/error 响应且不得包含 Token。
 
 - [ ] **Step 5: 验证 GREEN 并提交推送**
 
@@ -498,10 +498,10 @@ git commit -m "test: verify full audit remediation"
 git push
 ```
 
-- [ ] **Step 5: 进入 Comet verify 后执行生产验收**
+- **Comet verify 后续：执行生产验收（不属于 build checkbox）**
 
 用已进入 `dev` 历史的实际完整 SHA 部署；验证 CSP/nosniff/frame/base/noopener、恶意 payload 不可执行、零收藏 health、cache `page_subjects` 与 400、compare 认证错误、tombstone 24h 元数据、footer SHA。不得在 build 阶段提前宣称生产通过。
 
-- [ ] **Step 6: PR、合并与归档**
+- **Comet verify/archive 后续：PR、合并与归档（不属于 build checkbox）**
 
 生产验证与 GitHub checks 通过后勾选 `6.4`、`6.5`，创建 PR、等待检查、合并；用户确认后运行 Comet archive 并再次 strict validate。

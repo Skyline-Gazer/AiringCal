@@ -35,5 +35,8 @@
 - [ ] 6.1 运行相关包 RED→GREEN 测试、typecheck、Wrangler dry-run 与 diff check，并按安全/API/缓存边界原子 commit/push
 - [ ] 6.2 运行全量 `pnpm test`、`pnpm typecheck`、`pnpm build:check`、OpenSpec strict、`git diff --check` 与 `pnpm audit --prod`
 - [ ] 6.3 完成 thorough code review，修复全部 P0/P1/P2 并记录验证报告
-- [ ] 6.4 以 dev 不可变 SHA 部署，验证公开安全头、恶意 payload、health/cache/compare/tombstone 行为与 footer SHA
-- [ ] 6.5 创建 PR、等待检查、合并并归档 change
+
+Verify/archive follow-up（由 Comet 后续阶段验收，不作为 build guard checkbox）：
+
+- 6.4 以 dev 不可变 SHA 部署，验证公开安全头、恶意 payload、health/cache/compare/tombstone 行为与 footer SHA
+- 6.5 创建 PR、等待检查、合并并归档 change
