@@ -2,6 +2,7 @@
 change: adopt-free-plan-sync-workflow
 design-doc: docs/superpowers/specs/2026-07-10-free-plan-sync-workflow-design.md
 base-ref: 99dc51bf29098e424a0e2e257a225115512f2264
+archived-with: 2026-07-14-adopt-free-plan-sync-workflow
 ---
 
 # Free Plan Cloudflare Workflow Implementation Plan
@@ -22,6 +23,7 @@ base-ref: 99dc51bf29098e424a0e2e257a225115512f2264
 - 每个任务先验证 CLI flag/config key/API，再按 Red-Green-Refactor 执行。
 - 每个原子任务更新对应文档、保持可部署，并 commit/push 当前 `dev`。
 
+archived-with: 2026-07-14-adopt-free-plan-sync-workflow
 ---
 
 ### Task 1: 解耦 CI/CD 与业务同步
