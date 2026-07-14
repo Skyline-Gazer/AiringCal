@@ -1,0 +1,12 @@
+name = "airing-cal-frontend"
+main = "src/index.ts"
+compatibility_date = "2026-06-17"
+keep_vars = true
+
+[[services]]
+binding = "READ_WORKER"
+service = "airing-cal-read"
+
+[[services]]
+binding = "SYNC_WORKER"
+service = "airing-cal-sync"

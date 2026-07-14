@@ -1,0 +1,14 @@
+{
+  "change": "simplify-frontend-deployment",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "9b2017dd734e084985b9726306953f7f13ea0fc57e94debc20e72c94d7719b3e",
+  "files": [
+    { "path": "openspec/changes/simplify-frontend-deployment/proposal.md", "sha256": "fc6b1bbfb73f203a64a380b80b4ecd32774bfb7a20dd9e3014066c7db616644d" },
+    { "path": "openspec/changes/simplify-frontend-deployment/design.md", "sha256": "fc379f3aaf25edea890d20b9d549975643d0ace4c97321ce0d880ba60a900d0f" },
+    { "path": "openspec/changes/simplify-frontend-deployment/tasks.md", "sha256": "7345d00cef7d070cacce78dab14469bd0c1fc27ebbea91773fc8ce8d423c59b6" },
+    { "path": "openspec/changes/simplify-frontend-deployment/specs/single-frontend-delivery/spec.md", "sha256": "73e481a36989addada9f84b736823a747a96885d2fd9ced0fe6b50564765b218" }
+  ]
+}

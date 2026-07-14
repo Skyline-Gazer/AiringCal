@@ -1,0 +1,23 @@
+{
+  "name": "@airing-cal/media-worker",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "build:check": "wrangler types worker-configuration.d.ts --check --config wrangler.toml && wrangler deploy --dry-run --outdir dist --config wrangler.toml",
+    "cf:types": "wrangler types worker-configuration.d.ts --config wrangler.toml",
+    "deploy": "wrangler deploy --config wrangler.toml",
+    "dev": "wrangler dev --config wrangler.toml",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test"
+  },
+  "dependencies": {
+    "@airing-cal/bgm-api": "workspace:*",
+    "@airing-cal/domain": "workspace:*",
+    "@airing-cal/storage": "workspace:*",
+    "@airing-cal/worker-common": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0"
+  }
+}

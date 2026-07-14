@@ -71,6 +71,7 @@ typings/
 # dotenv environment variables file
 .env
 .env.test
+.dev.vars
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -102,3 +103,25 @@ dist
 
 # TernJS port file
 .tern-port
+
+# macOS
+.DS_Store
+
+# npm lockfile (conflicts with pnpm)
+package-lock.json
+
+# pnpm content-addressable store (never commit)
+.pnpm-store/
+
+# Cloudflare Wrangler runtime cache
+.wrangler/
+apps/*/wrangler.deploy.toml
+
+# Local isolated development worktrees
+.worktrees/
+
+# Reasonix agent internal state
+.reasonix/
+reasonix.toml
+
+packages/worker/dist-check/

@@ -1,0 +1,17 @@
+{
+  "change": "adopt-free-plan-sync-workflow",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "89b89127f3eba3dcffa85ee537c8a5980f2dd8f6233b9e12fc6831a0cec33200",
+  "files": [
+    { "path": "openspec/changes/adopt-free-plan-sync-workflow/proposal.md", "sha256": "3f07ab1f7cbbc4e988744b4ff651a5150b9544900d1ce847b6daa7faed853fb4" },
+    { "path": "openspec/changes/adopt-free-plan-sync-workflow/design.md", "sha256": "5b9a663c2365d801572375c1f4a224cf34f5b5f1b23f32ba110bf116dd5e1b90" },
+    { "path": "openspec/changes/adopt-free-plan-sync-workflow/tasks.md", "sha256": "75199bb06bf869b042ec0488a36a5235a3a3aca9516bd2ca40e852217667d8be" },
+    { "path": "openspec/changes/adopt-free-plan-sync-workflow/specs/cache-refresh-lifecycle/spec.md", "sha256": "dfb7c8c81655260a7ec3c92a821186eafd9abc3592e5ba44d31df035dbd0982d" },
+    { "path": "openspec/changes/adopt-free-plan-sync-workflow/specs/durable-sync-workflow/spec.md", "sha256": "b655e4b248392884e18368607932f7ff7897b8d935c3c620fce9f4e979e04f62" },
+    { "path": "openspec/changes/adopt-free-plan-sync-workflow/specs/project-quality-gates/spec.md", "sha256": "7ada106e53a3a06b621274fa86f2d511930dc716639eed646a0b346ad06508fb" },
+    { "path": "openspec/changes/adopt-free-plan-sync-workflow/specs/sync-consistency/spec.md", "sha256": "5fab5f0059caf4537e62bc4f5a822217a4def03c75d8f7a93027d7c1b460c8e7" }
+  ]
+}

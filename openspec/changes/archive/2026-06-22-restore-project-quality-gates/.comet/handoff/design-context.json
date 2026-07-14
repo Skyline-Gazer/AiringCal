@@ -1,0 +1,14 @@
+{
+  "change": "restore-project-quality-gates",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "5236c5e05c1b2a5f5384652af8343e1a9a8390611bfe625ffcf84c090c55e1ac",
+  "files": [
+    { "path": "openspec/changes/restore-project-quality-gates/proposal.md", "sha256": "ff64aa912814ca043af8af235daa7dfa40ff2719d8b56e9065a46f541ab4ac65" },
+    { "path": "openspec/changes/restore-project-quality-gates/design.md", "sha256": "630d74a35e8c9fe0a9a56b9931640f28112f2951fe891ef8f064fbb6eb618c8c" },
+    { "path": "openspec/changes/restore-project-quality-gates/tasks.md", "sha256": "af6f2b253fab2543c69ebb81017fc911121a6075169ba7471dc0b415f2ac5f70" },
+    { "path": "openspec/changes/restore-project-quality-gates/specs/project-quality-gates/spec.md", "sha256": "0d18c95c97d569d52150b18d8c53f2e304f655bf616ae74df166a9d34515c7b1" }
+  ]
+}

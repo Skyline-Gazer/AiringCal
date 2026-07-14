@@ -1,0 +1,14 @@
+{
+  "change": "secure-management-api",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "4cf752db3ed79a52efeb8da8a21ca9472e30982112dbbf58314b6f8526689876",
+  "files": [
+    { "path": "openspec/changes/secure-management-api/proposal.md", "sha256": "04fbbd0c23aebcde9beb8d016c2ac4086fd603bf31c409dc35f132372b92d92e" },
+    { "path": "openspec/changes/secure-management-api/design.md", "sha256": "f903d3c1d6a1adaaf559ca6f90b78cda9c0d254276bb74371490c6ba724ad5b1" },
+    { "path": "openspec/changes/secure-management-api/tasks.md", "sha256": "93000f1f4052cdbc89eae91e9ede3e84dd683f73222efd6bb4d3bf8049ff6177" },
+    { "path": "openspec/changes/secure-management-api/specs/management-api-security/spec.md", "sha256": "62e4725b2dc09640a246743b320bce8fc06f094bfeb911559caebf6d197469da" }
+  ]
+}

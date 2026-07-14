@@ -1,0 +1,31 @@
+name = "airing-cal-sync"
+main = "src/production.ts"
+compatibility_date = "2026-06-17"
+keep_vars = true
+
+[triggers]
+crons = ["0 */4 * * *"]
+
+[vars]
+SYNC_MODE = "merge"
+
+[[kv_namespaces]]
+binding = "AIRING_CAL_KV"
+id = "<AIRING_CAL_KV_NAMESPACE_ID>"
+
+[[queues.producers]]
+binding = "MEDIA_QUEUE"
+queue = "airing-cal-media"
+
+[[workflows]]
+name = "airing-cal-sync"
+binding = "SYNC_WORKFLOW"
+class_name = "SyncWorkflow"
+
+[[durable_objects.bindings]]
+name = "SNAPSHOT_COORDINATOR"
+class_name = "SnapshotCoordinator"
+
+[[migrations]]
+tag = "snapshot-coordinator-v1"
+new_sqlite_classes = ["SnapshotCoordinator"]
