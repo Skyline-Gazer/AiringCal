@@ -7,28 +7,24 @@
 
 ## Current Task
 
-- Unique text: `Task 4: bgm.tv 章节完整分页与 100 ID 分批`
+- Unique text: `Task 5: Compare 认证失败稳定映射`
 - OpenSpec mappings:
-  - `3.1 对照 docs/example/api/bgm-api.json 验证章节读取和 PATCH 接口字段、limit 与 payload`
-  - `3.2 增加 1001+ 章节收藏分页 RED 测试并实现 limit=1000 offset 循环`
-  - `3.3 增加每批最多 100 ID 和第二批失败 RED 测试，实现分批 PATCH 与 partial/error 汇总`
-- Brief: `.superpowers/sdd/task-4-brief.md`
+  - `3.4 增加单/双账户无效 Token compare RED 测试，返回稳定非 200 认证错误`
+- Brief: `.superpowers/sdd/task-5-brief.md`
 - Stage: `done`
-- Base commit: `5378196beb063f6797ed06ceaf66a63908142941`
-- Implementer: `/root/task4_episode_sync`
-- Implementation commits: `850aaf9`, `46e0b40`
-- Changed files: `packages/bgm-api/src/bgm-client.ts`, `bgm-client.test.ts`, `platform.ts`, `platform.test.ts`, `index.ts`, `packages/domain/src/index.ts`, `sync.test.ts`
-- RED evidence: offsets only [0], empty page returned success, PATCH batch [201], no second-batch failure, and executeSync lost partial fields
-- GREEN evidence: bgm-api 27/27, domain 23/23, both typechecks and diff check passed
-- Report: `.superpowers/sdd/task-4-report.md`
-- Review package: `.superpowers/sdd/review-5378196..46e0b40.diff`
+- Base commit: `751b987d6e2965c70db0336e3ccb1b99c2e8bdfa`
+- Implementer: `/root/task5_compare_auth`
+- Implementation commits: `045d0ff`, `0777c7a`
+- Changed files: `apps/sync-worker/src/index.ts`, `sync-worker.test.ts`, `packages/domain/src/index.ts`, `sync.test.ts`, `packages/worker-common/src/index.ts`, `README.md`
+- RED evidence: missing domain rejection and sync returned 200 for auth-stage 401/403/network/429/503
+- GREEN evidence: domain 27/27, sync 39/39, worker-common 12/12, three typechecks, sync build:check and diff check passed
+- Report: `.superpowers/sdd/task-5-report.md`
+- Review package: `.superpowers/sdd/review-751b987..0777c7a.diff`
 - Batch review round: `2/2`
 - Passed review stages: spec compliance, code quality
-- Resolved feedback: pagination consistency, duplicate/overfill protection, strict partial shape, multi-type global batch coverage
+- Resolved feedback: collection-stage 401/403 now propagates for either/both accounts with direct and causal error shapes
 - Unresolved feedback: none
-- Accepted Minor findings carried to final review:
-  - Remove or simplify unreachable `unique === 0` pagination branch.
-  - Require partial `failedBatch.episodeIds` length between 1 and 100 in the domain guard.
+- Accepted Minor finding carried to final review: add collection-stage non-authentication partial-result endpoint regression coverage.
 - Accepted Minor findings carried to final review:
   - Task 2 Frontend CSP test could explicitly forbid script `'unsafe-inline'`.
   - Task 2 operation test could explicitly assert `default-src 'none'` and encoded entities.

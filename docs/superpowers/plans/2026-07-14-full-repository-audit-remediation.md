@@ -319,7 +319,7 @@ git push
 - Consumes: `BgmHttpError.status` 或平台层等价认证错误。
 - Produces: compare 认证失败的非 200 响应与稳定 `AUTHENTICATION_FAILED` code；不回显 Token。
 
-- [ ] **Step 1: 写单账户与双账户无效 Token RED 测试**
+- [x] **Step 1: 写单账户与双账户无效 Token RED 测试**
 
 模拟 `/v0/me` 或收藏请求返回 401/403，分别断言：
 
@@ -330,17 +330,17 @@ assert.equal(body.error.code, 'AUTHENTICATION_FAILED')
 assert.doesNotMatch(JSON.stringify(body), /source-secret|target-secret/)
 ```
 
-- [ ] **Step 2: 运行 sync-worker 测试确认 RED**
+- [x] **Step 2: 运行 sync-worker 测试确认 RED**
 
 Run: `CI=true pnpm -F @airing-cal/sync-worker test`
 
 Expected: FAIL，现有 compare catch 把认证错误映射为 500 或成功空结果。
 
-- [ ] **Step 3: 实现认证错误分类并同步文档**
+- [x] **Step 3: 实现认证错误分类并同步文档**
 
 增加纯 `syncErrorResponse(error)` 或等价 helper：Syntax/validation→400，401/403→对应非 200 与稳定 code，其余上游错误沿用现有映射。README 记录 compare 认证错误契约。
 
-- [ ] **Step 4: 验证 GREEN 并提交推送 Task 5 compare 修复**
+- [x] **Step 4: 验证 GREEN 并提交推送 Task 5 compare 修复**
 
 Run: `CI=true pnpm -F @airing-cal/sync-worker test && CI=true pnpm -F @airing-cal/sync-worker typecheck && pnpm -F @airing-cal/sync-worker build:check`
 
