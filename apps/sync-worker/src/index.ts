@@ -137,6 +137,10 @@ function errorJson(error: unknown, status = 500): Response {
   return publicError(status, status === 400 ? 'INVALID_REQUEST' : 'REQUEST_FAILED', error)
 }
 
+function escapeHtml(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
 function syncOperationHeaders(id: string): Headers {
   const headers = syncHeaders()
   headers.set('Content-Type', 'application/json; charset=utf-8')
@@ -504,8 +508,15 @@ async function fetch(request: Request, env: SyncEnv): Promise<Response> {
     const operation = await storage.get<SyncOperationLog>(operationLogKey(id))
     if (!operation) return errorJson(new Error('Operation log not found or expired'), 404)
     if (request.headers.get('accept')?.includes('application/json')) return json({ ok: true, operation }, { headers: syncHeaders() })
-    return new Response(`<h1>同步操作日志</h1><pre>${JSON.stringify(operation, null, 2)}</pre>`, {
-      headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY' },
+    const escaped = escapeHtml(JSON.stringify(operation, null, 2))
+    return new Response(`<h1>同步操作日志</h1><pre>${escaped}</pre>`, {
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        'X-Content-Type-Options': 'nosniff',
+        'X-Frame-Options': 'DENY',
+      },
     })
   }
 

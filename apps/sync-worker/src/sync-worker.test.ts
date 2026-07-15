@@ -961,6 +961,33 @@ test('internal sync apply persists a 24h operation log and check returns it', as
   }
 })
 
+test('operation check escapes HTML while preserving the JSON response contract', async () => {
+  const kv = new MockKV()
+  const operationId = 'malicious-0123456789abcdef'
+  const maliciousOperation = {
+    id: operationId,
+    event: 'sync_operation',
+    status: 'error',
+    error: '</pre><script>alert("operation")</script>&',
+  }
+  kv.values.set(`sync:operation:${operationId}`, maliciousOperation)
+
+  const html = await worker.fetch?.(new Request(`https://sync.local/internal/check/${operationId}`), {
+    AIRING_CAL_KV: kv,
+  } as any)
+  const jsonResponse = await worker.fetch?.(new Request(`https://sync.local/internal/check/${operationId}`, {
+    headers: { Accept: 'application/json' },
+  }), { AIRING_CAL_KV: kv } as any)
+
+  assert.equal(html?.headers.get('x-content-type-options'), 'nosniff')
+  assert.equal(html?.headers.get('x-frame-options'), 'DENY')
+  assert.match(html?.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/)
+  assert.match(html?.headers.get('content-security-policy') ?? '', /base-uri 'none'/)
+  assert.doesNotMatch(await html?.text() ?? '', /<\/pre><script>/)
+  assert.equal(jsonResponse?.headers.get('content-security-policy'), null)
+  assert.deepEqual(await jsonResponse?.json(), { ok: true, operation: maliciousOperation })
+})
+
 test('internal sync apply reuses at most five items without refetching collections', async () => {
   const kv = new MockKV()
   const originalFetch = globalThis.fetch
