@@ -7,28 +7,28 @@
 
 ## Current Task
 
-- Unique text: `Task 3: Read health/cache 严格契约`
+- Unique text: `Task 4: bgm.tv 章节完整分页与 100 ID 分批`
 - OpenSpec mappings:
-  - `2.1 增加零收藏 health 仍返回完整 data 的 RED 测试并修复提前返回`
-  - `2.2 增加 page=2junk、未知 type、非法 limit/cursor 的 RED 测试并实现完整字符串校验与 400`
-  - `2.3 将 cache 当前页计数改为 page_subjects，保持 cursor 兼容并更新 README`
-- Brief: `.superpowers/sdd/task-3-brief.md`
+  - `3.1 对照 docs/example/api/bgm-api.json 验证章节读取和 PATCH 接口字段、limit 与 payload`
+  - `3.2 增加 1001+ 章节收藏分页 RED 测试并实现 limit=1000 offset 循环`
+  - `3.3 增加每批最多 100 ID 和第二批失败 RED 测试，实现分批 PATCH 与 partial/error 汇总`
+- Brief: `.superpowers/sdd/task-4-brief.md`
 - Stage: `done`
-- Base commit: `396dacf3db4ce04029637ef4a55c9ae450404437`
-- Implementer: `/root/task3_read_contracts`
-- Implementation commits: `e95a88f`, `c2550ab`
-- Changed files: `apps/read-worker/src/index.ts`, `apps/read-worker/src/read-worker.test.ts`, `README.md`
-- RED evidence: read tests failed 4 cases covering invalid collection/cache queries, cache field, and zero-count health
-- GREEN evidence: read 29/29, typecheck, build:check and diff check passed
-- Report: `.superpowers/sdd/task-3-report.md`
-- Review package: `.superpowers/sdd/review-396dacf..c2550ab.diff`
+- Base commit: `5378196beb063f6797ed06ceaf66a63908142941`
+- Implementer: `/root/task4_episode_sync`
+- Implementation commits: `850aaf9`, `46e0b40`
+- Changed files: `packages/bgm-api/src/bgm-client.ts`, `bgm-client.test.ts`, `platform.ts`, `platform.test.ts`, `index.ts`, `packages/domain/src/index.ts`, `sync.test.ts`
+- RED evidence: offsets only [0], empty page returned success, PATCH batch [201], no second-batch failure, and executeSync lost partial fields
+- GREEN evidence: bgm-api 27/27, domain 23/23, both typechecks and diff check passed
+- Report: `.superpowers/sdd/task-4-report.md`
+- Review package: `.superpowers/sdd/review-5378196..46e0b40.diff`
 - Batch review round: `2/2`
 - Passed review stages: spec compliance, code quality
-- Resolved feedback:
-  - Duplicate query parameters rejected.
-  - Cursor rejects C1 controls while preserving opaque valid values.
-  - INVALID_QUERY uses no-store.
+- Resolved feedback: pagination consistency, duplicate/overfill protection, strict partial shape, multi-type global batch coverage
 - Unresolved feedback: none
+- Accepted Minor findings carried to final review:
+  - Remove or simplify unreachable `unique === 0` pagination branch.
+  - Require partial `failedBatch.episodeIds` length between 1 and 100 in the domain guard.
 - Accepted Minor findings carried to final review:
   - Task 2 Frontend CSP test could explicitly forbid script `'unsafe-inline'`.
   - Task 2 operation test could explicitly assert `default-src 'none'` and encoded entities.

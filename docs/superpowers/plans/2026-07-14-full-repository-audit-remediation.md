@@ -262,23 +262,23 @@ git push
 - Produces: `getSubjectEpisodeCollections(...): Promise<{data; total}>` 完整集合；每次 PATCH `episodeIds.length <= 100`。
 - Produces: `BgmEpisodePatchError`，包含 `code: 'EPISODE_PATCH_PARTIAL'`、`succeeded: number`、`failedBatch: { index: number; episodeIds: number[] }` 与原始 cause，供 Sync Worker 映射为 partial/error 响应。
 
-- [ ] **Step 1: 按规则核对本地 OpenAPI fixture**
+- [x] **Step 1: 按规则核对本地 OpenAPI fixture**
 
 Run: `sed -n '1994,2176p' docs/example/api/bgm-api.json`
 
 Expected: 确认 GET/PATCH `/v0/users/-/collections/{subject_id}/episodes`、Bearer auth、`limit`/`offset` 和 PATCH body 的 `episode_id`/`type`。若 fixture 与计划示例不符，以 fixture 为准并先修订本任务。
 
-- [ ] **Step 2: 写 1001+ 分页、空页与第二批失败 RED 测试**
+- [x] **Step 2: 写 1001+ 分页、空页与第二批失败 RED 测试**
 
 构造第一页 1000、第二页 1，并断言请求 offsets `[0, 1000]`；构造 `total=1001` 但第二页为空，断言 rejection 含稳定 pagination code/message。对 201 个同 type ID 断言 PATCH sizes `[100, 100, 1]`；第二批返回 500 时断言结果不是完整成功且包含第一批成功与第二批失败。
 
-- [ ] **Step 3: 运行 bgm-api 测试确认 RED**
+- [x] **Step 3: 运行 bgm-api 测试确认 RED**
 
 Run: `CI=true pnpm -F @airing-cal/bgm-api test`
 
 Expected: FAIL，现实现只请求 offset 0 且按 type 一次发送全部 IDs。
 
-- [ ] **Step 4: 实现分页、空页保护与批次汇总**
+- [x] **Step 4: 实现分页、空页保护与批次汇总**
 
 ```ts
 const data: BgmEpisodeCollection[] = []
@@ -296,7 +296,7 @@ return { data, total }
 
 Platform 以 `ids.slice(index, index + 100)` 分批；catch 时抛出 `BgmEpisodePatchError`，保留已成功数量和失败批次。Sync Worker 将该错误稳定序列化为非完整成功的 partial/error 响应且不得包含 Token。
 
-- [ ] **Step 5: 验证 GREEN 并提交推送**
+- [x] **Step 5: 验证 GREEN 并提交推送**
 
 Run: `CI=true pnpm -F @airing-cal/bgm-api test && CI=true pnpm -F @airing-cal/bgm-api typecheck`
 

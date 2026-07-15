@@ -13,9 +13,9 @@
 
 ## 3. bgm.tv 章节同步与认证错误
 
-- [ ] 3.1 对照 `docs/example/api/bgm-api.json` 验证章节读取和 PATCH 接口字段、limit 与 payload
-- [ ] 3.2 增加 1001+ 章节收藏分页 RED 测试并实现 `limit=1000` offset 循环
-- [ ] 3.3 增加每批最多 100 ID 和第二批失败 RED 测试，实现分批 PATCH 与 partial/error 汇总
+- [x] 3.1 对照 `docs/example/api/bgm-api.json` 验证章节读取和 PATCH 接口字段、limit 与 payload
+- [x] 3.2 增加 1001+ 章节收藏分页 RED 测试并实现 `limit=1000` offset 循环
+- [x] 3.3 增加每批最多 100 ID 和第二批失败 RED 测试，实现分批 PATCH 与 partial/error 汇总
 - [ ] 3.4 增加单/双账户无效 Token compare RED 测试，返回稳定非 200 认证错误
 
 ## 4. Subject 404 tombstone
