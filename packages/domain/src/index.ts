@@ -18,7 +18,8 @@ export interface SubjectMeta {
   exists: boolean | null
   nsfw: boolean
   checked_at: number
-  reason: 'subject_detail' | 'not_found_or_restricted' | 'network_error' | 'upstream_error'
+  expires_at: number | null
+  reason: 'subject_detail' | 'not_found' | 'network_error' | 'upstream_error'
 }
 
 export interface BgmCollectionLike {
@@ -294,7 +295,8 @@ export function subjectMetaFromNotFound(subjectId: number, checkedAt: number): S
     exists: false,
     nsfw: true,
     checked_at: checkedAt,
-    reason: 'not_found_or_restricted',
+    expires_at: checkedAt + 86400,
+    reason: 'not_found',
   }
 }
 
@@ -304,6 +306,7 @@ export function subjectMetaFromDetail(subjectId: number, subject: SubjectDetailL
     exists: true,
     nsfw: subject.nsfw === true,
     checked_at: checkedAt,
+    expires_at: null,
     reason: 'subject_detail',
   }
 }

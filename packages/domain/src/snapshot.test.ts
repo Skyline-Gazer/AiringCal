@@ -79,6 +79,7 @@ test('subjectMetaFromNotFound applies conservative NSFW policy', () => {
     exists: false,
     nsfw: true,
     checked_at: 1782650000,
-    reason: 'not_found_or_restricted',
+    expires_at: 1782736400,
+    reason: 'not_found',
   })
 })

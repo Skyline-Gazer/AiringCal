@@ -95,6 +95,7 @@ test('subject detail projections use full subject response as canonical source',
     exists: true,
     nsfw: true,
     checked_at: 1783000000,
+    expires_at: null,
     reason: 'subject_detail',
   })
 

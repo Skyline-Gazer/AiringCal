@@ -116,6 +116,44 @@ test('calendar hydrates cached image refs and subject metadata like collections'
   assert.equal(kv.gets.includes('subject:detail:23080'), true)
 })
 
+test('calendar ignores old detail while a not-found tombstone is active', async () => {
+  const kv = new MockKV()
+  const now = 1_782_650_300
+  kv.values.set('snapshot:calendar', [{
+    weekday: { id: 1 },
+    items: [{ id: 23080, eps: 12, total_episodes: 12, nsfw: false }],
+  }])
+  kv.values.set('subject:meta:23080', {
+    subject_id: 23080,
+    exists: false,
+    nsfw: true,
+    checked_at: now,
+    expires_at: now + 86400,
+    reason: 'not_found',
+  })
+  kv.values.set('subject:detail:23080', {
+    cached_at: now - 86400,
+    subject: { id: 23080, eps: 99, total_episodes: 99, rating: { score: 9.9 } },
+  })
+  const originalNow = Date.now
+  Date.now = () => (now + 86399) * 1000
+
+  try {
+    const response = await worker.fetch(new Request('https://read.local/calendar'), {
+      AIRING_CAL_KV: kv,
+      AIRING_CAL_R2: { get: async () => null },
+    } as any)
+    const item = (await response.json() as any)[0].items[0]
+
+    assert.equal(item.nsfw, true)
+    assert.equal(item.eps, 12)
+    assert.equal(item.total_episodes, 12)
+    assert.equal(item.rating, undefined)
+  } finally {
+    Date.now = originalNow
+  }
+})
+
 test('calendar reads the active Workflow snapshot version', async () => {
   const kv = new MockKV()
   kv.values.set('snapshot:calendar', [{ weekday: { id: 1 }, items: [{ id: 1, name: 'legacy' }] }])

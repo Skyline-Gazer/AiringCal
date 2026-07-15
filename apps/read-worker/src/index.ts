@@ -242,7 +242,11 @@ async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unk
         env.AIRING_CAL_KV.get(subjectDetailKey(subjectId), 'json'),
       ])
       if (!status && !meta && !detailEntry) return entry
-      const detail = (detailEntry as any)?.subject
+      const tombstone = (meta as any)?.exists === false
+        && (meta as any)?.reason === 'not_found'
+        && typeof (meta as any)?.expires_at === 'number'
+        && Math.floor(Date.now() / 1000) < (meta as any).expires_at
+      const detail = tombstone ? null : (detailEntry as any)?.subject
       const eps = positiveEpisodeCount(detail?.eps, detail?.eps_count, detail?.total_episodes, entry.eps, entry.eps_count, entry.total_episodes)
       const totalEpisodes = positiveEpisodeCount(detail?.total_episodes, detail?.eps, detail?.eps_count, entry.total_episodes, entry.eps, entry.eps_count)
       return {
