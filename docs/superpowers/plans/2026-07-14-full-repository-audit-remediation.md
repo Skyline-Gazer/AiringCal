@@ -175,7 +175,7 @@ Run: `CI=true pnpm -F @airing-cal/widget test && CI=true pnpm -F @airing-cal/fro
 
 Expected: PASS，JSON operation 测试保持不变。
 
-- [x] **Step 5: 提交推送**
+- [x] **Step 5: 提交推送 Task 2 HTML 安全修复**
 
 勾选 tasks `1.3`、`1.4`。
 
@@ -239,7 +239,7 @@ Run: `CI=true pnpm -F @airing-cal/read-worker test && CI=true pnpm -F @airing-ca
 
 Expected: PASS。
 
-- [ ] **Step 5: 提交推送**
+- [ ] **Step 5: 提交推送 Task 3 Read API 修复**
 
 勾选 tasks `2.1`～`2.3`。
 
@@ -340,7 +340,7 @@ Expected: FAIL，现有 compare catch 把认证错误映射为 500 或成功空�
 
 增加纯 `syncErrorResponse(error)` 或等价 helper：Syntax/validation→400，401/403→对应非 200 与稳定 code，其余上游错误沿用现有映射。README 记录 compare 认证错误契约。
 
-- [ ] **Step 4: 验证 GREEN 并提交推送**
+- [ ] **Step 4: 验证 GREEN 并提交推送 Task 5 compare 修复**
 
 Run: `CI=true pnpm -F @airing-cal/sync-worker test && CI=true pnpm -F @airing-cal/sync-worker typecheck && pnpm -F @airing-cal/sync-worker build:check`
 
@@ -394,7 +394,7 @@ Run: `CI=true pnpm -F @airing-cal/media-worker test && CI=true pnpm -F @airing-c
 
 Expected: PASS，包括现有 `subject-refresh-coordinator` 新 generation 覆盖旧 generation 测试。
 
-- [ ] **Step 5: 提交推送**
+- [ ] **Step 5: 提交推送 Task 6 tombstone 修复**
 
 勾选 tasks `4.1`～`4.3`。
 
@@ -439,7 +439,7 @@ Expected: FAIL，因为旧目录仍存在。
 
 使用 `git rm -r packages/widget/assets/public packages/widget/assets/theme/v1`。测试通过临时目录或纯 render helper 计算输出，不能覆盖工作树后再声称一致。README 说明唯一编辑源和 `pnpm -F @airing-cal/widget generate`。
 
-- [ ] **Step 4: 验证 GREEN 并提交推送**
+- [ ] **Step 4: 验证 GREEN 并提交推送 Task 7 资产清理**
 
 Run: `pnpm -F @airing-cal/widget generate && node --test scripts/generate-widget-assets.test.mjs && CI=true pnpm -F @airing-cal/widget test && CI=true pnpm build:check`
 
