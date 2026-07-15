@@ -483,6 +483,12 @@ export async function compareAccounts(
     clientB.fetchCollections(tokenB, nameB),
   ])
 
+  for (const settled of [settledA, settledB]) {
+    if (settled.status !== 'rejected') continue
+    const authenticationError = findAuthenticationError(settled.reason)
+    if (authenticationError) throw authenticationError
+  }
+
   const colA = unwrapCollections(settledA, nameA)
   const colB = unwrapCollections(settledB, nameB)
 
@@ -541,6 +547,12 @@ export async function compareAccounts(
     onlyB,
     differences,
   }
+}
+
+function findAuthenticationError(error: unknown): Error & { status: 401 | 403 } | null {
+  if (!(error instanceof Error)) return null
+  if ('status' in error && (error.status === 401 || error.status === 403)) return error as Error & { status: 401 | 403 }
+  return findAuthenticationError(error.cause)
 }
 
 function unwrapCollections(settled: PromiseSettledResult<ComparisonItem[]>, name: string) {

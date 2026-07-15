@@ -141,7 +141,7 @@ function syncErrorResponse(error: unknown): Response {
   if (error instanceof SyntaxError || error instanceof SyncValidationError) {
     return publicError(400, 'INVALID_REQUEST', error)
   }
-  if (error instanceof BgmHttpError && (error.status === 401 || error.status === 403)) {
+  if (error instanceof Error && 'status' in error && (error.status === 401 || error.status === 403)) {
     return publicError(error.status, 'AUTHENTICATION_FAILED', error)
   }
   return publicError(500, 'REQUEST_FAILED', error)

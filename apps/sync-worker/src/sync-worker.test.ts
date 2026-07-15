@@ -178,6 +178,75 @@ test('internal compare maps dual authentication failure to a stable non-secret e
   }
 })
 
+test('internal compare maps either collection authentication failure without returning partial success', async () => {
+  for (const scenario of [
+    { rejectedToken: 'source-secret', status: 401 },
+    { rejectedToken: 'target-secret', status: 403 },
+  ]) {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/v0/me')) return Response.json({ username: 'valid-user', id: 1 })
+      assert.equal(url.includes('/collections?'), true)
+      const authorization = new Headers(init?.headers).get('authorization')
+      if (authorization === `Bearer ${scenario.rejectedToken}`) {
+        return new Response('invalid token', { status: scenario.status })
+      }
+      return Response.json({ total: 0, data: [] })
+    }) as typeof globalThis.fetch
+
+    try {
+      const response = await worker.fetch?.(new Request('https://sync.local/internal/sync/compare', {
+        method: 'POST',
+        body: JSON.stringify({
+          platformA: 'bgm',
+          platformB: 'bgm',
+          tokenA: 'source-secret',
+          tokenB: 'target-secret',
+        }),
+      }), {} as any)
+      const body = await response?.json() as any
+
+      assert.equal(response?.status, scenario.status)
+      assert.equal(body.ok, false)
+      assert.equal(body.error.code, 'AUTHENTICATION_FAILED')
+      assert.doesNotMatch(JSON.stringify(body), /source-secret|target-secret/)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+})
+
+test('internal compare maps dual collection authentication failure to a stable non-secret error', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input)
+    if (url.endsWith('/v0/me')) return Response.json({ username: 'valid-user', id: 1 })
+    assert.equal(url.includes('/collections?'), true)
+    return new Response('invalid token', { status: 403 })
+  }) as typeof globalThis.fetch
+
+  try {
+    const response = await worker.fetch?.(new Request('https://sync.local/internal/sync/compare', {
+      method: 'POST',
+      body: JSON.stringify({
+        platformA: 'bgm',
+        platformB: 'bgm',
+        tokenA: 'source-secret',
+        tokenB: 'target-secret',
+      }),
+    }), {} as any)
+    const body = await response?.json() as any
+
+    assert.equal(response?.status, 403)
+    assert.equal(body.ok, false)
+    assert.equal(body.error.code, 'AUTHENTICATION_FAILED')
+    assert.doesNotMatch(JSON.stringify(body), /source-secret|target-secret/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('internal compare keeps network failures on the generic request failure path', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async () => { throw new Error('network unavailable') }) as typeof globalThis.fetch

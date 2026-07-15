@@ -108,6 +108,34 @@ test('compareAccounts preserves a dual authentication failure without fetching c
   assert.deepEqual(target.fetchedUsernames, [])
 })
 
+test('compareAccounts preserves either collection authentication failure', async () => {
+  for (const [rejectedAccount, status] of [['source', 401], ['target', 403]] as const) {
+    const authenticationError = Object.assign(new Error(`${rejectedAccount} collection authentication failed`), { status })
+    const source = new FakeClient('source-user', [item('1')])
+    const target = new FakeClient('target-user', [item('2')])
+    if (rejectedAccount === 'source') source.fetchCollections = async () => { throw new Error('source collection failed', { cause: authenticationError }) }
+    else target.fetchCollections = async () => { throw authenticationError }
+
+    await assert.rejects(
+      compareAccounts(source, 'source-secret', target, 'target-secret'),
+      (error) => error === authenticationError,
+    )
+  }
+})
+
+test('compareAccounts preserves a dual collection authentication failure', async () => {
+  const sourceError = Object.assign(new Error('source collection authentication failed'), { status: 403 })
+  const source = new FakeClient('source-user', [])
+  const target = new FakeClient('target-user', [])
+  source.fetchCollections = async () => { throw sourceError }
+  target.fetchCollections = async () => { throw Object.assign(new Error('target collection authentication failed'), { status: 401 }) }
+
+  await assert.rejects(
+    compareAccounts(source, 'source-secret', target, 'target-secret'),
+    (error) => error === sourceError,
+  )
+})
+
 test('executeSync patches partial entries and reports baseline field changes', async () => {
   const source = new FakeClient('source-user', [
     item('8', { status: WatchStatus.COMPLETED, progress: 8, score: 9 }),

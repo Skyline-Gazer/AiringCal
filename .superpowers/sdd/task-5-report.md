@@ -33,3 +33,12 @@ PASS — compare authentication failures now stop before collection reads and re
 ## Concerns
 
 - None. Coordinator-owned task and progress files were not modified or staged.
+
+## Review fix: collection-stage authentication
+
+- RED: added source-side 401, target-side 403, and dual-account collection-stage tests. Domain reported missing rejections; sync-worker returned HTTP 200 instead of 401/403.
+- Root cause: collection failures were passed through `Promise.allSettled`; `fetchAllCollections` wrapped the original HTTP error in `Error.cause`, then `unwrapCollections` converted the rejection into an empty/partial result.
+- GREEN: before either collection result is unwrapped, domain now finds only a real `Error` whose direct or causal `status` is exactly 401/403 and rethrows that original authentication error.
+- Sync mapping accepts the same strict, platform-independent error shape and returns stable `AUTHENTICATION_FAILED`; token-safe public errors are unchanged.
+- Non-authentication network, 429, and 5xx failures do not match the strict classifier and retain their existing generic/partial semantics.
+- Final verification: domain test 27/27 + typecheck; sync-worker test 39/39 + typecheck + build:check; worker-common test 12/12 + typecheck; all passed.
