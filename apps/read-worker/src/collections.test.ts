@@ -121,7 +121,7 @@ test('calendar ignores old detail while a not-found tombstone is active', async 
   const now = 1_782_650_300
   kv.values.set('snapshot:calendar', [{
     weekday: { id: 1 },
-    items: [{ id: 23080, eps: 12, total_episodes: 12, nsfw: false }],
+    items: [{ id: 23080, eps: 99, eps_count: 98, total_episodes: 97, rating: { score: 9.9 }, nsfw: false }],
   }])
   kv.values.set('subject:meta:23080', {
     subject_id: 23080,
@@ -146,9 +146,32 @@ test('calendar ignores old detail while a not-found tombstone is active', async 
     const item = (await response.json() as any)[0].items[0]
 
     assert.equal(item.nsfw, true)
-    assert.equal(item.eps, 12)
-    assert.equal(item.total_episodes, 12)
+    assert.equal(item.eps, undefined)
+    assert.equal(item.eps_count, undefined)
+    assert.equal(item.total_episodes, undefined)
     assert.equal(item.rating, undefined)
+  } finally {
+    Date.now = originalNow
+  }
+})
+
+test('collections remove snapshot detail fields under an active tombstone but preserve progress', async () => {
+  const kv = new MockKV()
+  const now = 1_782_650_300
+  kv.values.set('snapshot:collections:watching', [{ subject_id: 23080, rating: { score: 9.9 }, eps: 99, eps_count: 98, total_episodes: 97, ep_status: 7, nsfw: false }])
+  kv.values.set('snapshot:summary', { watching: 1, _total: 1 })
+  kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: now, expires_at: now + 86400, reason: 'not_found' })
+  const originalNow = Date.now
+  Date.now = () => (now + 1) * 1000
+  try {
+    const response = await worker.fetch(new Request('https://read.local/collections?type=watching'), { AIRING_CAL_KV: kv, AIRING_CAL_R2: { get: async () => null } } as any)
+    const item = (await response.json() as any).data[0]
+    assert.equal(item.rating, undefined)
+    assert.equal(item.eps, undefined)
+    assert.equal(item.eps_count, undefined)
+    assert.equal(item.total_episodes, undefined)
+    assert.equal(item.ep_status, 7)
+    assert.equal(item.nsfw, true)
   } finally {
     Date.now = originalNow
   }

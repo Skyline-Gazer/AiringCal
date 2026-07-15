@@ -300,6 +300,13 @@ export function subjectMetaFromNotFound(subjectId: number, checkedAt: number): S
   }
 }
 
+export function isActiveNotFoundSubjectMeta(meta: SubjectMeta | null | undefined, now: number): meta is SubjectMeta & { exists: false; reason: 'not_found'; expires_at: number } {
+  return meta?.exists === false
+    && meta.reason === 'not_found'
+    && typeof meta.expires_at === 'number'
+    && now < meta.expires_at
+}
+
 export function subjectMetaFromDetail(subjectId: number, subject: SubjectDetailLike, checkedAt: number): SubjectMeta {
   return {
     subject_id: subjectId,

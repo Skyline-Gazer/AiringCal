@@ -1,7 +1,7 @@
 export const appBoundary = 'sync-worker'
 
 import { BgmClient, BgmHttpError, BgmPlatformClient, fetchAllCollections } from '@airing-cal/bgm-api'
-import { compareAccounts, executeSync, imageRefsFromStatus, mergeCollections, subjectDetailImages, SyncValidationError, transformCalendar, withSubjectDetail, type SubjectDetailMap, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
+import { compareAccounts, executeSync, imageRefsFromStatus, isActiveNotFoundSubjectMeta, mergeCollections, subjectDetailImages, SyncValidationError, transformCalendar, withSubjectDetail, type SubjectDetailMap, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
 import { getCachedSubjectDetail, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectDetailKey, subjectMetaKey, subjectRefreshKey, syncMetaKey, type MediaRefreshJobV2 } from '@airing-cal/storage'
 import { publicError, sanitizeErrorMessage, syncHeaders } from '@airing-cal/worker-common'
 
@@ -270,6 +270,8 @@ async function loadSubjectDetails(storage: KVStorage, client: BgmClient, subject
     const chunk = subjectIds.slice(index, index + SUBJECT_DETAIL_CONCURRENCY)
     const details = await Promise.all(chunk.map(async (subjectId) => {
       try {
+        const meta = await storage.get<SubjectMeta>(subjectMetaKey(subjectId))
+        if (isActiveNotFoundSubjectMeta(meta, now)) return [subjectId, null] as const
         return [subjectId, await getCachedSubjectDetail(storage, client, subjectId, now)] as const
       } catch (error) {
         errors.push(warningError(subjectId, error))
@@ -288,10 +290,14 @@ async function loadSubjectDetails(storage: KVStorage, client: BgmClient, subject
   }
 }
 
-async function loadStoredSubjectDetails(storage: KVStorage, subjectIds: number[]): Promise<Map<number, any>> {
+async function loadStoredSubjectDetails(storage: KVStorage, subjectIds: number[], now: number): Promise<Map<number, any>> {
   const map = new Map<number, any>()
   const cachedEntries = await mapConcurrent(subjectIds, CACHE_LOAD_CONCURRENCY, async (subjectId) => {
-    const cached = await storage.get<{ subject?: any }>(subjectDetailKey(subjectId))
+    const [meta, cached] = await Promise.all([
+      storage.get<SubjectMeta>(subjectMetaKey(subjectId)),
+      storage.get<{ subject?: any }>(subjectDetailKey(subjectId)),
+    ])
+    if (isActiveNotFoundSubjectMeta(meta, now)) return [subjectId, null] as const
     return [subjectId, cached?.subject ?? null] as const
   })
   for (const [subjectId, subject] of cachedEntries) {
@@ -392,7 +398,7 @@ async function runScheduledSync(env: SyncEnv, runId = `legacy:${Math.floor(Date.
   const collectionSubjectIds = collections.map((collection: any) => collection.subject_id).filter((subjectId: unknown): subjectId is number => typeof subjectId === 'number')
   const { details: calendarDetails, warnings: detailWarnings } = await loadSubjectDetails(storage, client, calendarSubjectIds(rawCalendar), now)
   warnings.push(...detailWarnings)
-  const storedCollectionDetails = await loadStoredSubjectDetails(storage, collectionSubjectIds)
+  const storedCollectionDetails = await loadStoredSubjectDetails(storage, collectionSubjectIds, now)
   const subjectDetails = new Map([...storedCollectionDetails, ...calendarDetails])
   const calendar = enrichCalendarWithSubjectDetails(rawCalendar, subjectDetails)
   const subjectInputs = collectSubjectInputs(collections as any[], calendar as any[], subjectDetails)

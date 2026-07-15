@@ -1,7 +1,7 @@
 export const appBoundary = 'media-worker'
 
 import { BgmClient, BgmHttpError, BgmNetworkError, BgmTimeoutError } from '@airing-cal/bgm-api'
-import { imageRef, subjectDetailImages, subjectMetaFromDetail, subjectMetaFromNotFound, type SubjectMeta } from '@airing-cal/domain'
+import { imageRef, isActiveNotFoundSubjectMeta, subjectDetailImages, subjectMetaFromDetail, subjectMetaFromNotFound, type SubjectMeta } from '@airing-cal/domain'
 import { getCachedSubjectDetail, imageIndexKey, imageStatusKey, KVStorage, R2ImageStore, subjectDetailKey, subjectMetaKey, subjectRefreshKey, type ImageSourceSize, type MediaRefreshJobV2, type MediaRefreshJobV3, type SubjectRefreshState } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
@@ -46,13 +46,6 @@ function isTransient(error: unknown): boolean {
   return error instanceof BgmTimeoutError
     || error instanceof BgmNetworkError
     || error instanceof BgmHttpError && (error.status === 429 || error.status >= 500)
-}
-
-function activeNotFound(meta: SubjectMeta | null, now: number): boolean {
-  return meta?.exists === false
-    && meta.reason === 'not_found'
-    && typeof meta.expires_at === 'number'
-    && now < meta.expires_at
 }
 
 async function sha256Hex(data: ArrayBuffer): Promise<string> {
@@ -134,7 +127,11 @@ async function fetchSubjectDetail(job: MediaJob, client: BgmClient, storage: KVS
     const subject = await getCachedSubjectDetail(storage, client, job.subject_id, now)
     if (!subject) {
       await storage.put(subjectMetaKey(job.subject_id), subjectMetaFromNotFound(job.subject_id, now))
-      await storage.delete(subjectDetailKey(job.subject_id))
+      try {
+        await storage.delete(subjectDetailKey(job.subject_id))
+      } catch {
+        // The tombstone is authoritative; stale detail removal is best-effort.
+      }
       return null
     }
     await storage.put(subjectMetaKey(job.subject_id), subjectMetaFromDetail(job.subject_id, subject, now))
@@ -184,7 +181,7 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | '
     await putRefreshState(storage, job, 'running', now)
   }
   const meta = await storage.get<SubjectMeta>(subjectMetaKey(job.subject_id))
-  if (activeNotFound(meta, now)) {
+  if (isActiveNotFoundSubjectMeta(meta, now)) {
     if (isVersionedJob(job)) await putRefreshState(storage, job, 'ok', now)
     return 'processed'
   }

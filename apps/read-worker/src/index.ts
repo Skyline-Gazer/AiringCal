@@ -1,6 +1,7 @@
 export const appBoundary = 'read-worker'
 
 import { imageOriginalKey, imageStatusKey, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncCurrentKey, syncMetaKey, syncRunKey, type SnapshotManifest, type SyncRun } from '@airing-cal/storage'
+import { isActiveNotFoundSubjectMeta, type SubjectMeta } from '@airing-cal/domain'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 interface ReadEnv {
@@ -209,10 +210,14 @@ function positiveEpisodeCount(...values: unknown[]): number | undefined {
 async function hydrateCollectionImages(data: unknown[], env: ReadEnv): Promise<unknown[]> {
   return mapConcurrent(data, HYDRATION_CONCURRENCY, async (entry: any) => {
     if (!entry || typeof entry !== 'object' || typeof entry.subject_id !== 'number') return entry
-    const status = await env.AIRING_CAL_KV.get(imageStatusKey(entry.subject_id), 'json')
-    if (!status) return entry
+    const [status, meta] = await Promise.all([
+      env.AIRING_CAL_KV.get(imageStatusKey(entry.subject_id), 'json'),
+      env.AIRING_CAL_KV.get(subjectMetaKey(entry.subject_id), 'json'),
+    ])
+    const projected = projectSnapshotEntry(entry, meta as SubjectMeta | null)
+    if (!status) return projected
     return {
-      ...entry,
+      ...projected,
       images: {
         common: cachedImageRef((status as any).common),
         large: cachedImageRef((status as any).large),
@@ -223,6 +228,14 @@ async function hydrateCollectionImages(data: unknown[], env: ReadEnv): Promise<u
       },
     }
   })
+}
+
+function projectSnapshotEntry(entry: any, meta: SubjectMeta | null): any {
+  if (!isActiveNotFoundSubjectMeta(meta, nowSeconds())) {
+    return meta ? { ...entry, nsfw: meta.nsfw } : entry
+  }
+  const { rating: _rating, eps: _eps, eps_count: _epsCount, total_episodes: _totalEpisodes, ...safe } = entry
+  return { ...safe, nsfw: true }
 }
 
 async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unknown[]> {
@@ -242,15 +255,13 @@ async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unk
         env.AIRING_CAL_KV.get(subjectDetailKey(subjectId), 'json'),
       ])
       if (!status && !meta && !detailEntry) return entry
-      const tombstone = (meta as any)?.exists === false
-        && (meta as any)?.reason === 'not_found'
-        && typeof (meta as any)?.expires_at === 'number'
-        && Math.floor(Date.now() / 1000) < (meta as any).expires_at
+      const tombstone = isActiveNotFoundSubjectMeta(meta as SubjectMeta | null, nowSeconds())
       const detail = tombstone ? null : (detailEntry as any)?.subject
-      const eps = positiveEpisodeCount(detail?.eps, detail?.eps_count, detail?.total_episodes, entry.eps, entry.eps_count, entry.total_episodes)
-      const totalEpisodes = positiveEpisodeCount(detail?.total_episodes, detail?.eps, detail?.eps_count, entry.total_episodes, entry.eps, entry.eps_count)
+      const projected = projectSnapshotEntry(entry, meta as SubjectMeta | null)
+      const eps = positiveEpisodeCount(detail?.eps, detail?.eps_count, detail?.total_episodes, projected.eps, projected.eps_count, projected.total_episodes)
+      const totalEpisodes = positiveEpisodeCount(detail?.total_episodes, detail?.eps, detail?.eps_count, projected.total_episodes, projected.eps, projected.eps_count)
       return {
-        ...entry,
+        ...projected,
         ...(eps ? { eps } : {}),
         ...(totalEpisodes ? { total_episodes: totalEpisodes } : {}),
         ...(detail?.rating ? { rating: detail.rating } : {}),
@@ -259,14 +270,14 @@ async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unk
               common: cachedImageRef((status as any).common),
               large: cachedImageRef((status as any).large),
             }
-          : entry.images,
+          : projected.images,
         image_status: status
           ? {
               common: imageStatus((status as any).common),
               large: imageStatus((status as any).large),
             }
-          : entry.image_status,
-        nsfw: (meta as any)?.nsfw ?? entry.nsfw,
+          : projected.image_status,
+        nsfw: (meta as any)?.nsfw ?? projected.nsfw,
       }
     })
     hydrated.push({ ...day, items })

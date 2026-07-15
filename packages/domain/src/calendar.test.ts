@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { imageRef, imageRefsFromStatus, subjectDetailImages, subjectMetaFromDetail, transformCalendar, withSubjectDetail } from './index.ts'
+import { imageRef, imageRefsFromStatus, isActiveNotFoundSubjectMeta, subjectDetailImages, subjectMetaFromDetail, transformCalendar, withSubjectDetail } from './index.ts'
 import type { BgmCalendarSubjectLike } from './index.ts'
+
+test('not-found tombstone expires exactly at expires_at', () => {
+  const meta = { subject_id: 1, exists: false, nsfw: true, checked_at: 100, expires_at: 200, reason: 'not_found' } as const
+  assert.equal(isActiveNotFoundSubjectMeta(meta, 199), true)
+  assert.equal(isActiveNotFoundSubjectMeta(meta, 200), false)
+})
 
 test('imageRefsFromStatus converts cached image status to public refs only', () => {
   assert.deepEqual(imageRefsFromStatus({

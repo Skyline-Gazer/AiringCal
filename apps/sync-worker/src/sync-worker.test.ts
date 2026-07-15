@@ -858,6 +858,34 @@ test('scheduled sync enriches collection and calendar snapshots from existing me
   }
 })
 
+test('scheduled sync never republishes residual detail while a not-found tombstone is active', async () => {
+  const kv = new MockKV()
+  const now = Math.floor(Date.UTC(2026, 5, 30, 4, 0, 0) / 1000)
+  kv.values.set(subjectDetailKey(23080), { cached_at: now - 1, subject: { id: 23080, name: 'Residual', name_cn: '残留', eps: 99, eps_count: 98, total_episodes: 97, rating: { score: 9.9 } } })
+  kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: now - 1, expires_at: now + 86400, reason: 'not_found' })
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  const upstream = mockFetch()
+  globalThis.fetch = upstream.fetch as typeof globalThis.fetch
+  Date.now = () => now * 1000
+  try {
+    await worker.scheduled({ scheduledTime: now * 1000 } as any, { AIRING_CAL_KV: kv, MEDIA_QUEUE: { send: async () => {} }, BANGUMI_TOKEN: 'token-a', BANGUMI_USERS: 'alice', SYNC_MODE: 'merge' } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+    const collection = (kv.values.get('snapshot:collections:watching') as any[])[0]
+    const calendar = (kv.values.get('snapshot:calendar') as any[])[0].items[0]
+    assert.equal(collection.ep_status, 1)
+    assert.notEqual(collection.eps, 99)
+    assert.notEqual(collection.total_episodes, 97)
+    assert.notEqual(calendar.eps, 99)
+    assert.notEqual(calendar.eps_count, 98)
+    assert.notEqual(calendar.total_episodes, 97)
+    assert.notEqual(calendar.rating?.score, 9.9)
+    assert.equal(upstream.calls.filter((url) => url.endsWith('/v0/subjects/23080')).length, 0)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('scheduled sync loads collection cache state concurrently before publishing snapshots', async () => {
   const kv = new MockKV()
   const collectionCount = 30

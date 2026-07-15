@@ -55,3 +55,26 @@ After the minimal implementation, the combined GREEN command passed all four com
 - Tombstone suppression covers image-only upstream work as well as subject detail because it occurs before either path.
 - No source, test, plan, tasks, README, or coordinator progress file is changed by this report-only follow-up.
 - The worktree retains an unrelated coordinator-owned modification to `openspec/changes/remediate-full-repository-audit/.comet/subagent-progress.md`; it was not modified or staged by Task 6.
+
+## Review fix round 1
+
+The thorough review findings were fixed with a second RED→GREEN cycle:
+
+- Domain now exports the type-safe `isActiveNotFoundSubjectMeta(meta, now)` predicate. Media, Read, and Sync use the same exact `now < expires_at` boundary; a domain test proves `now === expires_at` is inactive and the media recovery test reprobes at that exact second.
+- Sync reads subject meta before both upstream/cached calendar detail loading and stored collection detail loading. An active tombstone suppresses the upstream subject call and excludes residual detail from both collection and calendar snapshots, even if the detail key remains present.
+- Read removes snapshot-carried `rating`, `eps`, `eps_count`, and `total_episodes` under an active tombstone for both collection and calendar responses, while retaining collection progress such as `ep_status` and forcing conservative `nsfw: true`.
+- Media tests prove an active tombstone suppresses both subject and image upstream work for an image-only job. Tombstone metadata remains authoritative when stale-detail deletion fails: deletion is best-effort after the fail-closed meta write.
+
+Review-fix RED evidence:
+
+- Domain failed to load because `isActiveNotFoundSubjectMeta` was not exported.
+- Read passed 29/31; enriched collection/calendar snapshot fields remained visible.
+- Sync passed 39/40; the active tombstone still allowed one `/v0/subjects/23080` request.
+- Media's exact-boundary, image-only, and delete-failure tests passed immediately against the existing control-flow ordering; the shared-helper replacement and best-effort deletion retained those behaviors.
+
+Review-fix GREEN and final verification:
+
+- Complete tests: media 23/23, read 31/31, sync 40/40, domain 28/28, storage 8/8 (130/130).
+- Typechecks: media, read, sync, domain, and storage all PASS.
+- Build checks: media, read, and sync Wrangler type checks and dry-run deploys all PASS.
+- `git diff --check` PASS; scope contains only Task 6 code/tests plus this report. Coordinator-owned progress remains unstaged and untouched.
