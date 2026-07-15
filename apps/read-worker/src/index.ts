@@ -42,6 +42,12 @@ function json(data: unknown, init?: ResponseInit): Response {
 
 class InvalidQueryError extends Error {}
 
+function singleQueryParameter(searchParams: URLSearchParams, name: string): string | null {
+  const values = searchParams.getAll(name)
+  if (values.length > 1) throw new InvalidQueryError(`Repeated ${name}`)
+  return values[0] ?? null
+}
+
 function parseCollectionType(value: string | null): (typeof COLLECTION_TYPES)[number] {
   if (value === null) return 'watching'
   if (!COLLECTION_TYPES.includes(value as (typeof COLLECTION_TYPES)[number])) throw new InvalidQueryError()
@@ -58,7 +64,7 @@ function parsePositiveInteger(name: string, value: string | null, fallback: numb
 
 function parseCursor(value: string | null): string | undefined {
   if (value === null) return undefined
-  if (!value || value.length > MAX_CURSOR_LENGTH || /[\x00-\x1f\x7f]/.test(value)) throw new InvalidQueryError()
+  if (!value || value.length > MAX_CURSOR_LENGTH || /[\x00-\x1f\x7f-\x9f]/.test(value)) throw new InvalidQueryError()
   return value
 }
 
@@ -266,9 +272,9 @@ async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unk
 
 async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
-  const type = parseCollectionType(url.searchParams.get('type'))
-  const page = parsePositiveInteger('page', url.searchParams.get('page'), 1)
-  const limit = parsePositiveInteger('limit', url.searchParams.get('limit'), 24, 100)
+  const type = parseCollectionType(singleQueryParameter(url.searchParams, 'type'))
+  const page = parsePositiveInteger('page', singleQueryParameter(url.searchParams, 'page'), 1)
+  const limit = parsePositiveInteger('limit', singleQueryParameter(url.searchParams, 'limit'), 24, 100)
   const activeInstance = await activeSnapshotInstance(storage)
   const data = await readSnapshot<unknown[]>(storage, activeInstance, `collections:${type}`, snapshotCollectionsKey(type)) ?? []
   const start = (page - 1) * limit
@@ -286,8 +292,8 @@ async function handleCalendar(env: ReadEnv): Promise<Response> {
 }
 
 async function handleCache(url: URL, env: ReadEnv): Promise<Response> {
-  const limit = parsePositiveInteger('limit', url.searchParams.get('limit'), 24, 100)
-  const cursor = parseCursor(url.searchParams.get('cursor'))
+  const limit = parsePositiveInteger('limit', singleQueryParameter(url.searchParams, 'limit'), 24, 100)
+  const cursor = parseCursor(singleQueryParameter(url.searchParams, 'cursor'))
   const list = await env.AIRING_CAL_KV.list?.({ prefix: 'image:status:', limit, cursor })
   const entries = (await mapConcurrent(list?.keys ?? [], HYDRATION_CONCURRENCY, async (key) => {
     const status = await env.AIRING_CAL_KV.get(key.name, 'json')
@@ -385,7 +391,10 @@ async function fetch(request: Request, env: ReadEnv): Promise<Response> {
     return new Response('Not found', { status: 404 })
   } catch (error) {
     if (error instanceof InvalidQueryError) {
-      return json({ ok: false, error: { code: 'INVALID_QUERY', message: 'Invalid query parameter' } }, { status: 400 })
+      return json({ ok: false, error: { code: 'INVALID_QUERY', message: 'Invalid query parameter' } }, {
+        status: 400,
+        headers: { 'Cache-Control': 'no-store' },
+      })
     }
     if (error instanceof SnapshotIncompleteError) {
       return json({ ok: false, error: { code: 'SNAPSHOT_INCOMPLETE', message: 'Active snapshot is incomplete' } }, { status: 503 })

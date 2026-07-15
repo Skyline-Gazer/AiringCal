@@ -375,7 +375,7 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 
 `/api/cache` 是公开且脱敏的缓存状态 JSON。它使用 opaque KV cursor 分页，合法 cursor 会原样传给 KV；`limit` 最大 100，并以固定并发读取当前页 image status。响应中的 `page_subjects` 是当前页条目数，`cursor` 为 `null` 表示已到最后一页。它不暴露 access token、上游认证响应体或未清理的错误信息。
 
-`/api/collections` 的 `type`、`page`、`limit` 与 `/api/cache` 的 `limit`、`cursor` 都执行完整格式验证。未知 collection type、非正整数、超出上限、空或含控制字符的 cursor 等非法 query 返回 HTTP 400 和稳定的 `INVALID_QUERY` JSON 错误，不会静默采用默认值。
+`/api/collections` 的 `type`、`page`、`limit` 与 `/api/cache` 的 `limit`、`cursor` 都执行完整格式验证；这些参数重复出现也会被拒绝。未知 collection type、非正整数、超出上限、空或含 U+0000–U+001F、U+007F–U+009F 控制字符的 cursor 等非法 query 返回 HTTP 400 和稳定的 `INVALID_QUERY` JSON 错误，不会静默采用默认值。此类错误响应显式使用 `Cache-Control: no-store`。
 
 页面 footer 不读取完整 `/api/cache` 明细；`/src/cache.js` 只读取 `/api/health` 中的轻量 cache 摘要与同步状态，避免为了展示 footer 触发大量 KV image status 读取。
 

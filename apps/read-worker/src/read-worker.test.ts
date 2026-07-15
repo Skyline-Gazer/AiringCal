@@ -125,6 +125,18 @@ test('read-worker rejects invalid collection type, page, and limit query paramet
   }
 })
 
+test('read-worker rejects repeated collection query parameters', async () => {
+  for (const query of [
+    'type=watching&type=watched',
+    'page=1&page=2',
+    'limit=24&limit=12',
+  ]) {
+    const response = await worker.fetch(new Request(`https://read.local/collections?${query}`), env() as any)
+
+    assert.equal(response.status, 400, query)
+  }
+})
+
 test('read-worker serves the active versioned snapshot after a live Workflow commit', async () => {
   const kv = new MockKV()
   kv.values.set('snapshot:collections:watching', [{ subject_id: 515856, collection_type: 3 }])
@@ -246,6 +258,37 @@ test('read-worker rejects invalid cache limit and cursor query parameters', asyn
       ok: false,
       error: { code: 'INVALID_QUERY', message: 'Invalid query parameter' },
     }, query)
+  }
+})
+
+test('read-worker rejects repeated cache query parameters', async () => {
+  for (const query of [
+    'limit=24&limit=12',
+    'cursor=first&cursor=second',
+  ]) {
+    const response = await worker.fetch(new Request(`https://read.local/cache?${query}`), env() as any)
+
+    assert.equal(response.status, 400, query)
+  }
+})
+
+test('read-worker rejects C1 control characters in cache cursors', async () => {
+  for (const cursor of ['\u0080', '\u0085', '\u009f']) {
+    const response = await worker.fetch(new Request(`https://read.local/cache?cursor=${encodeURIComponent(cursor)}`), env() as any)
+
+    assert.equal(response.status, 400, cursor.charCodeAt(0).toString(16))
+  }
+})
+
+test('read-worker marks invalid query responses as non-cacheable', async () => {
+  for (const path of [
+    '/collections?page=0',
+    '/cache?limit=0',
+  ]) {
+    const response = await worker.fetch(new Request(`https://read.local${path}`), env() as any)
+
+    assert.equal(response.status, 400, path)
+    assert.equal(response.headers.get('Cache-Control'), 'no-store', path)
   }
 })
 
