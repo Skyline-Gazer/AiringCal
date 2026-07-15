@@ -137,6 +137,16 @@ function errorJson(error: unknown, status = 500): Response {
   return publicError(status, status === 400 ? 'INVALID_REQUEST' : 'REQUEST_FAILED', error)
 }
 
+function syncErrorResponse(error: unknown): Response {
+  if (error instanceof SyntaxError || error instanceof SyncValidationError) {
+    return publicError(400, 'INVALID_REQUEST', error)
+  }
+  if (error instanceof BgmHttpError && (error.status === 401 || error.status === 403)) {
+    return publicError(error.status, 'AUTHENTICATION_FAILED', error)
+  }
+  return publicError(500, 'REQUEST_FAILED', error)
+}
+
 function escapeHtml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
@@ -462,7 +472,7 @@ async function fetch(request: Request, env: SyncEnv): Promise<Response> {
       const clientB = getPlatformClient(body.platformB || 'bgm')
       return json(await compareAccounts(clientA, body.tokenA || '', clientB, body.tokenB || ''), { headers: syncHeaders() })
     } catch (error) {
-      return errorJson(error, error instanceof SyntaxError || error instanceof SyncValidationError ? 400 : 500)
+      return syncErrorResponse(error)
     }
   }
 

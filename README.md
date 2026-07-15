@@ -55,6 +55,8 @@ https://airing-cal-frontend.<你的 workers.dev 子域>.workers.dev
 
 账号 compare 返回的差异条目包含规范化 `itemA` / `itemB`。页面按方向选择源 item，并以最多 5 条一批提交给 `/api/sync/apply`；apply 直接复用这些 items，不会为每批重新拉取全部源收藏。旧 `subject_ids` 输入暂时兼容一个版本且同样限制为 5 条。用户 token 只存在于当前请求内，不写入 KV operation log、Queue 或其他异步载荷；compare、apply 和 check 响应统一使用 `Cache-Control: no-store`。
 
+compare 会先认证两个账户；任一账户返回 401/403 时立即停止且不读取收藏，并以相同 HTTP 状态返回稳定的 `AUTHENTICATION_FAILED` 错误 code。错误响应不会包含账户 token；限流、网络或其他 bgm.tv 上游故障仍使用 `REQUEST_FAILED`。
+
 `airing-cal-sync` 没有公开同步 URL。Cloudflare Workflows Free Plan 不支持原生 Workflow schedule，因此生产定时入口是同一个 sync Worker 的轻量 Cron；Cron 每 4 小时只创建一个 live Workflow instance，不拉取 bgm.tv、不读写业务缓存：
 
 ```toml

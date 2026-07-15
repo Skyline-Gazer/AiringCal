@@ -471,12 +471,12 @@ export async function compareAccounts(
   clientB: PlatformClient,
   tokenB: string,
 ): Promise<CompareResult> {
-  const [meA, meB] = await Promise.allSettled([
+  const [meA, meB] = await Promise.all([
     clientA.getMe(tokenA),
     clientB.getMe(tokenB),
   ])
-  const nameA = meA.status === 'fulfilled' ? meA.value.username : 'Account A'
-  const nameB = meB.status === 'fulfilled' ? meB.value.username : 'Account B'
+  const nameA = meA.username
+  const nameB = meB.username
 
   const [settledA, settledB] = await Promise.allSettled([
     clientA.fetchCollections(tokenA, nameA),

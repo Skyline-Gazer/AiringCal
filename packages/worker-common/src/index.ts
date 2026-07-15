@@ -4,6 +4,7 @@ const PUBLIC_ERROR_MESSAGES: Record<string, string> = {
   BGM_AUTH: 'Authentication failed',
   BGM_UPSTREAM: 'Upstream request failed',
   BGM_TIMEOUT: 'Upstream request timed out',
+  AUTHENTICATION_FAILED: 'Authentication failed',
   INVALID_REQUEST: 'Invalid request',
   REQUEST_FAILED: 'Request failed',
 }

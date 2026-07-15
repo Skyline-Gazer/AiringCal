@@ -113,6 +113,121 @@ test('sync-worker does not expose public cron HTTP route', async () => {
   assert.equal(response?.status, 404)
 })
 
+test('internal compare maps either account authentication failure without exposing tokens or fetching collections', async () => {
+  for (const scenario of [
+    { rejectedToken: 'source-secret', status: 401 },
+    { rejectedToken: 'target-secret', status: 403 },
+  ]) {
+    const originalFetch = globalThis.fetch
+    const calls: string[] = []
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      calls.push(url)
+      assert.equal(url.endsWith('/v0/me'), true)
+      const authorization = new Headers(init?.headers).get('authorization')
+      if (authorization === `Bearer ${scenario.rejectedToken}`) {
+        return new Response('invalid token', { status: scenario.status })
+      }
+      return Response.json({ username: 'valid-user', id: 1 })
+    }) as typeof globalThis.fetch
+
+    try {
+      const response = await worker.fetch?.(new Request('https://sync.local/internal/sync/compare', {
+        method: 'POST',
+        body: JSON.stringify({
+          platformA: 'bgm',
+          platformB: 'bgm',
+          tokenA: 'source-secret',
+          tokenB: 'target-secret',
+        }),
+      }), {} as any)
+      const body = await response?.json() as any
+
+      assert.equal(response?.status, scenario.status)
+      assert.equal(body.ok, false)
+      assert.equal(body.error.code, 'AUTHENTICATION_FAILED')
+      assert.doesNotMatch(JSON.stringify(body), /source-secret|target-secret/)
+      assert.equal(calls.some((url) => url.includes('/collections?')), false)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+})
+
+test('internal compare maps dual authentication failure to a stable non-secret error', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response('invalid token', { status: 401 })) as typeof globalThis.fetch
+
+  try {
+    const response = await worker.fetch?.(new Request('https://sync.local/internal/sync/compare', {
+      method: 'POST',
+      body: JSON.stringify({
+        platformA: 'bgm',
+        platformB: 'bgm',
+        tokenA: 'source-secret',
+        tokenB: 'target-secret',
+      }),
+    }), {} as any)
+    const body = await response?.json() as any
+
+    assert.equal(response?.status, 401)
+    assert.equal(body.error.code, 'AUTHENTICATION_FAILED')
+    assert.doesNotMatch(JSON.stringify(body), /source-secret|target-secret/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('internal compare keeps network failures on the generic request failure path', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => { throw new Error('network unavailable') }) as typeof globalThis.fetch
+
+  try {
+    const response = await worker.fetch?.(new Request('https://sync.local/internal/sync/compare', {
+      method: 'POST',
+      body: JSON.stringify({
+        platformA: 'bgm',
+        platformB: 'bgm',
+        tokenA: 'source-secret',
+        tokenB: 'target-secret',
+      }),
+    }), {} as any)
+    const body = await response?.json() as any
+
+    assert.equal(response?.status, 500)
+    assert.equal(body.error.code, 'REQUEST_FAILED')
+    assert.doesNotMatch(JSON.stringify(body), /source-secret|target-secret/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('internal compare does not misclassify rate limits or upstream failures as authentication', async () => {
+  for (const upstreamStatus of [429, 503]) {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response('temporary upstream failure', { status: upstreamStatus })) as typeof globalThis.fetch
+
+    try {
+      const response = await worker.fetch?.(new Request('https://sync.local/internal/sync/compare', {
+        method: 'POST',
+        body: JSON.stringify({
+          platformA: 'bgm',
+          platformB: 'bgm',
+          tokenA: 'source-secret',
+          tokenB: 'target-secret',
+        }),
+      }), {} as any)
+      const body = await response?.json() as any
+
+      assert.equal(response?.status, 500)
+      assert.equal(body.error.code, 'REQUEST_FAILED')
+      assert.doesNotMatch(JSON.stringify(body), /source-secret|target-secret/)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+})
+
 test('scheduled sync writes new snapshot keys and enqueues media work without image downloads', async () => {
   const kv = new MockKV()
   const queueMessages: unknown[] = []
