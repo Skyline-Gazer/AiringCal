@@ -177,6 +177,51 @@ test('fetchJson classifies non-404 upstream errors as BgmHttpError', async () =>
   }
 })
 
+test('getSubjectEpisodeCollections fetches all 1001 episode collections', async () => {
+  const originalFetch = globalThis.fetch
+  const offsets: number[] = []
+  globalThis.fetch = async (url) => {
+    const offset = Number(new URL(String(url)).searchParams.get('offset'))
+    offsets.push(offset)
+    const count = offset === 0 ? 1000 : 1
+    return Response.json({
+      total: 1001,
+      data: Array.from({ length: count }, (_, index) => ({ episode: { id: offset + index + 1 }, type: 2 })),
+    })
+  }
+  try {
+    const result = await new BgmClient().getSubjectEpisodeCollections('secret-token', 23080)
+
+    assert.deepEqual(offsets, [0, 1000])
+    assert.equal(result.data.length, 1001)
+    assert.equal(result.total, 1001)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('getSubjectEpisodeCollections rejects an empty page before total with a stable code and no token', async () => {
+  const originalFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async () => Response.json(calls++ === 0
+    ? { total: 1001, data: Array.from({ length: 1000 }, (_, index) => ({ episode: { id: index + 1 }, type: 2 })) }
+    : { total: 1001, data: [] })
+  try {
+    await assert.rejects(
+      () => new BgmClient().getSubjectEpisodeCollections('secret-token', 23080),
+      (error: unknown) => {
+        assert.ok(error instanceof Error)
+        assert.equal((error as Error & { code?: string }).code, 'EPISODE_PAGINATION_EMPTY_PAGE')
+        assert.match(error.message, /subject 23080.*offset 1000.*total 1001/)
+        assert.doesNotMatch(error.message, /secret-token/)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('downloadImage normalizes protocol-relative bgm image urls before fetching', async () => {
   const client = new BgmClient()
   const originalFetch = globalThis.fetch

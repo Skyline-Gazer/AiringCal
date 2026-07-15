@@ -117,6 +117,31 @@ test('executeSync applies validated items without refetching source collections'
   assert.equal(results[0]?.status, 'ok')
 })
 
+test('executeSync preserves structured partial episode patch evidence', async () => {
+  const source = new FakeClient('source-user', [])
+  const partialError = Object.assign(new Error('episode patch partially failed'), {
+    code: 'EPISODE_PATCH_PARTIAL' as const,
+    succeeded: 100,
+    failedBatch: { index: 1, episodeIds: [101, 102] },
+  })
+  const target = new FakeClient('target-user', [])
+  target.patchEntry = async () => { throw partialError }
+
+  const results = await executeSync(source, 'source-token', target, 'target-token', {
+    mode: 'partial', from: 'source', to: 'target', items: [item('8')],
+  })
+
+  assert.deepEqual(results[0], {
+    externalId: '8',
+    title: 'Anime 8',
+    status: 'error',
+    error: 'episode patch partially failed',
+    code: 'EPISODE_PATCH_PARTIAL',
+    succeeded: 100,
+    failedBatch: { index: 1, episodeIds: [101, 102] },
+  })
+})
+
 test('executeSync rejects more than five items before any platform call', async () => {
   const source = new FakeClient('source-user', [])
   const target = new FakeClient('target-user', [])

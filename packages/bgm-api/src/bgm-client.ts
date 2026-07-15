@@ -27,6 +27,15 @@ export class BgmNetworkError extends Error {
   }
 }
 
+export class BgmPaginationError extends Error {
+  readonly code = 'EPISODE_PAGINATION_EMPTY_PAGE' as const
+
+  constructor(subjectId: number, offset: number, total: number) {
+    super(`bgm.tv episode pagination returned an empty page for subject ${subjectId} at offset ${offset} before total ${total}`)
+    this.name = 'BgmPaginationError'
+  }
+}
+
 export interface BgmCollection {
   subject_id: number
   subject_type: number
@@ -287,10 +296,22 @@ export class BgmClient {
   }
 
   async getSubjectEpisodeCollections(token: string, subjectId: number): Promise<{ data: BgmEpisodeCollection[]; total: number }> {
-    const url = `${BGM_BASE}/v0/users/-/collections/${subjectId}/episodes?limit=1000&offset=0`
-    return this.fetchJson(url, {
-      headers: { Authorization: `Bearer ${token}`, 'User-Agent': UA },
-    })
+    const data: BgmEpisodeCollection[] = []
+    let total = 0
+    let offset = 0
+    do {
+      const url = `${BGM_BASE}/v0/users/-/collections/${subjectId}/episodes?limit=1000&offset=${offset}`
+      const page = await this.fetchJson(url, {
+        headers: { Authorization: `Bearer ${token}`, 'User-Agent': UA },
+      }) as { data: BgmEpisodeCollection[]; total: number }
+      total = page.total
+      if (data.length < total && page.data.length === 0) {
+        throw new BgmPaginationError(subjectId, offset, total)
+      }
+      data.push(...page.data)
+      offset += page.data.length
+    } while (data.length < total)
+    return { data, total }
   }
 
   async patchSubjectEpisodeCollections(token: string, subjectId: number, episodeIds: number[], type: 0 | 1 | 2 | 3) {

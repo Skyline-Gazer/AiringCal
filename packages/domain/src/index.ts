@@ -190,6 +190,12 @@ export interface SyncResult {
     total: number
   }
   error?: string
+  code?: 'EPISODE_PATCH_PARTIAL'
+  succeeded?: number
+  failedBatch?: {
+    index: number
+    episodeIds: number[]
+  }
 }
 
 export class SyncValidationError extends Error {
@@ -578,16 +584,39 @@ export async function executeSync(
         episodeProgress: patchResult.episodeProgress,
       })
     } catch (error) {
-      results.push({
+      const result: SyncResult = {
         externalId: entry.externalId,
         title: entry.title,
         status: 'error',
         error: error instanceof Error ? error.message : String(error),
-      })
+      }
+      if (isEpisodePatchPartialError(error)) {
+        result.code = error.code
+        result.succeeded = error.succeeded
+        result.failedBatch = error.failedBatch
+      }
+      results.push(result)
     }
   }
 
   return results
+}
+
+function isEpisodePatchPartialError(error: unknown): error is {
+  code: 'EPISODE_PATCH_PARTIAL'
+  succeeded: number
+  failedBatch: { index: number; episodeIds: number[] }
+} {
+  if (!error || typeof error !== 'object') return false
+  const candidate = error as Record<string, unknown>
+  const failedBatch = candidate.failedBatch
+  return candidate.code === 'EPISODE_PATCH_PARTIAL'
+    && typeof candidate.succeeded === 'number'
+    && !!failedBatch
+    && typeof failedBatch === 'object'
+    && typeof (failedBatch as Record<string, unknown>).index === 'number'
+    && Array.isArray((failedBatch as Record<string, unknown>).episodeIds)
+    && ((failedBatch as Record<string, unknown>).episodeIds as unknown[]).every((id) => typeof id === 'number')
 }
 
 function validateSyncRequest(request: SyncRequest): void {
