@@ -113,6 +113,18 @@ test('read-worker paginates collection snapshots by page and limit', async () =>
   assert.deepEqual(body.data.map((entry: any) => entry.subject_id), [3, 4])
 })
 
+test('read-worker rejects invalid collection type, page, and limit query parameters', async () => {
+  for (const query of ['type=unknown', 'page=2junk', 'page=0', 'limit=101']) {
+    const response = await worker.fetch(new Request(`https://read.local/collections?${query}`), env() as any)
+
+    assert.equal(response.status, 400, query)
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      error: { code: 'INVALID_QUERY', message: 'Invalid query parameter' },
+    }, query)
+  }
+})
+
 test('read-worker serves the active versioned snapshot after a live Workflow commit', async () => {
   const kv = new MockKV()
   kv.values.set('snapshot:collections:watching', [{ subject_id: 515856, collection_type: 3 }])
@@ -209,11 +221,41 @@ test('read-worker cache stats expose sanitized image cache data only', async () 
   const response = await worker.fetch(new Request('https://read.local/cache'), env(kv) as any)
   const body = await response.json() as any
 
-  assert.equal(body.total_subjects, 1)
+  assert.equal(body.page_subjects, 1)
+  assert.equal('total_subjects' in body, false)
   assert.equal(body.common.failed, 1)
   assert.equal(body.large.cached, 1)
   assert.equal(JSON.stringify(body).includes('secret-token'), false)
   assert.equal(JSON.stringify(body).includes('source_url'), false)
+})
+
+test('read-worker rejects invalid cache limit and cursor query parameters', async () => {
+  const queries = [
+    'limit=2junk',
+    'limit=0',
+    'limit=101',
+    'cursor=',
+    'cursor=%00bad',
+    `cursor=${'a'.repeat(1025)}`,
+  ]
+  for (const query of queries) {
+    const response = await worker.fetch(new Request(`https://read.local/cache?${query}`), env() as any)
+
+    assert.equal(response.status, 400, query)
+    assert.deepEqual(await response.json(), {
+      ok: false,
+      error: { code: 'INVALID_QUERY', message: 'Invalid query parameter' },
+    }, query)
+  }
+})
+
+test('read-worker passes a valid opaque cache cursor through unchanged', async () => {
+  const kv = new MockKV()
+  const cursor = 'opaque:cursor_1-2.3~value'
+
+  await worker.fetch(new Request(`https://read.local/cache?cursor=${encodeURIComponent(cursor)}`), env(kv) as any)
+
+  assert.equal(kv.listCalls[0]?.cursor, cursor)
 })
 
 test('read-worker cache stats use bounded cursor pagination', async () => {
@@ -305,6 +347,20 @@ test('read-worker health reports collection snapshot status when KV has data', a
   assert.equal(body.data.cache.total_subjects, 42)
   assert.match(body.data.cron.next_at, /^\d{4}-\d{2}-\d{2}T/)
   assert.equal(body.data.cron.last.status, 'ok')
+})
+
+test('read-worker health returns complete data when collection count is zero', async () => {
+  const kv = new MockKV()
+  kv.values.set('snapshot:summary', { _total: 0 })
+
+  const response = await worker.fetch(new Request('https://read.local/health'), env(kv) as any)
+  const body = await response.json() as any
+
+  assert.equal(response.status, 200)
+  assert.equal(body.data.collections.types._total, 0)
+  assert.equal(body.data.cache.total_subjects, 0)
+  assert.equal(typeof body.data.cron, 'object')
+  assert.equal('workflow' in body.data, true)
 })
 
 test('read-worker health falls back to snapshot sync time when cron status is missing', async () => {

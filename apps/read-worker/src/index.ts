@@ -24,6 +24,7 @@ const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] a
 const CRON_INTERVAL_HOURS = 4
 const HYDRATION_CONCURRENCY = 8
 const WORKFLOW_STALE_SECONDS = 20 * 60
+const MAX_CURSOR_LENGTH = 1024
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000)
@@ -39,17 +40,26 @@ function json(data: unknown, init?: ResponseInit): Response {
   })
 }
 
-function validCollectionType(value: string | null): (typeof COLLECTION_TYPES)[number] {
-  return COLLECTION_TYPES.includes(value as any) ? value as (typeof COLLECTION_TYPES)[number] : 'watching'
+class InvalidQueryError extends Error {}
+
+function parseCollectionType(value: string | null): (typeof COLLECTION_TYPES)[number] {
+  if (value === null) return 'watching'
+  if (!COLLECTION_TYPES.includes(value as (typeof COLLECTION_TYPES)[number])) throw new InvalidQueryError()
+  return value as (typeof COLLECTION_TYPES)[number]
 }
 
-function positiveInteger(value: string | null, fallback: number): number {
-  const parsed = Number.parseInt(value ?? '', 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+function parsePositiveInteger(name: string, value: string | null, fallback: number, max?: number): number {
+  if (value === null) return fallback
+  if (!/^[1-9]\d*$/.test(value)) throw new InvalidQueryError(`Invalid ${name}`)
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || (max !== undefined && parsed > max)) throw new InvalidQueryError(`Invalid ${name}`)
+  return parsed
 }
 
-function collectionLimit(value: string | null): number {
-  return Math.min(100, positiveInteger(value, 24))
+function parseCursor(value: string | null): string | undefined {
+  if (value === null) return undefined
+  if (!value || value.length > MAX_CURSOR_LENGTH || /[\x00-\x1f\x7f]/.test(value)) throw new InvalidQueryError()
+  return value
 }
 
 function sanitizeStatus(value: any): any {
@@ -256,11 +266,11 @@ async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unk
 
 async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
-  const type = validCollectionType(url.searchParams.get('type'))
+  const type = parseCollectionType(url.searchParams.get('type'))
+  const page = parsePositiveInteger('page', url.searchParams.get('page'), 1)
+  const limit = parsePositiveInteger('limit', url.searchParams.get('limit'), 24, 100)
   const activeInstance = await activeSnapshotInstance(storage)
   const data = await readSnapshot<unknown[]>(storage, activeInstance, `collections:${type}`, snapshotCollectionsKey(type)) ?? []
-  const page = positiveInteger(url.searchParams.get('page'), 1)
-  const limit = collectionLimit(url.searchParams.get('limit'))
   const start = (page - 1) * limit
   const pageData = data.slice(start, start + limit)
   const types = await readSnapshot<Record<string, number>>(storage, activeInstance, 'summary', snapshotSummaryKey()) ?? {}
@@ -276,8 +286,8 @@ async function handleCalendar(env: ReadEnv): Promise<Response> {
 }
 
 async function handleCache(url: URL, env: ReadEnv): Promise<Response> {
-  const limit = collectionLimit(url.searchParams.get('limit'))
-  const cursor = url.searchParams.get('cursor') ?? undefined
+  const limit = parsePositiveInteger('limit', url.searchParams.get('limit'), 24, 100)
+  const cursor = parseCursor(url.searchParams.get('cursor'))
   const list = await env.AIRING_CAL_KV.list?.({ prefix: 'image:status:', limit, cursor })
   const entries = (await mapConcurrent(list?.keys ?? [], HYDRATION_CONCURRENCY, async (key) => {
     const status = await env.AIRING_CAL_KV.get(key.name, 'json')
@@ -297,7 +307,7 @@ async function handleCache(url: URL, env: ReadEnv): Promise<Response> {
     if (entry.large?.status && entry.large.status in large) large[entry.large.status as keyof typeof large]++
   }
   return json({
-    total_subjects: entries.length,
+    page_subjects: entries.length,
     common,
     large,
     items: entries,
@@ -328,17 +338,16 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
   return json({
     ok: true,
     worker: 'read-worker',
-    data: types && typeof types._total === 'number' && types._total > 0
-      ? {
+    data: {
           collections: {
-            types,
+            types: { ...types, _total: types?._total ?? 0 },
             updated_at: typeof active?.published_at === 'number'
               ? new Date(active.published_at * 1000).toISOString()
               : meta?.synced_at ? new Date(meta.synced_at * 1000).toISOString() : null,
             users: meta?.users ?? [],
           },
           cache: {
-            total_subjects: types._total,
+            total_subjects: types?._total ?? 0,
             source: 'snapshot_summary',
           },
           cron: {
@@ -346,8 +355,7 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
             last: scheduledWorkflowCronStatus(workflowRun, cronLastStatus(meta), effectiveWorkflowStatus),
           },
           workflow,
-        }
-      : null,
+        },
   })
 }
 
@@ -376,6 +384,9 @@ async function fetch(request: Request, env: ReadEnv): Promise<Response> {
     if (url.pathname.startsWith('/image/')) return await handleImage(url.pathname, env)
     return new Response('Not found', { status: 404 })
   } catch (error) {
+    if (error instanceof InvalidQueryError) {
+      return json({ ok: false, error: { code: 'INVALID_QUERY', message: 'Invalid query parameter' } }, { status: 400 })
+    }
     if (error instanceof SnapshotIncompleteError) {
       return json({ ok: false, error: { code: 'SNAPSHOT_INCOMPLETE', message: 'Active snapshot is incomplete' } }, { status: 503 })
     }

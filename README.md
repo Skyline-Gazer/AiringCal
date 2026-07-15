@@ -43,11 +43,11 @@ https://airing-cal-frontend.<你的 workers.dev 子域>.workers.dev
 | `/src/bangumi.js` | Widget script |
 | `/src/bangumi.css` | Widget styles |
 | `/src/cache.js` | Footer runtime status script |
-| `/api/collections?type=watching` | 通过 `READ_WORKER` 读取 collection snapshot |
+| `/api/collections?type=watching&page=1&limit=24` | 通过 `READ_WORKER` 分页读取 collection snapshot；`type` 必须是五种已发布类型之一，`limit` 最大 100 |
 | `/api/calendar` | 通过 `READ_WORKER` 读取 calendar snapshot |
 | `/api/config?key=nsfw` | 通过 `READ_WORKER` 读取公开配置 |
 | `/api/health` | 通过 `READ_WORKER` 读取健康状态、轻量 cache 摘要、cron 兼容状态和最近 Workflow run |
-| `/api/cache?limit=100&cursor=<opaque>` | 通过 `READ_WORKER` 分页读取脱敏缓存 JSON；`limit` 最大 100 |
+| `/api/cache?limit=100&cursor=<opaque>` | 通过 `READ_WORKER` 分页读取脱敏缓存 JSON；`limit` 最大 100，当前页数量字段为 `page_subjects` |
 | `/api/sync/compare` | 通过 `SYNC_WORKER` 执行动画收藏对比 |
 | `/api/sync/apply` | 通过 `SYNC_WORKER` 执行动画收藏同步并写操作日志 |
 | `/api/check/:id` | 通过 `SYNC_WORKER` 查询 24 小时内的同步操作日志 |
@@ -373,7 +373,9 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 
 ## Cache 与 NSFW
 
-`/api/cache` 是公开且脱敏的缓存状态 JSON。它使用 KV cursor 分页，`limit` 最大 100，并以固定并发读取当前页 image status；响应中的 `cursor` 为 `null` 表示已到最后一页。它不暴露 access token、上游认证响应体或未清理的错误信息。
+`/api/cache` 是公开且脱敏的缓存状态 JSON。它使用 opaque KV cursor 分页，合法 cursor 会原样传给 KV；`limit` 最大 100，并以固定并发读取当前页 image status。响应中的 `page_subjects` 是当前页条目数，`cursor` 为 `null` 表示已到最后一页。它不暴露 access token、上游认证响应体或未清理的错误信息。
+
+`/api/collections` 的 `type`、`page`、`limit` 与 `/api/cache` 的 `limit`、`cursor` 都执行完整格式验证。未知 collection type、非正整数、超出上限、空或含控制字符的 cursor 等非法 query 返回 HTTP 400 和稳定的 `INVALID_QUERY` JSON 错误，不会静默采用默认值。
 
 页面 footer 不读取完整 `/api/cache` 明细；`/src/cache.js` 只读取 `/api/health` 中的轻量 cache 摘要与同步状态，避免为了展示 footer 触发大量 KV image status 读取。
 
