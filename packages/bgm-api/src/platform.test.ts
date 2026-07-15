@@ -150,3 +150,45 @@ test('BgmPlatformClient exposes structured partial evidence when the second epis
     globalThis.fetch = originalFetch
   }
 })
+
+test('BgmPlatformClient keeps succeeded count and batch index global across type buckets', async () => {
+  const originalFetch = globalThis.fetch
+  const patches: Array<{ type: number; episodeIds: number[] }> = []
+  globalThis.fetch = async (url, init) => {
+    const text = String(url)
+    if (text.endsWith('/collections/23080')) return Response.json({})
+    if (text.includes('/episodes?')) {
+      const source = (init?.headers as Record<string, string>).Authorization === 'Bearer source-token'
+      const data = source
+        ? [
+            ...Array.from({ length: 101 }, (_, index) => ({ episode: { id: index + 1 }, type: 2 })),
+            ...Array.from({ length: 2 }, (_, index) => ({ episode: { id: index + 102 }, type: 3 })),
+          ]
+        : Array.from({ length: 103 }, (_, index) => ({ episode: { id: index + 1 }, type: 1 }))
+      return Response.json({ total: 103, data })
+    }
+    const body = JSON.parse(String(init?.body)) as { type: number; episode_id: number[] }
+    patches.push({ type: body.type, episodeIds: body.episode_id })
+    return patches.length === 3
+      ? Response.json({ title: 'failed' }, { status: 500 })
+      : Response.json({})
+  }
+  try {
+    await assert.rejects(
+      () => new BgmPlatformClient().patchEntry('target-token', '23080', {
+        externalId: '23080', title: 'A', status: WatchStatus.COMPLETED, progress: 103,
+        totalEpisodes: 103, score: 9, platform: 'bgm',
+      }, { sourceToken: 'source-token' }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error)
+        const partial = error as Error & { succeeded?: number; failedBatch?: { index: number; episodeIds: number[] } }
+        assert.equal(partial.succeeded, 101)
+        assert.deepEqual(partial.failedBatch, { index: 2, episodeIds: [102, 103] })
+        assert.deepEqual(patches.map(({ type, episodeIds }) => [type, episodeIds.length]), [[2, 100], [2, 1], [3, 2]])
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

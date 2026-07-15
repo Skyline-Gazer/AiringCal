@@ -222,6 +222,89 @@ test('getSubjectEpisodeCollections rejects an empty page before total with a sta
   }
 })
 
+for (const scenario of [
+  {
+    name: 'a changed total after the first page',
+    pages: [
+      { total: 1001, data: Array.from({ length: 1000 }, (_, index) => ({ episode: { id: index + 1 }, type: 2 })) },
+      { total: 1002, data: [{ episode: { id: 1001 }, type: 2 }] },
+    ],
+  },
+  {
+    name: 'accumulated rows exceeding the first total',
+    pages: [
+      { total: 1001, data: Array.from({ length: 1000 }, (_, index) => ({ episode: { id: index + 1 }, type: 2 })) },
+      { total: 1001, data: [{ episode: { id: 1001 }, type: 2 }, { episode: { id: 1002 }, type: 2 }] },
+    ],
+  },
+  {
+    name: 'a duplicate episode ID across pages',
+    pages: [
+      { total: 1001, data: Array.from({ length: 1000 }, (_, index) => ({ episode: { id: index + 1 }, type: 2 })) },
+      { total: 1001, data: [{ episode: { id: 1000 }, type: 2 }] },
+    ],
+  },
+] as const) {
+  test(`getSubjectEpisodeCollections rejects ${scenario.name} with a stable pagination error`, async () => {
+    const originalFetch = globalThis.fetch
+    let page = 0
+    globalThis.fetch = async () => Response.json(scenario.pages[page++])
+    try {
+      await assert.rejects(
+        () => new BgmClient().getSubjectEpisodeCollections('secret-token', 23080),
+        (error: unknown) => {
+          assert.ok(error instanceof Error)
+          assert.equal((error as Error & { code?: string }).code, 'EPISODE_PAGINATION_INCONSISTENT')
+          assert.doesNotMatch(error.message, /secret-token/)
+          return true
+        },
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+}
+
+test('getSubjectEpisodeCollections rejects a non-empty page with no unique progress', async () => {
+  const originalFetch = globalThis.fetch
+  let page = 0
+  const firstPage = Array.from({ length: 1000 }, (_, index) => ({ episode: { id: index + 1 }, type: 2 }))
+  globalThis.fetch = async () => Response.json(page++ === 0
+    ? { total: 1002, data: firstPage }
+    : { total: 1002, data: [{ episode: { id: 999 }, type: 2 }, { episode: { id: 1000 }, type: 2 }] })
+  try {
+    await assert.rejects(
+      () => new BgmClient().getSubjectEpisodeCollections('secret-token', 23080),
+      (error: unknown) => {
+        assert.ok(error instanceof Error)
+        assert.equal((error as Error & { code?: string }).code, 'EPISODE_PAGINATION_INCONSISTENT')
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+for (const total of [Number.NaN, -1, Number.MAX_SAFE_INTEGER + 1]) {
+  test(`getSubjectEpisodeCollections rejects invalid first-page total ${String(total)}`, async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async () => Response.json({ total, data: [] })
+    try {
+      await assert.rejects(
+        () => new BgmClient().getSubjectEpisodeCollections('secret-token', 23080),
+        (error: unknown) => {
+          assert.ok(error instanceof Error)
+          assert.equal((error as Error & { code?: string }).code, 'EPISODE_PAGINATION_INCONSISTENT')
+          return true
+        },
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+}
+
 test('downloadImage normalizes protocol-relative bgm image urls before fetching', async () => {
   const client = new BgmClient()
   const originalFetch = globalThis.fetch

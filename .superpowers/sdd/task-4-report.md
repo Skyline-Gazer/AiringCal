@@ -31,3 +31,19 @@ Implemented bgm.tv episode collection pagination and conservative PATCH batching
 - `git diff --check`: passed.
 
 Node 26 retained timeout handles when running the package's bare `tsx --test`; complete suites were therefore run with the locally verified Node test option `--test-force-exit` and explicit test files where needed.
+
+## Review remediation
+
+- RED: total drift, accumulated rows beyond the first total, duplicate episode IDs, and non-empty pages without unique progress were accepted or failed without the stable pagination code.
+- RED: malformed partial evidence was accepted for non-`Error` objects, `NaN`/negative/unsafe counters, and zero/unsafe episode IDs.
+- RED: invalid first-page totals (`NaN` and values beyond the safe integer range) were not rejected with the consistency code.
+- GREEN: the first total is fixed and validated as a non-negative safe integer; later drift, overfill, duplicate IDs, and stalled unique progress reject with `EPISODE_PAGINATION_INCONSISTENT`, while the existing empty-page code and normal 1001-item behavior remain intact.
+- GREEN: partial evidence now requires a real `Error`, exact code, non-negative safe `succeeded`/batch index, and positive safe episode IDs.
+- Coverage: a multi-type scenario proves `succeeded` and failed batch `index` remain global across type buckets (`101` successes, failed batch index `2`).
+
+## Review verification
+
+- `CI=true pnpm -F @airing-cal/bgm-api test`: 27 passed.
+- `CI=true pnpm -F @airing-cal/domain test`: 23 passed.
+- Both package typechecks passed.
+- `git diff --check` passed.

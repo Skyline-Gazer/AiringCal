@@ -607,16 +607,19 @@ function isEpisodePatchPartialError(error: unknown): error is {
   succeeded: number
   failedBatch: { index: number; episodeIds: number[] }
 } {
-  if (!error || typeof error !== 'object') return false
-  const candidate = error as Record<string, unknown>
+  if (!(error instanceof Error)) return false
+  const candidate = error as unknown as Record<string, unknown>
   const failedBatch = candidate.failedBatch
   return candidate.code === 'EPISODE_PATCH_PARTIAL'
-    && typeof candidate.succeeded === 'number'
+    && Number.isSafeInteger(candidate.succeeded)
+    && (candidate.succeeded as number) >= 0
     && !!failedBatch
     && typeof failedBatch === 'object'
-    && typeof (failedBatch as Record<string, unknown>).index === 'number'
+    && Number.isSafeInteger((failedBatch as Record<string, unknown>).index)
+    && ((failedBatch as Record<string, unknown>).index as number) >= 0
     && Array.isArray((failedBatch as Record<string, unknown>).episodeIds)
-    && ((failedBatch as Record<string, unknown>).episodeIds as unknown[]).every((id) => typeof id === 'number')
+    && ((failedBatch as Record<string, unknown>).episodeIds as unknown[])
+      .every((id) => Number.isSafeInteger(id) && (id as number) > 0)
 }
 
 function validateSyncRequest(request: SyncRequest): void {

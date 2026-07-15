@@ -28,11 +28,19 @@ export class BgmNetworkError extends Error {
 }
 
 export class BgmPaginationError extends Error {
-  readonly code = 'EPISODE_PAGINATION_EMPTY_PAGE' as const
+  readonly code: 'EPISODE_PAGINATION_EMPTY_PAGE' | 'EPISODE_PAGINATION_INCONSISTENT'
 
-  constructor(subjectId: number, offset: number, total: number) {
-    super(`bgm.tv episode pagination returned an empty page for subject ${subjectId} at offset ${offset} before total ${total}`)
+  constructor(
+    subjectId: number,
+    offset: number,
+    total: number,
+    reason = `returned an empty page at offset ${offset} before total ${total}`,
+  ) {
+    super(`bgm.tv episode pagination for subject ${subjectId} ${reason}`)
     this.name = 'BgmPaginationError'
+    this.code = reason.startsWith('returned an empty page')
+      ? 'EPISODE_PAGINATION_EMPTY_PAGE'
+      : 'EPISODE_PAGINATION_INCONSISTENT'
   }
 }
 
@@ -297,16 +305,39 @@ export class BgmClient {
 
   async getSubjectEpisodeCollections(token: string, subjectId: number): Promise<{ data: BgmEpisodeCollection[]; total: number }> {
     const data: BgmEpisodeCollection[] = []
-    let total = 0
+    const episodeIds = new Set<number>()
+    let total: number | undefined
     let offset = 0
     do {
       const url = `${BGM_BASE}/v0/users/-/collections/${subjectId}/episodes?limit=1000&offset=${offset}`
       const page = await this.fetchJson(url, {
         headers: { Authorization: `Bearer ${token}`, 'User-Agent': UA },
       }) as { data: BgmEpisodeCollection[]; total: number }
-      total = page.total
+      if (total === undefined) {
+        if (!Number.isSafeInteger(page.total) || page.total < 0) {
+          throw new BgmPaginationError(subjectId, offset, page.total, `returned invalid total ${page.total}`)
+        }
+        total = page.total
+      } else if (page.total !== total) {
+        throw new BgmPaginationError(subjectId, offset, total, `changed total from ${total} to ${page.total} at offset ${offset}`)
+      }
       if (data.length < total && page.data.length === 0) {
         throw new BgmPaginationError(subjectId, offset, total)
+      }
+      if (data.length + page.data.length > total) {
+        throw new BgmPaginationError(subjectId, offset, total, `exceeded total ${total} at offset ${offset}`)
+      }
+      let unique = 0
+      for (const entry of page.data) {
+        const episodeId = entry.episode.id
+        if (episodeIds.has(episodeId)) {
+          throw new BgmPaginationError(subjectId, offset, total, `returned duplicate episode ID ${episodeId} at offset ${offset}`)
+        }
+        episodeIds.add(episodeId)
+        unique++
+      }
+      if (page.data.length > 0 && unique === 0) {
+        throw new BgmPaginationError(subjectId, offset, total, `made no unique progress at offset ${offset}`)
       }
       data.push(...page.data)
       offset += page.data.length

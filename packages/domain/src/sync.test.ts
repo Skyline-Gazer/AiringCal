@@ -142,6 +142,31 @@ test('executeSync preserves structured partial episode patch evidence', async ()
   })
 })
 
+for (const [name, partialError] of [
+  ['a non-Error object', { code: 'EPISODE_PATCH_PARTIAL', succeeded: 1, failedBatch: { index: 0, episodeIds: [1] } }],
+  ['the wrong code', Object.assign(new Error('bad code'), { code: 'OTHER', succeeded: 1, failedBatch: { index: 0, episodeIds: [1] } })],
+  ['NaN succeeded', Object.assign(new Error('bad succeeded'), { code: 'EPISODE_PATCH_PARTIAL', succeeded: Number.NaN, failedBatch: { index: 0, episodeIds: [1] } })],
+  ['negative succeeded', Object.assign(new Error('bad succeeded'), { code: 'EPISODE_PATCH_PARTIAL', succeeded: -1, failedBatch: { index: 0, episodeIds: [1] } })],
+  ['an unsafe batch index', Object.assign(new Error('bad index'), { code: 'EPISODE_PATCH_PARTIAL', succeeded: 1, failedBatch: { index: Number.MAX_SAFE_INTEGER + 1, episodeIds: [1] } })],
+  ['a negative batch index', Object.assign(new Error('bad index'), { code: 'EPISODE_PATCH_PARTIAL', succeeded: 1, failedBatch: { index: -1, episodeIds: [1] } })],
+  ['a zero episode ID', Object.assign(new Error('bad episode id'), { code: 'EPISODE_PATCH_PARTIAL', succeeded: 1, failedBatch: { index: 0, episodeIds: [0] } })],
+  ['an unsafe episode ID', Object.assign(new Error('bad episode id'), { code: 'EPISODE_PATCH_PARTIAL', succeeded: 1, failedBatch: { index: 0, episodeIds: [Number.MAX_SAFE_INTEGER + 1] } })],
+] as const) {
+  test(`executeSync rejects partial evidence with ${name}`, async () => {
+    const source = new FakeClient('source-user', [])
+    const target = new FakeClient('target-user', [])
+    target.patchEntry = async () => { throw partialError }
+
+    const [result] = await executeSync(source, 'source-token', target, 'target-token', {
+      mode: 'partial', from: 'source', to: 'target', items: [item('8')],
+    })
+
+    assert.equal(result?.code, undefined)
+    assert.equal(result?.succeeded, undefined)
+    assert.equal(result?.failedBatch, undefined)
+  })
+}
+
 test('executeSync rejects more than five items before any platform call', async () => {
   const source = new FakeClient('source-user', [])
   const target = new FakeClient('target-user', [])
