@@ -53,7 +53,7 @@ base-ref: 549edf34af2d860ccc995de589631242d4a24e2d
 - Produces: `escapeHtml(value): string`、`escapeAttribute(value): string`、`safeUrl(value, fallback): string`，以及仅通过 `addEventListener` 绑定的交互。
 - Consumes: API 返回的标题、用户名、weekday、错误、图片 URL、operation link 和数值/枚举字段。
 
-- [ ] **Step 1: 写 Widget 恶意输入与 inline handler 的失败测试**
+- [x] **Step 1: 写 Widget 恶意输入与 inline handler 的失败测试**
 
 在 `render.test.ts` 增加表驱动断言，至少覆盖：
 
@@ -69,13 +69,13 @@ assert.doesNotMatch(renderUrlFixture('javascript:alert(1)'), /(?:href|src)=["']j
 
 测试 helper 应执行或抽取真实模板路径，不能只测试一个与生产代码无关的复制函数；危险 URL 用 `javascript:alert(1)` 并断言不会进入 `href`/`src`。
 
-- [ ] **Step 2: 运行测试并确认 RED**
+- [x] **Step 2: 运行测试并确认 RED**
 
 Run: `CI=true pnpm -F @airing-cal/widget test`
 
 Expected: FAIL，至少指出现有 inline `onclick`/`.onclick` 或恶意 payload 未编码。
 
-- [ ] **Step 3: 实现最小安全渲染边界**
+- [x] **Step 3: 实现最小安全渲染边界**
 
 在主题源码集中加入纯 helper，并逐个替换动态插值：
 
@@ -97,7 +97,7 @@ function safeUrl(value, fallback) {
 
 静态按钮使用 `createElement`/`textContent`；批量卡片模板只插入编码文本、验证后的数字/枚举和 `safeUrl` 返回值。用 delegated `addEventListener` 替代 NSFW overlay 与分页的 inline/属性事件。
 
-- [ ] **Step 4: 重新生成资产并验证 GREEN**
+- [x] **Step 4: 重新生成资产并验证 GREEN**
 
 Run: `pnpm -F @airing-cal/widget generate`
 
@@ -105,7 +105,7 @@ Run: `CI=true pnpm -F @airing-cal/widget test && CI=true pnpm -F @airing-cal/wid
 
 Expected: PASS；`generated-assets.ts` 与主题源码同步。
 
-- [ ] **Step 5: 审查、更新任务状态并原子提交推送**
+- [x] **Step 5: 审查、更新任务状态并原子提交推送**
 
 检查所有 `innerHTML` 插值都有上下文处理，勾选 OpenSpec tasks `1.1`、`1.2` 中完成项。
 

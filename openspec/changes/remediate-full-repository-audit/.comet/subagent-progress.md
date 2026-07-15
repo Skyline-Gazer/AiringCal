@@ -12,7 +12,7 @@
   - `1.1 为恶意标题、用户名、weekday、错误、属性值和 operation </pre><script> 增加 RED 回归测试`
   - `1.2 实现统一 HTML/属性编码与数值/枚举验证，移除 inline handler 并保护外链`
 - Brief: `.superpowers/sdd/task-1-brief.md`
-- Stage: `blocked`
+- Stage: `done`
 - Base commit: `442b66d20994aa52ba2d0127fef71434d3956e23`
 - Implementer: `/root/task1_widget_security`
 - Implementation commits: `45cd943071495846d038c89a80b6c237ec7bbf96`, `df7460b76d272ecc071fd4400073f0e6c5dd3797`
@@ -28,5 +28,5 @@
   - Exercise real production renderer sinks for malicious title, username, weekday, error, attribute and operation URL payloads.
   - Validate score range/finite value and status through an explicit allowlist before rendering.
 - Unresolved feedback:
-  - Final spec gate: original output-injection RED proved helper absence rather than observing malicious payload through the production renderer.
-  - Checkoff is intentionally pending because coordinator checkoff occurs only after the review gate approves.
+  - None.
+- Accepted deviation: user accepted the historical RED evidence form on 2026-07-15; current production-renderer regression coverage, GREEN evidence, and code-quality approval remain required and passed.

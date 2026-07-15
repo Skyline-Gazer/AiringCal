@@ -1,7 +1,7 @@
 ## 1. 安全渲染与 Token 生命周期
 
-- [ ] 1.1 为恶意标题、用户名、weekday、错误、属性值和 operation `</pre><script>` 增加 RED 回归测试
-- [ ] 1.2 实现统一 HTML/属性编码与数值/枚举验证，移除 inline handler 并保护外链
+- [x] 1.1 为恶意标题、用户名、weekday、错误、属性值和 operation `</pre><script>` 增加 RED 回归测试
+- [x] 1.2 实现统一 HTML/属性编码与数值/枚举验证，移除 inline handler 并保护外链
 - [ ] 1.3 删除 sessionStorage Token 持久化并在页面初始化清除历史 `sync-tokenA/B`
 - [ ] 1.4 增加 CSP、nosniff、frame/base 限制并验证 JSON operation check 契约不变
 
