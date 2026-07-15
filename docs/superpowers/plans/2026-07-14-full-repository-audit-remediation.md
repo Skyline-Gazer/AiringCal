@@ -130,7 +130,7 @@ git push
 - Produces: 页面闭包内 `syncTokens = { A: '', B: '' }`；HTML header helper；`escapeHtml` 后的 operation `<pre>`。
 - Preserves: operation JSON `{ ok: true, operation }` 契约。
 
-- [ ] **Step 1: 写 Token、operation payload 与 header RED 测试**
+- [x] **Step 1: 写 Token、operation payload 与 header RED 测试**
 
 ```ts
 assert.match(widgetJs, /removeItem\(['"]sync-tokenA['"]\)/)
@@ -143,13 +143,13 @@ assert.doesNotMatch(await html.text(), /<\/pre><script>/)
 assert.deepEqual(await jsonResponse.json(), { ok: true, operation: maliciousOperation })
 ```
 
-- [ ] **Step 2: 运行受影响测试确认 RED**
+- [x] **Step 2: 运行受影响测试确认 RED**
 
 Run: `CI=true pnpm -F @airing-cal/widget test && CI=true pnpm -F @airing-cal/frontend-worker test && CI=true pnpm -F @airing-cal/sync-worker test`
 
 Expected: FAIL 于 sessionStorage 持久化、安全头或 operation HTML 注入断言。
 
-- [ ] **Step 3: 实现内存 Token 与 HTML 安全策略**
+- [x] **Step 3: 实现内存 Token 与 HTML 安全策略**
 
 页面初始化执行两次 `sessionStorage.removeItem`，输入/提交只读写闭包状态。Frontend 的 HTML 响应设置 CSP、nosniff、`X-Frame-Options: DENY`；operation HTML 使用：
 
@@ -167,7 +167,7 @@ return new Response(`<h1>同步操作日志</h1><pre>${escaped}</pre>`, {
 })
 ```
 
-- [ ] **Step 4: 生成资产并验证 GREEN**
+- [x] **Step 4: 生成资产并验证 GREEN**
 
 Run: `pnpm -F @airing-cal/widget generate`
 
@@ -175,7 +175,7 @@ Run: `CI=true pnpm -F @airing-cal/widget test && CI=true pnpm -F @airing-cal/fro
 
 Expected: PASS，JSON operation 测试保持不变。
 
-- [ ] **Step 5: 提交推送**
+- [x] **Step 5: 提交推送**
 
 勾选 tasks `1.3`、`1.4`。
 
