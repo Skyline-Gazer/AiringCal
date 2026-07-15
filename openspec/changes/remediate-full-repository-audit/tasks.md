@@ -7,9 +7,9 @@
 
 ## 2. Read API 严格契约
 
-- [ ] 2.1 增加零收藏 health 仍返回完整 data 的 RED 测试并修复提前返回
-- [ ] 2.2 增加 `page=2junk`、未知 type、非法 limit/cursor 的 RED 测试并实现完整字符串校验与 400
-- [ ] 2.3 将 cache 当前页计数改为 `page_subjects`，保持 cursor 兼容并更新 README
+- [x] 2.1 增加零收藏 health 仍返回完整 data 的 RED 测试并修复提前返回
+- [x] 2.2 增加 `page=2junk`、未知 type、非法 limit/cursor 的 RED 测试并实现完整字符串校验与 400
+- [x] 2.3 将 cache 当前页计数改为 `page_subjects`，保持 cursor 兼容并更新 README
 
 ## 3. bgm.tv 章节同步与认证错误
 

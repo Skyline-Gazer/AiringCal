@@ -7,23 +7,28 @@
 
 ## Current Task
 
-- Unique text: `Task 2: Token 内存生命周期与公开 HTML 安全头`
+- Unique text: `Task 3: Read health/cache 严格契约`
 - OpenSpec mappings:
-  - `1.3 删除 sessionStorage Token 持久化并在页面初始化清除历史 sync-tokenA/B`
-  - `1.4 增加 CSP、nosniff、frame/base 限制并验证 JSON operation check 契约不变`
-- Brief: `.superpowers/sdd/task-2-brief.md`
+  - `2.1 增加零收藏 health 仍返回完整 data 的 RED 测试并修复提前返回`
+  - `2.2 增加 page=2junk、未知 type、非法 limit/cursor 的 RED 测试并实现完整字符串校验与 400`
+  - `2.3 将 cache 当前页计数改为 page_subjects，保持 cursor 兼容并更新 README`
+- Brief: `.superpowers/sdd/task-3-brief.md`
 - Stage: `done`
-- Base commit: `c08b2e368da34edb35701522b09ee925b55e235c`
-- Implementer: `/root/task2_html_security`
-- Implementation commit: `e741e03353cbb2d51a878d74d907da3fbb404e02`
-- Changed files: `apps/frontend-worker/src/index.ts`, `apps/frontend-worker/src/frontend-worker.test.ts`, `apps/sync-worker/src/index.ts`, `apps/sync-worker/src/sync-worker.test.ts`
-- RED evidence: frontend 6/7 failed on missing nosniff; sync 32/33 failed on missing nosniff and raw operation HTML interpolation
-- GREEN evidence: widget 23/23, frontend 7/7, sync 33/33; three package typechecks, generation and diff check passed
-- Report: `.superpowers/sdd/task-2-report.md`
-- Review package: `.superpowers/sdd/review-c08b2e3..e741e03.diff`
-- Batch review round: `1/2`
+- Base commit: `396dacf3db4ce04029637ef4a55c9ae450404437`
+- Implementer: `/root/task3_read_contracts`
+- Implementation commits: `e95a88f`, `c2550ab`
+- Changed files: `apps/read-worker/src/index.ts`, `apps/read-worker/src/read-worker.test.ts`, `README.md`
+- RED evidence: read tests failed 4 cases covering invalid collection/cache queries, cache field, and zero-count health
+- GREEN evidence: read 29/29, typecheck, build:check and diff check passed
+- Report: `.superpowers/sdd/task-3-report.md`
+- Review package: `.superpowers/sdd/review-396dacf..c2550ab.diff`
+- Batch review round: `2/2`
 - Passed review stages: spec compliance, code quality
+- Resolved feedback:
+  - Duplicate query parameters rejected.
+  - Cursor rejects C1 controls while preserving opaque valid values.
+  - INVALID_QUERY uses no-store.
 - Unresolved feedback: none
-- Accepted Minor findings for final review:
-  - Frontend CSP test could explicitly forbid script `'unsafe-inline'`.
-  - Operation test could explicitly assert `default-src 'none'` and encoded `&amp;`, `&lt;`, `&gt;`.
+- Accepted Minor findings carried to final review:
+  - Task 2 Frontend CSP test could explicitly forbid script `'unsafe-inline'`.
+  - Task 2 operation test could explicitly assert `default-src 'none'` and encoded entities.

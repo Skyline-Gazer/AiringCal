@@ -196,7 +196,7 @@ git push
 - Produces: `parseCollectionType(value): type`、`parsePositiveInteger(name, value, fallback, max?): number`、`parseCursor(value): string | undefined`；非法输入抛出 `InvalidQueryError` 并映射 400。
 - Changes: `/cache.total_subjects` → `/cache.page_subjects`；合法 cursor 字符串保持透传。
 
-- [ ] **Step 1: 增加零收藏、严格参数与分页字段 RED 测试**
+- [x] **Step 1: 增加零收藏、严格参数与分页字段 RED 测试**
 
 ```ts
 assert.equal((await health.json()).data.collections.types._total, 0)
@@ -210,13 +210,13 @@ assert.equal('total_subjects' in cacheBody, false)
 
 分别对 `/collections` 的 type/page/limit 与 `/cache` 的 limit/cursor 使用实际路由测试。
 
-- [ ] **Step 2: 运行 Read Worker 测试确认 RED**
+- [x] **Step 2: 运行 Read Worker 测试确认 RED**
 
 Run: `CI=true pnpm -F @airing-cal/read-worker test`
 
 Expected: FAIL，现有 `parseInt` 接受尾随字符、未知 type 默认 watching、零收藏 data 为 null、cache 字段仍为 `total_subjects`。
 
-- [ ] **Step 3: 实现严格 parser 与完整 health**
+- [x] **Step 3: 实现严格 parser 与完整 health**
 
 ```ts
 class InvalidQueryError extends Error {}
@@ -231,7 +231,7 @@ function parsePositiveInteger(name: string, value: string | null, fallback: numb
 
 cursor 允许现有 KV cursor 可表示字符但拒绝空串、控制字符和异常长度；catch `InvalidQueryError` 返回 400 稳定错误对象。health 始终组装 `data`，用 `types?._total ?? 0`。cache 返回 `page_subjects: entries.length`。
 
-- [ ] **Step 4: 同步 README 并验证 GREEN**
+- [x] **Step 4: 同步 README 并验证 GREEN**
 
 README 明确 `page_subjects` breaking 字段与非法 query 的 400 行为。
 
@@ -239,7 +239,7 @@ Run: `CI=true pnpm -F @airing-cal/read-worker test && CI=true pnpm -F @airing-ca
 
 Expected: PASS。
 
-- [ ] **Step 5: 提交推送 Task 3 Read API 修复**
+- [x] **Step 5: 提交推送 Task 3 Read API 修复**
 
 勾选 tasks `2.1`～`2.3`。
 
