@@ -13,7 +13,7 @@
   - `4.2 定义 tombstone 类型、key/TTL 与保守 NSFW 投影，404 时停止返回旧 detail`
   - `4.3 验证 tombstone 到期后允许重新探测且 generation 协调语义不倒退`
 - Brief: `.superpowers/sdd/task-6-brief.md`
-- Stage: `extra-fix-review`
+- Stage: `blocked`
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
@@ -30,7 +30,11 @@
 - Extra-round authorization: user explicitly authorized one additional focused fix round on 2026-07-16.
 - Extra fix commit: `5b5ae5d6a68d51907f002be8b068e5e12dd76cdc` (`fix: remove stale tombstone snapshot fields`).
 - Extra fix RED/GREEN: enriched collection/calendar tests failed at 29/31 on stale `name`; after the minimal projection fix, five Task 6 suites pass 130/130, five typechecks pass, media/read/sync build checks pass, and `git diff --check` passes.
-- Next action: independent final review of the P1 and complete Task 6 boundary.
+- Extra review result: the previously blocking active-tombstone canonical-field P1 is fixed, but the complete Task 6 boundary remains blocked by two newly identified Important findings.
+- New Important findings:
+  - A first confirmed 404 writes the tombstone but the same media job continues into stale image fallback/download/status writes.
+  - At `now >= expires_at`, read suppression ends before a successful reprobe replaces the `not_found` meta, so snapshot or residual cached detail can reappear.
+- Block reason: the user-authorized additional focused fix round has been consumed; another explicit authorization is required before a new RED→GREEN fix and review round.
 - Accepted Minor findings carried to final review:
   - Task 2 Frontend CSP test could explicitly forbid script `'unsafe-inline'`.
   - Task 2 operation test could explicitly assert `default-src 'none'` and encoded entities.
