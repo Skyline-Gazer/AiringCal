@@ -13,7 +13,7 @@
   - `4.2 定义 tombstone 类型、key/TTL 与保守 NSFW 投影，404 时停止返回旧 detail`
   - `4.3 验证 tombstone 到期后允许重新探测且 generation 协调语义不倒退`
 - Brief: `.superpowers/sdd/task-6-brief.md`
-- Stage: `blocked`
+- Stage: `extra-fix-authorized`
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
@@ -27,7 +27,8 @@
 - Resolved feedback: sync residual-detail suppression, numeric snapshot field stripping, shared predicate, exact expiry, image-only suppression
 - Unresolved feedback:
   - P1: Read active-tombstone projection must also remove snapshot-carried canonical detail fields `name`, `name_cn`, `summary`, and `date`, with collection/calendar regressions.
-- Block reason: Thorough batch exhausted 2/2 review-fix rounds; user authorization is required for an additional focused fix round.
+- Extra-round authorization: user explicitly authorized one additional focused fix round on 2026-07-16.
+- Next action: add collection/calendar RED regressions for snapshot-carried canonical detail fields, apply the minimal projection fix, and obtain an independent final review.
 - Accepted Minor findings carried to final review:
   - Task 2 Frontend CSP test could explicitly forbid script `'unsafe-inline'`.
   - Task 2 operation test could explicitly assert `default-src 'none'` and encoded entities.
