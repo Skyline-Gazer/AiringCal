@@ -13,7 +13,7 @@
   - `4.2 定义 tombstone 类型、key/TTL 与保守 NSFW 投影，404 时停止返回旧 detail`
   - `4.3 验证 tombstone 到期后允许重新探测且 generation 协调语义不倒退`
 - Brief: `.superpowers/sdd/task-6-brief.md`
-- Stage: `third-extra-fix-authorized`
+- Stage: `third-extra-fix-review`
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
@@ -43,7 +43,9 @@
   - At/after TTL expiry, an image-only V3 job can process stale job URLs without a successful detail reprobe.
   - Collection-only tombstones with cached images may never be reprobed because sync considers metadata plus cached images complete.
 - Third extra-round authorization: user explicitly authorized RED→GREEN fixes for all three image/recovery findings.
-- Next action: suppress tombstone image projections, force expired image-only jobs through detail reprobe, and queue expired collection-only tombstones for recovery, then obtain independent review.
+- Third extra fix commit: `864b30fdd19b59aeca4dd7e595b7cb0c9af1ba3e` (`fix: close tombstone image recovery gaps`).
+- Third extra fix RED/GREEN: Read 29/31 exposed images; Media 24/26 used stale job/cache URLs; Sync 40/41 failed to queue expired collection-only recovery. After fixes, five Task 6 suites pass 134/134, five typechecks pass, media/read/sync build checks pass, and `git diff --check` passes.
+- Next action: independent final review of the three fixes and the complete Task 6 boundary.
 - Accepted Minor findings carried to final review:
   - Task 2 Frontend CSP test could explicitly forbid script `'unsafe-inline'`.
   - Task 2 operation test could explicitly assert `default-src 'none'` and encoded entities.
