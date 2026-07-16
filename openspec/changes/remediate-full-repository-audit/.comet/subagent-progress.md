@@ -13,7 +13,7 @@
   - `4.2 定义 tombstone 类型、key/TTL 与保守 NSFW 投影，404 时停止返回旧 detail`
   - `4.3 验证 tombstone 到期后允许重新探测且 generation 协调语义不倒退`
 - Brief: `.superpowers/sdd/task-6-brief.md`
-- Stage: `second-extra-fix-authorized`
+- Stage: `second-extra-fix-review`
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
@@ -35,7 +35,9 @@
   - A first confirmed 404 writes the tombstone but the same media job continues into stale image fallback/download/status writes.
   - At `now >= expires_at`, read suppression ends before a successful reprobe replaces the `not_found` meta, so snapshot or residual cached detail can reappear.
 - Second extra-round authorization: user explicitly authorized RED→GREEN fixes for both remaining Important findings.
-- Next action: short-circuit first-404 media jobs and separate read suppression state from refresh-throttling TTL, then obtain independent review.
+- Second extra fix commit: `56d4aad2fab77a9b741dffb0016d460010285774` (`fix: keep missing subjects suppressed through reprobe`).
+- Second extra fix RED/GREEN: media 23/24 reproduced same-job stale image downloads; read 29/31 reproduced exact-expiry stale detail. After fixes, five Task 6 suites pass 133/133, five typechecks pass, media/read/sync build checks pass, and `git diff --check` passes.
+- Next action: independent final review of both fixes and the complete Task 6 boundary.
 - Accepted Minor findings carried to final review:
   - Task 2 Frontend CSP test could explicitly forbid script `'unsafe-inline'`.
   - Task 2 operation test could explicitly assert `default-src 'none'` and encoded entities.
