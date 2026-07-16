@@ -886,6 +886,70 @@ test('scheduled sync never republishes residual detail while a not-found tombsto
   }
 })
 
+test('scheduled sync queues expired collection-only tombstones for recovery but suppresses active TTLs', async () => {
+  const now = Math.floor(Date.UTC(2026, 5, 30, 4, 0, 0) / 1000)
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  Date.now = () => now * 1000
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      return Response.json({
+        total: 1,
+        data: [{
+          subject_id: 23080,
+          subject_type: 2,
+          rate: 9,
+          type: 3,
+          comment: '',
+          tags: [],
+          ep_status: 1,
+          vol_status: 0,
+          updated_at: '2026-06-29T00:00:00.000Z',
+          private: false,
+          subject: {
+            id: 23080,
+            name: 'Collection only',
+            name_cn: '仅收藏',
+            images: { common: 'https://img.example/common.jpg', large: 'https://img.example/large.jpg' },
+          },
+        }],
+      })
+    }
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected upstream fetch: ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    for (const scenario of [
+      { label: 'active', expiresAt: now + 1, expectedJobs: 0 },
+      { label: 'expired', expiresAt: now, expectedJobs: 1 },
+    ]) {
+      const kv = new MockKV()
+      kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: now - 86400, expires_at: scenario.expiresAt, reason: 'not_found' })
+      kv.values.set('image:status:23080', {
+        common: { status: 'cached', hash: 'a'.repeat(64), uri: `/image/${'a'.repeat(64)}`, r2_key: `images/${'a'.repeat(64)}/original` },
+        large: { status: 'cached', hash: 'b'.repeat(64), uri: `/image/${'b'.repeat(64)}`, r2_key: `images/${'b'.repeat(64)}/original` },
+      })
+      const queueMessages: unknown[] = []
+
+      await worker.scheduled({ scheduledTime: now * 1000 } as any, {
+        AIRING_CAL_KV: kv,
+        MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
+        BANGUMI_TOKEN: 'token-a',
+        BANGUMI_USERS: 'alice',
+        SYNC_MODE: 'merge',
+      } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+
+      assert.equal(queueMessages.length, scenario.expectedJobs, scenario.label)
+      if (scenario.expectedJobs) assertV2MediaJob(queueMessages[0], 23080, '仅收藏', { common: 'https://img.example/common.jpg', large: 'https://img.example/large.jpg' })
+    }
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('scheduled sync loads collection cache state concurrently before publishing snapshots', async () => {
   const kv = new MockKV()
   const collectionCount = 30

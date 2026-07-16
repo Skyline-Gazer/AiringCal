@@ -372,6 +372,65 @@ test('media-worker active tombstone suppresses subject and image upstream for im
   }
 })
 
+test('media-worker expired tombstone forces image-only jobs through a confirmed detail reprobe', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const now = 1_782_650_000
+  const previousStatus = {
+    common: { status: 'cached', hash: 'a'.repeat(64), uri: `/image/${'a'.repeat(64)}`, r2_key: `images/${'a'.repeat(64)}/original`, source_url: 'https://img.example/old.jpg' },
+    large: { status: 'missing_source', hash: null, uri: null, r2_key: null },
+  }
+  kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, reason: 'not_found', checked_at: now - 86400, expires_at: now })
+  kv.values.set(subjectDetailKey(23080), { cached_at: now - 1, subject: { id: 23080, images: { common: 'https://img.example/residual.jpg' } } })
+  kv.values.set('image:status:23080', previousStatus)
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  const calls: string[] = []
+  globalThis.fetch = async (url: string | URL | Request) => {
+    calls.push(String(url))
+    if (String(url).includes('/v0/subjects/23080')) return new Response('Not found', { status: 404 })
+    throw new Error(`stale image URL must not be processed: ${url}`)
+  }
+  Date.now = () => now * 1000
+  try {
+    await worker.queue(batch({ version: 3, generation: 2, job_id: 'expired-image-only-404', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.deepEqual(calls, ['https://api.bgm.tv/v0/subjects/23080'])
+    assert.deepEqual(kv.values.get('image:status:23080'), previousStatus)
+    assert.equal(r2.writes.length, 0)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker expired tombstone recovery uses fresh detail images for image-only jobs', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const now = 1_782_650_000
+  kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, reason: 'not_found', checked_at: now - 86400, expires_at: now })
+  kv.values.set(subjectDetailKey(23080), { cached_at: now - 1, subject: { id: 23080, images: { common: 'https://img.example/residual.jpg' } } })
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  const calls: string[] = []
+  globalThis.fetch = async (url: string | URL | Request) => {
+    const text = String(url)
+    calls.push(text)
+    if (text.includes('/v0/subjects/23080')) return Response.json({ id: 23080, nsfw: false, images: { common: 'https://img.example/recovered.jpg' } })
+    if (text === 'https://img.example/recovered.jpg') return new Response('recovered-bytes', { headers: { 'content-type': 'image/jpeg' } })
+    throw new Error(`stale image URL must not be processed: ${text}`)
+  }
+  Date.now = () => now * 1000
+  try {
+    await worker.queue(batch({ version: 3, generation: 2, job_id: 'expired-image-only-recovery', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.deepEqual(calls, ['https://api.bgm.tv/v0/subjects/23080', 'https://img.example/recovered.jpg'])
+    assert.equal((kv.values.get('subject:meta:23080') as any).exists, true)
+    assert.equal((kv.values.get('image:status:23080') as any).common.source_url, 'https://img.example/recovered.jpg')
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('media-worker remains fail-closed when stale detail deletion fails after tombstone write', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()

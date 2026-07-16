@@ -215,6 +215,7 @@ async function hydrateCollectionImages(data: unknown[], env: ReadEnv): Promise<u
       env.AIRING_CAL_KV.get(subjectMetaKey(entry.subject_id), 'json'),
     ])
     const projected = projectSnapshotEntry(entry, meta as SubjectMeta | null)
+    if (isConfirmedNotFoundSubjectMeta(meta as SubjectMeta | null)) return projected
     if (!status) return projected
     return {
       ...projected,
@@ -243,6 +244,8 @@ function projectSnapshotEntry(entry: any, meta: SubjectMeta | null): any {
     eps: _eps,
     eps_count: _epsCount,
     total_episodes: _totalEpisodes,
+    images: _images,
+    image_status: _imageStatus,
     ...safe
   } = entry
   return { ...safe, nsfw: true }
@@ -275,13 +278,13 @@ async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unk
         ...(eps ? { eps } : {}),
         ...(totalEpisodes ? { total_episodes: totalEpisodes } : {}),
         ...(detail?.rating ? { rating: detail.rating } : {}),
-        images: status
+        images: !tombstone && status
           ? {
               common: cachedImageRef((status as any).common),
               large: cachedImageRef((status as any).large),
             }
           : projected.images,
-        image_status: status
+        image_status: !tombstone && status
           ? {
               common: imageStatus((status as any).common),
               large: imageStatus((status as any).large),

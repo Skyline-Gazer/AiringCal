@@ -132,6 +132,8 @@ test('calendar keeps suppressing old detail when a not-found tombstone reaches e
       eps_count: 98,
       total_episodes: 97,
       rating: { score: 9.9 },
+      images: { common: 'https://img.example/stale-snapshot-common.jpg', large: 'https://img.example/stale-snapshot-large.jpg' },
+      image_status: { common: 'cached', large: 'cached' },
       nsfw: false,
     }],
   }])
@@ -146,6 +148,10 @@ test('calendar keeps suppressing old detail when a not-found tombstone reaches e
   kv.values.set('subject:detail:23080', {
     cached_at: now - 86400,
     subject: { id: 23080, eps: 99, total_episodes: 99, rating: { score: 9.9 } },
+  })
+  kv.values.set('image:status:23080', {
+    common: { status: 'cached', hash, uri: `/image/${hash}`, r2_key: `images/${hash}/original` },
+    large: { status: 'cached', hash, uri: `/image/${hash}`, r2_key: `images/${hash}/original` },
   })
   const originalNow = Date.now
   Date.now = () => (now + 86400) * 1000
@@ -166,6 +172,8 @@ test('calendar keeps suppressing old detail when a not-found tombstone reaches e
     assert.equal(item.name_cn, undefined)
     assert.equal(item.summary, undefined)
     assert.equal(item.date, undefined)
+    assert.equal(item.images, undefined)
+    assert.equal(item.image_status, undefined)
     assert.equal(item.id, 23080)
     assert.equal(item.subject_id, 23080)
   } finally {
@@ -186,11 +194,17 @@ test('collections keep suppressing snapshot detail fields at exact tombstone exp
     eps: 99,
     eps_count: 98,
     total_episodes: 97,
+    images: { common: 'https://img.example/stale-snapshot-common.jpg', large: 'https://img.example/stale-snapshot-large.jpg' },
+    image_status: { common: 'cached', large: 'cached' },
     ep_status: 7,
     nsfw: false,
   }])
   kv.values.set('snapshot:summary', { watching: 1, _total: 1 })
   kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: now, expires_at: now + 86400, reason: 'not_found' })
+  kv.values.set('image:status:23080', {
+    common: { status: 'cached', hash, uri: `/image/${hash}`, r2_key: `images/${hash}/original` },
+    large: { status: 'cached', hash, uri: `/image/${hash}`, r2_key: `images/${hash}/original` },
+  })
   const originalNow = Date.now
   Date.now = () => (now + 86400) * 1000
   try {
@@ -204,6 +218,8 @@ test('collections keep suppressing snapshot detail fields at exact tombstone exp
     assert.equal(item.name_cn, undefined)
     assert.equal(item.summary, undefined)
     assert.equal(item.date, undefined)
+    assert.equal(item.images, undefined)
+    assert.equal(item.image_status, undefined)
     assert.equal(item.subject_id, 23080)
     assert.equal(item.ep_status, 7)
     assert.equal(item.nsfw, true)

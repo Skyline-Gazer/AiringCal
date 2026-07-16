@@ -123,3 +123,35 @@ Second-extra-round final verification:
 - Build checks passed for media, read, and sync; Wrangler types were current and all three dry-run deploys completed.
 - `git diff --check` passed.
 - The first sandboxed focused test attempt was invalid because `tsx` could not create its IPC pipe (`listen EPERM`); all effective RED and GREEN evidence above came from the permitted outside-sandbox reruns.
+
+## User-authorized third extra fix round
+
+The three image and recovery findings were verified against the public projection, V3 job, and scheduled refresh-plan contracts, then fixed in separate RED→GREEN cycles.
+
+Confirmed-not-found Read image RED/GREEN evidence:
+
+- Collection and calendar exact-expiry fixtures now contain both snapshot image fields and independently cached image status.
+- The first sandboxed attempt was invalid because `tsx` could not create its IPC pipe (`listen EPERM`). The permitted rerun produced the effective RED: read-worker 29/31; both endpoints reattached cached image refs while the confirmed tombstone was still authoritative.
+- The minimal fix removes snapshot `images`/`image_status` in the tombstone projection and prevents both hydration paths from reattaching cached status until successful recovery replaces metadata.
+- Focused GREEN: read-worker 31/31.
+
+Expired image-only Media RED/GREEN evidence:
+
+- Regressions cover exact expiry followed by a repeated 404 and by successful recovery. Both jobs request only `image_common`, carry a stale job URL, and retain a fresh residual detail cache entry.
+- Initial effective RED: media-worker 24/26; both cases fetched the stale job URL without calling `/v0/subjects/23080`. After routing image-only work into the detail path, the strengthened residual-cache fixtures produced a second effective RED at 24/26 because cached `residual.jpg` still bypassed the required upstream reprobe.
+- The minimal final fix forces any persistent confirmed-not-found metadata through a direct upstream detail reprobe once its active TTL ends, bypassing residual detail cache. A repeated 404 renews the tombstone and returns before image work; successful recovery replaces metadata/detail and uses the recovered detail image URL.
+- Focused GREEN: media-worker 26/26. The recovery test proves the stale URL is never fetched and the repeated-404 test proves image status and R2 remain unchanged.
+
+Collection-only Sync recovery RED/GREEN evidence:
+
+- A scheduled-sync regression uses a collection-only subject with complete cached images and confirmed-not-found metadata, testing active TTL and exact expiry independently.
+- Effective RED: sync-worker 40/41; the expired case queued zero recovery jobs while the active case remained correctly suppressed.
+- The minimal fix retains full `SubjectMeta` in refresh planning. `shouldQueueMedia` now suppresses active tombstones and forces expired confirmed tombstones before ordinary metadata/image completeness checks.
+- Focused GREEN: sync-worker 41/41; active TTL queues zero jobs and exact expiry queues one full V2 detail/meta/image recovery job.
+
+Third-extra-round final verification:
+
+- Complete tests passed: media 26/26, read 31/31, sync 41/41, domain 28/28, storage 8/8 (134/134).
+- Typechecks passed for media, read, sync, domain, and storage.
+- Build checks passed for media, read, and sync; Wrangler types were current and all three dry-run deploys completed.
+- `git diff --check` passed.

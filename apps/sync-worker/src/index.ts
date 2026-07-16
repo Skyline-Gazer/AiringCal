@@ -1,7 +1,7 @@
 export const appBoundary = 'sync-worker'
 
 import { BgmClient, BgmHttpError, BgmPlatformClient, fetchAllCollections } from '@airing-cal/bgm-api'
-import { compareAccounts, executeSync, imageRefsFromStatus, isActiveNotFoundSubjectMeta, mergeCollections, subjectDetailImages, SyncValidationError, transformCalendar, withSubjectDetail, type SubjectDetailMap, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
+import { compareAccounts, executeSync, imageRefsFromStatus, isActiveNotFoundSubjectMeta, isConfirmedNotFoundSubjectMeta, mergeCollections, subjectDetailImages, SyncValidationError, transformCalendar, withSubjectDetail, type SubjectDetailMap, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
 import { getCachedSubjectDetail, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectDetailKey, subjectMetaKey, subjectRefreshKey, syncMetaKey, type MediaRefreshJobV2 } from '@airing-cal/storage'
 import { publicError, sanitizeErrorMessage, syncHeaders } from '@airing-cal/worker-common'
 
@@ -76,10 +76,6 @@ interface SyncOperationLog {
 
 function usersFromEnv(value: string): string[] {
   return value.split(',').map((part) => part.trim()).filter(Boolean)
-}
-
-function hasImageSource(images: { common?: string; large?: string }): boolean {
-  return Boolean(images.common || images.large)
 }
 
 function hasCachedImage(refs: SubjectImages, size: 'common' | 'large'): boolean {
@@ -365,11 +361,11 @@ async function enqueueCalendarMediaEarly(env: SyncEnv, storage: KVStorage, subje
   return seen
 }
 
-async function loadSubjectMetaMap(storage: KVStorage, subjectIds: Iterable<number>): Promise<Map<number, Pick<SubjectMeta, 'nsfw'>>> {
-  const map = new Map<number, Pick<SubjectMeta, 'nsfw'>>()
+async function loadSubjectMetaMap(storage: KVStorage, subjectIds: Iterable<number>): Promise<Map<number, SubjectMeta>> {
+  const map = new Map<number, SubjectMeta>()
   const metaEntries = await mapConcurrent(subjectIds, CACHE_LOAD_CONCURRENCY, async (subjectId) => {
     const meta = await storage.get<SubjectMeta>(subjectMetaKey(subjectId))
-    return [subjectId, meta ? { nsfw: meta.nsfw } : null] as const
+    return [subjectId, meta] as const
   })
   for (const [subjectId, meta] of metaEntries) {
     if (meta) map.set(subjectId, meta)
@@ -377,8 +373,10 @@ async function loadSubjectMetaMap(storage: KVStorage, subjectIds: Iterable<numbe
   return map
 }
 
-function shouldQueueMedia(input: SubjectInput, images: SubjectImages | undefined, hasMeta: boolean): boolean {
-  if (!hasMeta) return true
+function shouldQueueMedia(input: SubjectInput, images: SubjectImages | undefined, meta: SubjectMeta | undefined, now: number): boolean {
+  if (isActiveNotFoundSubjectMeta(meta, now)) return false
+  if (isConfirmedNotFoundSubjectMeta(meta)) return true
+  if (!meta) return true
   if (input.images.common && !hasCachedImage(images ?? { common: null, large: null }, 'common')) return true
   if (input.images.large && !hasCachedImage(images ?? { common: null, large: null }, 'large')) return true
   return false
@@ -430,8 +428,7 @@ async function runScheduledSync(env: SyncEnv, runId = `legacy:${Math.floor(Date.
 
   for (const input of subjectInputs.values()) {
     if (earlyMediaSubjectIds.has(input.subject_id)) continue
-    if (!hasImageSource(input.images) && subjectMetaMap.has(input.subject_id)) continue
-    if (!shouldQueueMedia(input, imageMap.get(input.subject_id), subjectMetaMap.has(input.subject_id))) continue
+    if (!shouldQueueMedia(input, imageMap.get(input.subject_id), subjectMetaMap.get(input.subject_id), now)) continue
     const jobId = `${runId}:${input.subject_id}`
     await markMediaQueued(storage, input, now, jobId)
     await sendMediaJob(env, input, jobId)

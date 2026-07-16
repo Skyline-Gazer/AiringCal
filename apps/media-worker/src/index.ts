@@ -1,7 +1,7 @@
 export const appBoundary = 'media-worker'
 
 import { BgmClient, BgmHttpError, BgmNetworkError, BgmTimeoutError } from '@airing-cal/bgm-api'
-import { imageRef, isActiveNotFoundSubjectMeta, subjectDetailImages, subjectMetaFromDetail, subjectMetaFromNotFound, type SubjectMeta } from '@airing-cal/domain'
+import { imageRef, isActiveNotFoundSubjectMeta, isConfirmedNotFoundSubjectMeta, subjectDetailImages, subjectMetaFromDetail, subjectMetaFromNotFound, type SubjectMeta } from '@airing-cal/domain'
 import { getCachedSubjectDetail, imageIndexKey, imageStatusKey, KVStorage, R2ImageStore, subjectDetailKey, subjectMetaKey, subjectRefreshKey, type ImageSourceSize, type MediaRefreshJobV2, type MediaRefreshJobV3, type SubjectRefreshState } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
@@ -122,9 +122,11 @@ async function processImage(size: ImageSourceSize, sourceUrl: string | undefined
   }
 }
 
-async function fetchSubjectDetail(job: MediaJob, client: BgmClient, storage: KVStorage, now: number): Promise<any | null> {
+async function fetchSubjectDetail(job: MediaJob, client: BgmClient, storage: KVStorage, now: number, forceUpstream = false): Promise<any | null> {
   try {
-    const subject = await getCachedSubjectDetail(storage, client, job.subject_id, now)
+    const subject = forceUpstream
+      ? await client.getSubject(job.subject_id)
+      : await getCachedSubjectDetail(storage, client, job.subject_id, now)
     if (!subject) {
       await storage.put(subjectMetaKey(job.subject_id), subjectMetaFromNotFound(job.subject_id, now))
       try {
@@ -133,6 +135,9 @@ async function fetchSubjectDetail(job: MediaJob, client: BgmClient, storage: KVS
         // The tombstone is authoritative; stale detail removal is best-effort.
       }
       return null
+    }
+    if (forceUpstream) {
+      await storage.put(subjectDetailKey(job.subject_id), { cached_at: now, subject })
     }
     await storage.put(subjectMetaKey(job.subject_id), subjectMetaFromDetail(job.subject_id, subject, now))
     return subject
@@ -186,8 +191,13 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | '
     return 'processed'
   }
   const previousStatus = await storage.get<any>(imageStatusKey(job.subject_id))
-  const refreshDetail = !isVersionedJob(job) || job.components.includes('detail') || job.components.includes('meta')
-  const subject = refreshDetail ? await fetchSubjectDetail(job, client, storage, now) : null
+  const refreshDetail = !isVersionedJob(job)
+    || job.components.includes('detail')
+    || job.components.includes('meta')
+    || isConfirmedNotFoundSubjectMeta(meta)
+  const subject = refreshDetail
+    ? await fetchSubjectDetail(job, client, storage, now, isConfirmedNotFoundSubjectMeta(meta))
+    : null
   if (refreshDetail && !subject) {
     const refreshedMeta = await storage.get<SubjectMeta>(subjectMetaKey(job.subject_id))
     if (isActiveNotFoundSubjectMeta(refreshedMeta, now)) {
