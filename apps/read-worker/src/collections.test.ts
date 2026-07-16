@@ -121,7 +121,19 @@ test('calendar ignores old detail while a not-found tombstone is active', async 
   const now = 1_782_650_300
   kv.values.set('snapshot:calendar', [{
     weekday: { id: 1 },
-    items: [{ id: 23080, eps: 99, eps_count: 98, total_episodes: 97, rating: { score: 9.9 }, nsfw: false }],
+    items: [{
+      id: 23080,
+      subject_id: 23080,
+      name: 'Stale name',
+      name_cn: '陈旧名称',
+      summary: 'Stale summary',
+      date: '2020-01-01',
+      eps: 99,
+      eps_count: 98,
+      total_episodes: 97,
+      rating: { score: 9.9 },
+      nsfw: false,
+    }],
   }])
   kv.values.set('subject:meta:23080', {
     subject_id: 23080,
@@ -150,6 +162,12 @@ test('calendar ignores old detail while a not-found tombstone is active', async 
     assert.equal(item.eps_count, undefined)
     assert.equal(item.total_episodes, undefined)
     assert.equal(item.rating, undefined)
+    assert.equal(item.name, undefined)
+    assert.equal(item.name_cn, undefined)
+    assert.equal(item.summary, undefined)
+    assert.equal(item.date, undefined)
+    assert.equal(item.id, 23080)
+    assert.equal(item.subject_id, 23080)
   } finally {
     Date.now = originalNow
   }
@@ -158,7 +176,19 @@ test('calendar ignores old detail while a not-found tombstone is active', async 
 test('collections remove snapshot detail fields under an active tombstone but preserve progress', async () => {
   const kv = new MockKV()
   const now = 1_782_650_300
-  kv.values.set('snapshot:collections:watching', [{ subject_id: 23080, rating: { score: 9.9 }, eps: 99, eps_count: 98, total_episodes: 97, ep_status: 7, nsfw: false }])
+  kv.values.set('snapshot:collections:watching', [{
+    subject_id: 23080,
+    name: 'Stale name',
+    name_cn: '陈旧名称',
+    summary: 'Stale summary',
+    date: '2020-01-01',
+    rating: { score: 9.9 },
+    eps: 99,
+    eps_count: 98,
+    total_episodes: 97,
+    ep_status: 7,
+    nsfw: false,
+  }])
   kv.values.set('snapshot:summary', { watching: 1, _total: 1 })
   kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: now, expires_at: now + 86400, reason: 'not_found' })
   const originalNow = Date.now
@@ -170,6 +200,11 @@ test('collections remove snapshot detail fields under an active tombstone but pr
     assert.equal(item.eps, undefined)
     assert.equal(item.eps_count, undefined)
     assert.equal(item.total_episodes, undefined)
+    assert.equal(item.name, undefined)
+    assert.equal(item.name_cn, undefined)
+    assert.equal(item.summary, undefined)
+    assert.equal(item.date, undefined)
+    assert.equal(item.subject_id, 23080)
     assert.equal(item.ep_status, 7)
     assert.equal(item.nsfw, true)
   } finally {

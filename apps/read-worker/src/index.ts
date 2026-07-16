@@ -234,7 +234,17 @@ function projectSnapshotEntry(entry: any, meta: SubjectMeta | null): any {
   if (!isActiveNotFoundSubjectMeta(meta, nowSeconds())) {
     return meta ? { ...entry, nsfw: meta.nsfw } : entry
   }
-  const { rating: _rating, eps: _eps, eps_count: _epsCount, total_episodes: _totalEpisodes, ...safe } = entry
+  const {
+    name: _name,
+    name_cn: _nameCn,
+    summary: _summary,
+    date: _date,
+    rating: _rating,
+    eps: _eps,
+    eps_count: _epsCount,
+    total_episodes: _totalEpisodes,
+    ...safe
+  } = entry
   return { ...safe, nsfw: true }
 }
 

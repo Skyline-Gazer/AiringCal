@@ -78,3 +78,22 @@ Review-fix GREEN and final verification:
 - Typechecks: media, read, sync, domain, and storage all PASS.
 - Build checks: media, read, and sync Wrangler type checks and dry-run deploys all PASS.
 - `git diff --check` PASS; scope contains only Task 6 code/tests plus this report. Coordinator-owned progress remains unstaged and untouched.
+
+## User-authorized extra focused fix round
+
+The remaining review finding was technically confirmed: `withSubjectDetail` and `mergeCollections` can copy canonical detail fields into snapshots, while the active-tombstone Read projection previously removed only episode and rating fields. Once persisted in a snapshot, the Read worker cannot distinguish old detail values from safe source values.
+
+Extra-round RED evidence:
+
+- The first sandboxed `CI=true pnpm -F @airing-cal/read-worker test` attempt was invalid because `tsx` could not create its IPC pipe (`listen EPERM`).
+- Rerunning outside the sandbox produced the effective RED: read-worker 29/31. The enriched collection and calendar regressions both failed because the response still contained `name: 'Stale name'` instead of `undefined`.
+
+Extra-round implementation and GREEN evidence:
+
+- During an active not-found tombstone only, `projectSnapshotEntry` now also removes snapshot-carried `name`, `name_cn`, `summary`, and `date` alongside the existing episode/rating fields.
+- The regressions prove collection `subject_id`, calendar `id`/`subject_id`, collection `ep_status`, and conservative `nsfw: true` remain available; non-tombstone projection is unchanged.
+- Read-worker passed 31/31 after the minimal implementation.
+- Complete tests passed: media 23/23, read 31/31, sync 40/40, domain 28/28, storage 8/8 (130/130).
+- Typechecks passed for media, read, sync, domain, and storage.
+- Build checks passed for media, read, and sync, including current Wrangler types and dry-run deploys.
+- `git diff --check` passed.
