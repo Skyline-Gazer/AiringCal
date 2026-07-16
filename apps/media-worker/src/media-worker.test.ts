@@ -240,6 +240,51 @@ test('media-worker treats subject detail 404 as restricted NSFW', async () => {
   }
 })
 
+test('media-worker stops a V3 detail and image job after its first confirmed 404', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const previousStatus = {
+    subject_id: 23080,
+    title: 'Old title',
+    common: { status: 'cached', hash: 'a'.repeat(64), uri: `/image/${'a'.repeat(64)}`, r2_key: `images/${'a'.repeat(64)}/original`, source_url: 'https://img.example/old.jpg' },
+    large: { status: 'missing_source', hash: null, uri: null, r2_key: null },
+    subject_checked_at: 1,
+  }
+  kv.values.set('image:status:23080', previousStatus)
+  const originalFetch = globalThis.fetch
+  const calls: string[] = []
+  globalThis.fetch = async (url: string | URL | Request) => {
+    const text = String(url)
+    calls.push(text)
+    if (text.includes('/v0/subjects/23080')) return new Response('Not found', { status: 404 })
+    if (text.includes('stale-job.jpg')) return new Response('must-not-be-downloaded')
+    throw new Error(`unexpected fetch ${text}`)
+  }
+
+  try {
+    await worker.queue(batch({
+      version: 3,
+      generation: 1,
+      job_id: 'first-404',
+      subject_id: 23080,
+      title: 'Stale job title',
+      components: ['detail', 'meta', 'image_common', 'image_large'],
+      images: {
+        common: 'https://img.example/stale-job.jpg',
+        large: 'https://img.example/stale-job-large.jpg',
+      },
+    }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+
+    assert.deepEqual(calls, ['https://api.bgm.tv/v0/subjects/23080'])
+    assert.equal(r2.writes.length, 0)
+    assert.deepEqual(kv.values.get('image:status:23080'), previousStatus)
+    assert.equal((kv.values.get(subjectRefreshKey(23080)) as any).status, 'ok')
+    assert.equal((kv.values.get('subject:meta:23080') as any).reason, 'not_found')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('media-worker tombstones a confirmed 404 for exactly 24 hours then recovers', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()
@@ -648,7 +693,7 @@ test('media-worker acks terminal 404 and missing image sources', async () => {
       await worker.queue(message.batch as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
       assert.equal(message.state.acked, 1)
       assert.deepEqual(message.state.retries, [])
-      assert.match((kv.values.get(subjectRefreshKey(23080)) as any).status, /partial|failed/)
+      assert.equal((kv.values.get(subjectRefreshKey(23080)) as any).status, responseBody ? 'partial' : 'ok')
     } finally {
       globalThis.fetch = originalFetch
     }

@@ -1,7 +1,7 @@
 export const appBoundary = 'read-worker'
 
 import { imageOriginalKey, imageStatusKey, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncCurrentKey, syncMetaKey, syncRunKey, type SnapshotManifest, type SyncRun } from '@airing-cal/storage'
-import { isActiveNotFoundSubjectMeta, type SubjectMeta } from '@airing-cal/domain'
+import { isConfirmedNotFoundSubjectMeta, type SubjectMeta } from '@airing-cal/domain'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 interface ReadEnv {
@@ -231,7 +231,7 @@ async function hydrateCollectionImages(data: unknown[], env: ReadEnv): Promise<u
 }
 
 function projectSnapshotEntry(entry: any, meta: SubjectMeta | null): any {
-  if (!isActiveNotFoundSubjectMeta(meta, nowSeconds())) {
+  if (!isConfirmedNotFoundSubjectMeta(meta)) {
     return meta ? { ...entry, nsfw: meta.nsfw } : entry
   }
   const {
@@ -265,7 +265,7 @@ async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unk
         env.AIRING_CAL_KV.get(subjectDetailKey(subjectId), 'json'),
       ])
       if (!status && !meta && !detailEntry) return entry
-      const tombstone = isActiveNotFoundSubjectMeta(meta as SubjectMeta | null, nowSeconds())
+      const tombstone = isConfirmedNotFoundSubjectMeta(meta as SubjectMeta | null)
       const detail = tombstone ? null : (detailEntry as any)?.subject
       const projected = projectSnapshotEntry(entry, meta as SubjectMeta | null)
       const eps = positiveEpisodeCount(detail?.eps, detail?.eps_count, detail?.total_episodes, projected.eps, projected.eps_count, projected.total_episodes)

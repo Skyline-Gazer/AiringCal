@@ -188,6 +188,13 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | '
   const previousStatus = await storage.get<any>(imageStatusKey(job.subject_id))
   const refreshDetail = !isVersionedJob(job) || job.components.includes('detail') || job.components.includes('meta')
   const subject = refreshDetail ? await fetchSubjectDetail(job, client, storage, now) : null
+  if (refreshDetail && !subject) {
+    const refreshedMeta = await storage.get<SubjectMeta>(subjectMetaKey(job.subject_id))
+    if (isActiveNotFoundSubjectMeta(refreshedMeta, now)) {
+      if (isVersionedJob(job)) await putRefreshState(storage, job, 'ok', now)
+      return 'processed'
+    }
+  }
   const detailImages = subjectDetailImages(subject)
   const images = {
     common: detailImages.common ?? (isVersionedJob(job) ? job.images?.common : undefined),

@@ -97,3 +97,29 @@ Extra-round implementation and GREEN evidence:
 - Typechecks passed for media, read, sync, domain, and storage.
 - Build checks passed for media, read, and sync, including current Wrangler types and dry-run deploys.
 - `git diff --check` passed.
+
+## User-authorized second extra fix round
+
+The two new Important findings were independently verified and fixed one behavior at a time.
+
+First-404 Media RED/GREEN evidence:
+
+- A new normal V3 `detail` + `meta` + image-components regression received a confirmed subject-detail 404 while carrying stale job image URLs and an existing image status.
+- Effective RED: media-worker passed 23/24. The same job fetched both stale image URLs after the subject 404.
+- The minimal fix re-reads the authoritative metadata after a null detail result. A newly active confirmed-not-found tombstone completes a versioned refresh as `ok` and returns before image download, R2/index writes, or image-status replacement.
+- Focused GREEN: media-worker passed 24/24. The regression proves the only upstream call is the subject endpoint, R2 has no writes, the prior image status is unchanged, and the refresh is not falsely marked failed.
+
+Exact-expiry Read RED/GREEN evidence:
+
+- Collection and calendar regressions were advanced to exactly `expires_at` with stale canonical fields, rating/episode fields, and residual cached detail still present.
+- Effective RED: read-worker passed 29/31. Calendar returned old episode detail and collections returned stale snapshot rating at exact expiry.
+- The domain now separates `isActiveNotFoundSubjectMeta(meta, now)`, used only for refresh throttling, from `isConfirmedNotFoundSubjectMeta(meta)`, which remains authoritative for Read suppression until a successful reprobe replaces metadata.
+- Focused GREEN: read-worker passed 31/31 and domain passed 28/28. Existing media recovery still reprobes at exact expiry and replaces the tombstone after success.
+
+Second-extra-round final verification:
+
+- Complete tests passed: media 24/24, read 31/31, sync 40/40, domain 28/28, storage 8/8 (133/133).
+- Typechecks passed for media, read, sync, domain, and storage.
+- Build checks passed for media, read, and sync; Wrangler types were current and all three dry-run deploys completed.
+- `git diff --check` passed.
+- The first sandboxed focused test attempt was invalid because `tsx` could not create its IPC pipe (`listen EPERM`); all effective RED and GREEN evidence above came from the permitted outside-sandbox reruns.

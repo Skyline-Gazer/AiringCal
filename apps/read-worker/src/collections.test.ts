@@ -116,7 +116,7 @@ test('calendar hydrates cached image refs and subject metadata like collections'
   assert.equal(kv.gets.includes('subject:detail:23080'), true)
 })
 
-test('calendar ignores old detail while a not-found tombstone is active', async () => {
+test('calendar keeps suppressing old detail when a not-found tombstone reaches exact expiry', async () => {
   const kv = new MockKV()
   const now = 1_782_650_300
   kv.values.set('snapshot:calendar', [{
@@ -148,7 +148,7 @@ test('calendar ignores old detail while a not-found tombstone is active', async 
     subject: { id: 23080, eps: 99, total_episodes: 99, rating: { score: 9.9 } },
   })
   const originalNow = Date.now
-  Date.now = () => (now + 86399) * 1000
+  Date.now = () => (now + 86400) * 1000
 
   try {
     const response = await worker.fetch(new Request('https://read.local/calendar'), {
@@ -173,7 +173,7 @@ test('calendar ignores old detail while a not-found tombstone is active', async 
   }
 })
 
-test('collections remove snapshot detail fields under an active tombstone but preserve progress', async () => {
+test('collections keep suppressing snapshot detail fields at exact tombstone expiry but preserve progress', async () => {
   const kv = new MockKV()
   const now = 1_782_650_300
   kv.values.set('snapshot:collections:watching', [{
@@ -192,7 +192,7 @@ test('collections remove snapshot detail fields under an active tombstone but pr
   kv.values.set('snapshot:summary', { watching: 1, _total: 1 })
   kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: now, expires_at: now + 86400, reason: 'not_found' })
   const originalNow = Date.now
-  Date.now = () => (now + 1) * 1000
+  Date.now = () => (now + 86400) * 1000
   try {
     const response = await worker.fetch(new Request('https://read.local/collections?type=watching'), { AIRING_CAL_KV: kv, AIRING_CAL_R2: { get: async () => null } } as any)
     const item = (await response.json() as any).data[0]
