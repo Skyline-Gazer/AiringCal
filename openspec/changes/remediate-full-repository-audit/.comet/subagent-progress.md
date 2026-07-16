@@ -13,7 +13,7 @@
   - `4.2 定义 tombstone 类型、key/TTL 与保守 NSFW 投影，404 时停止返回旧 detail`
   - `4.3 验证 tombstone 到期后允许重新探测且 generation 协调语义不倒退`
 - Brief: `.superpowers/sdd/task-6-brief.md`
-- Stage: `second-extra-fix-review`
+- Stage: `blocked`
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
@@ -37,7 +37,12 @@
 - Second extra-round authorization: user explicitly authorized RED→GREEN fixes for both remaining Important findings.
 - Second extra fix commit: `56d4aad2fab77a9b741dffb0016d460010285774` (`fix: keep missing subjects suppressed through reprobe`).
 - Second extra fix RED/GREEN: media 23/24 reproduced same-job stale image downloads; read 29/31 reproduced exact-expiry stale detail. After fixes, five Task 6 suites pass 133/133, five typechecks pass, media/read/sync build checks pass, and `git diff --check` passes.
-- Next action: independent final review of both fixes and the complete Task 6 boundary.
+- Second extra review result: both authorized fixes are correct and fresh focused verification passes 133/133, but the complete boundary remains blocked by three newly identified Important findings.
+- New Important findings:
+  - Read collection/calendar hydration reattaches cached or snapshot image projections for confirmed-not-found subjects.
+  - At/after TTL expiry, an image-only V3 job can process stale job URLs without a successful detail reprobe.
+  - Collection-only tombstones with cached images may never be reprobed because sync considers metadata plus cached images complete.
+- Block reason: the second user-authorized fix round has been consumed; another explicit authorization is required for these three RED→GREEN fixes and review.
 - Accepted Minor findings carried to final review:
   - Task 2 Frontend CSP test could explicitly forbid script `'unsafe-inline'`.
   - Task 2 operation test could explicitly assert `default-src 'none'` and encoded entities.
