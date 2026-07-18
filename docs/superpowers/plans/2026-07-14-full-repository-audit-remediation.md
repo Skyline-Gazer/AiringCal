@@ -2,6 +2,7 @@
 change: remediate-full-repository-audit
 design-doc: docs/superpowers/specs/2026-07-14-full-repository-audit-remediation-design.md
 base-ref: 549edf34af2d860ccc995de589631242d4a24e2d
+archived-with: 2026-07-18-remediate-full-repository-audit
 ---
 
 # 全仓审计剩余问题修复 Implementation Plan
@@ -39,6 +40,7 @@ base-ref: 549edf34af2d860ccc995de589631242d4a24e2d
 - `packages/domain/src/subject-meta.ts`、`packages/storage/src/keys.ts`：若现有类型/键 helper 需要扩展，只承载共享 tombstone 类型和存储命名。
 - `scripts/generate-widget-assets.mjs`：唯一资产生成器；build check 校验产物与旧目录不存在。
 
+archived-with: 2026-07-18-remediate-full-repository-audit
 ---
 
 ### Task 1: Widget 输出编码、URL 校验与无 inline handler

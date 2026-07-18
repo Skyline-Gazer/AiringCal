@@ -2,6 +2,8 @@
 comet_change: remediate-full-repository-audit
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-18-remediate-full-repository-audit
+status: final
 ---
 
 # 全仓审计剩余问题修复技术设计
