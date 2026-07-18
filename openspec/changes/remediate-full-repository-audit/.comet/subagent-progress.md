@@ -7,18 +7,15 @@
 
 ## Current Task
 
-- Unique text: `Task 7: 删除漂移 Widget 副本并锁定生成链`
+- Unique text: `Task 8: 全量质量门禁、文档审计与生产验收准备`
 - OpenSpec mappings:
-  - `5.1 使用 rg 与构建入口证明旧 assets/public、theme/v1 副本无部署消费者`
-  - `5.2 删除旧副本并增加源码、生成产物、部署入口一致性测试`
-  - `5.3 更新 README 与生成说明，明确 assets/theme 和 generated-assets.ts 唯一链路`
-- Stage: `done`
-- Base commit: `db99586`
-- Implementer: `/root/task7_widget_assets`
-- Implementation commit: `2d692e92b1e6035ef03c2f1a3cdcb909686bc4ee` (`chore: remove stale widget asset copies`).
-- Consumer preflight: production import and generator use only `assets/theme` → `src/generated-assets.ts`; one security regression in `packages/widget/src/render.test.ts` still reads stale copies and must be migrated before deletion.
-- RED/GREEN: absence gate failed 1/2 while stale dirs existed; after deletion/migration, generator gate 2/2, Widget 23/23, widget typecheck, full build check, generated diff, and `git diff --check` pass.
-- Final review: APPROVED with no Critical, Important, or Minor findings; node generation tests 2/2, Widget 23/23, full build check, regeneration cleanliness, and consumer proof all pass.
+  - `6.1 运行相关包 RED→GREEN 测试、typecheck、Wrangler dry-run 与 diff check，并按安全/API/缓存边界原子 commit/push`
+  - `6.2 运行全量 pnpm test、pnpm typecheck、pnpm build:check、OpenSpec strict、git diff --check 与 pnpm audit --prod`
+  - `6.3 完成 thorough code review，修复全部 P0/P1/P2 并记录验证报告`
+- Stage: `docs-and-gates-dispatched`
+- Base commit: `70762b1`
+- Implementer: `/root/task8_docs_gates`
+- Next action: audit README against actual routes/config/contracts, run all full gates with fresh evidence, then dispatch boundary and full-branch reviewers.
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
