@@ -224,7 +224,7 @@ export async function getCachedSubjectDetail<T = any>(
 
   try {
     const subject = await client.getSubject(subjectId)
-    if (!subject) return cached?.subject ?? null
+    if (!subject) return null
     await storage.put(subjectDetailKey(subjectId), { cached_at: now, subject })
     return subject
   } catch (error) {

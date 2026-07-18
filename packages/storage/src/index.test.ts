@@ -68,6 +68,21 @@ test('getCachedSubjectDetail refreshes stale cache and keeps stale data when ref
   assert.deepEqual(fallback, { id: 23080, name: 'Fresh', total_episodes: 24 })
 })
 
+test('getCachedSubjectDetail returns confirmed not-found instead of stale detail', async () => {
+  const kv = new MockKV()
+  const storage = new KVStorage(kv)
+  kv.values.set(subjectDetailKey(23080), {
+    cached_at: 1000,
+    subject: { id: 23080, name: 'Stale', total_episodes: 12 },
+  })
+
+  const subject = await getCachedSubjectDetail(storage, {
+    getSubject: async () => null,
+  }, 23080, 1000 + 60 * 60 * 24 * 8)
+
+  assert.equal(subject, null)
+})
+
 test('nextSubjectRefreshAt deterministically spreads subjects across six to eight days', () => {
   const cachedAt = 1_000_000
   const refreshTimes = Array.from({ length: 100 }, (_, index) => nextSubjectRefreshAt(index + 1, cachedAt))

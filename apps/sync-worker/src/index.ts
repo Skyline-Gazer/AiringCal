@@ -1,7 +1,7 @@
 export const appBoundary = 'sync-worker'
 
 import { BgmClient, BgmHttpError, BgmPlatformClient, fetchAllCollections } from '@airing-cal/bgm-api'
-import { compareAccounts, executeSync, imageRefsFromStatus, mergeCollections, subjectDetailImages, SyncValidationError, transformCalendar, withSubjectDetail, type SubjectDetailMap, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
+import { compareAccounts, executeSync, imageRefsFromStatus, isActiveNotFoundSubjectMeta, isConfirmedNotFoundSubjectMeta, mergeCollections, subjectDetailImages, SyncValidationError, transformCalendar, withSubjectDetail, type SubjectDetailMap, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
 import { getCachedSubjectDetail, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectDetailKey, subjectMetaKey, subjectRefreshKey, syncMetaKey, type MediaRefreshJobV2 } from '@airing-cal/storage'
 import { publicError, sanitizeErrorMessage, syncHeaders } from '@airing-cal/worker-common'
 
@@ -78,10 +78,6 @@ function usersFromEnv(value: string): string[] {
   return value.split(',').map((part) => part.trim()).filter(Boolean)
 }
 
-function hasImageSource(images: { common?: string; large?: string }): boolean {
-  return Boolean(images.common || images.large)
-}
-
 function hasCachedImage(refs: SubjectImages, size: 'common' | 'large'): boolean {
   return refs[size] !== null
 }
@@ -135,6 +131,20 @@ function json(data: unknown, init?: ResponseInit): Response {
 
 function errorJson(error: unknown, status = 500): Response {
   return publicError(status, status === 400 ? 'INVALID_REQUEST' : 'REQUEST_FAILED', error)
+}
+
+function syncErrorResponse(error: unknown): Response {
+  if (error instanceof SyntaxError || error instanceof SyncValidationError) {
+    return publicError(400, 'INVALID_REQUEST', error)
+  }
+  if (error instanceof Error && 'status' in error && (error.status === 401 || error.status === 403)) {
+    return publicError(error.status, 'AUTHENTICATION_FAILED', error)
+  }
+  return publicError(500, 'REQUEST_FAILED', error)
+}
+
+function escapeHtml(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 }
 
 function syncOperationHeaders(id: string): Headers {
@@ -256,6 +266,8 @@ async function loadSubjectDetails(storage: KVStorage, client: BgmClient, subject
     const chunk = subjectIds.slice(index, index + SUBJECT_DETAIL_CONCURRENCY)
     const details = await Promise.all(chunk.map(async (subjectId) => {
       try {
+        const meta = await storage.get<SubjectMeta>(subjectMetaKey(subjectId))
+        if (isConfirmedNotFoundSubjectMeta(meta)) return [subjectId, null] as const
         return [subjectId, await getCachedSubjectDetail(storage, client, subjectId, now)] as const
       } catch (error) {
         errors.push(warningError(subjectId, error))
@@ -277,7 +289,11 @@ async function loadSubjectDetails(storage: KVStorage, client: BgmClient, subject
 async function loadStoredSubjectDetails(storage: KVStorage, subjectIds: number[]): Promise<Map<number, any>> {
   const map = new Map<number, any>()
   const cachedEntries = await mapConcurrent(subjectIds, CACHE_LOAD_CONCURRENCY, async (subjectId) => {
-    const cached = await storage.get<{ subject?: any }>(subjectDetailKey(subjectId))
+    const [meta, cached] = await Promise.all([
+      storage.get<SubjectMeta>(subjectMetaKey(subjectId)),
+      storage.get<{ subject?: any }>(subjectDetailKey(subjectId)),
+    ])
+    if (isConfirmedNotFoundSubjectMeta(meta)) return [subjectId, null] as const
     return [subjectId, cached?.subject ?? null] as const
   })
   for (const [subjectId, subject] of cachedEntries) {
@@ -345,11 +361,11 @@ async function enqueueCalendarMediaEarly(env: SyncEnv, storage: KVStorage, subje
   return seen
 }
 
-async function loadSubjectMetaMap(storage: KVStorage, subjectIds: Iterable<number>): Promise<Map<number, Pick<SubjectMeta, 'nsfw'>>> {
-  const map = new Map<number, Pick<SubjectMeta, 'nsfw'>>()
+async function loadSubjectMetaMap(storage: KVStorage, subjectIds: Iterable<number>): Promise<Map<number, SubjectMeta>> {
+  const map = new Map<number, SubjectMeta>()
   const metaEntries = await mapConcurrent(subjectIds, CACHE_LOAD_CONCURRENCY, async (subjectId) => {
     const meta = await storage.get<SubjectMeta>(subjectMetaKey(subjectId))
-    return [subjectId, meta ? { nsfw: meta.nsfw } : null] as const
+    return [subjectId, meta] as const
   })
   for (const [subjectId, meta] of metaEntries) {
     if (meta) map.set(subjectId, meta)
@@ -357,8 +373,10 @@ async function loadSubjectMetaMap(storage: KVStorage, subjectIds: Iterable<numbe
   return map
 }
 
-function shouldQueueMedia(input: SubjectInput, images: SubjectImages | undefined, hasMeta: boolean): boolean {
-  if (!hasMeta) return true
+function shouldQueueMedia(input: SubjectInput, images: SubjectImages | undefined, meta: SubjectMeta | undefined, now: number): boolean {
+  if (isActiveNotFoundSubjectMeta(meta, now)) return false
+  if (isConfirmedNotFoundSubjectMeta(meta)) return true
+  if (!meta) return true
   if (input.images.common && !hasCachedImage(images ?? { common: null, large: null }, 'common')) return true
   if (input.images.large && !hasCachedImage(images ?? { common: null, large: null }, 'large')) return true
   return false
@@ -410,8 +428,7 @@ async function runScheduledSync(env: SyncEnv, runId = `legacy:${Math.floor(Date.
 
   for (const input of subjectInputs.values()) {
     if (earlyMediaSubjectIds.has(input.subject_id)) continue
-    if (!hasImageSource(input.images) && subjectMetaMap.has(input.subject_id)) continue
-    if (!shouldQueueMedia(input, imageMap.get(input.subject_id), subjectMetaMap.has(input.subject_id))) continue
+    if (!shouldQueueMedia(input, imageMap.get(input.subject_id), subjectMetaMap.get(input.subject_id), now)) continue
     const jobId = `${runId}:${input.subject_id}`
     await markMediaQueued(storage, input, now, jobId)
     await sendMediaJob(env, input, jobId)
@@ -458,7 +475,7 @@ async function fetch(request: Request, env: SyncEnv): Promise<Response> {
       const clientB = getPlatformClient(body.platformB || 'bgm')
       return json(await compareAccounts(clientA, body.tokenA || '', clientB, body.tokenB || ''), { headers: syncHeaders() })
     } catch (error) {
-      return errorJson(error, error instanceof SyntaxError || error instanceof SyncValidationError ? 400 : 500)
+      return syncErrorResponse(error)
     }
   }
 
@@ -504,8 +521,15 @@ async function fetch(request: Request, env: SyncEnv): Promise<Response> {
     const operation = await storage.get<SyncOperationLog>(operationLogKey(id))
     if (!operation) return errorJson(new Error('Operation log not found or expired'), 404)
     if (request.headers.get('accept')?.includes('application/json')) return json({ ok: true, operation }, { headers: syncHeaders() })
-    return new Response(`<h1>同步操作日志</h1><pre>${JSON.stringify(operation, null, 2)}</pre>`, {
-      headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY' },
+    const escaped = escapeHtml(JSON.stringify(operation, null, 2))
+    return new Response(`<h1>同步操作日志</h1><pre>${escaped}</pre>`, {
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'Content-Security-Policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+        'X-Content-Type-Options': 'nosniff',
+        'X-Frame-Options': 'DENY',
+      },
     })
   }
 

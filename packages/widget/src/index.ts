@@ -36,18 +36,26 @@ function escapeHtml(value: unknown): string {
     .replaceAll("'", '&#39;')
 }
 
-function normalizeRepositoryUrl(repositoryUrl: string): string {
-  return repositoryUrl
-    .replace(/^git\+/, '')
-    .replace(/\.git$/, '')
+function normalizeRepositoryUrl(repositoryUrl: string): string | undefined {
+  try {
+    const url = new URL(repositoryUrl.replace(/^git\+/, ''))
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined
+    url.hash = ''
+    url.search = ''
+    url.pathname = url.pathname.replace(/\/+$/, '').replace(/\.git$/, '')
+    return url.href.replace(/\/$/, '')
+  } catch {
+    return undefined
+  }
 }
 
 export function renderFooter(build: BuildInfo): string {
   const commit = build.commitSha?.trim()
   const repo = build.repositoryUrl?.trim()
+  const normalizedRepo = repo ? normalizeRepositoryUrl(repo) : undefined
   const buildLabel = commit ? `Build ${escapeHtml(commit.slice(0, 7))}` : 'Build unknown'
-  const buildHtml = commit && repo
-    ? `<a href="${escapeHtml(normalizeRepositoryUrl(repo))}/commit/${escapeHtml(commit)}">${buildLabel}</a>`
+  const buildHtml = commit && normalizedRepo
+    ? `<a href="${escapeHtml(normalizedRepo)}/commit/${escapeHtml(commit)}" target="_blank" rel="noopener noreferrer">${buildLabel}</a>`
     : `<span>${buildLabel}</span>`
   return `<footer class="bgm-footer">${buildHtml}<span class="bgm-footer-cache" data-runtime-status>Status loading...</span></footer>`
 }

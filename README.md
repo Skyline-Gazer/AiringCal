@@ -25,6 +25,14 @@ AiringCal 是一个 Cloudflare Workers monorepo。它把公开访问、只读数
 | `@airing-cal/widget` | HTML shell、footer runtime status、widget JS/CSS assets |
 | `@airing-cal/worker-common` | public error、安全 header、敏感信息清理、部署/文档守护测试 |
 
+Widget 资产的唯一手写源是 `packages/widget/assets/theme/{bangumi.js,bangumi.css,cache.js}`，唯一运行时生成产物是 `packages/widget/src/generated-assets.ts`。修改主题源后运行：
+
+```bash
+pnpm -F @airing-cal/widget generate
+```
+
+生成链测试会拒绝生成产物漂移，也会拒绝重新引入 `assets/public` 或 `assets/theme/v1` 副本。
+
 ## 外部访问入口
 
 外部只访问 `airing-cal-frontend`。如果使用 workers.dev，地址通常是：
@@ -43,17 +51,21 @@ https://airing-cal-frontend.<你的 workers.dev 子域>.workers.dev
 | `/src/bangumi.js` | Widget script |
 | `/src/bangumi.css` | Widget styles |
 | `/src/cache.js` | Footer runtime status script |
-| `/api/collections?type=watching` | 通过 `READ_WORKER` 读取 collection snapshot |
+| `/api/collections?type=watching&page=1&limit=24` | 通过 `READ_WORKER` 分页读取 collection snapshot；`type` 必须是五种已发布类型之一，`limit` 最大 100 |
 | `/api/calendar` | 通过 `READ_WORKER` 读取 calendar snapshot |
 | `/api/config?key=nsfw` | 通过 `READ_WORKER` 读取公开配置 |
 | `/api/health` | 通过 `READ_WORKER` 读取健康状态、轻量 cache 摘要、cron 兼容状态和最近 Workflow run |
-| `/api/cache?limit=100&cursor=<opaque>` | 通过 `READ_WORKER` 分页读取脱敏缓存 JSON；`limit` 最大 100 |
+| `/api/cache?limit=100&cursor=<opaque>` | 通过 `READ_WORKER` 分页读取脱敏缓存 JSON；`limit` 最大 100，当前页数量字段为 `page_subjects` |
 | `/api/sync/compare` | 通过 `SYNC_WORKER` 执行动画收藏对比 |
 | `/api/sync/apply` | 通过 `SYNC_WORKER` 执行动画收藏同步并写操作日志 |
 | `/api/check/:id` | 通过 `SYNC_WORKER` 查询 24 小时内的同步操作日志 |
 | `/image/:hash` | 通过 `READ_WORKER` 读取 R2 图片 |
 
 账号 compare 返回的差异条目包含规范化 `itemA` / `itemB`。页面按方向选择源 item，并以最多 5 条一批提交给 `/api/sync/apply`；apply 直接复用这些 items，不会为每批重新拉取全部源收藏。旧 `subject_ids` 输入暂时兼容一个版本且同样限制为 5 条。用户 token 只存在于当前请求内，不写入 KV operation log、Queue 或其他异步载荷；compare、apply 和 check 响应统一使用 `Cache-Control: no-store`。
+
+compare 会先认证两个账户；身份或收藏请求中任一账户返回 401/403 时，compare 都会停止且不会返回部分或空成功，并以相同 HTTP 状态返回稳定的 `AUTHENTICATION_FAILED` 错误 code。错误响应不会包含账户 token；限流、网络或其他 bgm.tv 上游故障仍使用 `REQUEST_FAILED` 或既有的部分结果语义。
+
+apply 同步章节进度时，会以 `limit=1000`、递增 offset 读取源/目标账户的全部章节收藏，再按目标章节状态分组并以每批最多 100 个 episode ID PATCH。某一批失败时，该条目返回 `status: "error"`、`code: "EPISODE_PATCH_PARTIAL"`、已经成功更新的 `succeeded` 数量和失败批次 `failedBatch`；此前成功批次不会被描述成整体成功。
 
 `airing-cal-sync` 没有公开同步 URL。Cloudflare Workflows Free Plan 不支持原生 Workflow schedule，因此生产定时入口是同一个 sync Worker 的轻量 Cron；Cron 每 4 小时只创建一个 live Workflow instance，不拉取 bgm.tv、不读写业务缓存：
 
@@ -247,6 +259,11 @@ Wrangler 本地权限映射把 `workers_scripts:write` 描述为可修改 Worker
 | `NSFW_SHOW=false` | `airing-cal-read` Variable | 不展示 R18 内容；不设置时默认展示 |
 | `BANGUMI_GIT_COMMIT_SHA` | `airing-cal-frontend` Variable | 可选；footer 显示并链接当前 commit |
 | `BANGUMI_GIT_REPOSITORY_URL` | `airing-cal-frontend` Variable | 可选；footer commit link 的 GitHub 仓库地址 |
+| `BANGUMI_GOOGLE_SITE_VERIFICATION` | `airing-cal-frontend` Variable | 可选；输出 Google site verification meta |
+| `BANGUMI_YANDEX_VERIFICATION` | `airing-cal-frontend` Variable | 可选；输出 Yandex verification meta |
+| `BANGUMI_BING_SITE_VERIFICATION` | `airing-cal-frontend` Variable | 可选；输出 Bing `msvalidate.01` meta |
+| `BANGUMI_BAIDU_SITE_VERIFICATION` | `airing-cal-frontend` Variable | 可选；输出 Baidu site verification meta |
+| `BANGUMI_GA4_ID`、`BANGUMI_CLARITY_ID`、`BANGUMI_YANDEX_METRICA_ID`、`BANGUMI_BAIDU_TONGJI_ID` | `airing-cal-frontend` Variable | 保留项；当前不会输出 analytics script |
 
 绑定自定义域名不需要改任何 repository URL 变量。自定义域名只影响访问入口，应该绑定到 `airing-cal-frontend`；repository URL 只用于页面 footer 的 commit link，不参与路由、service binding、KV/R2/Queue 或域名解析。
 
@@ -306,7 +323,7 @@ subject detail 使用 stale-while-revalidate：旧内容在刷新窗口后继续
 - `subjectMetaFromDetail(subjectId, subject, checkedAt)`：从完整 subject detail 生成 `subject:meta`。
 - `withSubjectDetail(subject, detail)`：用完整 subject detail 覆盖 calendar slim subject 的展示字段。
 
-`airing-cal-sync` 会为 collections 和 calendar 发现到的 subject id 复用/刷新 `subject:detail:{subject_id}`，再生成公开 snapshot。collections 的名称、简介、日期和集数字段也优先来自完整 subject detail；`airing-cal-read` 只做 image/meta 状态 hydration，不再在请求时读取 `subject:detail` 补展示字段。
+生产 Workflow 直接从 collection/calendar 响应生成版本化公开 snapshot，并为发现的 subject 投递 Media V3 job；它不读取或刷新 `subject:detail:{subject_id}`。Media Worker 异步写入 detail/meta/image 状态，Read Worker 在读取 collection/calendar 时用这些状态补图片并执行 tombstone 投影。
 
 subject detail 返回 404 时会保守缓存为：
 
@@ -314,9 +331,12 @@ subject detail 返回 404 时会保守缓存为：
 {
   "exists": false,
   "nsfw": true,
-  "reason": "not_found_or_restricted"
+  "reason": "not_found",
+  "expires_at": 1780000000
 }
 ```
+
+新 tombstone 的抑制 TTL 是 24 小时：TTL 内不重复请求 subject detail；到期只代表允许重新排队和探测，不代表旧 detail 或图片可以恢复公开。只要 metadata 仍是 confirmed-not-found，Read 和 Sync 都保持 fail-closed，Media 的恢复探测若返回 404、401/403 或其他失败也不会继续处理旧图片；只有成功取得新 detail 并写入存在状态后才解除屏蔽。旧数据中的 `reason: "not_found_or_restricted"` 同样按 confirmed-not-found 处理，并立即安排一次迁移探测。
 
 ## 本地开发与验证
 
@@ -373,7 +393,9 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 
 ## Cache 与 NSFW
 
-`/api/cache` 是公开且脱敏的缓存状态 JSON。它使用 KV cursor 分页，`limit` 最大 100，并以固定并发读取当前页 image status；响应中的 `cursor` 为 `null` 表示已到最后一页。它不暴露 access token、上游认证响应体或未清理的错误信息。
+`/api/cache` 是公开且脱敏的缓存状态 JSON。它使用 opaque KV cursor 分页，合法 cursor 会原样传给 KV；`limit` 最大 100，并以固定并发读取当前页 image status。响应中的 `page_subjects` 是当前页条目数，`cursor` 为 `null` 表示已到最后一页。它不暴露 access token、上游认证响应体或未清理的错误信息。
+
+`/api/collections` 的 `type`、`page`、`limit` 与 `/api/cache` 的 `limit`、`cursor` 都执行完整格式验证；这些参数重复出现也会被拒绝。未知 collection type、非正整数、超出上限、空或含 U+0000–U+001F、U+007F–U+009F 控制字符的 cursor 等非法 query 返回 HTTP 400 和稳定的 `INVALID_QUERY` JSON 错误，不会静默采用默认值。此类错误响应显式使用 `Cache-Control: no-store`。
 
 页面 footer 不读取完整 `/api/cache` 明细；`/src/cache.js` 只读取 `/api/health` 中的轻量 cache 摘要与同步状态，避免为了展示 footer 触发大量 KV image status 读取。
 

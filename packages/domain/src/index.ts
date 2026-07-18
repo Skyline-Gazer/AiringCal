@@ -18,7 +18,8 @@ export interface SubjectMeta {
   exists: boolean | null
   nsfw: boolean
   checked_at: number
-  reason: 'subject_detail' | 'not_found_or_restricted' | 'network_error' | 'upstream_error'
+  expires_at?: number | null
+  reason: 'subject_detail' | 'not_found' | 'not_found_or_restricted' | 'network_error' | 'upstream_error'
 }
 
 export interface BgmCollectionLike {
@@ -190,6 +191,12 @@ export interface SyncResult {
     total: number
   }
   error?: string
+  code?: 'EPISODE_PATCH_PARTIAL'
+  succeeded?: number
+  failedBatch?: {
+    index: number
+    episodeIds: number[]
+  }
 }
 
 export class SyncValidationError extends Error {
@@ -288,8 +295,20 @@ export function subjectMetaFromNotFound(subjectId: number, checkedAt: number): S
     exists: false,
     nsfw: true,
     checked_at: checkedAt,
-    reason: 'not_found_or_restricted',
+    expires_at: checkedAt + 86400,
+    reason: 'not_found',
   }
+}
+
+export function isActiveNotFoundSubjectMeta(meta: SubjectMeta | null | undefined, now: number): meta is SubjectMeta & { exists: false; reason: 'not_found'; expires_at: number } {
+  return meta?.exists === false
+    && meta.reason === 'not_found'
+    && typeof meta.expires_at === 'number'
+    && now < meta.expires_at
+}
+
+export function isConfirmedNotFoundSubjectMeta(meta: SubjectMeta | null | undefined): meta is SubjectMeta & { exists: false; reason: 'not_found' | 'not_found_or_restricted' } {
+  return meta?.exists === false && (meta.reason === 'not_found' || meta.reason === 'not_found_or_restricted')
 }
 
 export function subjectMetaFromDetail(subjectId: number, subject: SubjectDetailLike, checkedAt: number): SubjectMeta {
@@ -298,6 +317,7 @@ export function subjectMetaFromDetail(subjectId: number, subject: SubjectDetailL
     exists: true,
     nsfw: subject.nsfw === true,
     checked_at: checkedAt,
+    expires_at: null,
     reason: 'subject_detail',
   }
 }
@@ -465,17 +485,23 @@ export async function compareAccounts(
   clientB: PlatformClient,
   tokenB: string,
 ): Promise<CompareResult> {
-  const [meA, meB] = await Promise.allSettled([
+  const [meA, meB] = await Promise.all([
     clientA.getMe(tokenA),
     clientB.getMe(tokenB),
   ])
-  const nameA = meA.status === 'fulfilled' ? meA.value.username : 'Account A'
-  const nameB = meB.status === 'fulfilled' ? meB.value.username : 'Account B'
+  const nameA = meA.username
+  const nameB = meB.username
 
   const [settledA, settledB] = await Promise.allSettled([
     clientA.fetchCollections(tokenA, nameA),
     clientB.fetchCollections(tokenB, nameB),
   ])
+
+  for (const settled of [settledA, settledB]) {
+    if (settled.status !== 'rejected') continue
+    const authenticationError = findAuthenticationError(settled.reason)
+    if (authenticationError) throw authenticationError
+  }
 
   const colA = unwrapCollections(settledA, nameA)
   const colB = unwrapCollections(settledB, nameB)
@@ -537,6 +563,12 @@ export async function compareAccounts(
   }
 }
 
+function findAuthenticationError(error: unknown): Error & { status: 401 | 403 } | null {
+  if (!(error instanceof Error)) return null
+  if ('status' in error && (error.status === 401 || error.status === 403)) return error as Error & { status: 401 | 403 }
+  return findAuthenticationError(error.cause)
+}
+
 function unwrapCollections(settled: PromiseSettledResult<ComparisonItem[]>, name: string) {
   if (settled.status === 'fulfilled') return { name, items: settled.value, total: settled.value.length }
   const reason = settled.reason instanceof Error ? settled.reason.message : String(settled.reason)
@@ -578,16 +610,42 @@ export async function executeSync(
         episodeProgress: patchResult.episodeProgress,
       })
     } catch (error) {
-      results.push({
+      const result: SyncResult = {
         externalId: entry.externalId,
         title: entry.title,
         status: 'error',
         error: error instanceof Error ? error.message : String(error),
-      })
+      }
+      if (isEpisodePatchPartialError(error)) {
+        result.code = error.code
+        result.succeeded = error.succeeded
+        result.failedBatch = error.failedBatch
+      }
+      results.push(result)
     }
   }
 
   return results
+}
+
+function isEpisodePatchPartialError(error: unknown): error is {
+  code: 'EPISODE_PATCH_PARTIAL'
+  succeeded: number
+  failedBatch: { index: number; episodeIds: number[] }
+} {
+  if (!(error instanceof Error)) return false
+  const candidate = error as unknown as Record<string, unknown>
+  const failedBatch = candidate.failedBatch
+  return candidate.code === 'EPISODE_PATCH_PARTIAL'
+    && Number.isSafeInteger(candidate.succeeded)
+    && (candidate.succeeded as number) >= 0
+    && !!failedBatch
+    && typeof failedBatch === 'object'
+    && Number.isSafeInteger((failedBatch as Record<string, unknown>).index)
+    && ((failedBatch as Record<string, unknown>).index as number) >= 0
+    && Array.isArray((failedBatch as Record<string, unknown>).episodeIds)
+    && ((failedBatch as Record<string, unknown>).episodeIds as unknown[])
+      .every((id) => Number.isSafeInteger(id) && (id as number) > 0)
 }
 
 function validateSyncRequest(request: SyncRequest): void {

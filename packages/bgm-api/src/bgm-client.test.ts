@@ -119,6 +119,23 @@ test('GET retries timeout and network failures', async () => {
   }
 })
 
+test('patchSubjectEpisodeCollections rejects batches outside the supported 1 to 100 range', async () => {
+  const client = new BgmClient('token-a')
+  const originalFetch = globalThis.fetch
+  const captured = captureFetch(204, '')
+  globalThis.fetch = captured.fetch
+  try {
+    await assert.rejects(client.patchSubjectEpisodeCollections('token-a', 23080, [], 2), /between 1 and 100/)
+    await assert.rejects(
+      client.patchSubjectEpisodeCollections('token-a', 23080, Array.from({ length: 101 }, (_, index) => index + 1), 2),
+      /between 1 and 100/,
+    )
+    assert.equal(captured.calls.length, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('GET does not retry 401 or 403 responses', async () => {
   for (const status of [401, 403]) {
     const originalFetch = globalThis.fetch
@@ -176,6 +193,134 @@ test('fetchJson classifies non-404 upstream errors as BgmHttpError', async () =>
     globalThis.fetch = originalFetch
   }
 })
+
+test('getSubjectEpisodeCollections fetches all 1001 episode collections', async () => {
+  const originalFetch = globalThis.fetch
+  const offsets: number[] = []
+  globalThis.fetch = async (url) => {
+    const offset = Number(new URL(String(url)).searchParams.get('offset'))
+    offsets.push(offset)
+    const count = offset === 0 ? 1000 : 1
+    return Response.json({
+      total: 1001,
+      data: Array.from({ length: count }, (_, index) => ({ episode: { id: offset + index + 1 }, type: 2 })),
+    })
+  }
+  try {
+    const result = await new BgmClient().getSubjectEpisodeCollections('secret-token', 23080)
+
+    assert.deepEqual(offsets, [0, 1000])
+    assert.equal(result.data.length, 1001)
+    assert.equal(result.total, 1001)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('getSubjectEpisodeCollections rejects an empty page before total with a stable code and no token', async () => {
+  const originalFetch = globalThis.fetch
+  let calls = 0
+  globalThis.fetch = async () => Response.json(calls++ === 0
+    ? { total: 1001, data: Array.from({ length: 1000 }, (_, index) => ({ episode: { id: index + 1 }, type: 2 })) }
+    : { total: 1001, data: [] })
+  try {
+    await assert.rejects(
+      () => new BgmClient().getSubjectEpisodeCollections('secret-token', 23080),
+      (error: unknown) => {
+        assert.ok(error instanceof Error)
+        assert.equal((error as Error & { code?: string }).code, 'EPISODE_PAGINATION_EMPTY_PAGE')
+        assert.match(error.message, /subject 23080.*offset 1000.*total 1001/)
+        assert.doesNotMatch(error.message, /secret-token/)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+for (const scenario of [
+  {
+    name: 'a changed total after the first page',
+    pages: [
+      { total: 1001, data: Array.from({ length: 1000 }, (_, index) => ({ episode: { id: index + 1 }, type: 2 })) },
+      { total: 1002, data: [{ episode: { id: 1001 }, type: 2 }] },
+    ],
+  },
+  {
+    name: 'accumulated rows exceeding the first total',
+    pages: [
+      { total: 1001, data: Array.from({ length: 1000 }, (_, index) => ({ episode: { id: index + 1 }, type: 2 })) },
+      { total: 1001, data: [{ episode: { id: 1001 }, type: 2 }, { episode: { id: 1002 }, type: 2 }] },
+    ],
+  },
+  {
+    name: 'a duplicate episode ID across pages',
+    pages: [
+      { total: 1001, data: Array.from({ length: 1000 }, (_, index) => ({ episode: { id: index + 1 }, type: 2 })) },
+      { total: 1001, data: [{ episode: { id: 1000 }, type: 2 }] },
+    ],
+  },
+] as const) {
+  test(`getSubjectEpisodeCollections rejects ${scenario.name} with a stable pagination error`, async () => {
+    const originalFetch = globalThis.fetch
+    let page = 0
+    globalThis.fetch = async () => Response.json(scenario.pages[page++])
+    try {
+      await assert.rejects(
+        () => new BgmClient().getSubjectEpisodeCollections('secret-token', 23080),
+        (error: unknown) => {
+          assert.ok(error instanceof Error)
+          assert.equal((error as Error & { code?: string }).code, 'EPISODE_PAGINATION_INCONSISTENT')
+          assert.doesNotMatch(error.message, /secret-token/)
+          return true
+        },
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+}
+
+test('getSubjectEpisodeCollections rejects a non-empty page with no unique progress', async () => {
+  const originalFetch = globalThis.fetch
+  let page = 0
+  const firstPage = Array.from({ length: 1000 }, (_, index) => ({ episode: { id: index + 1 }, type: 2 }))
+  globalThis.fetch = async () => Response.json(page++ === 0
+    ? { total: 1002, data: firstPage }
+    : { total: 1002, data: [{ episode: { id: 999 }, type: 2 }, { episode: { id: 1000 }, type: 2 }] })
+  try {
+    await assert.rejects(
+      () => new BgmClient().getSubjectEpisodeCollections('secret-token', 23080),
+      (error: unknown) => {
+        assert.ok(error instanceof Error)
+        assert.equal((error as Error & { code?: string }).code, 'EPISODE_PAGINATION_INCONSISTENT')
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+for (const total of [Number.NaN, -1, Number.MAX_SAFE_INTEGER + 1]) {
+  test(`getSubjectEpisodeCollections rejects invalid first-page total ${String(total)}`, async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async () => Response.json({ total, data: [] })
+    try {
+      await assert.rejects(
+        () => new BgmClient().getSubjectEpisodeCollections('secret-token', 23080),
+        (error: unknown) => {
+          assert.ok(error instanceof Error)
+          assert.equal((error as Error & { code?: string }).code, 'EPISODE_PAGINATION_INCONSISTENT')
+          return true
+        },
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+}
 
 test('downloadImage normalizes protocol-relative bgm image urls before fetching', async () => {
   const client = new BgmClient()
