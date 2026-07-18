@@ -13,7 +13,7 @@
   - `4.2 定义 tombstone 类型、key/TTL 与保守 NSFW 投影，404 时停止返回旧 detail`
   - `4.3 验证 tombstone 到期后允许重新探测且 generation 协调语义不倒退`
 - Brief: `.superpowers/sdd/task-6-brief.md`
-- Stage: `fourth-extra-fix-review`
+- Stage: `blocked`
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
@@ -50,7 +50,9 @@
 - Fourth extra-round authorization: user explicitly authorized the residual-detail snapshot RED→GREEN fix and review.
 - Fourth extra fix commit: `06d9e9cba2614c1617e1cd7bea88fd6220e14366` (`fix: prevent residual tombstone detail snapshots`).
 - Fourth extra fix RED/GREEN: Sync 41/42 exposed `name: Residual`; after both detail loaders suppress all confirmed tombstones, five Task 6 suites pass 135/135, five typechecks pass, media/read/sync build checks pass, and `git diff --check` passes.
-- Next action: independent final review of the residual-detail fix and complete Task 6 boundary.
+- Fourth extra review result: the residual-detail fix and all previously authorized sequential behaviors are correct with fresh focused verification at 135/135, but deployment-state compatibility remains blocked by one Important finding.
+- New Important finding: pre-change persisted tombstones use `exists: false, reason: not_found_or_restricted` without `expires_at`; the new confirmed-not-found predicate recognizes only `reason: not_found`, so Read/Sync/Media can stop fail-closed behavior for existing production records after deployment.
+- Block reason: the fourth user-authorized fix round has been consumed; another explicit authorization is required for legacy tombstone compatibility RED→GREEN coverage and review.
 - Accepted Minor findings carried to final review:
   - Task 2 Frontend CSP test could explicitly forbid script `'unsafe-inline'`.
   - Task 2 operation test could explicitly assert `default-src 'none'` and encoded entities.
