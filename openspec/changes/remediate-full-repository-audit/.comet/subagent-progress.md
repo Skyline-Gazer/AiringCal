@@ -12,11 +12,13 @@
   - `5.1 使用 rg 与构建入口证明旧 assets/public、theme/v1 副本无部署消费者`
   - `5.2 删除旧副本并增加源码、生成产物、部署入口一致性测试`
   - `5.3 更新 README 与生成说明，明确 assets/theme 和 generated-assets.ts 唯一链路`
-- Stage: `dispatched`
+- Stage: `review`
 - Base commit: `db99586`
 - Implementer: `/root/task7_widget_assets`
+- Implementation commit: `2d692e92b1e6035ef03c2f1a3cdcb909686bc4ee` (`chore: remove stale widget asset copies`).
 - Consumer preflight: production import and generator use only `assets/theme` → `src/generated-assets.ts`; one security regression in `packages/widget/src/render.test.ts` still reads stale copies and must be migrated before deletion.
-- Next action: strict RED→GREEN absence/generation-chain tests, migrate the stale-copy test consumer, remove both directories, update README, verify and independently review.
+- RED/GREEN: absence gate failed 1/2 while stale dirs existed; after deletion/migration, generator gate 2/2, Widget 23/23, widget typecheck, full build check, generated diff, and `git diff --check` pass.
+- Next action: independent review of asset deletion, non-mutating drift gate, security test migration, and README contract.
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
