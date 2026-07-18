@@ -12,10 +12,13 @@
   - `6.1 运行相关包 RED→GREEN 测试、typecheck、Wrangler dry-run 与 diff check，并按安全/API/缓存边界原子 commit/push`
   - `6.2 运行全量 pnpm test、pnpm typecheck、pnpm build:check、OpenSpec strict、git diff --check 与 pnpm audit --prod`
   - `6.3 完成 thorough code review，修复全部 P0/P1/P2 并记录验证报告`
-- Stage: `docs-and-gates-dispatched`
+- Stage: `boundary-review`
 - Base commit: `70762b1`
 - Implementer: `/root/task8_docs_gates`
-- Next action: audit README against actual routes/config/contracts, run all full gates with fresh evidence, then dispatch boundary and full-branch reviewers.
+- README/gates commit: `90424feefdc1bb5d8a3c9920325712aa7cae1ca1` (`docs: synchronize audit remediation contracts`).
+- Fresh gates: tests 221/221, typecheck 9/9 projects, build check 4/4 Workers, OpenSpec strict, and `git diff --check` pass.
+- Gate blocker: `pnpm audit --prod` could not produce a vulnerability result; the registry request is denied as production dependency metadata export. Explicit informed user approval is required before retrying.
+- Next action: complete security, Read/API, and Media/cache/asset boundary reviews while awaiting audit authorization, then run full-branch review.
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
