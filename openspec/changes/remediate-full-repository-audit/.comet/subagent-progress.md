@@ -7,13 +7,16 @@
 
 ## Current Task
 
-- Unique text: `Task 6: 24 小时 subject 404 tombstone`
+- Unique text: `Task 7: 删除漂移 Widget 副本并锁定生成链`
 - OpenSpec mappings:
-  - `4.1 增加已有 detail 后刷新 404、TTL 内不重复请求的 RED 测试`
-  - `4.2 定义 tombstone 类型、key/TTL 与保守 NSFW 投影，404 时停止返回旧 detail`
-  - `4.3 验证 tombstone 到期后允许重新探测且 generation 协调语义不倒退`
-- Brief: `.superpowers/sdd/task-6-brief.md`
-- Stage: `done`
+  - `5.1 使用 rg 与构建入口证明旧 assets/public、theme/v1 副本无部署消费者`
+  - `5.2 删除旧副本并增加源码、生成产物、部署入口一致性测试`
+  - `5.3 更新 README 与生成说明，明确 assets/theme 和 generated-assets.ts 唯一链路`
+- Stage: `dispatched`
+- Base commit: `db99586`
+- Implementer: `/root/task7_widget_assets`
+- Consumer preflight: production import and generator use only `assets/theme` → `src/generated-assets.ts`; one security regression in `packages/widget/src/render.test.ts` still reads stale copies and must be migrated before deletion.
+- Next action: strict RED→GREEN absence/generation-chain tests, migrate the stale-copy test consumer, remove both directories, update README, verify and independently review.
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
