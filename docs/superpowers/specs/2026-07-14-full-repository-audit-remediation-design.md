@@ -80,6 +80,12 @@ Compare 在任一账户收到上游认证失败时返回稳定的非 200 认证�
 
 测试使用可控时钟覆盖写入前存在旧 detail、TTL 内读取与刷新、24 小时后恢复探测、404 后保守 NSFW，以及网络/429/5xx 不误写 tombstone。
 
+### Implementation Divergence
+
+实现将 tombstone 的读取语义收紧为持续 fail-closed：24 小时 TTL 只控制何时允许重新排队和探测，不代表到期后可以重新公开旧 detail、图片或快照字段。只要 metadata 仍是 confirmed-not-found，Read 和 Sync 都继续屏蔽旧数据；Media 只有在上游成功返回新 detail 并写入 `exists: true` 后才解除该状态。重复 404 会续写新的 24 小时 tombstone，401/403、其他终止错误和暂时性错误均不得回落到旧图片处理。
+
+为兼容部署前已持久化的数据，旧 `reason: not_found_or_restricted` 且没有 `expires_at` 的 metadata 也按 confirmed-not-found 处理。它不参与 TTL 节流，而是立即安排一次安全重探测；在成功恢复或迁移为新 24 小时 tombstone 前仍保持 fail-closed。该偏差用于避免 TTL 边界、删除失败残留缓存和滚动部署期间重新暴露已确认失效的数据。
+
 ## Widget 资产生成链
 
 在删除目录前，用 `rg`、构建入口和生成脚本证明 `packages/widget/assets/public` 与 `packages/widget/assets/theme/v1` 没有部署消费者。随后删除这些手工副本，只保留主题根目录中的手写文件和 `generated-assets.ts` 生成产物。
