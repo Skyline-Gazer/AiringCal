@@ -21,7 +21,7 @@
   function safeUrl(value, fallback) {
     try {
       var url = new URL(String(value), location.origin)
-      if (url.origin === location.origin || url.protocol === 'https:' || url.protocol === 'http:') return url.href
+      if (url.protocol === 'https:' || url.protocol === 'http:') return url.href
     } catch (_) {}
     return fallback || '#'
   }

@@ -425,7 +425,10 @@ async function fetch(request: Request, env: ReadEnv): Promise<Response> {
       })
     }
     if (error instanceof SnapshotIncompleteError) {
-      return json({ ok: false, error: { code: 'SNAPSHOT_INCOMPLETE', message: 'Active snapshot is incomplete' } }, { status: 503 })
+      return json({ ok: false, error: { code: 'SNAPSHOT_INCOMPLETE', message: 'Active snapshot is incomplete' } }, {
+        status: 503,
+        headers: { 'Cache-Control': 'no-store' },
+      })
     }
     throw error
   }

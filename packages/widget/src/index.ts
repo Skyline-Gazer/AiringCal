@@ -47,7 +47,7 @@ export function renderFooter(build: BuildInfo): string {
   const repo = build.repositoryUrl?.trim()
   const buildLabel = commit ? `Build ${escapeHtml(commit.slice(0, 7))}` : 'Build unknown'
   const buildHtml = commit && repo
-    ? `<a href="${escapeHtml(normalizeRepositoryUrl(repo))}/commit/${escapeHtml(commit)}">${buildLabel}</a>`
+    ? `<a href="${escapeHtml(normalizeRepositoryUrl(repo))}/commit/${escapeHtml(commit)}" target="_blank" rel="noopener noreferrer">${buildLabel}</a>`
     : `<span>${buildLabel}</span>`
   return `<footer class="bgm-footer">${buildHtml}<span class="bgm-footer-cache" data-runtime-status>Status loading...</span></footer>`
 }

@@ -52,6 +52,7 @@ test('frontend-worker protects HTML responses without applying HTML CSP to asset
   assert.equal(html.headers.get('x-frame-options'), 'DENY')
   assert.match(html.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/)
   assert.match(html.headers.get('content-security-policy') ?? '', /base-uri 'none'/)
+  assert.doesNotMatch(html.headers.get('content-security-policy') ?? '', /script-src[^;]*'unsafe-inline'/)
   assert.equal(js.headers.get('content-security-policy'), null)
   assert.equal(css.headers.get('content-security-policy'), null)
 })

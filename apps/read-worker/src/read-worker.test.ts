@@ -175,6 +175,7 @@ test('read-worker returns 503 instead of mixing legacy data when active manifest
 
   const response = await worker.fetch(new Request('https://read.local/collections?type=watching'), env(kv) as any)
   assert.equal(response.status, 503)
+  assert.equal(response.headers.get('Cache-Control'), 'no-store')
   assert.deepEqual(await response.json(), {
     ok: false,
     error: { code: 'SNAPSHOT_INCOMPLETE', message: 'Active snapshot is incomplete' },

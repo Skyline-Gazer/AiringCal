@@ -63,7 +63,7 @@ function loadWidgetProductionRenderers() {
 
   return Function(
     'location',
-    `var syncState, resultArea, document
+    `var syncState, resultArea, document, API = ''
     ${source}
     return {
       renderSubjectCard,
@@ -108,6 +108,7 @@ test('renderFooter omits cache page link and links commit when SHA and repositor
   assert.equal(footer.includes('href="/cache"'), false)
   assert.match(footer, /Build 0123456/)
   assert.match(footer, /https:\/\/github.com\/markd3ng\/AiringCal\/commit\/0123456789abcdef/)
+  assert.match(footer, /target="_blank" rel="noopener noreferrer"/)
   assert.match(footer, /data-runtime-status/)
 })
 
@@ -258,6 +259,19 @@ test('widget rejects dangerous URLs and contains no inline click handlers', () =
   assert.doesNotMatch(widgetJs, /\sonclick\s*=/i)
   assert.doesNotMatch(widgetJs, /\.onclick\s*=/)
   assert.match(widgetJs, /addEventListener\(['"]click['"]/)
+})
+
+test('production widget renderers reject blob and data URLs in link and image sinks', () => {
+  const renderers = loadWidgetProductionRenderers()
+  const linkHtml = renderers.renderInlineSyncLog([], ['blob:https://widget.example/secret', 'data:text/html,<script>alert(1)</script>'])
+  const imageHtml = renderers.renderSubjectCard({
+    subjectId: 1,
+    name: 'unsafe cover',
+    images: { common: { uri: 'blob:https://widget.example/secret' } },
+  })
+
+  assert.doesNotMatch(linkHtml, /href=["'](?:blob|data):/i)
+  assert.doesNotMatch(imageHtml, /src=["'](?:blob|data):/i)
 })
 
 test('widgetJs sends compare items to apply in bounded batches', () => {

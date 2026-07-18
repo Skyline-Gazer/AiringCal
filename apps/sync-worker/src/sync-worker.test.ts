@@ -1355,7 +1355,10 @@ test('operation check escapes HTML while preserving the JSON response contract',
   assert.equal(html?.headers.get('x-frame-options'), 'DENY')
   assert.match(html?.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/)
   assert.match(html?.headers.get('content-security-policy') ?? '', /base-uri 'none'/)
-  assert.doesNotMatch(await html?.text() ?? '', /<\/pre><script>/)
+  assert.match(html?.headers.get('content-security-policy') ?? '', /default-src 'none'/)
+  const htmlBody = await html?.text() ?? ''
+  assert.match(htmlBody, /&lt;\/pre&gt;&lt;script&gt;alert\(\\"operation\\"\)&lt;\/script&gt;&amp;/)
+  assert.doesNotMatch(htmlBody, /<\/pre><script>/)
   assert.equal(jsonResponse?.headers.get('content-security-policy'), null)
   assert.deepEqual(await jsonResponse?.json(), { ok: true, operation: maliciousOperation })
 })

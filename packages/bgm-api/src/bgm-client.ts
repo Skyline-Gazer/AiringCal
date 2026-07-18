@@ -346,6 +346,9 @@ export class BgmClient {
   }
 
   async patchSubjectEpisodeCollections(token: string, subjectId: number, episodeIds: number[], type: 0 | 1 | 2 | 3) {
+    if (episodeIds.length < 1 || episodeIds.length > 100) {
+      throw new RangeError('episodeIds must contain between 1 and 100 entries')
+    }
     const url = `${BGM_BASE}/v0/users/-/collections/${subjectId}/episodes`
     return this.fetchJson(url, {
       method: 'PATCH',

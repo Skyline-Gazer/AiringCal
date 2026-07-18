@@ -119,6 +119,23 @@ test('GET retries timeout and network failures', async () => {
   }
 })
 
+test('patchSubjectEpisodeCollections rejects batches outside the supported 1 to 100 range', async () => {
+  const client = new BgmClient('token-a')
+  const originalFetch = globalThis.fetch
+  const captured = captureFetch(204, '')
+  globalThis.fetch = captured.fetch
+  try {
+    await assert.rejects(client.patchSubjectEpisodeCollections('token-a', 23080, [], 2), /between 1 and 100/)
+    await assert.rejects(
+      client.patchSubjectEpisodeCollections('token-a', 23080, Array.from({ length: 101 }, (_, index) => index + 1), 2),
+      /between 1 and 100/,
+    )
+    assert.equal(captured.calls.length, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('GET does not retry 401 or 403 responses', async () => {
   for (const status of [401, 403]) {
     const originalFetch = globalThis.fetch
