@@ -173,3 +173,21 @@ Fourth-extra-round final verification:
 - Typechecks passed for media, read, sync, domain, and storage.
 - Build checks passed for media, read, and sync; Wrangler types were current and all three dry-run deploys completed.
 - `git diff --check` passed.
+
+## User-authorized fifth extra fix round
+
+The deployment compatibility finding was verified against the exact pre-Task-6 source at base commit `bf171585902d63f32ebfffd8224167c5777cce69`. Its persisted missing-subject metadata was `{ subject_id, exists: false, nsfw: true, checked_at, reason: 'not_found_or_restricted' }` with no `expires_at` field.
+
+Legacy tombstone compatibility RED/GREEN evidence:
+
+- The first sandboxed test attempt was invalid because `tsx` could not create its IPC pipe (`listen EPERM`). The permitted rerun produced the effective RED: domain 28/29; `isConfirmedNotFoundSubjectMeta` returned false for the verified legacy shape.
+- The shared metadata type now accepts the legacy reason and an absent `expires_at`. The confirmed predicate recognizes both persisted legacy and current `not_found` records, while the active-TTL predicate accepts only current `not_found` records with a future numeric expiry.
+- This keeps legacy records fail-closed in Read and Sync but does not suppress refresh forever: Sync excludes residual detail and immediately queues recovery; Media forces a direct subject probe even for image-only work, bypassing residual detail and job image URLs. A repeated 404 migrates metadata to the current 24-hour tombstone. Existing successful-recovery coverage proves a successful probe replaces metadata with `exists: true`; transient failures leave the prior confirmed metadata authoritative.
+- Focused GREEN passed: domain 29/29, read 32/32, sync 43/43, and media 27/27.
+
+Fifth-extra-round final verification:
+
+- Complete Task 6 tests passed: media 27/27, read 32/32, sync 43/43, domain 29/29, storage 8/8 (139/139).
+- Typechecks passed for media, read, sync, domain, and storage.
+- Build checks passed for media, read, and sync; Wrangler types were current and all three dry-run deploys completed.
+- `git diff --check` passed.

@@ -18,8 +18,8 @@ export interface SubjectMeta {
   exists: boolean | null
   nsfw: boolean
   checked_at: number
-  expires_at: number | null
-  reason: 'subject_detail' | 'not_found' | 'network_error' | 'upstream_error'
+  expires_at?: number | null
+  reason: 'subject_detail' | 'not_found' | 'not_found_or_restricted' | 'network_error' | 'upstream_error'
 }
 
 export interface BgmCollectionLike {
@@ -301,13 +301,14 @@ export function subjectMetaFromNotFound(subjectId: number, checkedAt: number): S
 }
 
 export function isActiveNotFoundSubjectMeta(meta: SubjectMeta | null | undefined, now: number): meta is SubjectMeta & { exists: false; reason: 'not_found'; expires_at: number } {
-  return isConfirmedNotFoundSubjectMeta(meta)
+  return meta?.exists === false
+    && meta.reason === 'not_found'
     && typeof meta.expires_at === 'number'
     && now < meta.expires_at
 }
 
-export function isConfirmedNotFoundSubjectMeta(meta: SubjectMeta | null | undefined): meta is SubjectMeta & { exists: false; reason: 'not_found' } {
-  return meta?.exists === false && meta.reason === 'not_found'
+export function isConfirmedNotFoundSubjectMeta(meta: SubjectMeta | null | undefined): meta is SubjectMeta & { exists: false; reason: 'not_found' | 'not_found_or_restricted' } {
+  return meta?.exists === false && (meta.reason === 'not_found' || meta.reason === 'not_found_or_restricted')
 }
 
 export function subjectMetaFromDetail(subjectId: number, subject: SubjectDetailLike, checkedAt: number): SubjectMeta {

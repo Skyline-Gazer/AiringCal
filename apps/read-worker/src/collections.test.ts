@@ -228,6 +228,38 @@ test('collections keep suppressing snapshot detail fields at exact tombstone exp
   }
 })
 
+test('collections keep legacy tombstones fail-closed before migration', async () => {
+  const kv = new MockKV()
+  kv.values.set('snapshot:collections:watching', [{
+    subject_id: 23080,
+    name: 'Stale name',
+    name_cn: '陈旧名称',
+    summary: 'Stale summary',
+    date: '2020-01-01',
+    rating: { score: 9.9 },
+    eps: 99,
+    total_episodes: 97,
+    images: { common: 'https://img.example/stale.jpg' },
+    image_status: { common: 'cached' },
+    ep_status: 7,
+    nsfw: false,
+  }])
+  kv.values.set('snapshot:summary', { watching: 1, _total: 1 })
+  kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: 1_782_650_300, reason: 'not_found_or_restricted' })
+  kv.values.set('image:status:23080', {
+    common: { status: 'cached', hash, uri: `/image/${hash}`, r2_key: `images/${hash}/original` },
+  })
+
+  const response = await worker.fetch(new Request('https://read.local/collections?type=watching'), { AIRING_CAL_KV: kv, AIRING_CAL_R2: { get: async () => null } } as any)
+  const item = (await response.json() as any).data[0]
+  for (const field of ['name', 'name_cn', 'summary', 'date', 'rating', 'eps', 'total_episodes', 'images', 'image_status']) {
+    assert.equal(item[field], undefined, field)
+  }
+  assert.equal(item.subject_id, 23080)
+  assert.equal(item.ep_status, 7)
+  assert.equal(item.nsfw, true)
+})
+
 test('calendar reads the active Workflow snapshot version', async () => {
   const kv = new MockKV()
   kv.values.set('snapshot:calendar', [{ weekday: { id: 1 }, items: [{ id: 1, name: 'legacy' }] }])

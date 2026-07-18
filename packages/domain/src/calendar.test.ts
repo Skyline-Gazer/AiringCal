@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { imageRef, imageRefsFromStatus, isActiveNotFoundSubjectMeta, subjectDetailImages, subjectMetaFromDetail, transformCalendar, withSubjectDetail } from './index.ts'
+import { imageRef, imageRefsFromStatus, isActiveNotFoundSubjectMeta, isConfirmedNotFoundSubjectMeta, subjectDetailImages, subjectMetaFromDetail, transformCalendar, withSubjectDetail } from './index.ts'
 import type { BgmCalendarSubjectLike } from './index.ts'
 
 test('not-found tombstone expires exactly at expires_at', () => {
   const meta = { subject_id: 1, exists: false, nsfw: true, checked_at: 100, expires_at: 200, reason: 'not_found' } as const
   assert.equal(isActiveNotFoundSubjectMeta(meta, 199), true)
   assert.equal(isActiveNotFoundSubjectMeta(meta, 200), false)
+})
+
+test('legacy not-found-or-restricted metadata stays confirmed but requires immediate reprobe', () => {
+  const meta = { subject_id: 1, exists: false, nsfw: true, checked_at: 100, reason: 'not_found_or_restricted' } as const
+  assert.equal(isConfirmedNotFoundSubjectMeta(meta), true)
+  assert.equal(isActiveNotFoundSubjectMeta(meta, 100), false)
 })
 
 test('imageRefsFromStatus converts cached image status to public refs only', () => {

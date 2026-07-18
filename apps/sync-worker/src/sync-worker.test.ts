@@ -950,6 +950,38 @@ test('scheduled sync never republishes residual detail when a not-found tombston
   }
 })
 
+test('scheduled sync suppresses legacy tombstone detail and queues immediate recovery', async () => {
+  const kv = new MockKV()
+  const now = Math.floor(Date.UTC(2026, 5, 30, 4, 0, 0) / 1000)
+  kv.values.set(subjectDetailKey(23080), { cached_at: now - 1, subject: { id: 23080, name: 'Residual', eps: 99, rating: { score: 9.9 } } })
+  kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: now - 100, reason: 'not_found_or_restricted' })
+  const queueMessages: unknown[] = []
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  const upstream = mockFetch()
+  globalThis.fetch = upstream.fetch as typeof globalThis.fetch
+  Date.now = () => now * 1000
+  try {
+    await worker.scheduled({ scheduledTime: now * 1000 } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
+      BANGUMI_TOKEN: 'token-a', BANGUMI_USERS: 'alice', SYNC_MODE: 'merge',
+    } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+    const collection = (kv.values.get('snapshot:collections:watching') as any[])[0]
+    const calendar = (kv.values.get('snapshot:calendar') as any[])[0].items[0]
+    assert.notEqual(collection.name, 'Residual')
+    assert.notEqual(collection.eps, 99)
+    assert.notEqual(collection.rating?.score, 9.9)
+    assert.notEqual(calendar.name, 'Residual')
+    assert.notEqual(calendar.eps, 99)
+    assert.equal(upstream.calls.filter((url) => url.endsWith('/v0/subjects/23080')).length, 0)
+    assert.equal(queueMessages.length, 1)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('scheduled sync queues expired collection-only tombstones for recovery but suppresses active TTLs', async () => {
   const now = Math.floor(Date.UTC(2026, 5, 30, 4, 0, 0) / 1000)
   const originalFetch = globalThis.fetch

@@ -431,6 +431,34 @@ test('media-worker expired tombstone recovery uses fresh detail images for image
   }
 })
 
+test('media-worker immediately reprobes legacy tombstones and migrates repeated 404 metadata', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const now = 1_782_650_000
+  kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: now - 100, reason: 'not_found_or_restricted' })
+  kv.values.set(subjectDetailKey(23080), { cached_at: now - 1, subject: { id: 23080, images: { common: 'https://img.example/residual.jpg' } } })
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  const calls: string[] = []
+  globalThis.fetch = async (url: string | URL | Request) => {
+    calls.push(String(url))
+    if (String(url).includes('/v0/subjects/23080')) return new Response('Not found', { status: 404 })
+    throw new Error(`legacy image URL must not be processed: ${url}`)
+  }
+  Date.now = () => now * 1000
+  try {
+    await worker.queue(batch({ version: 3, generation: 2, job_id: 'legacy-image-only-404', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.deepEqual(calls, ['https://api.bgm.tv/v0/subjects/23080'])
+    assert.deepEqual(kv.values.get('subject:meta:23080'), {
+      subject_id: 23080, exists: false, nsfw: true, checked_at: now, expires_at: now + 86400, reason: 'not_found',
+    })
+    assert.equal(r2.writes.length, 0)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('media-worker remains fail-closed when stale detail deletion fails after tombstone write', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()
