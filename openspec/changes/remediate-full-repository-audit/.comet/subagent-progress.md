@@ -12,7 +12,7 @@
   - `6.1 运行相关包 RED→GREEN 测试、typecheck、Wrangler dry-run 与 diff check，并按安全/API/缓存边界原子 commit/push`
   - `6.2 运行全量 pnpm test、pnpm typecheck、pnpm build:check、OpenSpec strict、git diff --check 与 pnpm audit --prod`
   - `6.3 完成 thorough code review，修复全部 P0/P1/P2 并记录验证报告`
-- Stage: `blocked`
+- Stage: `extra-security-fix-authorized`
 - Base commit: `70762b1`
 - Implementer: `/root/task8_docs_gates`
 - README/gates commit: `90424feefdc1bb5d8a3c9920325712aa7cae1ca1` (`docs: synchronize audit remediation contracts`).
@@ -28,8 +28,9 @@
 - Boundary re-review:
   - API APPROVED with no findings.
   - Security BLOCKED: `renderFooter` accepts configured `repositoryUrl` values using `javascript:` or `data:` and emits them into `href`; it must validate HTTP(S) and fall back to a non-link build label.
-- Review-round blocker: the thorough boundary review/fix/re-review batch is exhausted; explicit user authorization is required for one additional focused security fix/review round.
-- Gate blocker: explicit informed approval is still required to send production dependency metadata to npm registry for `pnpm audit --prod`.
+- Extra-round authorization: user explicitly authorized one additional focused footer URL security fix/review.
+- Audit authorization: user explicitly accepted sending production dependency names and versions to npm registry for `pnpm audit --prod`.
+- Next action: TDD-fix configured footer repository URL allowlisting, execute production dependency audit, then re-review and run full-branch review.
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
