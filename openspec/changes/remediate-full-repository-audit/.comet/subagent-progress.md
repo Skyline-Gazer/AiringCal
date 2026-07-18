@@ -13,7 +13,7 @@
   - `4.2 定义 tombstone 类型、key/TTL 与保守 NSFW 投影，404 时停止返回旧 detail`
   - `4.3 验证 tombstone 到期后允许重新探测且 generation 协调语义不倒退`
 - Brief: `.superpowers/sdd/task-6-brief.md`
-- Stage: `fifth-extra-fix-review`
+- Stage: `blocked`
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
@@ -55,7 +55,9 @@
 - Fifth extra-round authorization: user explicitly authorized legacy tombstone compatibility RED→GREEN fixes and continuation.
 - Fifth extra fix commit: `7c8cdd0` (`fix: preserve legacy tombstone safety`).
 - Fifth extra fix RED/GREEN: Domain 28/29 showed the legacy record was not confirmed; after compatibility changes, five Task 6 suites pass 139/139, five typechecks pass, media/read/sync build checks pass, and `git diff --check` passes.
-- Next action: independent final review of legacy compatibility and complete Task 6 boundary.
+- Fifth extra review result: legacy shape/type/read/sync/recovery compatibility is correct with fresh focused verification at 139/139, but one Media fail-closed edge remains.
+- New Important finding: when a forced reprobe for a legacy or expired confirmed tombstone returns non-transient non-404 (for example 401/403), metadata remains confirmed but inactive; the post-fetch guard checks only active current tombstones, so the job can fall through to stale image URLs and writes.
+- Block reason: the fifth user-authorized fix round has been consumed; another explicit authorization is required for the non-404 reprobe fail-closed RED→GREEN fix and review.
 - Accepted Minor findings carried to final review:
   - Task 2 Frontend CSP test could explicitly forbid script `'unsafe-inline'`.
   - Task 2 operation test could explicitly assert `default-src 'none'` and encoded entities.
