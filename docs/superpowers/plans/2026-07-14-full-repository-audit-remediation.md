@@ -417,13 +417,13 @@ git push
 - Preserves: `assets/theme/{bangumi.js,bangumi.css,cache.js}` → `src/generated-assets.ts`。
 - Produces: build/test gate，旧目录存在或生成产物漂移时失败。
 
-- [ ] **Step 1: 证明旧目录无消费者**
+- [x] **Step 1: 证明旧目录无消费者**
 
 Run: `rg -n "assets/public|assets/theme/v1|theme/v1" --glob '!packages/widget/assets/public/**' --glob '!packages/widget/assets/theme/v1/**' .`
 
 Expected: 没有部署/生成消费者；只有审计 spec/plan 提及。如存在消费者，先迁移到唯一链路再删除。
 
-- [ ] **Step 2: 写旧目录和生成漂移 RED 测试**
+- [x] **Step 2: 写旧目录和生成漂移 RED 测试**
 
 ```js
 assert.equal(existsSync('packages/widget/assets/public'), false)
@@ -435,11 +435,11 @@ Run: `node --test scripts/generate-widget-assets.test.mjs`
 
 Expected: FAIL，因为旧目录仍存在。
 
-- [ ] **Step 3: 删除副本并完善生成检查**
+- [x] **Step 3: 删除副本并完善生成检查**
 
 使用 `git rm -r packages/widget/assets/public packages/widget/assets/theme/v1`。测试通过临时目录或纯 render helper 计算输出，不能覆盖工作树后再声称一致。README 说明唯一编辑源和 `pnpm -F @airing-cal/widget generate`。
 
-- [ ] **Step 4: 验证 GREEN 并提交推送 Task 7 资产清理**
+- [x] **Step 4: 验证 GREEN 并提交推送 Task 7 资产清理**
 
 Run: `pnpm -F @airing-cal/widget generate && node --test scripts/generate-widget-assets.test.mjs && CI=true pnpm -F @airing-cal/widget test && CI=true pnpm build:check`
 

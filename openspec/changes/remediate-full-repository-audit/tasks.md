@@ -26,9 +26,9 @@
 
 ## 5. Widget 资产唯一来源
 
-- [ ] 5.1 使用 `rg` 与构建入口证明旧 `assets/public`、`theme/v1` 副本无部署消费者
-- [ ] 5.2 删除旧副本并增加源码、生成产物、部署入口一致性测试
-- [ ] 5.3 更新 README 与生成说明，明确 `assets/theme` 和 `generated-assets.ts` 唯一链路
+- [x] 5.1 使用 `rg` 与构建入口证明旧 `assets/public`、`theme/v1` 副本无部署消费者
+- [x] 5.2 删除旧副本并增加源码、生成产物、部署入口一致性测试
+- [x] 5.3 更新 README 与生成说明，明确 `assets/theme` 和 `generated-assets.ts` 唯一链路
 
 ## 6. 验证、审查与交付
 
