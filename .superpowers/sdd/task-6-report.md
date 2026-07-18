@@ -155,3 +155,21 @@ Third-extra-round final verification:
 - Typechecks passed for media, read, sync, domain, and storage.
 - Build checks passed for media, read, and sync; Wrangler types were current and all three dry-run deploys completed.
 - `git diff --check` passed.
+
+## User-authorized fourth extra fix round
+
+The residual-detail snapshot finding was verified at the exact TTL boundary and fixed without changing recovery scheduling.
+
+Residual-detail Sync RED/GREEN evidence:
+
+- The regression preloads a fresh residual detail entry to model best-effort deletion failure, retains persistent confirmed-not-found metadata at `now === expires_at`, and runs scheduled Sync.
+- The first sandboxed focused test attempt was invalid because `tsx` could not create its IPC pipe (`listen EPERM`). The permitted rerun produced the effective RED: sync-worker 41/42; the collection snapshot republished `name: 'Residual'` from the stale cache.
+- Both Sync detail loaders now use `isConfirmedNotFoundSubjectMeta` when deciding whether cached detail may enter a snapshot. TTL remains exclusive to `shouldQueueMedia`, so exact expiry still schedules one full recovery job while residual canonical, episode, and rating fields remain absent from collection and calendar snapshots.
+- Focused GREEN: sync-worker 42/42. The regression also proves scheduled Sync does not perform the subject reprobe itself; Media remains the serialized recovery path. Because the persisted snapshot never contains the residual values, successful Media recovery and subsequent Read suppression removal cannot reveal the deleted detail from that snapshot.
+
+Fourth-extra-round final verification:
+
+- Complete tests passed: media 26/26, read 31/31, sync 42/42, domain 28/28, storage 8/8 (135/135).
+- Typechecks passed for media, read, sync, domain, and storage.
+- Build checks passed for media, read, and sync; Wrangler types were current and all three dry-run deploys completed.
+- `git diff --check` passed.
