@@ -119,6 +119,33 @@ test('renderFooter falls back to Build unknown without commit link', () => {
   assert.equal(footer.includes('/commit/'), false)
 })
 
+test('renderFooter rejects non-HTTP repository protocols', () => {
+  for (const repositoryUrl of [
+    'javascript:alert(document.domain)',
+    'data:text/html,<script>alert(document.domain)</script>',
+  ]) {
+    const footer = renderFooter({ commitSha: '0123456789abcdef', repositoryUrl })
+
+    assert.match(footer, /<span>Build 0123456<\/span>/)
+    assert.equal(footer.includes('<a '), false)
+    assert.equal(footer.includes('href='), false)
+  }
+})
+
+test('renderFooter links normalized HTTP and HTTPS repository URLs', () => {
+  const cases = [
+    ['http://example.test/owner/repo/', 'http://example.test/owner/repo/commit/0123456789abcdef'],
+    ['git+https://example.test/owner/repo.git/', 'https://example.test/owner/repo/commit/0123456789abcdef'],
+  ] as const
+
+  for (const [repositoryUrl, expectedCommitUrl] of cases) {
+    const footer = renderFooter({ commitSha: '0123456789abcdef', repositoryUrl })
+
+    assert.match(footer, new RegExp(`href="${expectedCommitUrl}"`))
+    assert.match(footer, /target="_blank" rel="noopener noreferrer"/)
+  }
+})
+
 test('public pages reuse the exact shared footer output', () => {
   const build = { commitSha: 'abcdef0123456789', repositoryUrl: 'https://github.com/markd3ng/AiringCal' }
   const footer = renderFooter(build)
