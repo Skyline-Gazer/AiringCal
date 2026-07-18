@@ -12,7 +12,7 @@
   - `6.1 运行相关包 RED→GREEN 测试、typecheck、Wrangler dry-run 与 diff check，并按安全/API/缓存边界原子 commit/push`
   - `6.2 运行全量 pnpm test、pnpm typecheck、pnpm build:check、OpenSpec strict、git diff --check 与 pnpm audit --prod`
   - `6.3 完成 thorough code review，修复全部 P0/P1/P2 并记录验证报告`
-- Stage: `boundary-review-fix-1`
+- Stage: `boundary-re-review`
 - Base commit: `70762b1`
 - Implementer: `/root/task8_docs_gates`
 - README/gates commit: `90424feefdc1bb5d8a3c9920325712aa7cae1ca1` (`docs: synchronize audit remediation contracts`).
@@ -23,6 +23,9 @@
   - Read/API APPROVED: Minor direct PATCH helper 1–100 guard and `SNAPSHOT_INCOMPLETE` 503 `no-store` gap.
   - Media/cache/assets APPROVED: accepted Minor matrix coverage and generator-test template coupling.
 - Next action: TDD-fix the security Important and actionable security/API Minors, rerun affected gates, then re-review and run full-branch review.
+- Boundary fix commit: `a964338` (`fix: close final security and api boundaries`).
+- Boundary fix GREEN: Widget 24/24, Frontend 7/7, Sync 43/43, bgm-api 28/28, Read 32/32; five typechecks, Frontend/Sync/Read build checks, generation chain 2/2, and diff check pass.
+- Next action: independent security and API re-review, then full-branch review.
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
