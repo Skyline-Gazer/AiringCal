@@ -200,7 +200,7 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | '
     : null
   if (refreshDetail && !subject) {
     const refreshedMeta = await storage.get<SubjectMeta>(subjectMetaKey(job.subject_id))
-    if (isActiveNotFoundSubjectMeta(refreshedMeta, now)) {
+    if (isConfirmedNotFoundSubjectMeta(refreshedMeta)) {
       if (isVersionedJob(job)) await putRefreshState(storage, job, 'ok', now)
       return 'processed'
     }

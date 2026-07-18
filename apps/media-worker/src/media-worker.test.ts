@@ -459,6 +459,43 @@ test('media-worker immediately reprobes legacy tombstones and migrates repeated 
   }
 })
 
+test('media-worker keeps legacy tombstones fail-closed when forced reprobe is forbidden', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const now = 1_782_650_000
+  const tombstone = { subject_id: 23080, exists: false, nsfw: true, checked_at: now - 100, reason: 'not_found_or_restricted' }
+  const previousStatus = {
+    subject_id: 23080,
+    title: 'A',
+    common: { status: 'cached', hash: 'a'.repeat(64), uri: `/image/${'a'.repeat(64)}`, r2_key: `images/${'a'.repeat(64)}/original`, source_url: 'https://img.example/old.jpg' },
+    large: { status: 'missing_source', hash: null, uri: null, r2_key: null },
+    subject_checked_at: now - 100,
+  }
+  kv.values.set('subject:meta:23080', tombstone)
+  kv.values.set(subjectDetailKey(23080), { cached_at: now - 1, subject: { id: 23080, images: { common: 'https://img.example/residual.jpg' } } })
+  kv.values.set('image:status:23080', previousStatus)
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  const calls: string[] = []
+  globalThis.fetch = async (url: string | URL | Request) => {
+    calls.push(String(url))
+    if (String(url).includes('/v0/subjects/23080')) return new Response('Forbidden', { status: 403 })
+    throw new Error(`legacy image URL must not be processed: ${url}`)
+  }
+  Date.now = () => now * 1000
+  try {
+    await worker.queue(batch({ version: 3, generation: 2, job_id: 'legacy-image-only-403', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.deepEqual(calls, ['https://api.bgm.tv/v0/subjects/23080'])
+    assert.deepEqual(kv.values.get('subject:meta:23080'), tombstone)
+    assert.deepEqual(kv.values.get('image:status:23080'), previousStatus)
+    assert.equal(r2.writes.length, 0)
+    assert.equal((kv.values.get(subjectRefreshKey(23080)) as any).status, 'ok')
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('media-worker remains fail-closed when stale detail deletion fails after tombstone write', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()

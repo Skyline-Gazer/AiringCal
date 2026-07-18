@@ -191,3 +191,21 @@ Fifth-extra-round final verification:
 - Typechecks passed for media, read, sync, domain, and storage.
 - Build checks passed for media, read, and sync; Wrangler types were current and all three dry-run deploys completed.
 - `git diff --check` passed.
+
+## User-authorized sixth extra fix round
+
+The Media fail-closed finding was verified for the persisted legacy tombstone shape and fixed without changing transient retry or successful recovery behavior.
+
+Non-404 forced-reprobe RED/GREEN evidence:
+
+- A legacy confirmed tombstone, residual detail, cached image status, and stale V3 image-only job were combined with a forced subject reprobe returning HTTP 403.
+- The first sandboxed focused test attempt was invalid because `tsx` could not create its IPC pipe (`listen EPERM`). The permitted rerun produced the effective RED: media-worker 27/28; after the subject API call, the job fetched its stale image URL.
+- The minimal fix changes the post-fetch guard to stop whenever authoritative metadata remains any confirmed-not-found shape, rather than only a current active-TTL tombstone. The versioned refresh completes as `ok`, matching the existing terminal confirmed-tombstone semantics.
+- Focused GREEN: media-worker 28/28. The regression proves only the subject endpoint is called, the confirmed metadata and previous image status remain unchanged, R2 receives no writes, and no stale job or residual-detail image URL is processed.
+
+Sixth-extra-round final verification:
+
+- Complete Task 6 tests passed: media 28/28, read 32/32, sync 43/43, domain 29/29, storage 8/8 (140/140).
+- Typechecks passed for media, read, sync, domain, and storage.
+- Build checks passed for media, read, and sync; Wrangler types were current and all three dry-run deploys completed.
+- `git diff --check` passed.
