@@ -13,7 +13,7 @@
   - `4.2 定义 tombstone 类型、key/TTL 与保守 NSFW 投影，404 时停止返回旧 detail`
   - `4.3 验证 tombstone 到期后允许重新探测且 generation 协调语义不倒退`
 - Brief: `.superpowers/sdd/task-6-brief.md`
-- Stage: `blocked`
+- Stage: `fourth-extra-fix-authorized`
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
@@ -47,7 +47,8 @@
 - Third extra fix RED/GREEN: Read 29/31 exposed images; Media 24/26 used stale job/cache URLs; Sync 40/41 failed to queue expired collection-only recovery. After fixes, five Task 6 suites pass 134/134, five typechecks pass, media/read/sync build checks pass, and `git diff --check` passes.
 - Third extra review result: all three authorized fixes are correct and fresh focused verification passes 134/134, but the full boundary remains blocked by one newly identified Important finding.
 - New Important finding: at exact expiry, Sync detail loading excludes only active tombstones, so a best-effort deletion failure can let residual cached detail re-enter a new snapshot; after Media recovery changes meta to `exists: true`, Read can expose that old snapshot detail until another sync.
-- Block reason: the third user-authorized fix round has been consumed; another explicit authorization is required for the residual-detail snapshot RED→GREEN fix and review.
+- Fourth extra-round authorization: user explicitly authorized the residual-detail snapshot RED→GREEN fix and review.
+- Next action: prevent all confirmed tombstones from loading residual cached detail into Sync snapshots, verify the expiry/recovery/read sequence, then obtain independent review.
 - Accepted Minor findings carried to final review:
   - Task 2 Frontend CSP test could explicitly forbid script `'unsafe-inline'`.
   - Task 2 operation test could explicitly assert `default-src 'none'` and encoded entities.
