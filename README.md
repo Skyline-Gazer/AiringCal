@@ -25,6 +25,14 @@ AiringCal 是一个 Cloudflare Workers monorepo。它把公开访问、只读数
 | `@airing-cal/widget` | HTML shell、footer runtime status、widget JS/CSS assets |
 | `@airing-cal/worker-common` | public error、安全 header、敏感信息清理、部署/文档守护测试 |
 
+Widget 资产的唯一手写源是 `packages/widget/assets/theme/{bangumi.js,bangumi.css,cache.js}`，唯一运行时生成产物是 `packages/widget/src/generated-assets.ts`。修改主题源后运行：
+
+```bash
+pnpm -F @airing-cal/widget generate
+```
+
+生成链测试会拒绝生成产物漂移，也会拒绝重新引入 `assets/public` 或 `assets/theme/v1` 副本。
+
 ## 外部访问入口
 
 外部只访问 `airing-cal-frontend`。如果使用 workers.dev，地址通常是：

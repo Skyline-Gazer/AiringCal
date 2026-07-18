@@ -291,7 +291,7 @@ test('widgetCss styles footer cache statistics', () => {
 })
 
 test('packaged widget assets do not read legacy image hash fields', () => {
-  for (const asset of ['assets/public/src/bangumi.js', 'assets/theme/bangumi.js', 'assets/theme/cache.js', 'assets/theme/v1/bangumi.js']) {
+  for (const asset of ['assets/theme/bangumi.js', 'assets/theme/cache.js', 'src/generated-assets.ts']) {
     const source = readFileSync(resolve(widgetRoot, asset), 'utf8')
     assert.equal(source.includes('images.hash'), false, `${asset} should not read images.hash`)
     assert.equal(source.includes('hash_large'), false, `${asset} should not read hash_large`)
