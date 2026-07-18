@@ -13,7 +13,7 @@
   - `4.2 定义 tombstone 类型、key/TTL 与保守 NSFW 投影，404 时停止返回旧 detail`
   - `4.3 验证 tombstone 到期后允许重新探测且 generation 协调语义不倒退`
 - Brief: `.superpowers/sdd/task-6-brief.md`
-- Stage: `sixth-extra-fix-review`
+- Stage: `done`
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
@@ -60,7 +60,8 @@
 - Sixth extra-round authorization: user explicitly authorized the non-404 reprobe fail-closed RED→GREEN fix and continuation.
 - Sixth extra fix commit: `86d355b` (`fix: keep failed reprobes fail closed`).
 - Sixth extra fix RED/GREEN: Media 27/28 showed a 403 reprobe falling through to a stale image URL; after the confirmed-meta post-fetch guard, five Task 6 suites pass 140/140, five typechecks pass, media/read/sync build checks pass, and `git diff --check` passes.
-- Next action: independent final review of non-404 fail-closed behavior and complete Task 6 boundary.
+- Final review: APPROVED with no Critical or Important findings; fresh focused tests pass 140/140, five typechecks pass, and `git diff --check` passes.
+- Accepted Minor: add a separate expired-current tombstone plus 401 matrix test; runtime uses the same shared confirmed predicate as the covered legacy plus 403 regression.
 - Accepted Minor findings carried to final review:
   - Task 2 Frontend CSP test could explicitly forbid script `'unsafe-inline'`.
   - Task 2 operation test could explicitly assert `default-src 'none'` and encoded entities.

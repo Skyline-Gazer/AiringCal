@@ -366,17 +366,17 @@ git push
 - Produces: tombstone `{ subject_id, exists: false, nsfw: true, reason: 'not_found', checked_at, expires_at }`，`expires_at = checked_at + 86400`。
 - Preserves: transient stale-on-error 与 per-subject generation coordinator。
 
-- [ ] **Step 1: 写旧 detail→404、TTL 抑制、到期重探测与 transient RED 测试**
+- [x] **Step 1: 写旧 detail→404、TTL 抑制、到期重探测与 transient RED 测试**
 
 使用可控 `Date.now`：预置 subject detail，第一次 404 后断言旧 detail 被删除/屏蔽且 metadata 保守；推进 23:59 断言无第二次上游请求；推进超过 24h 断言重新请求。对 network、429、500 断言没有 `reason: not_found` 写入且旧 detail 仍可 stale-on-error。
 
-- [ ] **Step 2: 运行 media/read 测试确认 RED**
+- [x] **Step 2: 运行 media/read 测试确认 RED**
 
 Run: `CI=true pnpm -F @airing-cal/media-worker test && CI=true pnpm -F @airing-cal/read-worker test`
 
 Expected: FAIL，现有 not-found reason/TTL/旧 detail 屏蔽不满足规格。
 
-- [ ] **Step 3: 实现 tombstone helper 与刷新短路**
+- [x] **Step 3: 实现 tombstone helper 与刷新短路**
 
 ```ts
 const SUBJECT_NOT_FOUND_TTL_SECONDS = 24 * 60 * 60
@@ -388,13 +388,13 @@ function activeNotFound(meta: SubjectMeta | null, now: number): boolean {
 
 串行 `processJob` 内先读 meta；有效 tombstone 时不调用 bgm client。确认 404 时写 tombstone 并删除 detail key或让所有读取路径优先屏蔽。恢复成功覆盖 meta/detail。catch 中仅 `BgmHttpError(404)` 走 tombstone；network/429/5xx 继续 throw/stale。
 
-- [ ] **Step 4: 验证 generation 与 GREEN**
+- [x] **Step 4: 验证 generation 与 GREEN**
 
 Run: `CI=true pnpm -F @airing-cal/media-worker test && CI=true pnpm -F @airing-cal/read-worker test && CI=true pnpm -F @airing-cal/domain test && CI=true pnpm -F @airing-cal/storage test`
 
 Expected: PASS，包括现有 `subject-refresh-coordinator` 新 generation 覆盖旧 generation 测试。
 
-- [ ] **Step 5: 提交推送 Task 6 tombstone 修复**
+- [x] **Step 5: 提交推送 Task 6 tombstone 修复**
 
 勾选 tasks `4.1`～`4.3`。
 

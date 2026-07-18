@@ -20,9 +20,9 @@
 
 ## 4. Subject 404 tombstone
 
-- [ ] 4.1 增加已有 detail 后刷新 404、TTL 内不重复请求的 RED 测试
-- [ ] 4.2 定义 tombstone 类型、key/TTL 与保守 NSFW 投影，404 时停止返回旧 detail
-- [ ] 4.3 验证 tombstone 到期后允许重新探测且 generation 协调语义不倒退
+- [x] 4.1 增加已有 detail 后刷新 404、TTL 内不重复请求的 RED 测试
+- [x] 4.2 定义 tombstone 类型、key/TTL 与保守 NSFW 投影，404 时停止返回旧 detail
+- [x] 4.3 验证 tombstone 到期后允许重新探测且 generation 协调语义不倒退
 
 ## 5. Widget 资产唯一来源
 
