@@ -12,7 +12,7 @@
   - `6.1 运行相关包 RED→GREEN 测试、typecheck、Wrangler dry-run 与 diff check，并按安全/API/缓存边界原子 commit/push`
   - `6.2 运行全量 pnpm test、pnpm typecheck、pnpm build:check、OpenSpec strict、git diff --check 与 pnpm audit --prod`
   - `6.3 完成 thorough code review，修复全部 P0/P1/P2 并记录验证报告`
-- Stage: `full-branch-review`
+- Stage: `done`
 - Base commit: `70762b1`
 - Implementer: `/root/task8_docs_gates`
 - README/gates commit: `90424feefdc1bb5d8a3c9920325712aa7cae1ca1` (`docs: synchronize audit remediation contracts`).
@@ -34,7 +34,8 @@
 - Extra security RED/GREEN: Widget 24/26 reproduced dangerous protocols and double-slash commit URL; after fix Widget 26/26, Frontend 7/7, both typechecks, Frontend build check, generation cleanliness, and diff check pass.
 - Production audit: `pnpm audit --prod` completed under informed authorization with exit 0 and `No known vulnerabilities found`.
 - Extra security review: APPROVED with no Critical, Important, or Minor findings; Widget 26/26, Frontend 7/7, both typechecks, and diff check pass.
-- Next action: fresh full-branch review across all audit remediation boundaries and delivery configuration.
+- Full-branch review: APPROVED with no Critical, Important, or Minor findings across `549edf34..2986c61`; all implementation boundaries and deferred production verification scope match the design.
+- Final fresh gates on current HEAD: full tests, 9-project typecheck, 4-Worker build check, OpenSpec strict, diff/status cleanliness, and `pnpm audit --prod` (`No known vulnerabilities found`) pass.
 - Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
 - Implementer: `/root/task6_tombstone`
 - Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`

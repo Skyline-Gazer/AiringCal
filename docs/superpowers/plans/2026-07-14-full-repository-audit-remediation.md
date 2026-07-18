@@ -464,11 +464,11 @@ git push
 - Consumes: Tasks 1～7 的全部行为。
 - Produces: clean immutable commit、完整审查证据和可进入 Comet verify 的状态。
 
-- [ ] **Step 1: 执行 README 全量同步审计**
+- [x] **Step 1: 执行 README 全量同步审计**
 
 逐一核对公开路由、环境变量、Worker 职责、日志事件、Widget 生成链、400/认证/partial/tombstone 契约。仅修改与当前实现不一致的内容。
 
-- [ ] **Step 2: 运行全量自动门禁**
+- [x] **Step 2: 运行全量自动门禁**
 
 Run: `CI=true pnpm test`
 
@@ -484,11 +484,11 @@ Run: `pnpm audit --prod`
 
 Expected: 全部 exit 0；任何失败先按 `systematic-debugging` 定位根因，不得直接猜修。
 
-- [ ] **Step 3: 执行 thorough code review**
+- [x] **Step 3: 执行 thorough code review**
 
 按安全边界、Read 契约、bgm API、Media 缓存和资产链分批 review，再做一次全量 review。P0/P1/P2 全部修复；接受的非 critical 发现必须在 tasks 或验证报告中记录原因和影响。
 
-- [ ] **Step 4: 完成 build 阶段任务状态并提交推送**
+- [x] **Step 4: 完成 build 阶段任务状态并提交推送**
 
 勾选 tasks `6.1`～`6.3`；`6.4`、`6.5` 保留给 verify/PR/archive 阶段。
 
