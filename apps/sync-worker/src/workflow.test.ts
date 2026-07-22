@@ -8,6 +8,8 @@ class MockKV {
   puts: Array<{ key: string; value: unknown; options?: { expirationTtl?: number } }> = []
   activeStep: string | null = null
   apiCallsByStep = new Map<string, number>()
+  externalCallsByStep = new Map<string, number>()
+  failingGets = new Set<string>()
 
   private recordCall() {
     if (!this.activeStep) return
@@ -17,7 +19,13 @@ class MockKV {
   async get(key: string, type: 'json') {
     this.recordCall()
     assert.equal(type, 'json')
+    if (this.failingGets.has(key)) throw new Error(`KV read failed for ${key}`)
     return this.values.get(key) ?? null
+  }
+
+  recordExternalCall() {
+    if (!this.activeStep) return
+    this.externalCallsByStep.set(this.activeStep, (this.externalCallsByStep.get(this.activeStep) ?? 0) + 1)
   }
 
   async put(key: string, value: string, options?: { expirationTtl?: number }) {
@@ -109,8 +117,24 @@ class MockSnapshotCoordinator {
   reservations: any[] = []
   requests: string[] = []
   private budget: { date: string; consumed: number } | null = null
+  private reservationResults = new Map<string, { granted: number; consumed: number; soft_limit: number; hard_limit: number }>()
+  private queueMessages: unknown[] = []
+  loseNextReservationResponse = false
+  queueFailures = 0
 
   constructor(private kv: MockKV, readonly generation = 7, private maxGrant = Number.POSITIVE_INFINITY) {}
+
+  attachQueue(queueMessages: unknown[]) {
+    this.queueMessages = queueMessages
+  }
+
+  seedBudget(date: string, consumed: number) {
+    this.budget = { date, consumed }
+  }
+
+  get consumed() {
+    return this.budget?.consumed ?? 0
+  }
 
   binding() {
     return {
@@ -121,15 +145,34 @@ class MockSnapshotCoordinator {
             const body = await request.json() as any
             const path = new URL(request.url).pathname
             this.requests.push(path)
+            this.kv.recordExternalCall()
             if (path === '/allocate') return Response.json({ generation: this.generation })
             if (path === '/reserve-media') {
               this.reservations.push(body)
+              const existing = this.reservationResults.get(body.reservation_id)
+              if (existing) return Response.json(existing)
               const previousBudget = this.budget
+              if (previousBudget && body.date < previousBudget.date) {
+                return Response.json({ granted: 0, consumed: previousBudget.consumed, soft_limit: 50, hard_limit: 100 })
+              }
               const consumed = previousBudget && previousBudget.date === body.date ? previousBudget.consumed : 0
-              const limit = body.allow_over_soft ? 100 : 50
-              const granted = Math.min(body.requested, Math.max(0, limit - consumed), this.maxGrant)
-              this.budget = { date: body.date, consumed: consumed + granted }
-              return Response.json({ granted, consumed: this.budget.consumed, soft_limit: 50, hard_limit: 100 })
+              const privileged = Math.min(body.requested, body.privileged_requested)
+              const privilegedGranted = Math.min(privileged, Math.max(0, 100 - consumed))
+              const ordinaryGranted = Math.min(body.requested - privileged, Math.max(0, 50 - consumed - privilegedGranted))
+              const granted = Math.min(privilegedGranted + ordinaryGranted, this.maxGrant)
+              if (this.queueFailures > 0) {
+                this.queueFailures -= 1
+                throw new Error('queue unavailable')
+              }
+              const result = { granted, consumed: consumed + granted, soft_limit: 50, hard_limit: 100 }
+              this.budget = { date: body.date, consumed: result.consumed }
+              this.reservationResults.set(body.reservation_id, result)
+              this.queueMessages.push(...body.jobs.slice(0, granted))
+              if (this.loseNextReservationResponse) {
+                this.loseNextReservationResponse = false
+                throw new Error('coordinator response lost')
+              }
+              return Response.json(result)
             }
             this.commits.push(body.manifest)
             this.kv.values.set('snapshot:active', body.manifest)
@@ -142,11 +185,15 @@ class MockSnapshotCoordinator {
 }
 
 function workflowEnv(kv: MockKV, queueMessages: unknown[], coordinator = new MockSnapshotCoordinator(kv)): SyncWorkflowEnv {
+  coordinator.attachQueue(queueMessages)
   return {
     AIRING_CAL_KV: kv,
     SNAPSHOT_COORDINATOR: coordinator.binding(),
     MEDIA_QUEUE: {
-      sendBatch: async (messages) => { queueMessages.push(...messages.map((message) => message.body)) },
+      sendBatch: async (messages) => {
+        kv.recordExternalCall()
+        queueMessages.push(...messages.map((message) => message.body))
+      },
     },
     BANGUMI_TOKEN: 'server-token',
     BANGUMI_USERS: 'alice',
@@ -295,17 +342,20 @@ test('live workflow plans component jobs and reserves the shared media budget be
       .filter(([key]) => key.includes(':refresh-inputs'))
       .flatMap(([, value]) => value as unknown[])
     assert.equal(refreshInputs.length, 100)
-    assert.deepEqual(coordinator.reservations, [{
-      date: new Date(Date.now()).toISOString().slice(0, 10),
-      requested: 50,
-      allow_over_soft: false,
-    }])
+    assert.equal(coordinator.reservations.length, 1)
+    assert.equal(coordinator.reservations[0].date, new Date(Date.now()).toISOString().slice(0, 10))
+    assert.equal(coordinator.reservations[0].reservation_id, 'live-1:media')
+    assert.equal(coordinator.reservations[0].requested, 50)
+    assert.equal(coordinator.reservations[0].privileged_requested, 0)
+    assert.equal(coordinator.reservations[0].jobs.length, 50)
     assert.deepEqual(kv.subjectPuts(), [])
     assert.equal([...kv.apiCallsByStep.values()].every((calls) => calls <= 50), true)
     assert.equal([...kv.apiCallsByStep.entries()].filter(([name]) => name.startsWith('plan-refresh-')).every(([, calls]) => calls <= 50), true)
     assert.equal(kv.apiCallsByStep.get('reserve-media') ?? 0, 0)
+    assert.equal(kv.externalCallsByStep.get('reserve-media'), 1)
     assert.equal([...kv.apiCallsByStep.entries()].filter(([name]) => name.startsWith('enqueue-refresh-')).every(([, calls]) => calls === 0), true)
     assert.equal([...kv.apiCallsByStep.values()].reduce((total, calls) => total + calls, 0) < 500, true)
+    assert.equal(step.outputSizes.every((size) => size < 1024 * 1024), true)
     assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'live-1')
     assert.equal((kv.values.get('snapshot:active') as any).generation, 7)
     assert.equal(queueMessages.length, 50)
@@ -349,12 +399,105 @@ test('live workflow commits the snapshot when media budget grants zero', async (
     }, step, (message) => new TestNonRetryableError(message))
 
     assert.equal(coordinator.reservations.length, 1)
+    assert.equal(coordinator.reservations[0].reservation_id, 'budget-exhausted:media')
     assert.equal(coordinator.reservations[0].requested, 1)
-    assert.equal(coordinator.reservations[0].allow_over_soft, true)
+    assert.equal(coordinator.reservations[0].privileged_requested, 1)
     assert.equal(queueMessages.length, 0)
     assert.equal(result.refresh_jobs, 0)
     assert.equal(coordinator.commits.length, 1)
     assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'budget-exhausted')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('live workflow retries a lost coordinator response without reserving or enqueueing twice', async () => {
+  const kv = new MockKV()
+  const queueMessages: unknown[] = []
+  const coordinator = new MockSnapshotCoordinator(kv)
+  coordinator.loseNextReservationResponse = true
+  const step = new FakeStep(kv)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) return Response.json({ total: 1, data: [collection(1)] })
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    const result = await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
+      instanceId: 'response-loss',
+      payload: { mode: 'live', source: 'manual' },
+    }, step, (message) => new TestNonRetryableError(message))
+
+    assert.equal(step.attempts.get('reserve-media'), 2)
+    assert.equal(coordinator.reservations.length, 2)
+    assert.equal(coordinator.consumed, 1)
+    assert.equal(queueMessages.length, 1)
+    assert.equal(result.refresh_jobs, 1)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('live workflow gives mixed new and ordinary candidates only privileged hard headroom after soft is spent', async () => {
+  const kv = new MockKV()
+  const cachedAt = Math.floor(Date.now() / 1000) - 9 * 24 * 60 * 60
+  for (let subjectId = 1; subjectId <= 50; subjectId++) kv.seedCompleteSubject(subjectId, cachedAt)
+  for (let subjectId = 1; subjectId <= 10; subjectId++) kv.values.delete(`subject:detail:${subjectId}`)
+  const queueMessages: unknown[] = []
+  const coordinator = new MockSnapshotCoordinator(kv)
+  coordinator.seedBudget(new Date().toISOString().slice(0, 10), 50)
+  const step = new FakeStep(kv)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) return Response.json({ total: 50, data: Array.from({ length: 50 }, (_, index) => collection(index + 1)) })
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
+      instanceId: 'mixed-priority',
+      payload: { mode: 'live', source: 'manual' },
+    }, step, (message) => new TestNonRetryableError(message))
+
+    assert.equal(coordinator.reservations[0].requested, 50)
+    assert.equal(coordinator.reservations[0].privileged_requested, 10)
+    assert.deepEqual((queueMessages as any[]).map(({ subject_id }) => subject_id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    assert.equal(coordinator.consumed, 60)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('live workflow defers one subject media-state read failure and still publishes the snapshot', async () => {
+  const kv = new MockKV()
+  kv.failingGets.add('subject:detail:1')
+  const queueMessages: unknown[] = []
+  const coordinator = new MockSnapshotCoordinator(kv)
+  const step = new FakeStep(kv)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) return Response.json({ total: 2, data: [collection(1), collection(2)] })
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
+      instanceId: 'subject-read-failure',
+      payload: { mode: 'live', source: 'manual' },
+    }, step, (message) => new TestNonRetryableError(message))
+
+    const planningOutput = step.cache.get('plan-refresh-0') as any
+    assert.deepEqual(planningOutput.planning_errors, [{ subject_id: 1, error: 'KV read failed for subject:detail:1' }])
+    assert.deepEqual((queueMessages as any[]).map(({ subject_id }) => subject_id), [2])
+    assert.equal(coordinator.commits.length, 1)
+    assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'subject-read-failure')
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -400,7 +543,7 @@ test('live workflow does not commit active snapshot when enqueue fails', async (
   const kv = new MockKV()
   const coordinator = new MockSnapshotCoordinator(kv, 8)
   const env = workflowEnv(kv, [], coordinator)
-  env.MEDIA_QUEUE.sendBatch = async () => { throw new Error('queue unavailable') }
+  coordinator.queueFailures = 4
   const step = new FakeStep(kv)
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async (url: string | URL | Request) => {
@@ -416,6 +559,7 @@ test('live workflow does not commit active snapshot when enqueue fails', async (
       payload: { mode: 'live', source: 'manual' },
     }, step, (message) => new TestNonRetryableError(message)), /queue unavailable/)
     assert.equal(coordinator.commits.length, 0)
+    assert.equal(coordinator.consumed, 0)
     assert.equal(kv.values.has('snapshot:active'), false)
   } finally {
     globalThis.fetch = originalFetch

@@ -66,6 +66,9 @@ function imageNeedsRefresh(status: { status?: string; source_url?: string } | nu
 }
 
 export function planSubjectRefresh(input: RefreshPlannerInput, cached: CachedRefreshState, now: number): RefreshCandidate | null {
+  if (cached.refresh?.status === 'failed' || cached.refresh?.status === 'partial') {
+    return { ...input, components: ['detail', 'meta', 'image_common', 'image_large'], priority: 'retry' }
+  }
   if (!cached.detail) return { ...input, components: ['detail', 'meta'], priority: 'new_or_changed' }
 
   const components: MediaRefreshComponent[] = []
@@ -73,9 +76,6 @@ export function planSubjectRefresh(input: RefreshPlannerInput, cached: CachedRef
   if (imageNeedsRefresh(cached.image?.common, input.images?.common)) components.push('image_common')
   if (imageNeedsRefresh(cached.image?.large, input.images?.large)) components.push('image_large')
   if (components.length) return { ...input, components, priority: 'new_or_changed' }
-  if (cached.refresh?.status === 'failed' || cached.refresh?.status === 'partial') {
-    return { ...input, components: ['detail', 'meta', 'image_common', 'image_large'], priority: 'retry' }
-  }
   if (nextSubjectRefreshAt(input.subject_id, cached.detail.cached_at) <= now) {
     return {
       ...input,

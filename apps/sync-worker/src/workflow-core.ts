@@ -31,7 +31,6 @@ import {
 const COLLECTION_TYPES: CollectionType[] = ['want', 'watched', 'watching', 'on_hold', 'dropped']
 const PAGE_LIMIT = 50
 const REFRESH_CHUNK_SIZE = 10
-const ENQUEUE_CHUNKS_PER_STEP = 3
 const NETWORK_STEP = { retries: { limit: 3, delay: 1_000, backoff: 'exponential' as const }, timeout: 45_000 }
 const STORAGE_STEP = { retries: { limit: 3, delay: 500, backoff: 'exponential' as const }, timeout: 45_000 }
 
@@ -73,6 +72,7 @@ interface StepOutput {
   refreshInputKey?: string
   refreshChunks?: number
   candidates?: RefreshCandidate[]
+  planning_errors?: Array<{ subject_id: number; error: string }>
 }
 
 type RefreshInput = RefreshPlannerInput
@@ -341,21 +341,32 @@ export async function runSyncWorkflow(
       const output = await step.do(`plan-refresh-${chunkIndex}`, STORAGE_STEP, async () => {
         const allInputs = await getJson<RefreshInput[]>(env.AIRING_CAL_KV, prepared.refreshInputKey ?? '') ?? []
         const inputs = allInputs.slice(chunkIndex * REFRESH_CHUNK_SIZE, (chunkIndex + 1) * REFRESH_CHUNK_SIZE)
-        const cachedStates = await Promise.all(inputs.map(async (input) => ({
-          detail: await getJson<any>(env.AIRING_CAL_KV, subjectDetailKey(input.subject_id)),
-          meta: await getJson<any>(env.AIRING_CAL_KV, subjectMetaKey(input.subject_id)),
-          image: await getJson<any>(env.AIRING_CAL_KV, imageStatusKey(input.subject_id)),
-          refresh: await getJson<any>(env.AIRING_CAL_KV, subjectRefreshKey(input.subject_id)),
-        })))
-        const candidates = inputs.flatMap((input, index) => {
-          const candidate = planSubjectRefresh(input, cachedStates[index], nowSeconds())
-          return candidate ? [candidate] : []
-        })
+        const planned = await Promise.all(inputs.map(async (input) => {
+          try {
+            const cached = {
+              detail: await getJson<any>(env.AIRING_CAL_KV, subjectDetailKey(input.subject_id)),
+              meta: await getJson<any>(env.AIRING_CAL_KV, subjectMetaKey(input.subject_id)),
+              image: await getJson<any>(env.AIRING_CAL_KV, imageStatusKey(input.subject_id)),
+              refresh: await getJson<any>(env.AIRING_CAL_KV, subjectRefreshKey(input.subject_id)),
+            }
+            return { candidate: planSubjectRefresh(input, cached, nowSeconds()) }
+          } catch (error) {
+            return {
+              candidate: null,
+              planning_error: {
+                subject_id: input.subject_id,
+                error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+              },
+            }
+          }
+        }))
+        const candidates = planned.flatMap(({ candidate }) => candidate ? [candidate] : [])
+        const planningErrors = planned.flatMap(({ planning_error }) => planning_error ? [planning_error] : [])
         const key = syncStagingKey(event.instanceId, `refresh:${chunkIndex}`)
         await putJson(env.AIRING_CAL_KV, key, candidates, SYNC_STAGING_TTL_SECONDS)
         run = { ...run, stage: 'refresh_plan', heartbeat_at: nowSeconds() }
         await writeRun(env, run)
-        return { key, count: candidates.length, candidates, digest: await digest(candidates) }
+        return { key, count: candidates.length, candidates, planning_errors: planningErrors, digest: await digest(candidates) }
       })
       planOutputs.push(output)
       run = { ...run, stage: 'refresh_plan' }
@@ -367,20 +378,7 @@ export async function runSyncWorkflow(
         soft: 50,
         hard: 100,
       })
-      let granted = 0
-      if (selection.selected.length > 0) {
-        const reservation = await step.do('reserve-media', STORAGE_STEP, async () => {
-          const result = await coordinatorRequest<{ granted: number; consumed: number; soft_limit: number; hard_limit: number }>(env, '/reserve-media', {
-            date: utcDay,
-            requested: selection.selected.length,
-            allow_over_soft: selection.selected.every((candidate) => candidate.priority === 'new_or_changed'),
-          })
-          return result
-        })
-        granted = reservation.granted
-      }
-      run = { ...run, stage: 'enqueue', heartbeat_at: nowSeconds() }
-      const jobs: MediaRefreshJobV3[] = selection.selected.slice(0, granted).map((candidate) => ({
+      const jobs: MediaRefreshJobV3[] = selection.selected.map((candidate) => ({
         version: 3,
         generation: run.generation ?? 0,
         job_id: `${event.instanceId}:${candidate.subject_id}`,
@@ -389,17 +387,22 @@ export async function runSyncWorkflow(
         components: candidate.components,
         images: candidate.images,
       }))
-      refreshJobs = jobs.length
-      const enqueueBatchSize = REFRESH_CHUNK_SIZE * ENQUEUE_CHUNKS_PER_STEP
-      for (let index = 0; index < jobs.length; index += enqueueBatchSize) {
-        const batchIndex = index / enqueueBatchSize
-        const batch = jobs.slice(index, index + enqueueBatchSize)
-        await step.do(`enqueue-refresh-${batchIndex}`, STORAGE_STEP, async () => {
-          await env.MEDIA_QUEUE.sendBatch(batch.map((body) => ({ body, contentType: 'json' as const })))
-          return { key: syncStagingKey(event.instanceId, `refresh:${index}`), count: batch.length, digest: await digest(batch.map((job) => job.job_id)) }
+      let granted = 0
+      if (selection.selected.length > 0) {
+        const reservation = await step.do('reserve-media', STORAGE_STEP, async () => {
+          const result = await coordinatorRequest<{ granted: number; consumed: number; soft_limit: number; hard_limit: number }>(env, '/reserve-media', {
+            date: utcDay,
+            reservation_id: `${event.instanceId}:media`,
+            requested: selection.selected.length,
+            privileged_requested: selection.selected.filter((candidate) => candidate.priority === 'new_or_changed').length,
+            jobs,
+          })
+          return result
         })
-        run = { ...run, stage: 'enqueue' }
+        granted = reservation.granted
       }
+      run = { ...run, stage: 'enqueue', heartbeat_at: nowSeconds() }
+      refreshJobs = granted
 
       await step.do('commit-live-snapshot', STORAGE_STEP, async () => {
         const manifest: SnapshotManifest = {

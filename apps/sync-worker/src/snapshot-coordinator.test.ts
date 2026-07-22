@@ -1,17 +1,61 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { SnapshotManifest } from '@airing-cal/storage'
+import type { MediaRefreshJobV3, SnapshotManifest } from '@airing-cal/storage'
 import { SnapshotCoordinator, SnapshotCoordinatorCore } from './snapshot-coordinator.ts'
 
 class MemoryState {
   values = new Map<string, unknown>()
   async get<T>(key: string) { return this.values.get(key) as T | undefined }
   async put<T>(key: string, value: T) { this.values.set(key, value) }
+  async delete(key: string) { this.values.delete(key) }
 }
 
 class MemoryKV {
   values = new Map<string, unknown>()
   async put(key: string, value: string) { this.values.set(key, JSON.parse(value)) }
+}
+
+class MemoryQueue {
+  messages: MediaRefreshJobV3[] = []
+  failNext = false
+
+  async sendBatch(messages: Array<{ body: MediaRefreshJobV3; contentType?: 'json' }>) {
+    if (this.failNext) {
+      this.failNext = false
+      throw new Error('queue unavailable')
+    }
+    this.messages.push(...messages.map(({ body }) => body))
+  }
+}
+
+function mediaJobs(count: number, startSubjectId = 1): MediaRefreshJobV3[] {
+  return Array.from({ length: count }, (_, index) => {
+    const subjectId = startSubjectId + index
+    return {
+      version: 3,
+      generation: 1,
+      job_id: `workflow:${subjectId}`,
+      subject_id: subjectId,
+      title: `Subject ${subjectId}`,
+      components: ['detail'],
+    }
+  })
+}
+
+function reserveRequest(
+  coordinator: SnapshotCoordinator,
+  body: {
+    date: string
+    reservation_id: string
+    requested: number
+    privileged_requested: number
+    jobs: MediaRefreshJobV3[]
+  },
+) {
+  return coordinator.fetch(new Request('https://snapshot-coordinator/reserve-media', {
+    method: 'POST',
+    body: JSON.stringify({ ...body, allow_over_soft: body.privileged_requested > 0 }),
+  }))
 }
 
 function manifest(instanceId: string, generation: number): SnapshotManifest {
@@ -66,7 +110,7 @@ test('concurrent commit requests cannot interleave while the older KV write is a
     }
     kv.values.set(key, parsed)
   }
-  const coordinator = new SnapshotCoordinator({ storage: state } as any, { AIRING_CAL_KV: kv })
+  const coordinator = new SnapshotCoordinator({ storage: state } as any, { AIRING_CAL_KV: kv, MEDIA_QUEUE: new MemoryQueue() })
   const request = (generation: number) => new Request('https://snapshot-coordinator/commit', {
     method: 'POST',
     body: JSON.stringify({ generation, manifest: manifest(`workflow-${generation}`, generation) }),
@@ -82,12 +126,22 @@ test('concurrent commit requests cannot interleave while the older KV write is a
 })
 
 test('media budget shares a UTC day across scheduled and manual reservations and resets on a new day', async () => {
-  const coordinator = new SnapshotCoordinator({ storage: new MemoryState() } as any, { AIRING_CAL_KV: new MemoryKV() })
+  const queue = new MemoryQueue()
+  const coordinator = new SnapshotCoordinator(
+    { storage: new MemoryState() } as any,
+    { AIRING_CAL_KV: new MemoryKV(), MEDIA_QUEUE: queue } as any,
+  )
+  let reservation = 0
+  let nextSubjectId = 1
   const reserve = async (date: string, requested: number, allowOverSoft: boolean) => {
-    const response = await coordinator.fetch(new Request('https://snapshot-coordinator/reserve-media', {
-      method: 'POST',
-      body: JSON.stringify({ date, requested, allow_over_soft: allowOverSoft }),
-    }))
+    const response = await reserveRequest(coordinator, {
+      date,
+      reservation_id: `workflow-${reservation++}:media`,
+      requested,
+      privileged_requested: allowOverSoft ? requested : 0,
+      jobs: mediaJobs(requested, nextSubjectId),
+    })
+    nextSubjectId += requested
     assert.equal(response.status, 200)
     return await response.json()
   }
@@ -122,4 +176,132 @@ test('media budget shares a UTC day across scheduled and manual reservations and
     soft_limit: 50,
     hard_limit: 100,
   })
+})
+
+test('media budget replays one stable reservation without consuming or enqueueing twice', async () => {
+  const queue = new MemoryQueue()
+  const coordinator = new SnapshotCoordinator(
+    { storage: new MemoryState() } as any,
+    { AIRING_CAL_KV: new MemoryKV(), MEDIA_QUEUE: queue } as any,
+  )
+  const body = {
+    date: '2026-07-22',
+    reservation_id: 'workflow-1:media',
+    requested: 40,
+    privileged_requested: 0,
+    jobs: mediaJobs(40),
+  }
+
+  const first = await (await reserveRequest(coordinator, body)).json()
+  const replay = await (await reserveRequest(coordinator, body)).json()
+
+  assert.deepEqual(first, { granted: 40, consumed: 40, soft_limit: 50, hard_limit: 100 })
+  assert.deepEqual(replay, first)
+  assert.equal(queue.messages.length, 40)
+})
+
+test('media budget releases a failed queue reservation so the stable operation can retry', async () => {
+  const queue = new MemoryQueue()
+  queue.failNext = true
+  const coordinator = new SnapshotCoordinator(
+    { storage: new MemoryState() } as any,
+    { AIRING_CAL_KV: new MemoryKV(), MEDIA_QUEUE: queue } as any,
+  )
+  const body = {
+    date: '2026-07-22',
+    reservation_id: 'workflow-retry:media',
+    requested: 1,
+    privileged_requested: 1,
+    jobs: mediaJobs(1),
+  }
+
+  await assert.rejects(() => reserveRequest(coordinator, body), /queue unavailable/)
+  const retried = await (await reserveRequest(coordinator, body)).json()
+
+  assert.deepEqual(retried, { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100 })
+  assert.equal(queue.messages.length, 1)
+})
+
+test('media budget rejects an older UTC day without reopening a newer day budget', async () => {
+  const queue = new MemoryQueue()
+  const coordinator = new SnapshotCoordinator(
+    { storage: new MemoryState() } as any,
+    { AIRING_CAL_KV: new MemoryKV(), MEDIA_QUEUE: queue } as any,
+  )
+  const reserve = async (date: string, reservationId: string, startSubjectId: number) => {
+    const response = await reserveRequest(coordinator, {
+      date,
+      reservation_id: reservationId,
+      requested: 100,
+      privileged_requested: 100,
+      jobs: mediaJobs(100, startSubjectId),
+    })
+    return await response.json() as { granted: number }
+  }
+
+  assert.equal((await reserve('2026-07-23', 'new-day-1:media', 1)).granted, 100)
+  assert.equal((await reserve('2026-07-22', 'old-day:media', 101)).granted, 0)
+  assert.equal((await reserve('2026-07-23', 'new-day-2:media', 201)).granted, 0)
+  assert.equal(queue.messages.length, 100)
+})
+
+test('media budget grants a mixed reservation privileged headroom without letting ordinary work cross soft', async () => {
+  const queue = new MemoryQueue()
+  const coordinator = new SnapshotCoordinator(
+    { storage: new MemoryState() } as any,
+    { AIRING_CAL_KV: new MemoryKV(), MEDIA_QUEUE: queue } as any,
+  )
+  await reserveRequest(coordinator, {
+    date: '2026-07-22',
+    reservation_id: 'ordinary:media',
+    requested: 50,
+    privileged_requested: 0,
+    jobs: mediaJobs(50),
+  })
+
+  const response = await reserveRequest(coordinator, {
+    date: '2026-07-22',
+    reservation_id: 'mixed:media',
+    requested: 50,
+    privileged_requested: 10,
+    jobs: mediaJobs(50, 101),
+  })
+
+  assert.deepEqual(await response.json(), {
+    granted: 10,
+    consumed: 60,
+    soft_limit: 50,
+    hard_limit: 100,
+  })
+  assert.equal(queue.messages.length, 60)
+})
+
+test('media budget serializes concurrent reservations below the hard limit', async () => {
+  const queue = new MemoryQueue()
+  const coordinator = new SnapshotCoordinator(
+    { storage: new MemoryState() } as any,
+    { AIRING_CAL_KV: new MemoryKV(), MEDIA_QUEUE: queue } as any,
+  )
+
+  const responses = await Promise.all([
+    reserveRequest(coordinator, {
+      date: '2026-07-22',
+      reservation_id: 'concurrent-a:media',
+      requested: 75,
+      privileged_requested: 75,
+      jobs: mediaJobs(75),
+    }),
+    reserveRequest(coordinator, {
+      date: '2026-07-22',
+      reservation_id: 'concurrent-b:media',
+      requested: 75,
+      privileged_requested: 75,
+      jobs: mediaJobs(75, 101),
+    }),
+  ])
+  const results = await Promise.all(responses.map((response) => response.json() as Promise<{ granted: number; consumed: number }>))
+
+  assert.equal(results.reduce((total, { granted }) => total + granted, 0), 100)
+  assert.equal(Math.max(...results.map(({ consumed }) => consumed)), 100)
+  assert.equal(queue.messages.length, 100)
 })

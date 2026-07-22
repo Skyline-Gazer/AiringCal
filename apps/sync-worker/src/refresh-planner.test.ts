@@ -80,6 +80,17 @@ test('refresh planner classifies an incomplete previous refresh as retry', () =>
   assert.deepEqual(planned?.components, ['detail', 'meta', 'image_common', 'image_large'])
 })
 
+test('refresh planner keeps a failed image refresh at retry priority', () => {
+  const cachedAt = 1_000
+  const cached = completeCached(cachedAt)
+  cached.refresh.status = 'failed'
+  cached.image.common.status = 'failed'
+
+  const planned = planSubjectRefresh(input, cached, cachedAt + 1)
+  assert.equal(planned?.priority, 'retry')
+  assert.deepEqual(planned?.components, ['detail', 'meta', 'image_common', 'image_large'])
+})
+
 function candidate(subjectId: number, priority: RefreshPriority): RefreshCandidate {
   return {
     subject_id: subjectId,
@@ -113,6 +124,18 @@ test('refresh planner uses subject id modulo seven for deterministic cold member
   assert.equal(selection.deferred, 0)
 })
 
+test('refresh planner assigns every cold residue exactly once across seven UTC days', () => {
+  const coldCandidates = Array.from({ length: 7 }, (_, subjectId) => candidate(subjectId, 'cold'))
+  const selectedByDay = Array.from({ length: 7 }, (_, dayOffset) => {
+    const utcDay = new Date(Date.UTC(2026, 6, 19 + dayOffset)).toISOString().slice(0, 10)
+    return selectRefreshCandidates(coldCandidates, utcDay, { soft: 50, hard: 100 })
+      .selected.map(({ subject_id }) => subject_id)
+  })
+
+  assert.equal(selectedByDay.every((subjectIds) => subjectIds.length === 1), true)
+  assert.deepEqual(selectedByDay.flat().sort((left, right) => left - right), [0, 1, 2, 3, 4, 5, 6])
+})
+
 test('refresh planner limits eighty ordinary candidates to the soft limit of fifty', () => {
   const selection = selectRefreshCandidates(
     Array.from({ length: 80 }, (_, index) => candidate(index + 1, 'hot')),
@@ -141,4 +164,15 @@ test('refresh planner lets only new or changed candidates cross soft up to hard'
   assert.equal(sixty.deferred, 0)
   assert.equal(oneHundredOne.selected.length, 100)
   assert.equal(oneHundredOne.deferred, 1)
+})
+
+test('refresh planner lets new or changed candidates cross soft without carrying ordinary candidates with them', () => {
+  const selection = selectRefreshCandidates([
+    ...Array.from({ length: 60 }, (_, index) => candidate(index + 1, 'new_or_changed')),
+    ...Array.from({ length: 40 }, (_, index) => candidate(index + 101, 'hot')),
+  ], '2026-07-22', { soft: 50, hard: 100 })
+
+  assert.equal(selection.selected.length, 60)
+  assert.equal(selection.selected.every(({ priority }) => priority === 'new_or_changed'), true)
+  assert.equal(selection.deferred, 40)
 })
