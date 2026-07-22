@@ -17,3 +17,14 @@
 #### Scenario: 当日媒体 hard limit 已用尽
 - **WHEN** Workflow 完成收藏抓取且没有剩余媒体预算
 - **THEN** 系统发布收藏 snapshot、记录零投递并正常完成
+
+### Requirement: 所有 live 运行必须共享每日媒体预算
+系统 MUST 以 UTC 日期作为预算周期，使 scheduled live 与 manual live Workflow 共享同一 soft limit 与 hard limit；系统不得提供绕过 hard limit 的强制投递参数。Shadow Workflow MUST 不投递媒体任务。
+
+#### Scenario: 手动运行发生在定时运行之后
+- **WHEN** scheduled live 已用尽当日 hard limit，随后触发 manual live
+- **THEN** manual live 投递零个媒体任务、仍发布收藏 snapshot 并正常完成
+
+#### Scenario: 运行 shadow Workflow
+- **WHEN** 任意 UTC 日期触发 shadow Workflow
+- **THEN** Workflow 不预留媒体预算且不向 Media Queue 投递任务
