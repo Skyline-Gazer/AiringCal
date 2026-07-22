@@ -23,12 +23,14 @@
 3. job 去重仍覆盖 Workflow step 重放；跨日是否刷新由缓存到期而不是 instance-specific job ID 决定。
 4. 任务按 changed/new、hot due、cold shard、retry 排序，先截断至 soft limit 50；只有 changed/new 超过 soft limit 时可增长到 hard limit 100。
 5. consumer 写入前比较规范化值；时间戳仅在真实状态转换或内容变化时更新，图片完全复用时不重写 image status。
+6. Queue 与 Durable Object 之间不存在分布式事务，且 producer reject 不能证明零副作用。为严格保护 Free Plan hard limit，系统采用 fail-closed：稳定 reservation 在 coordinator 实际 UTC 日内先占用逻辑预算、最多发起一次 Queue send；任何歧义结果保留预算且不重发，但不得阻塞 snapshot 发布。确定性 job ID 与 per-subject coordinator 负责 at-least-once delivery 的业务去重。
 
 ## Risks / Trade-offs
 
 - [读取旧状态会增加 KV reads] → 659 个 subject 的有界读取远低于每日读额度，并通过 chunk 限制单 step 操作数。
 - [每日同步降低即时性] → 用户已确认日级新鲜度；手动 Workflow 仍可用于诊断，但服从同一媒体预算。
 - [预算截断造成积压] → 使用确定性排序与 cold shard，次日重新规划，不持久化大队列。
+- [Queue 结果不确定时可能少投递] → 保留当日预算且不重发，次日从权威缓存状态重新规划；优先保证 hard ceiling 与零重复 KV 副作用。
 
 ## Migration Plan
 

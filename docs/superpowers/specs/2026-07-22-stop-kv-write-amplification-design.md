@@ -37,9 +37,9 @@ Ordering inside each class is deterministic so Workflow replay and a next-day re
 
 ### Shared daily budget
 
-The stopgap budget uses a single compact day record rather than per-subject reservations. Reservation is performed before queue submission and records the UTC date and consumed count. The implementation must use the repository's existing concurrency-safe Workflow/KV mechanism and compare the current date/count before mutation. It must never enqueue above 100 across scheduled and manual live runs.
+The stopgap budget extends the existing `SnapshotCoordinator` Durable Object with one compact authoritative UTC-day record and stable per-Workflow reservation markers. The coordinator derives the budget date from its own clock, atomically records the logical grant before queue submission, and binds that grant to deterministic job IDs. It must never grant more than 100 logical jobs across scheduled and manual live runs in one actual UTC day.
 
-This KV budget is deliberately temporary. The following D1 change replaces it with an atomic D1 reservation table. The stopgap must therefore expose a narrow budget interface rather than spreading KV key knowledge through orchestration code.
+This Durable Object budget is deliberately temporary. The following D1 change replaces it with an atomic D1 reservation table. The stopgap therefore exposes a narrow `/reserve-media` interface rather than spreading budget state through orchestration code.
 
 ### Consumer compare-before-write
 
@@ -56,7 +56,8 @@ Each run reports aggregate counters for total subjects, due candidates, candidat
 - A collection or calendar pagination failure prevents destructive absence conclusions and fails that fetch stage as it does today.
 - A media-state read failure affects only candidate planning for that subject and is surfaced in aggregate errors; it cannot silently cause an unlimited full refresh.
 - Budget exhaustion produces zero additional media messages but does not fail public collection/calendar publication.
-- Queue submission failure is not counted as successfully consumed work unless the existing queue contract proves delivery; retry remains bounded by the hard limit.
+- Queue submission has an unavoidable acknowledgement ambiguity: Cloudflare proves persistence when `sendBatch` resolves but does not prove zero side effects when it rejects. The selected Free Plan policy is fail-closed: a stable reservation makes at most one producer attempt; any throw or confirmation-write interruption remains `uncertain`, continues to occupy the day's logical capacity, is never resent, and does not block snapshot publication. The next daily run derives still-missing media from authoritative cache state.
+- Physical Queue delivery remains at-least-once. Deterministic `job_id` plus `SubjectRefreshCoordinator` serialization/deduplication prevents a completed logical job from repeating business KV side effects; later consumer compare-before-write further protects partial/failure paths.
 - Workflow replay must return the previously recorded step result and must not reserve or enqueue a second time.
 - A consumer failure may update error/backoff state only when that state actually changes.
 

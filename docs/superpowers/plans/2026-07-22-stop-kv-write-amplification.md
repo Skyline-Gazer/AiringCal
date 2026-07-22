@@ -94,7 +94,7 @@ Run `git diff --check`, stage the tests, basic planner, Workflow integration, an
 
 **Interfaces:**
 - Consumes: `nextSubjectRefreshAt`, `subjectDetailKey`, `subjectMetaKey`, `imageStatusKey`, `subjectRefreshKey`, `MediaRefreshComponent`, `MediaRefreshJobV3` from `@airing-cal/storage`.
-- Produces: `selectRefreshCandidates(candidates, utcDay, limits): RefreshSelection` layered on the Task 1 candidate interface, and the existing `SNAPSHOT_COORDINATOR` Durable Object endpoint `POST /reserve-media` accepting `{ date, requested, allow_over_soft }` and returning `{ granted, consumed, soft_limit, hard_limit }`.
+- Produces: `selectRefreshCandidates(candidates, utcDay, limits): RefreshSelection` layered on the Task 1 candidate interface, and the existing `SNAPSHOT_COORDINATOR` Durable Object endpoint `POST /reserve-media` accepting a stable reservation ID, audit date, privileged prefix count, and deterministic jobs, then returning logical grant/consumption plus confirmed-or-uncertain delivery state.
 
 - [ ] **Step 1: Write planner RED tests**
 
@@ -122,7 +122,7 @@ Expected: `/reserve-media` is unimplemented or returns the wrong status/body.
 
 - [ ] **Step 6: Implement the minimal serialized budget coordinator**
 
-Extend the existing `SnapshotCoordinator` with storage record `{ date: string; consumed: number }` and a `/reserve-media` handler. Durable Object request serialization provides the required atomic boundary. Clamp grants to remaining hard capacity and allow crossing 50 only when `allow_over_soft` is true. Do not add another binding, class, migration, or KV key.
+Extend the existing `SnapshotCoordinator` with an authoritative UTC-day record, stable reservation markers, and a `/reserve-media` handler. Durable Object serialization provides the budget atomic boundary. Persist the logical grant before at most one Queue attempt. On any ambiguous producer error, keep the marker and capacity fail-closed, never resend, and return an uncertain result so snapshot publication continues. Clamp ordinary jobs to soft headroom and only the deterministic new/changed prefix to hard headroom. Do not add another binding, class, migration, or KV key.
 
 - [ ] **Step 7: Integrate planning into Workflow with a new RED test first**
 
@@ -130,7 +130,7 @@ Update `workflow.test.ts` before `workflow-core.ts` so the live-run test expects
 
 - [ ] **Step 8: Replace unconditional full jobs with bounded planning**
 
-In `workflow-core.ts`, keep KV operations bounded per Workflow step: read each chunk's detail/meta/image/refresh state, call the pure planner, stage only candidates, reserve once for the deterministic ordered selection, and enqueue only granted jobs. Do not write `subject:refresh:*` while planning. Ensure live snapshot commit no longer depends on media candidates existing or budget being available; Queue transport failures keep current safety semantics unless the delta spec requires otherwise.
+In `workflow-core.ts`, keep KV operations bounded per Workflow step: read each chunk's detail/meta/image/refresh state, call the pure planner, stage only candidates, and submit one stable logical reservation containing deterministic jobs to the coordinator. Do not write `subject:refresh:*` while planning. Ensure live snapshot commit no longer depends on media candidates, budget availability, or an uncertain Queue acknowledgement. Never release or resend an uncertain reservation.
 
 - [ ] **Step 9: Run focused and package tests GREEN**
 
