@@ -163,35 +163,35 @@ Mark task 2.2 complete, run `git diff --check`, stage only planner/budget/Workfl
 - Consumes: existing `processJob`, `KVStorage`, subject detail/meta/image/refresh records.
 - Produces: `putJsonIfChanged(storage, key, next, normalize): Promise<boolean>` (or equivalently named shared helper) whose equality excludes observation-only timestamps but retains semantic timestamps when content actually changes.
 
-- [ ] **Step 1: Write storage-helper RED tests**
+- [x] **Step 1: Write storage-helper RED tests**
 
 Add tests proving a missing key writes once, an identical normalized value writes zero times, and a semantic field change writes once. The test double must count concrete `put` calls.
 
-- [ ] **Step 2: Run storage tests and verify RED**
+- [x] **Step 2: Run storage tests and verify RED**
 
 Run: `pnpm -F @airing-cal/storage test -- --test-name-pattern="unchanged"`
 
 Expected: missing helper/export failure.
 
-- [ ] **Step 3: Implement the minimal compare helper and make storage GREEN**
+- [x] **Step 3: Implement the minimal compare helper and make storage GREEN**
 
 Use stable object comparison for the explicitly normalized record supplied by the caller; do not globally strip fields or change existing `KVStorage.put` semantics. Return whether a PUT occurred.
 
-- [ ] **Step 4: Write consumer RED tests for reusable media**
+- [x] **Step 4: Write consumer RED tests for reusable media**
 
 In `media-worker.test.ts`, seed matching detail metadata and both cached image statuses, execute a V3 job whose source URLs match, and assert no `subject:meta:*`, `image:status:*`, or terminal `subject:refresh:*` PUT. Add separate tests proving changed source, failure/backoff, and tombstone transitions still write. In coordinator tests, assert duplicate/obsolete jobs remain no-op.
 
-- [ ] **Step 5: Run media tests and verify RED**
+- [x] **Step 5: Run media tests and verify RED**
 
 Run: `pnpm -F @airing-cal/media-worker test -- --test-name-pattern="unchanged|reusable"`
 
 Expected: FAIL with observed redundant PUT keys/counts.
 
-- [ ] **Step 6: Apply compare-before-write at each consumer persistence boundary**
+- [x] **Step 6: Apply compare-before-write at each consumer persistence boundary**
 
 Normalize and compare detail metadata, subject metadata, each image status, and refresh terminal/error state immediately before their existing PUT sites. Preserve the stored value when the public/source/error/tombstone semantics are unchanged. Do not suppress a required running-to-failed, missing-to-cached, changed-source, retry, or tombstone transition.
 
-- [ ] **Step 7: Run focused tests GREEN and refactor**
+- [x] **Step 7: Run focused tests GREEN and refactor**
 
 Run:
 
@@ -203,7 +203,7 @@ pnpm -F @airing-cal/media-worker typecheck
 
 Expected: all pass with no warnings or changed public image references.
 
-- [ ] **Step 8: Commit and push consumer zero-write behavior**
+- [x] **Step 8: Commit and push consumer zero-write behavior**
 
 Mark task 2.3 complete, run `git diff --check`, commit only storage/media tests, implementation, and task checkbox as `fix: skip unchanged media KV writes`, then push.
 
