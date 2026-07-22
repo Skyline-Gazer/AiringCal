@@ -76,14 +76,33 @@ function reusableCachedImageStatus(previous: any, sourceUrl: string | undefined)
   return cached.source_url === sourceUrl ? cached : null
 }
 
+function failedImageStatus(previous: any, sourceUrl: string | undefined, error: unknown, now: number) {
+  return cachedImageStatus(previous) ?? {
+    ...emptyImageStatus(),
+    status: 'failed',
+    queued_at: now,
+    last_error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+    source_url: sourceUrl,
+  }
+}
+
 function normalizeSubjectMeta(value: SubjectMeta & { last_error?: string }) {
   const { checked_at: _checkedAt, ...semantic } = value
   return semantic
 }
 
 function normalizeImageStatus(value: any) {
-  const { subject_checked_at: _subjectCheckedAt, ...semantic } = value
-  return semantic
+  const { subject_checked_at: _subjectCheckedAt, common, large, ...semantic } = value
+  const withoutQueuedAt = (component: any) => {
+    if (!component || typeof component !== 'object') return component
+    const { queued_at: _queuedAt, ...componentSemantic } = component
+    return componentSemantic
+  }
+  return {
+    ...semantic,
+    common: withoutQueuedAt(common),
+    large: withoutQueuedAt(large),
+  }
 }
 
 function normalizeRefreshState(value: SubjectRefreshState) {
@@ -138,7 +157,7 @@ async function processImage(size: ImageSourceSize, sourceUrl: string | undefined
   }
   try {
     const downloaded = await client.downloadImage(sourceUrl)
-    if (!downloaded) return cachedImageStatus(previous) ?? { ...emptyImageStatus(), status: 'failed', queued_at: now, last_error: 'image download failed' }
+    if (!downloaded) return cachedImageStatus(previous) ?? { ...emptyImageStatus(), status: 'failed', queued_at: now, last_error: 'image download failed', source_url: sourceUrl }
     const hash = await sha256Hex(downloaded.data)
     const ref = imageRef(hash)
     await imageStore.putOriginal(hash, downloaded.data, downloaded.contentType, {
@@ -166,12 +185,13 @@ async function processImage(size: ImageSourceSize, sourceUrl: string | undefined
       source_url: sourceUrl,
     }
   } catch (error) {
-    if (isTransient(error) && !cachedImageStatus(previous)) throw error
+    if (isTransient(error) && (isVersionedJob(job) || !cachedImageStatus(previous))) throw error
     return cachedImageStatus(previous) ?? {
       ...emptyImageStatus(),
       status: 'failed',
       queued_at: now,
       last_error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+      source_url: sourceUrl,
     }
   }
 }
@@ -277,7 +297,7 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | '
     large: detailImages.large ?? (isVersionedJob(job) ? job.images?.large : undefined),
   }
 
-  const [common, large] = await Promise.all([
+  const imageResults = await Promise.allSettled([
     !isVersionedJob(job) || job.components.includes('image_common')
       ? processImage('common', images.common, previousStatus?.common, job, client, imageStore, storage, now)
       : previousStatus?.common ?? emptyImageStatus(),
@@ -285,6 +305,12 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | '
       ? processImage('large', images.large, previousStatus?.large, job, client, imageStore, storage, now)
       : previousStatus?.large ?? emptyImageStatus(),
   ])
+  const common = imageResults[0].status === 'fulfilled'
+    ? imageResults[0].value
+    : failedImageStatus(previousStatus?.common, images.common, imageResults[0].reason, now)
+  const large = imageResults[1].status === 'fulfilled'
+    ? imageResults[1].value
+    : failedImageStatus(previousStatus?.large, images.large, imageResults[1].reason, now)
 
   await putJsonIfChanged(storage, imageStatusKey(job.subject_id), {
     subject_id: job.subject_id,
@@ -293,6 +319,8 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | '
     large,
     subject_checked_at: now,
   }, normalizeImageStatus)
+  const transientFailure = imageResults.find((result) => result.status === 'rejected' && isTransient(result.reason))
+  if (transientFailure?.status === 'rejected') throw transientFailure.reason
   if (isVersionedJob(job)) {
     const requestedImages = [
       job.components.includes('image_common') ? common : null,
