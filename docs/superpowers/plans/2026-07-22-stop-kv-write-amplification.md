@@ -96,43 +96,43 @@ Run `git diff --check`, stage the tests, basic planner, Workflow integration, an
 - Consumes: `nextSubjectRefreshAt`, `subjectDetailKey`, `subjectMetaKey`, `imageStatusKey`, `subjectRefreshKey`, `MediaRefreshComponent`, `MediaRefreshJobV3` from `@airing-cal/storage`.
 - Produces: `selectRefreshCandidates(candidates, utcDay, limits): RefreshSelection` layered on the Task 1 candidate interface, and the existing `SNAPSHOT_COORDINATOR` Durable Object endpoint `POST /reserve-media` accepting a stable reservation ID, audit date, privileged prefix count, and deterministic jobs, then returning logical grant/consumption plus confirmed-or-uncertain delivery state.
 
-- [ ] **Step 1: Write planner RED tests**
+- [x] **Step 1: Write planner RED tests**
 
 In `refresh-planner.test.ts`, cover hot before cold before retry ordering, deterministic `subject_id % 7` cold membership, 80 ordinary => 50 selected, and 60 new/changed => 60 selected but 101 => 100.
 
-- [ ] **Step 2: Run planner tests and verify RED**
+- [x] **Step 2: Run planner tests and verify RED**
 
 Run: `pnpm -F @airing-cal/sync-worker test -- --test-name-pattern="refresh planner"`
 
 Expected: missing `selectRefreshCandidates` export or selection assertion failures.
 
-- [ ] **Step 3: Implement the pure planner and make it GREEN**
+- [x] **Step 3: Implement the pure planner and make it GREEN**
 
 Extend the Task 1 candidate with explicit priority data. Sort by numeric priority then subject ID. Return counters `{ candidates, selected, deferred, by_priority }` with the selected component arrays. Run the focused planner tests until all pass.
 
-- [ ] **Step 4: Write budget coordinator RED tests**
+- [x] **Step 4: Write budget coordinator RED tests**
 
 In `snapshot-coordinator.test.ts`, use its existing in-memory Durable Object storage double and assert sequential scheduled/manual reservations share `2026-07-22`, grants never take consumed above 100, a different UTC date resets count, and zero-request shadow logic never calls the coordinator.
 
-- [ ] **Step 5: Run budget tests and verify RED**
+- [x] **Step 5: Run budget tests and verify RED**
 
 Run: `pnpm -F @airing-cal/sync-worker test -- --test-name-pattern="media budget"`
 
 Expected: `/reserve-media` is unimplemented or returns the wrong status/body.
 
-- [ ] **Step 6: Implement the minimal serialized budget coordinator**
+- [x] **Step 6: Implement the minimal serialized budget coordinator**
 
 Extend the existing `SnapshotCoordinator` with an authoritative UTC-day record, stable reservation markers, and a `/reserve-media` handler. Durable Object serialization provides the budget atomic boundary. Persist the logical grant before at most one Queue attempt. On any ambiguous producer error, keep the marker and capacity fail-closed, never resend, and return an uncertain result so snapshot publication continues. Clamp ordinary jobs to soft headroom and only the deterministic new/changed prefix to hard headroom. Do not add another binding, class, migration, or KV key.
 
-- [ ] **Step 7: Integrate planning into Workflow with a new RED test first**
+- [x] **Step 7: Integrate planning into Workflow with a new RED test first**
 
 Update `workflow.test.ts` before `workflow-core.ts` so the live-run test expects component-specific jobs, shared-budget requests, zero media work for shadow, and snapshot commit despite zero grant. Verify RED against the old unconditional planner.
 
-- [ ] **Step 8: Replace unconditional full jobs with bounded planning**
+- [x] **Step 8: Replace unconditional full jobs with bounded planning**
 
 In `workflow-core.ts`, keep KV operations bounded per Workflow step: read each chunk's detail/meta/image/refresh state, call the pure planner, stage only candidates, and submit one stable logical reservation containing deterministic jobs to the coordinator. Do not write `subject:refresh:*` while planning. Ensure live snapshot commit no longer depends on media candidates, budget availability, or an uncertain Queue acknowledgement. Never release or resend an uncertain reservation.
 
-- [ ] **Step 9: Run focused and package tests GREEN**
+- [x] **Step 9: Run focused and package tests GREEN**
 
 Run:
 
@@ -144,7 +144,7 @@ pnpm -F @airing-cal/sync-worker typecheck
 
 Expected: all pass, including the 659 regression; no Workflow step exceeds the existing external-operation assertions.
 
-- [ ] **Step 10: Commit and push bounded planning atomically**
+- [x] **Step 10: Commit and push bounded planning atomically**
 
 Mark task 2.2 complete, run `git diff --check`, stage only planner/budget/Workflow/test/task files, commit as `fix: bound daily media refresh planning`, and push.
 

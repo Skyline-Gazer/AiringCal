@@ -6,7 +6,7 @@
 ## 2. Bounded Refresh Planning
 
 - [x] 2.1 Restore component-level 6-to-8-day due selection before enqueue and preserve Workflow replay idempotency
-- [ ] 2.2 Implement priority ordering, daily soft limit 50, hard limit 100 and deterministic cold seven-day shard selection
+- [x] 2.2 Implement priority ordering, daily soft limit 50, hard limit 100 and deterministic cold seven-day shard selection
 - [ ] 2.3 Make media consumer skip unchanged metadata, image status and refresh terminal writes while preserving errors and tombstones
 
 ## 3. Daily Scheduling and Observability
