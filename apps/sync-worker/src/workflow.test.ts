@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { nextSubjectRefreshAt } from '@airing-cal/storage'
+import { SnapshotCoordinator } from './snapshot-coordinator.ts'
 import { runSyncWorkflow, type SyncWorkflowEnv, type WorkflowStepLike } from './workflow-core.ts'
 
 class MockKV {
@@ -120,7 +121,6 @@ class MockSnapshotCoordinator {
   private reservationResults = new Map<string, { granted: number; consumed: number; soft_limit: number; hard_limit: number }>()
   private queueMessages: unknown[] = []
   loseNextReservationResponse = false
-  queueFailures = 0
 
   constructor(private kv: MockKV, readonly generation = 7, private maxGrant = Number.POSITIVE_INFINITY) {}
 
@@ -160,10 +160,6 @@ class MockSnapshotCoordinator {
               const privilegedGranted = Math.min(privileged, Math.max(0, 100 - consumed))
               const ordinaryGranted = Math.min(body.requested - privileged, Math.max(0, 50 - consumed - privilegedGranted))
               const granted = Math.min(privilegedGranted + ordinaryGranted, this.maxGrant)
-              if (this.queueFailures > 0) {
-                this.queueFailures -= 1
-                throw new Error('queue unavailable')
-              }
               const result = { granted, consumed: consumed + granted, soft_limit: 50, hard_limit: 100 }
               this.budget = { date: body.date, consumed: result.consumed }
               this.reservationResults.set(body.reservation_id, result)
@@ -539,11 +535,33 @@ test('unchanged 659-subject workflow enqueues no media and performs no subject K
   }
 })
 
-test('live workflow does not commit active snapshot when enqueue fails', async () => {
+test('live workflow commits the snapshot after an ambiguous queue submission without resending logical jobs', async () => {
   const kv = new MockKV()
-  const coordinator = new MockSnapshotCoordinator(kv, 8)
-  const env = workflowEnv(kv, [], coordinator)
-  coordinator.queueFailures = 4
+  const coordinatorState = {
+    values: new Map<string, unknown>(),
+    async get<T>(key: string) { return this.values.get(key) as T | undefined },
+    async put<T>(key: string, value: T) { this.values.set(key, value) },
+    async delete(key: string) { this.values.delete(key) },
+  }
+  const queueMessages: any[] = []
+  let queueCalls = 0
+  const coordinator = new SnapshotCoordinator({ storage: coordinatorState } as any, {
+    AIRING_CAL_KV: kv,
+    MEDIA_QUEUE: {
+      sendBatch: async (messages: Array<{ body: any }>) => {
+        queueCalls += 1
+        queueMessages.push(...messages.map(({ body }) => body))
+        throw new Error('queue response lost after accept')
+      },
+    },
+  } as any)
+  const env = workflowEnv(kv, [])
+  env.SNAPSHOT_COORDINATOR = {
+    getByName(name: string) {
+      assert.equal(name, 'snapshot-global')
+      return { fetch: (request: Request) => coordinator.fetch(request) }
+    },
+  }
   const step = new FakeStep(kv)
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async (url: string | URL | Request) => {
@@ -554,13 +572,20 @@ test('live workflow does not commit active snapshot when enqueue fails', async (
   }) as typeof globalThis.fetch
 
   try {
-    await assert.rejects(() => runSyncWorkflow(env, {
+    const result = await runSyncWorkflow(env, {
       instanceId: 'live-enqueue-failure',
       payload: { mode: 'live', source: 'manual' },
-    }, step, (message) => new TestNonRetryableError(message)), /queue unavailable/)
-    assert.equal(coordinator.commits.length, 0)
-    assert.equal(coordinator.consumed, 0)
-    assert.equal(kv.values.has('snapshot:active'), false)
+    }, step, (message) => new TestNonRetryableError(message))
+
+    assert.equal(result.refresh_jobs, 1)
+    assert.equal(queueCalls, 1)
+    assert.equal(queueMessages.length, 1)
+    assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'live-enqueue-failure')
+    assert.deepEqual(coordinatorState.values.get('mediaBudget'), {
+      date: new Date().toISOString().slice(0, 10),
+      consumed: 1,
+    })
+    assert.equal((coordinatorState.values.get('mediaReservation:live-enqueue-failure:media') as any).submission, 'uncertain')
   } finally {
     globalThis.fetch = originalFetch
   }

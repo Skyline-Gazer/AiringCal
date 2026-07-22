@@ -91,6 +91,38 @@ test('refresh planner keeps a failed image refresh at retry priority', () => {
   assert.deepEqual(planned?.components, ['detail', 'meta', 'image_common', 'image_large'])
 })
 
+test('refresh planner keeps failed or partial work with a real source change at new-or-changed priority', () => {
+  for (const status of ['failed', 'partial']) {
+    const cachedAt = 1_000
+    const cached = completeCached(cachedAt)
+    cached.refresh.status = status
+    cached.image.common.status = 'failed'
+    cached.image.common.source_url = 'https://images.example/42/old-common.jpg'
+
+    const planned = planSubjectRefresh(input, cached, cachedAt + 1)
+    assert.equal(planned?.priority, 'new_or_changed')
+    assert.deepEqual(planned?.components, ['image_common'])
+  }
+})
+
+test('refresh planner detects a failed image source change from cached detail when failure state omitted the URL', () => {
+  const cachedAt = 1_000
+  const cached = completeCached(cachedAt)
+  cached.refresh.status = 'partial'
+  cached.detail.subject = {
+    id: input.subject_id,
+    images: {
+      common: 'https://images.example/42/old-common.jpg',
+      large: input.images?.large,
+    },
+  } as any
+  cached.image.common = { status: 'failed' } as any
+
+  const planned = planSubjectRefresh(input, cached, cachedAt + 1)
+  assert.equal(planned?.priority, 'new_or_changed')
+  assert.deepEqual(planned?.components, ['image_common'])
+})
+
 function candidate(subjectId: number, priority: RefreshPriority): RefreshCandidate {
   return {
     subject_id: subjectId,

@@ -1,3 +1,4 @@
+import { subjectDetailImages } from '@airing-cal/domain'
 import { nextSubjectRefreshAt, type MediaRefreshComponent } from '@airing-cal/storage'
 
 export interface RefreshPlannerInput {
@@ -65,11 +66,26 @@ function imageNeedsRefresh(status: { status?: string; source_url?: string } | nu
   return status.status !== 'cached' && status.status !== 'missing_source'
 }
 
+function imageSourceChanged(
+  status: { source_url?: string } | null | undefined,
+  cachedSourceUrl: string | undefined,
+  sourceUrl: string | undefined,
+): boolean {
+  const previousSourceUrl = status?.source_url ?? cachedSourceUrl
+  return Boolean(sourceUrl && previousSourceUrl && previousSourceUrl !== sourceUrl)
+}
+
 export function planSubjectRefresh(input: RefreshPlannerInput, cached: CachedRefreshState, now: number): RefreshCandidate | null {
+  if (!cached.detail) return { ...input, components: ['detail', 'meta'], priority: 'new_or_changed' }
+
+  const cachedImages = subjectDetailImages(cached.detail.subject as Parameters<typeof subjectDetailImages>[0])
+  const changedImages: MediaRefreshComponent[] = []
+  if (imageSourceChanged(cached.image?.common, cachedImages.common, input.images?.common)) changedImages.push('image_common')
+  if (imageSourceChanged(cached.image?.large, cachedImages.large, input.images?.large)) changedImages.push('image_large')
+  if (changedImages.length) return { ...input, components: changedImages, priority: 'new_or_changed' }
   if (cached.refresh?.status === 'failed' || cached.refresh?.status === 'partial') {
     return { ...input, components: ['detail', 'meta', 'image_common', 'image_large'], priority: 'retry' }
   }
-  if (!cached.detail) return { ...input, components: ['detail', 'meta'], priority: 'new_or_changed' }
 
   const components: MediaRefreshComponent[] = []
   if (!cached.meta) components.push('meta')

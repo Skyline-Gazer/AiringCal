@@ -21,10 +21,12 @@ type CommitResult = { status: 'committed' | 'obsolete'; generation: number }
 type MediaBudgetResult = { granted: number; consumed: number; soft_limit: number; hard_limit: number }
 type MediaReservation = {
   date: string
+  budget_date?: string
   requested: number
   privileged_requested: number
   job_ids: string[]
   result: MediaBudgetResult
+  submission?: 'reserved' | 'confirmed' | 'uncertain' | 'not_needed'
 }
 
 const NEXT_GENERATION_KEY = 'nextGeneration'
@@ -41,6 +43,7 @@ export class SnapshotCoordinatorCore {
     private storage: CoordinatorStorage,
     private kv: JsonKV,
     private queue?: SnapshotCoordinatorEnv['MEDIA_QUEUE'],
+    private clock: () => number = () => Date.now(),
   ) {}
 
   async allocate(instanceId: string): Promise<number> {
@@ -90,16 +93,25 @@ export class SnapshotCoordinatorCore {
       return existing.result
     }
 
+    const budgetDate = new Date(this.clock()).toISOString().slice(0, 10)
     const previous = await this.storage.get<{ date: string; consumed: number }>(MEDIA_BUDGET_KEY)
-    const consumed = previous?.date === date ? previous.consumed : 0
-    if (previous && date < previous.date) {
+    const consumed = previous?.date === budgetDate ? previous.consumed : 0
+    if (previous && budgetDate < previous.date) {
       const result = {
         granted: 0,
         consumed: previous.consumed,
         soft_limit: MEDIA_SOFT_LIMIT,
         hard_limit: MEDIA_HARD_LIMIT,
       }
-      await this.storage.put(reservationKey, { date, requested, privileged_requested: privilegedRequested, job_ids: jobIds, result })
+      await this.storage.put(reservationKey, {
+        date,
+        budget_date: budgetDate,
+        requested,
+        privileged_requested: privilegedRequested,
+        job_ids: jobIds,
+        result,
+        submission: 'not_needed',
+      })
       return result
     }
 
@@ -117,29 +129,31 @@ export class SnapshotCoordinatorCore {
     }
     const reservation: MediaReservation = {
       date,
+      budget_date: budgetDate,
       requested,
       privileged_requested: privilegedRequested,
       job_ids: jobIds,
       result,
+      submission: granted > 0 ? 'reserved' : 'not_needed',
     }
 
-    const budgetWrite = this.storage.put(MEDIA_BUDGET_KEY, { date, consumed: nextConsumed })
+    const budgetWrite = this.storage.put(MEDIA_BUDGET_KEY, { date: budgetDate, consumed: nextConsumed })
     const reservationWrite = this.storage.put(reservationKey, reservation)
-    try {
-      const queueWrite = granted > 0
-        ? this.queue?.sendBatch(jobs.slice(0, granted).map((body) => ({ body, contentType: 'json' as const })))
-        : undefined
-      if (granted > 0 && !queueWrite) throw new Error('MEDIA_QUEUE is unavailable')
-      await Promise.all([budgetWrite, reservationWrite, queueWrite])
+    await Promise.all([budgetWrite, reservationWrite])
+    if (granted === 0) return result
+
+    if (!this.queue) {
+      await this.storage.put(reservationKey, { ...reservation, submission: 'uncertain' })
       return result
-    } catch (error) {
-      await Promise.allSettled([budgetWrite, reservationWrite])
-      const rollbackBudget = previous
-        ? this.storage.put(MEDIA_BUDGET_KEY, previous)
-        : this.storage.delete(MEDIA_BUDGET_KEY)
-      await Promise.all([rollbackBudget, this.storage.delete(reservationKey)])
-      throw error
     }
+    try {
+      await this.queue.sendBatch(jobs.slice(0, granted).map((body) => ({ body, contentType: 'json' as const })))
+    } catch {
+      await this.storage.put(reservationKey, { ...reservation, submission: 'uncertain' })
+      return result
+    }
+    await this.storage.put(reservationKey, { ...reservation, submission: 'confirmed' })
+    return result
   }
 }
 

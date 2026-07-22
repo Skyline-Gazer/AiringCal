@@ -5,8 +5,20 @@ import { SnapshotCoordinator, SnapshotCoordinatorCore } from './snapshot-coordin
 
 class MemoryState {
   values = new Map<string, unknown>()
+  failNextReservationConfirmation = false
+
   async get<T>(key: string) { return this.values.get(key) as T | undefined }
-  async put<T>(key: string, value: T) { this.values.set(key, value) }
+  async put<T>(key: string, value: T) {
+    if (
+      this.failNextReservationConfirmation
+      && key.startsWith('mediaReservation:')
+      && (value as { submission?: string })?.submission === 'confirmed'
+    ) {
+      this.failNextReservationConfirmation = false
+      throw new Error('confirmation persistence interrupted')
+    }
+    this.values.set(key, value)
+  }
   async delete(key: string) { this.values.delete(key) }
 }
 
@@ -17,14 +29,16 @@ class MemoryKV {
 
 class MemoryQueue {
   messages: MediaRefreshJobV3[] = []
-  failNext = false
+  acceptThenLoseResponseNext = false
+  sendCalls = 0
 
   async sendBatch(messages: Array<{ body: MediaRefreshJobV3; contentType?: 'json' }>) {
-    if (this.failNext) {
-      this.failNext = false
-      throw new Error('queue unavailable')
-    }
+    this.sendCalls += 1
     this.messages.push(...messages.map(({ body }) => body))
+    if (this.acceptThenLoseResponseNext) {
+      this.acceptThenLoseResponseNext = false
+      throw new Error('queue response lost after accept')
+    }
   }
 }
 
@@ -126,24 +140,21 @@ test('concurrent commit requests cannot interleave while the older KV write is a
 })
 
 test('media budget shares a UTC day across scheduled and manual reservations and resets on a new day', async () => {
+  let now = Date.parse('2026-07-22T23:59:00Z')
   const queue = new MemoryQueue()
-  const coordinator = new SnapshotCoordinator(
-    { storage: new MemoryState() } as any,
-    { AIRING_CAL_KV: new MemoryKV(), MEDIA_QUEUE: queue } as any,
-  )
+  const coordinator = new SnapshotCoordinatorCore(new MemoryState(), new MemoryKV(), queue, () => now)
   let reservation = 0
   let nextSubjectId = 1
   const reserve = async (date: string, requested: number, allowOverSoft: boolean) => {
-    const response = await reserveRequest(coordinator, {
+    const result = await coordinator.reserveMedia(
       date,
-      reservation_id: `workflow-${reservation++}:media`,
+      `workflow-${reservation++}:media`,
       requested,
-      privileged_requested: allowOverSoft ? requested : 0,
-      jobs: mediaJobs(requested, nextSubjectId),
-    })
+      allowOverSoft ? requested : 0,
+      mediaJobs(requested, nextSubjectId),
+    )
     nextSubjectId += requested
-    assert.equal(response.status, 200)
-    return await response.json()
+    return result
   }
 
   assert.deepEqual(await reserve('2026-07-22', 40, false), {
@@ -170,6 +181,7 @@ test('media budget shares a UTC day across scheduled and manual reservations and
     soft_limit: 50,
     hard_limit: 100,
   })
+  now = Date.parse('2026-07-23T00:01:00Z')
   assert.deepEqual(await reserve('2026-07-23', 8, false), {
     granted: 8,
     consumed: 8,
@@ -200,9 +212,9 @@ test('media budget replays one stable reservation without consuming or enqueuein
   assert.equal(queue.messages.length, 40)
 })
 
-test('media budget releases a failed queue reservation so the stable operation can retry', async () => {
+test('media budget keeps an accepted queue batch consumed when its response is lost', async () => {
   const queue = new MemoryQueue()
-  queue.failNext = true
+  queue.acceptThenLoseResponseNext = true
   const coordinator = new SnapshotCoordinator(
     { storage: new MemoryState() } as any,
     { AIRING_CAL_KV: new MemoryKV(), MEDIA_QUEUE: queue } as any,
@@ -215,14 +227,69 @@ test('media budget releases a failed queue reservation so the stable operation c
     jobs: mediaJobs(1),
   }
 
-  await assert.rejects(() => reserveRequest(coordinator, body), /queue unavailable/)
+  const first = await (await reserveRequest(coordinator, body)).json()
   const retried = await (await reserveRequest(coordinator, body)).json()
 
+  assert.deepEqual(first, { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100 })
   assert.deepEqual(retried, { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100 })
   assert.equal(queue.messages.length, 1)
+  assert.equal(queue.sendCalls, 1)
 })
 
-test('media budget rejects an older UTC day without reopening a newer day budget', async () => {
+test('media budget replays a durable marker without resending after confirmation persistence is interrupted', async () => {
+  const state = new MemoryState()
+  state.failNextReservationConfirmation = true
+  const queue = new MemoryQueue()
+  const coordinator = new SnapshotCoordinator(
+    { storage: state } as any,
+    { AIRING_CAL_KV: new MemoryKV(), MEDIA_QUEUE: queue } as any,
+  )
+  const body = {
+    date: '2026-07-22',
+    reservation_id: 'workflow-interrupted:media',
+    requested: 1,
+    privileged_requested: 1,
+    jobs: mediaJobs(1),
+  }
+
+  await assert.rejects(() => reserveRequest(coordinator, body), /confirmation persistence interrupted/)
+  const replay = await (await reserveRequest(coordinator, body)).json()
+
+  assert.deepEqual(replay, { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100 })
+  assert.equal(queue.messages.length, 1)
+  assert.equal(queue.sendCalls, 1)
+})
+
+test('media budget uses the coordinator UTC clock when a slow old run first arrives after midnight', async () => {
+  const state = new MemoryState()
+  const queue = new MemoryQueue()
+  const now = Date.parse('2026-07-23T00:01:00Z')
+  const coordinator = new SnapshotCoordinatorCore(state, new MemoryKV(), queue, () => now)
+
+  const oldRun = await coordinator.reserveMedia(
+    '2026-07-22',
+    'slow-old-run:media',
+    100,
+    100,
+    mediaJobs(100),
+  )
+  const newRun = await coordinator.reserveMedia(
+    '2026-07-23',
+    'new-run:media',
+    100,
+    100,
+    mediaJobs(100, 101),
+  )
+
+  assert.equal(oldRun.granted, 100)
+  assert.equal(newRun.granted, 0)
+  assert.equal(queue.messages.length, 100)
+  assert.deepEqual(state.values.get('mediaBudget'), { date: '2026-07-23', consumed: 100 })
+  assert.equal((state.values.get('mediaReservation:slow-old-run:media') as any).date, '2026-07-22')
+  assert.equal((state.values.get('mediaReservation:slow-old-run:media') as any).budget_date, '2026-07-23')
+})
+
+test('media budget treats caller dates as audit data that cannot reopen the actual UTC-day budget', async () => {
   const queue = new MemoryQueue()
   const coordinator = new SnapshotCoordinator(
     { storage: new MemoryState() } as any,
