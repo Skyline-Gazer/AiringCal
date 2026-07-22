@@ -613,11 +613,11 @@ SYNC_MODE
 Cron config:
 
 ```text
-triggers.crons = ["0 * * * *"]
+triggers.crons = ["0 20 * * *"]
 ```
 
 The exact syntax must be written in the target Worker config only after validating against the local Wrangler schema and `wrangler --help` / config docs for the chosen config format.
-Cloudflare plan limits count configured Cron Triggers, so the Worker keeps one hourly trigger and gates real sync execution in code to UTC hours 0/4/8/12/16/20.
+Cloudflare Cron uses UTC, so the Worker keeps one daily trigger at 20:00 UTC, corresponding to 04:00 Asia/Shanghai on the following local day.
 
 ### `media-worker`
 

@@ -393,6 +393,22 @@ test('read-worker health reports collection snapshot status when KV has data', a
   assert.equal(body.data.cron.last.status, 'ok')
 })
 
+test('read-worker health reports the next daily 20:00 UTC Cron', async () => {
+  const kv = new MockKV()
+  kv.values.set('snapshot:summary', { _total: 0 })
+  const originalNow = Date.now
+  Date.now = () => Date.UTC(2026, 6, 21, 20, 1, 0)
+
+  try {
+    const response = await worker.fetch(new Request('https://read.local/health'), env(kv) as any)
+    const body = await response.json() as any
+
+    assert.equal(body.data.cron.next_at, '2026-07-22T20:00:00.000Z')
+  } finally {
+    Date.now = originalNow
+  }
+})
+
 test('read-worker health returns complete data when collection count is zero', async () => {
   const kv = new MockKV()
   kv.values.set('snapshot:summary', { _total: 0 })

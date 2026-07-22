@@ -22,7 +22,7 @@ interface ReadEnv {
 }
 
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
-const CRON_INTERVAL_HOURS = 4
+const CRON_HOUR_UTC = 20
 const HYDRATION_CONCURRENCY = 8
 const WORKFLOW_STALE_SECONDS = 20 * 60
 const MAX_CURSOR_LENGTH = 1024
@@ -170,11 +170,8 @@ function imageStatus(status: any): string {
 
 function nextCronAt(now = Date.now()): string {
   const next = new Date(now)
-  next.setUTCMinutes(0, 0, 0)
-  if (next.getTime() <= now) next.setUTCHours(next.getUTCHours() + 1)
-  while (next.getUTCHours() % CRON_INTERVAL_HOURS !== 0) {
-    next.setUTCHours(next.getUTCHours() + 1)
-  }
+  next.setUTCHours(CRON_HOUR_UTC, 0, 0, 0)
+  if (next.getTime() <= now) next.setUTCDate(next.getUTCDate() + 1)
   return next.toISOString()
 }
 

@@ -187,7 +187,16 @@ export async function runSyncWorkflow(
   event: SyncWorkflowEventLike,
   step: WorkflowStepLike,
   nonRetryable: NonRetryableFactory,
-): Promise<{ instance_id: string; status: 'ok'; subject_count: number; refresh_jobs: number }> {
+): Promise<{
+  instance_id: string
+  status: 'ok'
+  subject_count: number
+  refresh_jobs: number
+  refresh_candidates: number
+  refresh_selected: number
+  refresh_deferred: number
+  avoided_writes: number
+}> {
   const scheduled = Boolean(event.schedule)
   const mode = scheduled ? 'live' : event.payload?.mode
   if (mode !== 'shadow' && mode !== 'live') throw nonRetryable('Manual workflow requires mode shadow or live')
@@ -209,6 +218,10 @@ export async function runSyncWorkflow(
     collection_pages: 0,
     subject_count: 0,
     refresh_jobs: 0,
+    refresh_candidates: 0,
+    refresh_selected: 0,
+    refresh_deferred: 0,
+    avoided_writes: 0,
     error: null,
   }
 
@@ -337,6 +350,9 @@ export async function runSyncWorkflow(
 
     const planOutputs: StepOutput[] = []
     let refreshJobs = 0
+    let refreshCandidates = 0
+    let refreshSelected = 0
+    let refreshDeferred = 0
     for (let chunkIndex = 0; mode === 'live' && chunkIndex < (prepared.refreshChunks ?? 0); chunkIndex++) {
       const output = await step.do(`plan-refresh-${chunkIndex}`, STORAGE_STEP, async () => {
         const allInputs = await getJson<RefreshInput[]>(env.AIRING_CAL_KV, prepared.refreshInputKey ?? '') ?? []
@@ -378,6 +394,9 @@ export async function runSyncWorkflow(
         soft: 50,
         hard: 100,
       })
+      refreshCandidates = selection.candidates
+      refreshSelected = selection.selected.length
+      refreshDeferred = selection.deferred
       const jobs: MediaRefreshJobV3[] = selection.selected.map((candidate) => ({
         version: 3,
         generation: run.generation ?? 0,
@@ -429,6 +448,10 @@ export async function runSyncWorkflow(
         completed_at: completedAt,
         subject_count: prepared.count,
         refresh_jobs: refreshJobs,
+        refresh_candidates: refreshCandidates,
+        refresh_selected: refreshSelected,
+        refresh_deferred: refreshDeferred,
+        avoided_writes: Math.max(0, prepared.count - refreshJobs),
       }
       await writeRun(env, run)
       const currentMeta = await getJson<Record<string, unknown>>(env.AIRING_CAL_KV, syncMetaKey()) ?? {}
@@ -441,7 +464,16 @@ export async function runSyncWorkflow(
       return { key: syncRunKey(event.instanceId), count: 1, digest: await digest(run) }
     })
 
-    return { instance_id: event.instanceId, status: 'ok', subject_count: prepared.count, refresh_jobs: refreshJobs }
+    return {
+      instance_id: event.instanceId,
+      status: 'ok',
+      subject_count: prepared.count,
+      refresh_jobs: refreshJobs,
+      refresh_candidates: refreshCandidates,
+      refresh_selected: refreshSelected,
+      refresh_deferred: refreshDeferred,
+      avoided_writes: Math.max(0, prepared.count - refreshJobs),
+    }
   } catch (error) {
     await step.do('record-error', STORAGE_STEP, async () => {
       const completedAt = nowSeconds()

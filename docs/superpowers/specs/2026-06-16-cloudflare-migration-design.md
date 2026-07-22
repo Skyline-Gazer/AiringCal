@@ -225,7 +225,7 @@ interface StorageAdapter {
 
 ### 频率
 
-每 4 小时一次（通过 `SYNC_INTERVAL` 环境变量可配）。
+当前生产止血 schedule 固定为每天 04:00 Asia/Shanghai，即 20:00 UTC；不通过运行时变量绕过日级媒体预算。
 
 ### 执行流程
 
@@ -332,15 +332,14 @@ name = "bangumi-tv"
 main = "workers/index.ts"
 compatibility_date = "2026-06-17"
 
-# 定时同步，每 4 小时
+# 定时同步，每天 04:00 Asia/Shanghai（20:00 UTC）
 [triggers]
-crons = ["0 */4 * * *"]
+crons = ["0 20 * * *"]
 
 # 公开环境变量
 [vars]
 SYNC_MODE = "merge"
 NSFW_SHOW = "true"
-SYNC_INTERVAL = "4h"
 
 # KV 命名空间（CI 自动创建）
 [[kv_namespaces]]

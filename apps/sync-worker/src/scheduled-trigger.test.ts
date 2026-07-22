@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { triggerScheduledWorkflow } from './scheduled-trigger.ts'
 
-test('Free Plan Cron creates one deterministic live Workflow instance', async () => {
+test('daily 20:00 UTC Cron creates one deterministic live Workflow instance', async () => {
   const calls: unknown[] = []
+  const scheduledTime = Date.UTC(2026, 6, 21, 20, 0, 0)
   await triggerScheduledWorkflow({
     SYNC_WORKFLOW: {
       create: async (options) => {
@@ -11,10 +12,10 @@ test('Free Plan Cron creates one deterministic live Workflow instance', async ()
         return { id: options.id }
       },
     },
-  }, 1_783_728_000_000)
+  }, scheduledTime)
 
   assert.deepEqual(calls, [{
-    id: 'scheduled-1783728000',
+    id: `scheduled-${scheduledTime / 1000}`,
     params: { mode: 'live', source: 'schedule' },
   }])
 })

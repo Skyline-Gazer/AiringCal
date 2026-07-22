@@ -24,6 +24,10 @@ export interface SyncRun {
   collection_pages: number
   subject_count: number
   refresh_jobs: number
+  refresh_candidates: number
+  refresh_selected: number
+  refresh_deferred: number
+  avoided_writes: number
   error: string | null
 }
 

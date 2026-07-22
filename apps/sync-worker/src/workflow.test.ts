@@ -327,7 +327,7 @@ test('live workflow plans component jobs and reserves the shared media budget be
   }) as typeof globalThis.fetch
 
   try {
-    await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
+    const result = await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
       instanceId: 'live-1',
       payload: { mode: 'live', source: 'manual' },
       schedule: undefined,
@@ -358,6 +358,23 @@ test('live workflow plans component jobs and reserves the shared media budget be
     assert.equal(new Set((queueMessages as any[]).map((job) => job.job_id)).size, 50)
     assert.equal((queueMessages as any[]).every((job) => job.version === 3 && job.generation === 7), true)
     assert.equal((queueMessages as any[]).every((job) => assert.deepEqual(job.components, ['detail', 'meta', 'image_common', 'image_large']) === undefined), true)
+    assert.deepEqual(result, {
+      instance_id: 'live-1',
+      status: 'ok',
+      subject_count: 100,
+      refresh_jobs: 50,
+      refresh_candidates: 100,
+      refresh_selected: 50,
+      refresh_deferred: 50,
+      avoided_writes: 50,
+    })
+    assert.deepEqual(kv.values.get('sync:run:live-1'), {
+      ...(kv.values.get('sync:run:live-1') as Record<string, unknown>),
+      refresh_candidates: 100,
+      refresh_selected: 50,
+      refresh_deferred: 50,
+      avoided_writes: 50,
+    })
     const lastEnqueueIndex = Math.max(...step.names.map((name, index) => name.startsWith('enqueue-refresh-') ? index : -1))
     assert.equal(step.names.indexOf('commit-live-snapshot') > lastEnqueueIndex, true)
     assert.equal((kv.values.get('sync:current') as any).instance_id, 'live-1')
@@ -469,6 +486,45 @@ test('live workflow gives mixed new and ordinary candidates only privileged hard
   }
 })
 
+test('live workflow reports hard-limited aggregate refresh counters', async () => {
+  const kv = new MockKV()
+  const queueMessages: unknown[] = []
+  const coordinator = new MockSnapshotCoordinator(kv)
+  const step = new FakeStep(kv)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      const offset = Number(new URL(text).searchParams.get('offset'))
+      const count = Math.min(50, 101 - offset)
+      return Response.json({ total: 101, data: Array.from({ length: count }, (_, index) => collection(offset + index + 1)) })
+    }
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    const result = await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
+      instanceId: 'hard-limited',
+      payload: { mode: 'live', source: 'manual' },
+    }, step, (message) => new TestNonRetryableError(message))
+
+    assert.equal(queueMessages.length, 100)
+    assert.deepEqual(result, {
+      instance_id: 'hard-limited',
+      status: 'ok',
+      subject_count: 101,
+      refresh_jobs: 100,
+      refresh_candidates: 101,
+      refresh_selected: 100,
+      refresh_deferred: 1,
+      avoided_writes: 1,
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('live workflow defers one subject media-state read failure and still publishes the snapshot', async () => {
   const kv = new MockKV()
   kv.failingGets.add('subject:detail:1')
@@ -521,7 +577,7 @@ test('unchanged 659-subject workflow enqueues no media and performs no subject K
   }) as typeof globalThis.fetch
 
   try {
-    await runSyncWorkflow(workflowEnv(kv, queueMessages), {
+    const result = await runSyncWorkflow(workflowEnv(kv, queueMessages), {
       instanceId: 'unchanged-659',
       payload: { mode: 'live', source: 'manual' },
       schedule: undefined,
@@ -530,6 +586,16 @@ test('unchanged 659-subject workflow enqueues no media and performs no subject K
     assert.equal(queueMessages.length, 0)
     assert.deepEqual(kv.subjectPuts(), [])
     assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'unchanged-659')
+    assert.deepEqual(result, {
+      instance_id: 'unchanged-659',
+      status: 'ok',
+      subject_count: 659,
+      refresh_jobs: 0,
+      refresh_candidates: 0,
+      refresh_selected: 0,
+      refresh_deferred: 0,
+      avoided_writes: 659,
+    })
   } finally {
     globalThis.fetch = originalFetch
   }

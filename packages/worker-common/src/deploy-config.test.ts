@@ -9,7 +9,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const appConfigs = [
   ['frontend-worker', ['[[services]]', 'READ_WORKER', 'SYNC_WORKER']],
   ['read-worker', ['[[kv_namespaces]]', '[[r2_buckets]]']],
-  ['sync-worker', ['[[queues.producers]]', '[[workflows]]', 'binding = "SYNC_WORKFLOW"', 'class_name = "SyncWorkflow"', '[triggers]', 'crons = ["0 */4 * * *"]']],
+  ['sync-worker', ['[[queues.producers]]', '[[workflows]]', 'binding = "SYNC_WORKFLOW"', 'class_name = "SyncWorkflow"', '[triggers]', 'crons = ["0 20 * * *"]']],
   ['media-worker', ['[[queues.consumers]]', '[[kv_namespaces]]', '[[r2_buckets]]']],
 ] as const
 
@@ -57,7 +57,8 @@ test('Free Plan Cron only triggers the Workflow without a legacy Queue consumer'
   assert.match(config, /^binding = "SYNC_WORKFLOW"$/m)
   assert.match(config, /^class_name = "SyncWorkflow"$/m)
   assert.match(config, /^\[triggers\]$/m)
-  assert.match(config, /^crons = \["0 \*\/4 \* \* \*"\]$/m)
+  assert.match(config, /^crons = \["0 20 \* \* \*"\]$/m)
+  assert.doesNotMatch(config, /0 \*\/4 \* \* \*/)
   assert.doesNotMatch(config, /^schedules =/m)
   assert.doesNotMatch(config, /^\[\[queues\.consumers\]\]$/m)
   assert.doesNotMatch(config, /airing-cal-sync-trigger/)
@@ -165,7 +166,7 @@ test('manual Workflow trigger uses GitHub secrets without exposing a public sync
 
 test('README documents the Free Plan Cron bridge without a native Workflow schedule', () => {
   const readme = readFileSync(resolve(root, 'README.md'), 'utf8')
-  for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/api/cache', '/api/health', 'images.common', 'images.large', 'Worker Cron', '0 */4 * * *', '手动 bootstrap workflow']) {
+  for (const fragment of ['frontend-worker', 'read-worker', 'sync-worker', 'media-worker', '/api/cache', '/api/health', 'images.common', 'images.large', 'Worker Cron', '0 20 * * *', '每天 04:00 Asia/Shanghai', '手动 bootstrap workflow']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document ${fragment}`)
   }
   for (const fragment of ['CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', '不要再创建 `CF_API_TOKEN` / `CF_ACCOUNT_ID`', 'Workers Scripts', 'Workers KV Storage', 'Workers R2 Storage', 'Queues', 'Account Settings', 'User Details', 'Workers Routes']) {
@@ -186,14 +187,17 @@ test('README documents the Free Plan Cron bridge without a native Workflow sched
   for (const fragment of ['`subject:refresh:{subject_id}`', '`job_id`', '6 至 8 天', '`max_concurrency = 4`', '`image:status:{subject_id}` 只描述真实图片缓存结果']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document media refresh lifecycle: ${fragment}`)
   }
-  for (const fragment of ['Cloudflare Workflows Free Plan 不支持原生 Workflow schedule', 'Cron handler 只创建 Workflow instance', '0 */4 * * *', '`sync:run:{instanceId}`', '`sync:staging:{instanceId}:*`', '`snapshot:shadow:{instanceId}:*`', 'workflows trigger airing-cal-sync', 'workflows instances describe', 'workflows instances restart', 'workflows instances terminate']) {
+  for (const fragment of ['Cloudflare Workflows Free Plan 不支持原生 Workflow schedule', 'Cron handler 只创建 Workflow instance', '0 20 * * *', '`sync:run:{instanceId}`', '`sync:staging:{instanceId}:*`', '`snapshot:shadow:{instanceId}:*`', 'workflows trigger airing-cal-sync', 'workflows instances describe', 'workflows instances restart', 'workflows instances terminate']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document shadow Workflow operations: ${fragment}`)
+  }
+  for (const fragment of ['UTC 自然日', 'soft limit 50', 'hard limit 100', '7 个 UTC 日', 'shadow 不预留预算且不投递 Media Queue', '未变化 subject 不产生逐 subject KV 写入', 'fail-closed', '`refresh_candidates`', '`refresh_selected`', '`refresh_deferred`', '`avoided_writes`']) {
+    assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document bounded refresh behavior: ${fragment}`)
   }
   assert.doesNotMatch(readme, /^schedules\s*=/m)
   for (const fragment of ['BANGUMI_GIT_COMMIT_SHA', 'BANGUMI_GIT_REPOSITORY_URL', '绑定自定义域名不需要改任何 repository URL 变量']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document optional frontend build metadata: ${fragment}`)
   }
-  for (const fragment of ['secrets.CF_API_TOKEN', 'secrets.CF_ACCOUNT_ID', 'CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', '内联 placeholder', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets', 'PUBLIC_REPOSITORY_URL', 'wrangler.deploy.toml', 'pre-check Cloudflare 资源', '部署完成后自动投递一次', 'CI 会向 `airing-cal-sync-trigger` 自动投递', '旧 Cron 仍是正式触发源', 'airing-cal-sync-trigger']) {
+  for (const fragment of ['0 */4 * * *', 'secrets.CF_API_TOKEN', 'secrets.CF_ACCOUNT_ID', 'CRON_SECRET', '/__cron/sync', 'bangumi-theme', 'images.hash', 'hash_large', '内联 placeholder', 'Workers Queues: Edit', 'Workers Routes: Edit', '通过 CI 上传 Worker secrets', 'PUBLIC_REPOSITORY_URL', 'wrangler.deploy.toml', 'pre-check Cloudflare 资源', '部署完成后自动投递一次', 'CI 会向 `airing-cal-sync-trigger` 自动投递', '旧 Cron 仍是正式触发源', 'airing-cal-sync-trigger']) {
     assert.doesNotMatch(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should not mention ${fragment}`)
   }
 })

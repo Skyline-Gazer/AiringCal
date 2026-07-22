@@ -4,7 +4,7 @@ compatibility_date = "2026-06-17"
 keep_vars = true
 
 [triggers]
-crons = ["0 */4 * * *"]
+crons = ["0 20 * * *"]
 
 [vars]
 SYNC_MODE = "merge"

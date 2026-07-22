@@ -67,7 +67,7 @@ compare 会先认证两个账户；身份或收藏请求中任一账户返回 40
 
 apply 同步章节进度时，会以 `limit=1000`、递增 offset 读取源/目标账户的全部章节收藏，再按目标章节状态分组并以每批最多 100 个 episode ID PATCH。某一批失败时，该条目返回 `status: "error"`、`code: "EPISODE_PATCH_PARTIAL"`、已经成功更新的 `succeeded` 数量和失败批次 `failedBatch`；此前成功批次不会被描述成整体成功。
 
-`airing-cal-sync` 没有公开同步 URL。Cloudflare Workflows Free Plan 不支持原生 Workflow schedule，因此生产定时入口是同一个 sync Worker 的轻量 Cron；Cron 每 4 小时只创建一个 live Workflow instance，不拉取 bgm.tv、不读写业务缓存：
+`airing-cal-sync` 没有公开同步 URL。Cloudflare Workflows Free Plan 不支持原生 Workflow schedule，因此生产定时入口是同一个 sync Worker 的轻量 Cron；Cron 每天 04:00 Asia/Shanghai（前一 UTC 日 20:00）只创建一个 live Workflow instance，不拉取 bgm.tv、不读写业务缓存。Cloudflare Cron 按 UTC 执行，所以 checked-in 表达式是：
 
 ```toml
 [[workflows]]
@@ -76,10 +76,10 @@ binding = "SYNC_WORKFLOW"
 class_name = "SyncWorkflow"
 
 [triggers]
-crons = ["0 */4 * * *"]
+crons = ["0 20 * * *"]
 ```
 
-旧的业务同步 Cron 实现与同步 trigger queue 已移除；当前 Cron 只调用 `SYNC_WORKFLOW.create()`。部署不会自动创建业务 instance；只有 Worker Cron 或明确的手动 control-plane 操作会触发同步。手动 shadow 会写隔离快照和审计结果，不覆盖正式 snapshot，也不投递 Media Queue：
+旧的业务同步 Cron 实现与同步 trigger queue 已移除；当前 Cron 只调用 `SYNC_WORKFLOW.create()`。部署不会自动创建业务 instance；只有 Worker Cron 或明确的手动 control-plane 操作会触发同步。手动 shadow 会写隔离快照和审计结果，不覆盖正式 snapshot；shadow 不预留预算且不投递 Media Queue：
 
 ```bash
 pnpm exec wrangler workflows trigger airing-cal-sync '{"mode":"shadow","source":"manual"}' --id shadow-<commit> --config apps/sync-worker/wrangler.toml
@@ -104,15 +104,17 @@ pnpm exec wrangler workflows instances restart airing-cal-sync <instance-id> --c
 pnpm exec wrangler workflows instances terminate airing-cal-sync <instance-id> --config apps/sync-worker/wrangler.toml
 ```
 
-Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都使用确定性 step 名；大 payload 写 staging KV，step 只返回 key、数量和 SHA-256 摘要。live initialize 通过 `SNAPSHOT_COORDINATOR` 分配单调 generation 并立即写 `sync:current`；refresh planning 每 10 个 subject 生成携带该 generation 的幂等候选 V3 job，enqueue 每 step 最多合并 3 个规划块。全部 versioned key 写入且全部 V3 job 入队成功后，coordinator 才提交包含 required keys/digests 的 `snapshot:active` manifest；coordinator 使用覆盖整个外部 KV await 的串行互斥区，较旧 Workflow 晚完成不能覆盖较新 generation。Workflow 不逐 subject 读取或写入 refresh/detail/meta/image 状态。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为 read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
+Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都使用确定性 step 名；大 payload 写 staging KV，step 只返回 key、数量和 SHA-256 摘要。live initialize 通过 `SNAPSHOT_COORDINATOR` 分配单调 generation 并立即写 `sync:current`；refresh planning 每 10 个 subject 有界读取现有 detail、metadata、image 与 refresh 状态，只为缺失、源变化、重试到期或确定性刷新时间已到的组件生成幂等 V3 候选。候选按 new/changed、hot due、cold shard、retry 排序；普通任务受 soft limit 50 限制，只有 new/changed 可扩展到 hard limit 100。cold 候选按 `subject_id mod 7` 分散到 7 个 UTC 日。
+
+scheduled live 与 manual live 共享同一个 UTC 自然日预算，没有强制绕过 hard limit 的参数。`SNAPSHOT_COORDINATOR` 先以稳定 reservation 预留逻辑预算，再最多调用一次 Queue producer；Queue 确认结果不确定时按 fail-closed 保留预算并标记 uncertain，不重发同一 reservation，但仍提交 collection/calendar snapshot。未变化 subject 不产生逐 subject KV 写入，也不投递媒体任务。Workflow 只读逐 subject 媒体状态，实际 detail/meta/image/refresh 写入仍由 Media Worker 执行。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为 read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
 
 收藏页不会在每次浏览页面时实时请求 bgm.tv。Workflow 以 `limit=50` 获取 collections 并按 bgm.tv `type` 发布 `want`、`watched`、`watching`、`on_hold`、`dropped` 版本化快照；读取端跟随 `snapshot:active` 读取同一个 instance 的五类 collections、calendar 和 summary，并在返回数据前验证 manifest 恰好列出这 7 个 required key 及其 SHA-256 digest。带有任一 V3 字段（`generation`、`required_keys`、`digests`）的 active manifest、key 或 digest 不完整时返回 HTTP 503 `SNAPSHOT_INCOMPLETE`，绝不逐 key 混入 legacy 数据；active 完全不存在，或旧 active pointer 同时不含上述三个 V3 字段时，才整套读取 legacy snapshot。Workflow 不请求 subject detail；detail、metadata 和图片由 Media Queue 以 stale-while-revalidate 方式异步收敛。
 
 collections 使用 bgm.tv OpenAPI 允许的 `limit=50` 分页，并受 120 秒整体预算约束。bgm.tv JSON GET 请求单次 timeout 为 10 秒；429、5xx、timeout 和网络错误最多重试 2 次，401/403 不重试，POST/PATCH 写请求也不会被 client 隐式重试。
 
-`/api/health` 仍保留 `data.cron.last` 作为迁移兼容字段；最近 instance 优先来自 initialize 阶段写入的 `sync:current`，因此 running 或硬中断实例不必等待 finalize 才可见。最近 instance 来自 schedule 时，cron 字段由对应 Workflow run 的同一个 effective status 派生，不再返回旧 Queue 遗留状态或出现 `stale/running` 分裂。`data.collections.updated_at` 优先使用当前 active snapshot 的发布时间。新的权威应用状态仍是 `data.workflow`，Cloudflare 控制面状态是最终依据。
+`/api/health` 仍保留 `data.cron.last` 作为迁移兼容字段，`data.cron.next_at` 按每日 20:00 UTC 计算；最近 instance 优先来自 initialize 阶段写入的 `sync:current`，因此 running 或硬中断实例不必等待 finalize 才可见。最近 instance 来自 schedule 时，cron 字段由对应 Workflow run 的同一个 effective status 派生，不再返回旧 Queue 遗留状态或出现 `stale/running` 分裂。`data.collections.updated_at` 优先使用当前 active snapshot 的发布时间。新的权威应用状态仍是 `data.workflow`，Cloudflare 控制面状态是最终依据。
 
-`/api/health` 的 `data.workflow` 暴露最近 instance 的 `instance_id`、mode、source、stage、heartbeat、完成时间、计数和脱敏错误。`queued`、`running` 或 `retrying` run 超过 20 分钟没有 heartbeat 时，应用侧返回 `status: "stale"` 与 `stale: true`；实际恢复、重启或终止仍以 Cloudflare Workflow instance 控制面状态为准。
+`/api/health` 的 `data.workflow` 暴露最近 instance 的 `instance_id`、mode、source、stage、heartbeat、完成时间、计数和脱敏错误。聚合计数包括媒体候选 `refresh_candidates`、planner 选中 `refresh_selected`、留待后续 `refresh_deferred`、实际 Queue 任务 `refresh_jobs` 与未触发媒体写路径的 `avoided_writes`；这些字段只写入已有 run 记录，不创建逐 subject 指标 key。`queued`、`running` 或 `retrying` run 超过 20 分钟没有 heartbeat 时，应用侧返回 `status: "stale"` 与 `stale: true`；实际恢复、重启或终止仍以 Cloudflare Workflow instance 控制面状态为准。
 
 Worker Cron 来自 checked-in `wrangler.toml`；routine deploy 只同步代码与配置，不主动触发 live instance。
 
@@ -306,7 +308,7 @@ KV key：
 | `snapshot:summary` | `airing-cal-sync` | 数量摘要 |
 | `sync:meta` | `airing-cal-sync` | 最近同步元信息 |
 | `sync:current` | `SyncWorkflow` | initialize 阶段写入的当前 live instance 与 generation 指针 |
-| `sync:run:{instanceId}` | `SyncWorkflow` | instance stage、heartbeat、计数与错误，TTL 3 天 |
+| `sync:run:{instanceId}` | `SyncWorkflow` | instance stage、heartbeat、`refresh_candidates` / `refresh_selected` / `refresh_deferred` / `refresh_jobs` / `avoided_writes` 聚合计数与错误，TTL 3 天 |
 | `sync:staging:{instanceId}:*` | `SyncWorkflow` | step 间 payload，TTL 24 小时 |
 | `snapshot:shadow:{instanceId}:*` | `SyncWorkflow` | shadow 快照与审计数据，不参与正式读取 |
 | `snapshot:version:{instanceId}:*` | `SyncWorkflow` | live 的版本化 snapshot；全部写完后由 `snapshot:active` 原子切换，read-worker 优先读取该版本 |
@@ -317,13 +319,13 @@ KV key：
 
 `subject:detail:{subject_id}` 存完整 `GET /v0/subjects/{subject_id}` 响应和 `cached_at`。代码里不要重复从 collection/calendar 的 slim subject 推导 canonical 图片或 NSFW；公共投影入口在 `@airing-cal/domain`：
 
-subject detail 使用 stale-while-revalidate：旧内容在刷新窗口后继续服务，下一次刷新时间按 subject ID 确定性分散到 6 至 8 天。`MediaRefreshJobV2` 的 `job_id` 由运行 ID 与 subject ID 组成；consumer 会跳过同一 job 的完成态或活动租约，瞬态失败按 30/120/300 秒重试，404 和缺失源图写终态后 ack。Media Queue 每次只取 1 条，`max_batch_timeout = 5`、`max_concurrency = 4`、`max_retries = 3`，避免同时压高 Workers Free Plan 与 bgm.tv 上游负载。
+subject detail 使用 stale-while-revalidate：旧内容在刷新窗口后继续服务，下一次刷新时间按 subject ID 确定性分散到 6 至 8 天；普通 cold 候选再按 7 个 UTC 日轮转，避免同日集中。`MediaRefreshJobV2` 的 `job_id` 由运行 ID 与 subject ID 组成；consumer 会跳过同一 job 的完成态或活动租约，瞬态失败按 30/120/300 秒重试，404 和缺失源图写终态后 ack。Media Queue 每次只取 1 条，`max_batch_timeout = 5`、`max_concurrency = 4`、`max_retries = 3`，避免同时压高 Workers Free Plan 与 bgm.tv 上游负载。
 
 - `subjectDetailImages(subject)`：从完整 subject detail 取 `common` / `large` 源图。
 - `subjectMetaFromDetail(subjectId, subject, checkedAt)`：从完整 subject detail 生成 `subject:meta`。
 - `withSubjectDetail(subject, detail)`：用完整 subject detail 覆盖 calendar slim subject 的展示字段。
 
-生产 Workflow 直接从 collection/calendar 响应生成版本化公开 snapshot，并为发现的 subject 投递 Media V3 job；它不读取或刷新 `subject:detail:{subject_id}`。Media Worker 异步写入 detail/meta/image 状态，Read Worker 在读取 collection/calendar 时用这些状态补图片并执行 tombstone 投影。
+生产 Workflow 直接从 collection/calendar 响应生成版本化公开 snapshot，并有界读取现有 subject detail/meta/image/refresh 状态，在入队前筛除缓存完整且未到期的 subject；它不刷新 `subject:detail:{subject_id}`。Media Worker 只对选中的组件异步执行并在写前比较规范值：缓存完全复用或结果未变化时保持 zero-write，Read Worker 在读取 collection/calendar 时用现有状态补图片并执行 tombstone 投影。
 
 subject detail 返回 404 时会保守缓存为：
 

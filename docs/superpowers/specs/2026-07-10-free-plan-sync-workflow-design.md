@@ -22,9 +22,9 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 2. `fetch-collections-page-0` 以 `limit=50` 获取 total 与第一页；后续页按页码创建固定 step，并把规范化数据写入 `sync:staging:{instanceId}:collections:{page}`。
 3. `fetch-calendar` 写入 instance calendar staging。
 4. `publish-{collectionType}` 与 `publish-calendar` 只读取 staging 和已有 cache。shadow 写 `snapshot:shadow:{instanceId}:*`；live 写 generation-scoped versioned keys，但此时不改变 active pointer。
-5. `plan-refresh-{chunk}` 每 10 个 subject 生成确定性的候选 V3 job，不逐 subject 读取 refresh/detail/meta/image KV。
-6. `enqueue-refresh-{chunk}` 每 step 合并最多 3 个规划块并使用 `Queue.sendBatch()`；shadow 跳过该阶段的副作用。Media consumer 在单消息 invocation 内判断 fresh/missing 并写 refresh 状态。
-7. 全部 versioned key 和 V3 job enqueue 成功后，`SnapshotCoordinator.commit()` 在覆盖外部 KV await 的互斥区内原子接受最新 generation 的完整 manifest；较旧 Workflow 返回 `obsolete`。
+5. `plan-refresh-{chunk}` 每 10 个 subject 有界读取 refresh/detail/meta/image KV，只为缺失、变化、到期或应重试组件生成确定性候选 V3 job。
+6. live 候选按 new/changed、hot due、7 日 cold shard、retry 排序；scheduled/manual live 通过 `SnapshotCoordinator` 共享 UTC 自然日 soft limit 50 / hard limit 100。shadow 不预留预算且不投递 Media Queue。
+7. coordinator 以稳定 reservation 先占逻辑预算并最多调用一次 Queue producer；确认歧义时 fail-closed 保留预算、不重发。随后 `SnapshotCoordinator.commit()` 原子接受最新 generation 的完整 manifest；媒体预算耗尽或投递结果 uncertain 均不阻塞 snapshot 发布，较旧 Workflow 返回 `obsolete`。
 8. `finalize` 更新 summary、`sync:meta` 与最终 `SyncRun`。
 
 所有外部 fetch、KV 和 Queue 副作用都位于 `step.do()`。step 名不使用时间或随机值，返回值只包含 staging key、count 和校验摘要。401/403 抛 `NonRetryableError`；429、5xx、timeout 和 network error按 45 秒 timeout、最多 3 次指数退避处理。
@@ -55,7 +55,7 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 1. 第一批提交先移除部署后的 sync trigger 与 KV polling，拆分 CI/deploy，保留旧 Cron。
 2. 上线 BGM 请求边界、缓存 refresh 状态和 Media Queue V2。
 3. 注册不带 schedule 的 Workflow binding，手动运行生产 shadow instance。
-4. shadow 核对 step 数、重试、输出、正式 key 隔离后，独立提交启用 `0 */4 * * *` Worker Cron 桥接并删除旧业务 Cron。
+4. shadow 核对 step 数、重试、输出、正式 key 隔离后，独立提交启用每天 20:00 UTC（04:00 Asia/Shanghai）的 `0 20 * * *` Worker Cron 桥接并删除旧业务 Cron。
 5. 至少观察一个完整 live 周期和 media backlog 收敛后，删除旧 trigger queue/handler/script。
 6. 增加 `resolve_ref` job，将自动或手动 ref 固定成 `dev` ancestor 的完整 SHA；所有部署 job checkout 同一 SHA，并在任何上传前完成 Cron 配额 preflight。任一部署 job 失败时，`recovery_report` 查询四个 Worker 当前 deployment JSON、汇总 job 结果并输出使用该完整 SHA 的精确收敛命令。
 
@@ -67,7 +67,7 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 - step 重放不重复提交 snapshot 或产生重复 media 副作用。
 - T2 generation 先 commit、T1 后 commit 时 active 保持 T2；active 缺 required key 时返回 503 而不混入 legacy。
 - shadow 不覆盖正式 key且不 enqueue；live 获取失败保留旧 snapshot。
-- 100 个 subject 先发布 snapshot，再按 10 个生成候选 refresh job；测试统计 plan step KV 调用不超过 3、enqueue step 不超过 4，Workflow 总 KV 调用保持在 500 以下。
+- 100 个 subject 先发布 snapshot，再按 10 个读取媒体状态并生成候选；普通任务最多选择 50，new/changed 最多 100，未变化 subject 不投递也不产生逐 subject KV 写入。
 - Media consumer 单消息、并发 4、瞬态 retry、终态 ack。
 - 同 subject 新 job 先完成、旧 job 后到达时旧 job obsolete，KV/R2 状态保持新 generation。
 - apply 每批不调用 collections GET，超过 5 条返回 400，持久化载荷不含 token。

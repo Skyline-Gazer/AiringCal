@@ -305,7 +305,7 @@ test('scheduled sync writes new snapshot keys and enqueues media work without im
   globalThis.fetch = upstream.fetch as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -371,7 +371,7 @@ test('scheduled sync marks refresh queued without changing image status for cale
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -430,7 +430,7 @@ test('scheduled sync enriches calendar episode totals from subject detail', asyn
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -515,7 +515,7 @@ test('scheduled sync still updates collection snapshots when subject detail enri
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async () => {} },
       BANGUMI_TOKEN: 'token-a',
@@ -596,7 +596,7 @@ test('scheduled sync reuses cached subject detail for calendar enrichment', asyn
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -675,7 +675,7 @@ test('scheduled sync normalizes cached subject detail episode count aliases into
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async () => {} },
       BANGUMI_TOKEN: 'token-a',
@@ -733,7 +733,7 @@ test('scheduled sync preserves queued refresh state when media queue send fails'
 
   try {
     await assert.rejects(
-      worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+      worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
         AIRING_CAL_KV: kv,
         MEDIA_QUEUE: { send: async () => { throw new Error('queue unavailable') } },
         BANGUMI_TOKEN: 'token-a',
@@ -798,7 +798,7 @@ test('scheduled sync publishes V2 refresh job before later KV enrichment failure
 
   try {
     await assert.rejects(
-      worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+      worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
         AIRING_CAL_KV: kv,
         MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
         BANGUMI_TOKEN: 'token-a',
@@ -833,7 +833,7 @@ test('scheduled sync enriches collection and calendar snapshots from existing me
   globalThis.fetch = upstream.fetch as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -860,7 +860,7 @@ test('scheduled sync enriches collection and calendar snapshots from existing me
 
 test('scheduled sync never republishes residual detail while a not-found tombstone is active', async () => {
   const kv = new MockKV()
-  const now = Math.floor(Date.UTC(2026, 5, 30, 4, 0, 0) / 1000)
+  const now = Math.floor(Date.UTC(2026, 5, 30, 20, 0, 0) / 1000)
   kv.values.set(subjectDetailKey(23080), { cached_at: now - 1, subject: { id: 23080, name: 'Residual', name_cn: '残留', eps: 99, eps_count: 98, total_episodes: 97, rating: { score: 9.9 } } })
   kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: now - 1, expires_at: now + 86400, reason: 'not_found' })
   const originalFetch = globalThis.fetch
@@ -888,7 +888,7 @@ test('scheduled sync never republishes residual detail while a not-found tombsto
 
 test('scheduled sync never republishes residual detail when a not-found tombstone expires', async () => {
   const kv = new MockKV()
-  const now = Math.floor(Date.UTC(2026, 5, 30, 4, 0, 0) / 1000)
+  const now = Math.floor(Date.UTC(2026, 5, 30, 20, 0, 0) / 1000)
   kv.values.set(subjectDetailKey(23080), {
     cached_at: now - 1,
     subject: {
@@ -952,7 +952,7 @@ test('scheduled sync never republishes residual detail when a not-found tombston
 
 test('scheduled sync suppresses legacy tombstone detail and queues immediate recovery', async () => {
   const kv = new MockKV()
-  const now = Math.floor(Date.UTC(2026, 5, 30, 4, 0, 0) / 1000)
+  const now = Math.floor(Date.UTC(2026, 5, 30, 20, 0, 0) / 1000)
   kv.values.set(subjectDetailKey(23080), { cached_at: now - 1, subject: { id: 23080, name: 'Residual', eps: 99, rating: { score: 9.9 } } })
   kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: now - 100, reason: 'not_found_or_restricted' })
   const queueMessages: unknown[] = []
@@ -983,7 +983,7 @@ test('scheduled sync suppresses legacy tombstone detail and queues immediate rec
 })
 
 test('scheduled sync queues expired collection-only tombstones for recovery but suppresses active TTLs', async () => {
-  const now = Math.floor(Date.UTC(2026, 5, 30, 4, 0, 0) / 1000)
+  const now = Math.floor(Date.UTC(2026, 5, 30, 20, 0, 0) / 1000)
   const originalFetch = globalThis.fetch
   const originalNow = Date.now
   Date.now = () => now * 1000
@@ -1131,7 +1131,7 @@ test('scheduled sync loads collection cache state concurrently before publishing
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -1154,7 +1154,7 @@ test('scheduled sync uses subject detail as canonical collection display source'
   globalThis.fetch = upstream.fetch as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -1248,7 +1248,7 @@ test('scheduled sync refreshes subject details for calendar subjects only', asyn
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -1481,7 +1481,7 @@ test('internal sync apply rejects missing tokens before upstream work', async ()
   }
 })
 
-test('scheduled sync skips non-four-hour cron ticks without upstream work', async () => {
+test('scheduled sync skips every UTC hour except the daily 20:00 trigger', async () => {
   const kv = new MockKV()
   kv.values.set('sync:meta', {
     synced_at: 1782650300,
@@ -1503,7 +1503,7 @@ test('scheduled sync skips non-four-hour cron ticks without upstream work', asyn
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 5, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 0, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -1515,6 +1515,7 @@ test('scheduled sync skips non-four-hour cron ticks without upstream work', asyn
     assert.equal((kv.values.get('sync:meta') as any).cron.last.status, 'ok')
     assert.equal((kv.values.get('sync:meta') as any).cron.last_skip.status, 'skipped')
     assert.equal((kv.values.get('sync:meta') as any).cron.last_skip.source, 'scheduled')
+    assert.equal((kv.values.get('sync:meta') as any).cron.effective_schedule, '0 20 * * *')
     assert.equal(queueMessages.length, 0)
   } finally {
     globalThis.fetch = originalFetch

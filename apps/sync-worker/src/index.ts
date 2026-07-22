@@ -26,8 +26,8 @@ const SYNC_OPERATION_PREFIX = 'sync:operation:'
 const SYNC_OPERATION_TTL_SECONDS = 60 * 60 * 24
 const SUBJECT_DETAIL_CONCURRENCY = 8
 const CACHE_LOAD_CONCURRENCY = 32
-const CRON_SCHEDULE = '0 * * * *'
-const EFFECTIVE_CRON_SCHEDULE = '0 */4 * * *'
+const CRON_SCHEDULE = '0 20 * * *'
+const EFFECTIVE_CRON_SCHEDULE = CRON_SCHEDULE
 
 interface SubjectInput {
   subject_id: number
@@ -538,7 +538,7 @@ async function fetch(request: Request, env: SyncEnv): Promise<Response> {
 
 function shouldRunSync(scheduledTime: number): boolean {
   const hour = new Date(scheduledTime).getUTCHours()
-  return hour % 4 === 0
+  return hour === 20
 }
 
 async function recordCronStatus(env: SyncEnv, statusKey: 'last' | 'last_skip', status: Record<string, unknown>): Promise<void> {
