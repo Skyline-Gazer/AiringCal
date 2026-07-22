@@ -106,7 +106,11 @@ class FakeStep implements WorkflowStepLike {
 
 class MockSnapshotCoordinator {
   commits: any[] = []
-  constructor(private kv: MockKV, readonly generation = 7) {}
+  reservations: any[] = []
+  requests: string[] = []
+  private budget: { date: string; consumed: number } | null = null
+
+  constructor(private kv: MockKV, readonly generation = 7, private maxGrant = Number.POSITIVE_INFINITY) {}
 
   binding() {
     return {
@@ -115,7 +119,18 @@ class MockSnapshotCoordinator {
         return {
           fetch: async (request: Request) => {
             const body = await request.json() as any
-            if (new URL(request.url).pathname === '/allocate') return Response.json({ generation: this.generation })
+            const path = new URL(request.url).pathname
+            this.requests.push(path)
+            if (path === '/allocate') return Response.json({ generation: this.generation })
+            if (path === '/reserve-media') {
+              this.reservations.push(body)
+              const previousBudget = this.budget
+              const consumed = previousBudget && previousBudget.date === body.date ? previousBudget.consumed : 0
+              const limit = body.allow_over_soft ? 100 : 50
+              const granted = Math.min(body.requested, Math.max(0, limit - consumed), this.maxGrant)
+              this.budget = { date: body.date, consumed: consumed + granted }
+              return Response.json({ granted, consumed: this.budget.consumed, soft_limit: 50, hard_limit: 100 })
+            }
             this.commits.push(body.manifest)
             this.kv.values.set('snapshot:active', body.manifest)
             return Response.json({ status: 'committed', generation: body.generation })
@@ -174,6 +189,7 @@ test('shadow workflow fetches 549 collections in 11 deterministic page steps wit
   kv.values.set('snapshot:collections:watching', [{ subject_id: 999, title: 'live' }])
   const queueMessages: unknown[] = []
   const step = new FakeStep(kv)
+  const coordinator = new MockSnapshotCoordinator(kv)
   const originalFetch = globalThis.fetch
   const calls: string[] = []
   globalThis.fetch = (async (url: string | URL | Request) => {
@@ -189,7 +205,7 @@ test('shadow workflow fetches 549 collections in 11 deterministic page steps wit
   }) as typeof globalThis.fetch
 
   try {
-    await runSyncWorkflow(workflowEnv(kv, queueMessages), {
+    await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
       instanceId: 'shadow-commit',
       payload: { mode: 'shadow', source: 'manual' },
       schedule: undefined,
@@ -202,6 +218,8 @@ test('shadow workflow fetches 549 collections in 11 deterministic page steps wit
     assert.equal(kv.values.has('snapshot:shadow:shadow-commit:collections:watching'), true)
     assert.deepEqual(kv.values.get('snapshot:collections:watching'), [{ subject_id: 999, title: 'live' }])
     assert.equal(queueMessages.length, 0)
+    assert.deepEqual(coordinator.requests, [])
+    assert.equal(step.names.some((name) => name.startsWith('plan-refresh-')), false)
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -250,10 +268,13 @@ test('workflow retries timeout and network failures at the step boundary', async
   }
 })
 
-test('live workflow keeps refresh planning and enqueue below the 50-call Free Plan budget', async () => {
+test('live workflow plans component jobs and reserves the shared media budget before enqueue', async () => {
   const kv = new MockKV()
+  const cachedAt = Math.floor(Date.now() / 1000) - 9 * 24 * 60 * 60
+  for (let subjectId = 1; subjectId <= 100; subjectId++) kv.seedCompleteSubject(subjectId, cachedAt)
   const queueMessages: unknown[] = []
   const step = new FakeStep(kv)
+  const coordinator = new MockSnapshotCoordinator(kv)
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async (url: string | URL | Request) => {
     const text = String(url)
@@ -263,41 +284,77 @@ test('live workflow keeps refresh planning and enqueue below the 50-call Free Pl
   }) as typeof globalThis.fetch
 
   try {
-    await runSyncWorkflow(workflowEnv(kv, queueMessages), {
+    await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
       instanceId: 'live-1',
       payload: { mode: 'live', source: 'manual' },
       schedule: undefined,
     }, step, (message) => new TestNonRetryableError(message))
 
     assert.deepEqual(step.names.filter((name) => name.startsWith('plan-refresh-')), Array.from({ length: 10 }, (_, index) => `plan-refresh-${index}`))
-    assert.deepEqual(step.names.filter((name) => name.startsWith('enqueue-refresh-')), Array.from({ length: 4 }, (_, index) => `enqueue-refresh-${index}`))
     const refreshInputs = [...kv.values.entries()]
       .filter(([key]) => key.includes(':refresh-inputs'))
       .flatMap(([, value]) => value as unknown[])
     assert.equal(refreshInputs.length, 100)
-    const queuedBatches = step.names.filter((name) => name.startsWith('enqueue-refresh-')).length
-    assert.equal(queuedBatches, 4)
-    assert.equal([...kv.values.keys()].some((key) => key.startsWith('subject:refresh:')), false)
+    assert.deepEqual(coordinator.reservations, [{
+      date: new Date(Date.now()).toISOString().slice(0, 10),
+      requested: 50,
+      allow_over_soft: false,
+    }])
+    assert.deepEqual(kv.subjectPuts(), [])
     assert.equal([...kv.apiCallsByStep.values()].every((calls) => calls <= 50), true)
     assert.equal([...kv.apiCallsByStep.entries()].filter(([name]) => name.startsWith('plan-refresh-')).every(([, calls]) => calls <= 50), true)
-    assert.equal([...kv.apiCallsByStep.entries()].filter(([name]) => name.startsWith('enqueue-refresh-')).every(([, calls]) => calls <= 4), true)
+    assert.equal(kv.apiCallsByStep.get('reserve-media') ?? 0, 0)
+    assert.equal([...kv.apiCallsByStep.entries()].filter(([name]) => name.startsWith('enqueue-refresh-')).every(([, calls]) => calls === 0), true)
     assert.equal([...kv.apiCallsByStep.values()].reduce((total, calls) => total + calls, 0) < 500, true)
     assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'live-1')
     assert.equal((kv.values.get('snapshot:active') as any).generation, 7)
-    assert.equal(queueMessages.length, 100)
-    assert.equal(new Set((queueMessages as any[]).map((job) => job.job_id)).size, 100)
+    assert.equal(queueMessages.length, 50)
+    assert.equal(new Set((queueMessages as any[]).map((job) => job.job_id)).size, 50)
     assert.equal((queueMessages as any[]).every((job) => job.version === 3 && job.generation === 7), true)
-    assert.equal(step.names.indexOf('commit-live-snapshot') > step.names.indexOf('enqueue-refresh-3'), true)
+    assert.equal((queueMessages as any[]).every((job) => assert.deepEqual(job.components, ['detail', 'meta', 'image_common', 'image_large']) === undefined), true)
+    const lastEnqueueIndex = Math.max(...step.names.map((name, index) => name.startsWith('enqueue-refresh-') ? index : -1))
+    assert.equal(step.names.indexOf('commit-live-snapshot') > lastEnqueueIndex, true)
     assert.equal((kv.values.get('sync:current') as any).instance_id, 'live-1')
 
     const putCount = kv.puts.length
-    await runSyncWorkflow(workflowEnv(kv, queueMessages), {
+    await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
       instanceId: 'live-1',
       payload: { mode: 'live', source: 'manual' },
       schedule: undefined,
     }, step, (message) => new TestNonRetryableError(message))
     assert.equal(kv.puts.length, putCount)
-    assert.equal(queueMessages.length, 100)
+    assert.equal(queueMessages.length, 50)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('live workflow commits the snapshot when media budget grants zero', async () => {
+  const kv = new MockKV()
+  const queueMessages: unknown[] = []
+  const coordinator = new MockSnapshotCoordinator(kv, 9, 0)
+  const step = new FakeStep(kv)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) return Response.json({ total: 1, data: [collection(1)] })
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    const result = await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
+      instanceId: 'budget-exhausted',
+      payload: { mode: 'live', source: 'manual' },
+    }, step, (message) => new TestNonRetryableError(message))
+
+    assert.equal(coordinator.reservations.length, 1)
+    assert.equal(coordinator.reservations[0].requested, 1)
+    assert.equal(coordinator.reservations[0].allow_over_soft, true)
+    assert.equal(queueMessages.length, 0)
+    assert.equal(result.refresh_jobs, 0)
+    assert.equal(coordinator.commits.length, 1)
+    assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'budget-exhausted')
   } finally {
     globalThis.fetch = originalFetch
   }

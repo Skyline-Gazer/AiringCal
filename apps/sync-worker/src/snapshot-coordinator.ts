@@ -14,11 +14,15 @@ interface SnapshotCoordinatorEnv {
 }
 
 type CommitResult = { status: 'committed' | 'obsolete'; generation: number }
+type MediaBudgetResult = { granted: number; consumed: number; soft_limit: number; hard_limit: number }
 
 const NEXT_GENERATION_KEY = 'nextGeneration'
 const INSTANCE_PREFIX = 'instance:'
 const LAST_COMMITTED_KEY = 'lastCommittedGeneration'
 const LAST_MANIFEST_KEY = 'lastCommittedManifest'
+const MEDIA_BUDGET_KEY = 'mediaBudget'
+const MEDIA_SOFT_LIMIT = 50
+const MEDIA_HARD_LIMIT = 100
 
 export class SnapshotCoordinatorCore {
   constructor(private storage: CoordinatorStorage, private kv: JsonKV) {}
@@ -47,6 +51,23 @@ export class SnapshotCoordinatorCore {
     await this.storage.put(LAST_COMMITTED_KEY, generation)
     await this.storage.put(LAST_MANIFEST_KEY, manifest)
     return { status: 'committed', generation }
+  }
+
+  async reserveMedia(date: string, requested: number, allowOverSoft: boolean): Promise<MediaBudgetResult> {
+    const previous = await this.storage.get<{ date: string; consumed: number }>(MEDIA_BUDGET_KEY)
+    const consumed = previous?.date === date ? previous.consumed : 0
+    const limit = allowOverSoft ? MEDIA_HARD_LIMIT : MEDIA_SOFT_LIMIT
+    const granted = Math.min(Math.max(0, Math.trunc(requested)), Math.max(0, limit - consumed))
+    const nextConsumed = consumed + granted
+    if (previous?.date !== date || granted > 0) {
+      await this.storage.put(MEDIA_BUDGET_KEY, { date, consumed: nextConsumed })
+    }
+    return {
+      granted,
+      consumed: nextConsumed,
+      soft_limit: MEDIA_SOFT_LIMIT,
+      hard_limit: MEDIA_HARD_LIMIT,
+    }
   }
 }
 
@@ -79,6 +100,14 @@ export class SnapshotCoordinator {
       }
       if (url.pathname === '/commit' && typeof body.generation === 'number' && body.manifest) {
         return Response.json(await this.core.commit(body.generation, body.manifest as SnapshotManifest))
+      }
+      if (
+        url.pathname === '/reserve-media'
+        && typeof body.date === 'string'
+        && typeof body.requested === 'number'
+        && typeof body.allow_over_soft === 'boolean'
+      ) {
+        return Response.json(await this.core.reserveMedia(body.date, body.requested, body.allow_over_soft))
       }
       return Response.json({ error: 'Invalid coordinator request' }, { status: 400 })
     })

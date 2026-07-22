@@ -21,7 +21,12 @@ import {
   type SyncWorkflowParams,
 } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
-import { planSubjectRefresh, type RefreshPlannerInput } from './refresh-planner.ts'
+import {
+  planSubjectRefresh,
+  selectRefreshCandidates,
+  type RefreshCandidate,
+  type RefreshPlannerInput,
+} from './refresh-planner.ts'
 
 const COLLECTION_TYPES: CollectionType[] = ['want', 'watched', 'watching', 'on_hold', 'dropped']
 const PAGE_LIMIT = 50
@@ -67,6 +72,7 @@ interface StepOutput {
   snapshotKeys?: Partial<Record<CollectionType, string>>
   refreshInputKey?: string
   refreshChunks?: number
+  candidates?: RefreshCandidate[]
 }
 
 type RefreshInput = RefreshPlannerInput
@@ -277,11 +283,13 @@ export async function runSyncWorkflow(
         snapshotKeys[type] = key
       }
       const ids = [...new Set([...collections.map((entry) => entry.subject_id), ...calendarSubjectIds(calendar)])]
+      const hotIds = new Set(collections.map((entry) => entry.subject_id))
       const titles = sourceTitles(collections, calendar)
       const images = sourceImages(collections, calendar)
       const refreshInputs = ids.map((subjectId): RefreshInput => ({
         subject_id: subjectId,
         title: titles.get(subjectId) ?? String(subjectId),
+        hot: hotIds.has(subjectId),
         images: images.get(subjectId),
       }))
       const refreshInputKey = syncStagingKey(event.instanceId, 'refresh-inputs')
@@ -329,7 +337,7 @@ export async function runSyncWorkflow(
 
     const planOutputs: StepOutput[] = []
     let refreshJobs = 0
-    for (let chunkIndex = 0; chunkIndex < (prepared.refreshChunks ?? 0); chunkIndex++) {
+    for (let chunkIndex = 0; mode === 'live' && chunkIndex < (prepared.refreshChunks ?? 0); chunkIndex++) {
       const output = await step.do(`plan-refresh-${chunkIndex}`, STORAGE_STEP, async () => {
         const allInputs = await getJson<RefreshInput[]>(env.AIRING_CAL_KV, prepared.refreshInputKey ?? '') ?? []
         const inputs = allInputs.slice(chunkIndex * REFRESH_CHUNK_SIZE, (chunkIndex + 1) * REFRESH_CHUNK_SIZE)
@@ -339,40 +347,56 @@ export async function runSyncWorkflow(
           image: await getJson<any>(env.AIRING_CAL_KV, imageStatusKey(input.subject_id)),
           refresh: await getJson<any>(env.AIRING_CAL_KV, subjectRefreshKey(input.subject_id)),
         })))
-        const jobs: MediaRefreshJobV3[] = inputs.flatMap((input, index) => {
+        const candidates = inputs.flatMap((input, index) => {
           const candidate = planSubjectRefresh(input, cachedStates[index], nowSeconds())
-          return candidate ? [{
-            version: 3,
-            generation: run.generation ?? 0,
-            job_id: `${event.instanceId}:${input.subject_id}`,
-            subject_id: input.subject_id,
-            title: input.title,
-            components: candidate.components,
-            images: input.images,
-          }] : []
+          return candidate ? [candidate] : []
         })
         const key = syncStagingKey(event.instanceId, `refresh:${chunkIndex}`)
-        await putJson(env.AIRING_CAL_KV, key, jobs, SYNC_STAGING_TTL_SECONDS)
+        await putJson(env.AIRING_CAL_KV, key, candidates, SYNC_STAGING_TTL_SECONDS)
         run = { ...run, stage: 'refresh_plan', heartbeat_at: nowSeconds() }
         await writeRun(env, run)
-        return { key, count: jobs.length, digest: await digest(jobs) }
+        return { key, count: candidates.length, candidates, digest: await digest(candidates) }
       })
       planOutputs.push(output)
-      refreshJobs += output.count
       run = { ...run, stage: 'refresh_plan' }
     }
 
     if (mode === 'live') {
-      for (let index = 0; index < planOutputs.length; index += ENQUEUE_CHUNKS_PER_STEP) {
-        const batchIndex = index / ENQUEUE_CHUNKS_PER_STEP
-        const outputs = planOutputs.slice(index, index + ENQUEUE_CHUNKS_PER_STEP)
+      const utcDay = new Date(run.started_at * 1000).toISOString().slice(0, 10)
+      const selection = selectRefreshCandidates(planOutputs.flatMap((output) => output.candidates ?? []), utcDay, {
+        soft: 50,
+        hard: 100,
+      })
+      let granted = 0
+      if (selection.selected.length > 0) {
+        const reservation = await step.do('reserve-media', STORAGE_STEP, async () => {
+          const result = await coordinatorRequest<{ granted: number; consumed: number; soft_limit: number; hard_limit: number }>(env, '/reserve-media', {
+            date: utcDay,
+            requested: selection.selected.length,
+            allow_over_soft: selection.selected.every((candidate) => candidate.priority === 'new_or_changed'),
+          })
+          return result
+        })
+        granted = reservation.granted
+      }
+      run = { ...run, stage: 'enqueue', heartbeat_at: nowSeconds() }
+      const jobs: MediaRefreshJobV3[] = selection.selected.slice(0, granted).map((candidate) => ({
+        version: 3,
+        generation: run.generation ?? 0,
+        job_id: `${event.instanceId}:${candidate.subject_id}`,
+        subject_id: candidate.subject_id,
+        title: candidate.title,
+        components: candidate.components,
+        images: candidate.images,
+      }))
+      refreshJobs = jobs.length
+      const enqueueBatchSize = REFRESH_CHUNK_SIZE * ENQUEUE_CHUNKS_PER_STEP
+      for (let index = 0; index < jobs.length; index += enqueueBatchSize) {
+        const batchIndex = index / enqueueBatchSize
+        const batch = jobs.slice(index, index + enqueueBatchSize)
         await step.do(`enqueue-refresh-${batchIndex}`, STORAGE_STEP, async () => {
-          const groups = await Promise.all(outputs.map((output) => getJson<MediaRefreshJobV3[]>(env.AIRING_CAL_KV, output.key)))
-          const jobs = groups.flatMap((group) => group ?? [])
-          if (jobs.length) await env.MEDIA_QUEUE.sendBatch(jobs.map((body) => ({ body, contentType: 'json' as const })))
-          run = { ...run, stage: 'enqueue', heartbeat_at: nowSeconds() }
-          await writeRun(env, run)
-          return { key: outputs[0]?.key ?? syncStagingKey(event.instanceId, `refresh:${index}`), count: jobs.length, digest: await digest(jobs.map((job) => job.job_id)) }
+          await env.MEDIA_QUEUE.sendBatch(batch.map((body) => ({ body, contentType: 'json' as const })))
+          return { key: syncStagingKey(event.instanceId, `refresh:${index}`), count: batch.length, digest: await digest(batch.map((job) => job.job_id)) }
         })
         run = { ...run, stage: 'enqueue' }
       }

@@ -80,3 +80,46 @@ test('concurrent commit requests cannot interleave while the older KV write is a
   await Promise.all([older, newer])
   assert.deepEqual(kv.values.get('snapshot:active'), manifest('workflow-2', 2))
 })
+
+test('media budget shares a UTC day across scheduled and manual reservations and resets on a new day', async () => {
+  const coordinator = new SnapshotCoordinator({ storage: new MemoryState() } as any, { AIRING_CAL_KV: new MemoryKV() })
+  const reserve = async (date: string, requested: number, allowOverSoft: boolean) => {
+    const response = await coordinator.fetch(new Request('https://snapshot-coordinator/reserve-media', {
+      method: 'POST',
+      body: JSON.stringify({ date, requested, allow_over_soft: allowOverSoft }),
+    }))
+    assert.equal(response.status, 200)
+    return await response.json()
+  }
+
+  assert.deepEqual(await reserve('2026-07-22', 40, false), {
+    granted: 40,
+    consumed: 40,
+    soft_limit: 50,
+    hard_limit: 100,
+  })
+  assert.deepEqual(await reserve('2026-07-22', 20, false), {
+    granted: 10,
+    consumed: 50,
+    soft_limit: 50,
+    hard_limit: 100,
+  })
+  assert.deepEqual(await reserve('2026-07-22', 75, true), {
+    granted: 50,
+    consumed: 100,
+    soft_limit: 50,
+    hard_limit: 100,
+  })
+  assert.deepEqual(await reserve('2026-07-22', 1, true), {
+    granted: 0,
+    consumed: 100,
+    soft_limit: 50,
+    hard_limit: 100,
+  })
+  assert.deepEqual(await reserve('2026-07-23', 8, false), {
+    granted: 8,
+    consumed: 8,
+    soft_limit: 50,
+    hard_limit: 100,
+  })
+})
