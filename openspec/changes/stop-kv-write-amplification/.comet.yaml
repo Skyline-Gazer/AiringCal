@@ -11,7 +11,7 @@ verify_mode: null
 auto_transition: true
 base_ref: 974323a6bc89a3514b4c814664548ff1ac8d9440
 design_doc: docs/superpowers/specs/2026-07-22-stop-kv-write-amplification-design.md
-plan: null
+plan: docs/superpowers/plans/2026-07-22-stop-kv-write-amplification.md
 verify_result: pending
 verification_report: null
 branch_status: pending
