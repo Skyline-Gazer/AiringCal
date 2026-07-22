@@ -22,7 +22,7 @@
   "author": "markd3ng",
   "license": "MIT",
   "dependencies": {
-    "@fission-ai/openspec": "^1.4.1"
+    "@fission-ai/openspec": "^1.6.0"
   },
   "devDependencies": {
     "tsx": "^4.22.4",
