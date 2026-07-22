@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { nextSubjectRefreshAt } from '@airing-cal/storage'
 import { runSyncWorkflow, type SyncWorkflowEnv, type WorkflowStepLike } from './workflow-core.ts'
 
 class MockKV {
@@ -29,6 +30,40 @@ class MockKV {
   async delete(key: string) {
     this.recordCall()
     this.values.delete(key)
+  }
+
+  subjectPuts() {
+    return this.puts.filter(({ key }) => key.startsWith('subject:refresh:') || key.startsWith('subject:meta:') || key.startsWith('image:status:'))
+  }
+
+  seedCompleteSubject(subjectId: number, cachedAt: number) {
+    const common = `https://images.example/${subjectId}/common.jpg`
+    const large = `https://images.example/${subjectId}/large.jpg`
+    this.values.set(`subject:detail:${subjectId}`, {
+      cached_at: cachedAt,
+      subject: { id: subjectId, images: { common, large } },
+    })
+    this.values.set(`subject:meta:${subjectId}`, {
+      subject_id: subjectId,
+      exists: true,
+      nsfw: false,
+      checked_at: cachedAt,
+      reason: 'subject_detail',
+    })
+    this.values.set(`image:status:${subjectId}`, {
+      subject_id: subjectId,
+      common: { status: 'cached', source_url: common },
+      large: { status: 'cached', source_url: large },
+    })
+    this.values.set(`subject:refresh:${subjectId}`, {
+      subject_id: subjectId,
+      job_id: `previous:${subjectId}`,
+      status: 'ok',
+      queued_at: cachedAt,
+      updated_at: cachedAt,
+      completed_at: cachedAt,
+      error: null,
+    })
   }
 }
 
@@ -125,7 +160,10 @@ function collection(subjectId: number) {
       date: '2026-07-01',
       eps: 12,
       total_episodes: 12,
-      images: {},
+      images: {
+        common: `https://images.example/${subjectId}/common.jpg`,
+        large: `https://images.example/${subjectId}/large.jpg`,
+      },
       rating: { score: 0, rank: 0, total: 0 },
     },
   }
@@ -241,7 +279,7 @@ test('live workflow keeps refresh planning and enqueue below the 50-call Free Pl
     assert.equal(queuedBatches, 4)
     assert.equal([...kv.values.keys()].some((key) => key.startsWith('subject:refresh:')), false)
     assert.equal([...kv.apiCallsByStep.values()].every((calls) => calls <= 50), true)
-    assert.equal([...kv.apiCallsByStep.entries()].filter(([name]) => name.startsWith('plan-refresh-')).every(([, calls]) => calls <= 3), true)
+    assert.equal([...kv.apiCallsByStep.entries()].filter(([name]) => name.startsWith('plan-refresh-')).every(([, calls]) => calls <= 50), true)
     assert.equal([...kv.apiCallsByStep.entries()].filter(([name]) => name.startsWith('enqueue-refresh-')).every(([, calls]) => calls <= 4), true)
     assert.equal([...kv.apiCallsByStep.values()].reduce((total, calls) => total + calls, 0) < 500, true)
     assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'live-1')
@@ -260,6 +298,42 @@ test('live workflow keeps refresh planning and enqueue below the 50-call Free Pl
     }, step, (message) => new TestNonRetryableError(message))
     assert.equal(kv.puts.length, putCount)
     assert.equal(queueMessages.length, 100)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('unchanged 659-subject workflow enqueues no media and performs no subject KV PUTs', async () => {
+  const kv = new MockKV()
+  const queueMessages: unknown[] = []
+  const step = new FakeStep(kv)
+  const cachedAt = Math.floor(Date.now() / 1000) - 1
+  for (let subjectId = 1; subjectId <= 659; subjectId++) {
+    assert.ok(nextSubjectRefreshAt(subjectId, cachedAt) > Math.floor(Date.now() / 1000))
+    kv.seedCompleteSubject(subjectId, cachedAt)
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      const offset = Number(new URL(text).searchParams.get('offset'))
+      const count = Math.min(50, 659 - offset)
+      return Response.json({ total: 659, data: Array.from({ length: count }, (_, index) => collection(offset + index + 1)) })
+    }
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await runSyncWorkflow(workflowEnv(kv, queueMessages), {
+      instanceId: 'unchanged-659',
+      payload: { mode: 'live', source: 'manual' },
+      schedule: undefined,
+    }, step, (message) => new TestNonRetryableError(message))
+
+    assert.equal(queueMessages.length, 0)
+    assert.deepEqual(kv.subjectPuts(), [])
+    assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'unchanged-659')
   } finally {
     globalThis.fetch = originalFetch
   }

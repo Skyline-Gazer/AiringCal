@@ -3,6 +3,10 @@ import { mergeCollections, subjectDetailImages, transformCalendar } from '@airin
 import {
   snapshotActiveKey,
   snapshotVersionKey,
+  imageStatusKey,
+  subjectDetailKey,
+  subjectMetaKey,
+  subjectRefreshKey,
   syncCurrentKey,
   syncMetaKey,
   syncRunKey,
@@ -17,6 +21,7 @@ import {
   type SyncWorkflowParams,
 } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
+import { planSubjectRefresh, type RefreshPlannerInput } from './refresh-planner.ts'
 
 const COLLECTION_TYPES: CollectionType[] = ['want', 'watched', 'watching', 'on_hold', 'dropped']
 const PAGE_LIMIT = 50
@@ -64,11 +69,7 @@ interface StepOutput {
   refreshChunks?: number
 }
 
-interface RefreshInput {
-  subject_id: number
-  title: string
-  images?: { common?: string; large?: string }
-}
+type RefreshInput = RefreshPlannerInput
 
 type NonRetryableFactory = (message: string) => Error
 
@@ -332,15 +333,24 @@ export async function runSyncWorkflow(
       const output = await step.do(`plan-refresh-${chunkIndex}`, STORAGE_STEP, async () => {
         const allInputs = await getJson<RefreshInput[]>(env.AIRING_CAL_KV, prepared.refreshInputKey ?? '') ?? []
         const inputs = allInputs.slice(chunkIndex * REFRESH_CHUNK_SIZE, (chunkIndex + 1) * REFRESH_CHUNK_SIZE)
-        const jobs: MediaRefreshJobV3[] = inputs.map((input) => ({
+        const cachedStates = await Promise.all(inputs.map(async (input) => ({
+          detail: await getJson<any>(env.AIRING_CAL_KV, subjectDetailKey(input.subject_id)),
+          meta: await getJson<any>(env.AIRING_CAL_KV, subjectMetaKey(input.subject_id)),
+          image: await getJson<any>(env.AIRING_CAL_KV, imageStatusKey(input.subject_id)),
+          refresh: await getJson<any>(env.AIRING_CAL_KV, subjectRefreshKey(input.subject_id)),
+        })))
+        const jobs: MediaRefreshJobV3[] = inputs.flatMap((input, index) => {
+          const candidate = planSubjectRefresh(input, cachedStates[index], nowSeconds())
+          return candidate ? [{
             version: 3,
             generation: run.generation ?? 0,
             job_id: `${event.instanceId}:${input.subject_id}`,
             subject_id: input.subject_id,
             title: input.title,
-            components: ['detail', 'meta', 'image_common', 'image_large'],
+            components: candidate.components,
             images: input.images,
-          }))
+          }] : []
+        })
         const key = syncStagingKey(event.instanceId, `refresh:${chunkIndex}`)
         await putJson(env.AIRING_CAL_KV, key, jobs, SYNC_STAGING_TTL_SECONDS)
         run = { ...run, stage: 'refresh_plan', heartbeat_at: nowSeconds() }
