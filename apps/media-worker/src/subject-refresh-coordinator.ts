@@ -1,4 +1,4 @@
-import { KVStorage, subjectRefreshKey, type MediaRefreshJobV2, type MediaRefreshJobV3, type SubjectRefreshState } from '@airing-cal/storage'
+import { KVStorage, putJsonIfChanged, subjectRefreshKey, type MediaRefreshJobV2, type MediaRefreshJobV3, type SubjectRefreshState } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 import { processJob, type MediaEnv, type MediaJob } from './index.ts'
 
@@ -74,7 +74,7 @@ export class SubjectRefreshCoordinator {
         const storage = new KVStorage(this.env.AIRING_CAL_KV)
         const now = Math.floor(Date.now() / 1000)
         const previous = await storage.get<SubjectRefreshState>(subjectRefreshKey(job.subject_id))
-        await storage.put(subjectRefreshKey(job.subject_id), {
+        await putJsonIfChanged(storage, subjectRefreshKey(job.subject_id), {
           subject_id: job.subject_id,
           job_id: versioned.job_id,
           ...('generation' in versioned ? { generation: versioned.generation } : {}),
@@ -83,7 +83,7 @@ export class SubjectRefreshCoordinator {
           updated_at: now,
           completed_at: now,
           error: safeError,
-        } satisfies SubjectRefreshState)
+        } satisfies SubjectRefreshState, (value) => value)
       }
       return Response.json({ error: safeError }, { status: 503 })
     }

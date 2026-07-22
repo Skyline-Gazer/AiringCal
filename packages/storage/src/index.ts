@@ -199,6 +199,25 @@ export class KVStorage implements StorageAdapter {
   }
 }
 
+function stableJson(value: unknown): string | undefined {
+  return JSON.stringify(value, (_key, candidate) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return candidate
+    return Object.fromEntries(Object.keys(candidate).sort().map((key) => [key, candidate[key]]))
+  })
+}
+
+export async function putJsonIfChanged<T>(
+  storage: StorageAdapter,
+  key: string,
+  next: T,
+  normalize: (value: T) => unknown,
+): Promise<boolean> {
+  const previous = await storage.get<T>(key)
+  if (previous !== null && stableJson(normalize(previous)) === stableJson(normalize(next))) return false
+  await storage.put(key, next)
+  return true
+}
+
 export function nextSubjectRefreshAt(subjectId: number, cachedAt: number): number {
   const sixDays = 6 * 24 * 60 * 60
   const twoDays = 2 * 24 * 60 * 60
@@ -225,7 +244,7 @@ export async function getCachedSubjectDetail<T = any>(
   try {
     const subject = await client.getSubject(subjectId)
     if (!subject) return null
-    await storage.put(subjectDetailKey(subjectId), { cached_at: now, subject })
+    await putJsonIfChanged(storage, subjectDetailKey(subjectId), { cached_at: now, subject }, (value) => value.subject)
     return subject
   } catch (error) {
     if (cached?.subject) return cached.subject

@@ -62,7 +62,7 @@ test('a failed newer generation still makes an older retry obsolete', async () =
   }
 })
 
-test('the Durable Object rejects an old retry before media state can be overwritten', async () => {
+test('the Durable Object leaves business KV unchanged for duplicate and obsolete jobs', async () => {
   const state = new MemoryState()
   const kv = {
     values: new Map<string, unknown>(),
@@ -89,6 +89,9 @@ test('the Durable Object rejects an old retry before media state can be overwrit
 
   assert.equal((await coordinator.fetch(request(3))).status, 200)
   const putsAfterNewJob = kv.puts
+  const duplicate = await coordinator.fetch(request(3))
+  assert.deepEqual(await duplicate.json(), { status: 'duplicate', generation: 3 })
+  assert.equal(kv.puts, putsAfterNewJob)
   const obsolete = await coordinator.fetch(request(2))
   assert.deepEqual(await obsolete.json(), { status: 'obsolete', generation: 2 })
   assert.equal(kv.puts, putsAfterNewJob)

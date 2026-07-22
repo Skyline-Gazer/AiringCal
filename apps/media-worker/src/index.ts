@@ -2,7 +2,7 @@ export const appBoundary = 'media-worker'
 
 import { BgmClient, BgmHttpError, BgmNetworkError, BgmTimeoutError } from '@airing-cal/bgm-api'
 import { imageRef, isActiveNotFoundSubjectMeta, isConfirmedNotFoundSubjectMeta, subjectDetailImages, subjectMetaFromDetail, subjectMetaFromNotFound, type SubjectMeta } from '@airing-cal/domain'
-import { getCachedSubjectDetail, imageIndexKey, imageStatusKey, KVStorage, R2ImageStore, subjectDetailKey, subjectMetaKey, subjectRefreshKey, type ImageSourceSize, type MediaRefreshJobV2, type MediaRefreshJobV3, type SubjectRefreshState } from '@airing-cal/storage'
+import { getCachedSubjectDetail, imageIndexKey, imageStatusKey, KVStorage, putJsonIfChanged, R2ImageStore, SUBJECT_DETAIL_TTL_SECONDS, subjectDetailKey, subjectMetaKey, subjectRefreshKey, type ImageSourceSize, type MediaRefreshJobV2, type MediaRefreshJobV3, type SubjectDetailCacheEntry, type SubjectRefreshState } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 export interface LegacyMediaJob {
@@ -76,6 +76,60 @@ function reusableCachedImageStatus(previous: any, sourceUrl: string | undefined)
   return cached.source_url === sourceUrl ? cached : null
 }
 
+function normalizeSubjectMeta(value: SubjectMeta & { last_error?: string }) {
+  const { checked_at: _checkedAt, ...semantic } = value
+  return semantic
+}
+
+function normalizeImageStatus(value: any) {
+  const { subject_checked_at: _subjectCheckedAt, ...semantic } = value
+  return semantic
+}
+
+function normalizeRefreshState(value: SubjectRefreshState) {
+  if (value.status !== 'ok' && value.status !== 'partial') return value
+  return {
+    subject_id: value.subject_id,
+    status: value.status,
+    error: value.error,
+  }
+}
+
+function sameSubjectMeta(meta: SubjectMeta | null, subjectId: number, subject: any): boolean {
+  return meta?.subject_id === subjectId
+    && meta.exists === true
+    && meta.nsfw === (subject?.nsfw === true)
+    && meta.expires_at === null
+    && meta.reason === 'subject_detail'
+}
+
+async function isFullyReusableJob(
+  job: MediaRefreshJobV2 | MediaRefreshJobV3,
+  storage: KVStorage,
+  meta: SubjectMeta | null,
+  previousStatus: any,
+  now: number,
+): Promise<boolean> {
+  if (!previousStatus || previousStatus.subject_id !== job.subject_id || previousStatus.title !== job.title) return false
+  const refreshDetail = job.components.includes('detail') || job.components.includes('meta') || isConfirmedNotFoundSubjectMeta(meta)
+  let subject: any = null
+  if (refreshDetail) {
+    if (isConfirmedNotFoundSubjectMeta(meta)) return false
+    const detail = await storage.get<SubjectDetailCacheEntry>(subjectDetailKey(job.subject_id))
+    if (!detail?.subject || typeof detail.cached_at !== 'number' || now - detail.cached_at > SUBJECT_DETAIL_TTL_SECONDS) return false
+    subject = detail.subject
+    if (!sameSubjectMeta(meta, job.subject_id, subject)) return false
+  }
+  const detailImages = subjectDetailImages(subject)
+  const images = {
+    common: detailImages.common ?? job.images?.common,
+    large: detailImages.large ?? job.images?.large,
+  }
+  if (job.components.includes('image_common') && !reusableCachedImageStatus(previousStatus.common, images.common)) return false
+  if (job.components.includes('image_large') && !reusableCachedImageStatus(previousStatus.large, images.large)) return false
+  return true
+}
+
 async function processImage(size: ImageSourceSize, sourceUrl: string | undefined, previous: any, job: MediaJob, client: BgmClient, imageStore: R2ImageStore, storage: KVStorage, now: number) {
   const cached = reusableCachedImageStatus(previous, sourceUrl)
   if (cached) return cached
@@ -128,7 +182,7 @@ async function fetchSubjectDetail(job: MediaJob, client: BgmClient, storage: KVS
       ? await client.getSubject(job.subject_id)
       : await getCachedSubjectDetail(storage, client, job.subject_id, now)
     if (!subject) {
-      await storage.put(subjectMetaKey(job.subject_id), subjectMetaFromNotFound(job.subject_id, now))
+      await putJsonIfChanged(storage, subjectMetaKey(job.subject_id), subjectMetaFromNotFound(job.subject_id, now), normalizeSubjectMeta)
       try {
         await storage.delete(subjectDetailKey(job.subject_id))
       } catch {
@@ -137,14 +191,14 @@ async function fetchSubjectDetail(job: MediaJob, client: BgmClient, storage: KVS
       return null
     }
     if (forceUpstream) {
-      await storage.put(subjectDetailKey(job.subject_id), { cached_at: now, subject })
+      await putJsonIfChanged(storage, subjectDetailKey(job.subject_id), { cached_at: now, subject }, (value) => value.subject)
     }
-    await storage.put(subjectMetaKey(job.subject_id), subjectMetaFromDetail(job.subject_id, subject, now))
+    await putJsonIfChanged(storage, subjectMetaKey(job.subject_id), subjectMetaFromDetail(job.subject_id, subject, now), normalizeSubjectMeta)
     return subject
   } catch (error) {
     const existing = await storage.get(subjectMetaKey(job.subject_id))
     if (!existing) {
-      await storage.put(subjectMetaKey(job.subject_id), {
+      await putJsonIfChanged(storage, subjectMetaKey(job.subject_id), {
         subject_id: job.subject_id,
         exists: null,
         nsfw: true,
@@ -152,16 +206,16 @@ async function fetchSubjectDetail(job: MediaJob, client: BgmClient, storage: KVS
         expires_at: null,
         reason: 'network_error',
         last_error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
-      })
+      }, normalizeSubjectMeta)
     }
     if (isTransient(error)) throw error
     return null
   }
 }
 
-async function putRefreshState(storage: KVStorage, job: MediaRefreshJobV2 | MediaRefreshJobV3, state: SubjectRefreshState['status'], now: number, error: string | null = null): Promise<void> {
+async function putRefreshState(storage: KVStorage, job: MediaRefreshJobV2 | MediaRefreshJobV3, state: SubjectRefreshState['status'], now: number, error: string | null = null): Promise<boolean> {
   const previous = await storage.get<SubjectRefreshState>(subjectRefreshKey(job.subject_id))
-  await storage.put(subjectRefreshKey(job.subject_id), {
+  return putJsonIfChanged(storage, subjectRefreshKey(job.subject_id), {
     subject_id: job.subject_id,
     job_id: job.job_id,
     ...('generation' in job ? { generation: job.generation } : {}),
@@ -170,7 +224,7 @@ async function putRefreshState(storage: KVStorage, job: MediaRefreshJobV2 | Medi
     updated_at: now,
     completed_at: state === 'running' || state === 'queued' ? null : now,
     error,
-  } satisfies SubjectRefreshState)
+  } satisfies SubjectRefreshState, normalizeRefreshState)
 }
 
 async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | 'duplicate'> {
@@ -178,19 +232,31 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | '
   const imageStore = new R2ImageStore(env.AIRING_CAL_R2)
   const client = new BgmClient()
   const now = Math.floor(Date.now() / 1000)
+  let meta: SubjectMeta | null = null
+  let previousStatus: any = null
   if (isVersionedJob(job)) {
     const refresh = await storage.get<SubjectRefreshState>(subjectRefreshKey(job.subject_id))
     const activeDuplicate = refresh?.job_id === job.job_id
       && (refresh.status === 'ok' || refresh.status === 'partial' || refresh.status === 'running' && now - refresh.updated_at < 600)
     if (activeDuplicate) return 'duplicate'
+    meta = await storage.get<SubjectMeta>(subjectMetaKey(job.subject_id))
+    previousStatus = await storage.get<any>(imageStatusKey(job.subject_id))
+    if (isActiveNotFoundSubjectMeta(meta, now)) {
+      await putRefreshState(storage, job, 'ok', now)
+      return 'processed'
+    }
+    if (refresh?.status !== 'failed' && await isFullyReusableJob(job, storage, meta, previousStatus, now)) {
+      await putRefreshState(storage, job, 'ok', now)
+      return 'processed'
+    }
     await putRefreshState(storage, job, 'running', now)
   }
-  const meta = await storage.get<SubjectMeta>(subjectMetaKey(job.subject_id))
+  meta ??= await storage.get<SubjectMeta>(subjectMetaKey(job.subject_id))
   if (isActiveNotFoundSubjectMeta(meta, now)) {
     if (isVersionedJob(job)) await putRefreshState(storage, job, 'ok', now)
     return 'processed'
   }
-  const previousStatus = await storage.get<any>(imageStatusKey(job.subject_id))
+  previousStatus ??= await storage.get<any>(imageStatusKey(job.subject_id))
   const refreshDetail = !isVersionedJob(job)
     || job.components.includes('detail')
     || job.components.includes('meta')
@@ -220,13 +286,13 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | '
       : previousStatus?.large ?? emptyImageStatus(),
   ])
 
-  await storage.put(imageStatusKey(job.subject_id), {
+  await putJsonIfChanged(storage, imageStatusKey(job.subject_id), {
     subject_id: job.subject_id,
     title: job.title,
     common,
     large,
     subject_checked_at: now,
-  })
+  }, normalizeImageStatus)
   if (isVersionedJob(job)) {
     const requestedImages = [
       job.components.includes('image_common') ? common : null,

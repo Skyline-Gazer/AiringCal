@@ -5,6 +5,7 @@ import worker from './index.ts'
 
 class MockKV {
   values = new Map<string, unknown>()
+  puts: Array<{ key: string; value: unknown }> = []
 
   async get(key: string, type?: 'json') {
     const value = this.values.get(key)
@@ -13,7 +14,9 @@ class MockKV {
   }
 
   async put(key: string, value: string) {
-    this.values.set(key, JSON.parse(value))
+    const parsed = JSON.parse(value)
+    this.puts.push({ key, value: parsed })
+    this.values.set(key, parsed)
   }
 
   async delete(key: string) {
@@ -52,6 +55,115 @@ function trackedBatch(body: unknown, attempts = 1) {
     },
   }
 }
+
+test('media-worker reusable V3 media writes no unchanged metadata image or terminal refresh state', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const now = 1_782_650_000
+  const previousMeta = {
+    subject_id: 23080,
+    exists: true,
+    nsfw: false,
+    checked_at: now - 100,
+    expires_at: null,
+    reason: 'subject_detail',
+  }
+  const previousImageStatus = {
+    subject_id: 23080,
+    title: 'A CN',
+    common: { status: 'cached', hash: 'a'.repeat(64), uri: `/image/${'a'.repeat(64)}`, r2_key: `images/${'a'.repeat(64)}/original`, queued_at: 1, cached_at: 2, last_error: null, source_url: 'https://img.example/common.jpg' },
+    large: { status: 'cached', hash: 'b'.repeat(64), uri: `/image/${'b'.repeat(64)}`, r2_key: `images/${'b'.repeat(64)}/original`, queued_at: 3, cached_at: 4, last_error: null, source_url: 'https://img.example/large.jpg' },
+    subject_checked_at: now - 100,
+  }
+  const previousRefresh = {
+    subject_id: 23080,
+    job_id: 'workflow-1:23080',
+    generation: 1,
+    status: 'ok',
+    queued_at: now - 200,
+    updated_at: now - 100,
+    completed_at: now - 100,
+    error: null,
+  }
+  kv.values.set(subjectDetailKey(23080), {
+    cached_at: now,
+    subject: {
+      id: 23080,
+      nsfw: false,
+      images: {
+        common: 'https://img.example/common.jpg',
+        large: 'https://img.example/large.jpg',
+      },
+    },
+  })
+  kv.values.set('subject:meta:23080', previousMeta)
+  kv.values.set('image:status:23080', previousImageStatus)
+  kv.values.set(subjectRefreshKey(23080), previousRefresh)
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  globalThis.fetch = (async () => { throw new Error('reusable media must not access upstream') }) as typeof globalThis.fetch
+  Date.now = () => now * 1000
+
+  try {
+    await worker.queue(batch({
+      version: 3,
+      generation: 2,
+      job_id: 'workflow-2:23080',
+      subject_id: 23080,
+      title: 'A CN',
+      components: ['detail', 'meta', 'image_common', 'image_large'],
+      images: {
+        common: 'https://img.example/common.jpg',
+        large: 'https://img.example/large.jpg',
+      },
+    }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+
+    const redundantPuts = kv.puts.filter(({ key, value }) => key === 'subject:meta:23080'
+      || key === 'image:status:23080'
+      || key === subjectRefreshKey(23080) && (value as any).status !== 'running')
+    assert.deepEqual(redundantPuts.map(({ key }) => key), [])
+    assert.deepEqual(kv.values.get('subject:meta:23080'), previousMeta)
+    assert.deepEqual(kv.values.get('image:status:23080'), previousImageStatus)
+    assert.deepEqual(kv.values.get(subjectRefreshKey(23080)), previousRefresh)
+    assert.equal(r2.writes.length, 0)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker changed image source still writes cached status', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  kv.values.set('image:status:23080', {
+    subject_id: 23080,
+    title: 'A CN',
+    common: { status: 'cached', hash: 'a'.repeat(64), uri: `/image/${'a'.repeat(64)}`, r2_key: `images/${'a'.repeat(64)}/original`, source_url: 'https://img.example/old.jpg' },
+    large: { status: 'cached', hash: 'b'.repeat(64), uri: `/image/${'b'.repeat(64)}`, r2_key: `images/${'b'.repeat(64)}/original`, source_url: 'https://img.example/large.jpg' },
+    subject_checked_at: 1,
+  })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    if (String(url) === 'https://img.example/new.jpg') return new Response('new-image')
+    throw new Error(`unexpected fetch ${url}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await worker.queue(batch({
+      version: 3,
+      generation: 2,
+      job_id: 'changed-source:23080',
+      subject_id: 23080,
+      title: 'A CN',
+      components: ['image_common'],
+      images: { common: 'https://img.example/new.jpg' },
+    }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+
+    assert.equal(kv.puts.some(({ key, value }) => key === 'image:status:23080' && (value as any).common.source_url === 'https://img.example/new.jpg'), true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
 
 test('media-worker downloads common and large images, writes R2 and cache status', async () => {
   const kv = new MockKV()
@@ -309,6 +421,7 @@ test('media-worker tombstones a confirmed 404 for exactly 24 hours then recovers
   try {
     Date.now = () => checkedAt * 1000
     await worker.queue(batch(job) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.equal(kv.puts.some(({ key, value }) => key === 'subject:meta:23080' && (value as any).reason === 'not_found'), true)
     assert.deepEqual(kv.values.get('subject:meta:23080'), {
       subject_id: 23080, exists: false, nsfw: true, reason: 'not_found', checked_at: checkedAt, expires_at: checkedAt + 86400,
     })
@@ -771,7 +884,7 @@ test('media-worker handles a fresh V2 candidate without upstream or R2 work', as
   }
 })
 
-test('media-worker retries transient V2 failures with bounded delay', async () => {
+test('media-worker failure backoff transition writes failed refresh state with bounded delay', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()
   const message = trackedBatch({
@@ -789,6 +902,7 @@ test('media-worker retries transient V2 failures with bounded delay', async () =
     assert.equal(message.state.acked, 0)
     assert.deepEqual(message.state.retries, [{ delaySeconds: 30 }])
     assert.equal((kv.values.get(subjectRefreshKey(23080)) as any).status, 'failed')
+    assert.equal(kv.puts.some(({ key, value }) => key === subjectRefreshKey(23080) && (value as any).status === 'failed'), true)
   } finally {
     globalThis.fetch = originalFetch
   }
