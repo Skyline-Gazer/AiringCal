@@ -37,11 +37,11 @@ base-ref: 6281572784cd93e242589656453648f83909705e
 - Consumes: existing `MockKV`, `FakeStep`, `workflowEnv`, `runSyncWorkflow`.
 - Produces: reusable KV PUT classification helpers, `planSubjectRefresh(input, cached, now): RefreshCandidate | null`, and a green 659-subject full-path regression.
 
-- [ ] **Step 1: Extend the KV/Queue test doubles without changing production code**
+- [x] **Step 1: Extend the KV/Queue test doubles without changing production code**
 
 Add helpers to `MockKV` that return PUTs whose keys start with `subject:refresh:`, `subject:meta:`, or `image:status:` and a helper that seeds complete unexpired detail/meta/image/refresh records for a subject. Keep Queue observation through the existing `queueMessages` array.
 
-- [ ] **Step 2: Write the failing 659-subject regression**
+- [x] **Step 2: Write the failing 659-subject regression**
 
 Create a test named `unchanged 659-subject workflow enqueues no media and performs no subject KV PUTs`. Stub 14 collection pages totaling 659 unique subjects plus an empty calendar, seed every subject with complete source-matching state whose `cached_at` is before `nextSubjectRefreshAt`, execute a new live Workflow instance, and assert:
 
@@ -51,21 +51,21 @@ assert.deepEqual(kv.subjectPuts(), [])
 assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'unchanged-659')
 ```
 
-- [ ] **Step 3: Run the exact test and verify RED**
+- [x] **Step 3: Run the exact test and verify RED**
 
 Run: `pnpm -F @airing-cal/sync-worker test -- --test-name-pattern="unchanged 659-subject"`
 
 Expected: FAIL because the current Workflow creates 659 full-component jobs and Queue receives messages. Confirm the failure is an assertion mismatch, not fixture or pagination setup failure.
 
-- [ ] **Step 4: Add focused RED tests for component due selection**
+- [x] **Step 4: Add focused RED tests for component due selection**
 
 In `refresh-planner.test.ts`, cover complete/unexpired => `null`, missing detail => `['detail','meta']`, changed image source => only the changed image component, and the exact `nextSubjectRefreshAt` boundary => due. Run the focused tests and confirm the missing-module/export failure.
 
-- [ ] **Step 5: Implement basic component due filtering and integrate it**
+- [x] **Step 5: Implement basic component due filtering and integrate it**
 
 Define explicit input/cached-state/candidate types in `refresh-planner.ts`. Use `nextSubjectRefreshAt(subjectId, cachedAt) <= now`; do not introduce another TTL formula. In `workflow-core.ts`, read detail/meta/image/refresh state in bounded chunks, call the pure planner, and stage only non-null candidates. Shadow must still create no Queue messages. Do not add budget or priority selection in this task.
 
-- [ ] **Step 6: Run focused tests and verify GREEN**
+- [x] **Step 6: Run focused tests and verify GREEN**
 
 Run:
 
@@ -77,7 +77,7 @@ pnpm -F @airing-cal/sync-worker typecheck
 
 Expected: all pass, including the 659 regression, with no subject refresh/meta/image PUTs from planning.
 
-- [ ] **Step 7: Commit and push the complete RED→GREEN task**
+- [x] **Step 7: Commit and push the complete RED→GREEN task**
 
 Run `git diff --check`, stage the tests, basic planner, Workflow integration, and completed OpenSpec tasks 1.1/1.2 and 2.1. Commit as `fix: skip media planning for fresh subjects` and push the feature branch. Preserve the RED command/failure summary and GREEN command/pass summary in the subagent report; do not commit an intentionally failing tree.
 
