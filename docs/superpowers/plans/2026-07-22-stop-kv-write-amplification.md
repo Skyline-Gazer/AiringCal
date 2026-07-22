@@ -24,15 +24,18 @@ base-ref: 6281572784cd93e242589656453648f83909705e
 
 ---
 
-### Task 1: Observable unchanged-cache regression baseline
+### Task 1: Observable unchanged-cache regression and basic due filtering
 
 **Files:**
 - Modify: `apps/sync-worker/src/workflow.test.ts`
+- Create: `apps/sync-worker/src/refresh-planner.ts`
+- Create: `apps/sync-worker/src/refresh-planner.test.ts`
+- Modify: `apps/sync-worker/src/workflow-core.ts`
 - Modify: `openspec/changes/stop-kv-write-amplification/tasks.md`
 
 **Interfaces:**
 - Consumes: existing `MockKV`, `FakeStep`, `workflowEnv`, `runSyncWorkflow`.
-- Produces: reusable KV PUT classification helpers and a 659-subject full-path regression test that later planner tasks must satisfy.
+- Produces: reusable KV PUT classification helpers, `planSubjectRefresh(input, cached, now): RefreshCandidate | null`, and a green 659-subject full-path regression.
 
 - [ ] **Step 1: Extend the KV/Queue test doubles without changing production code**
 
@@ -54,15 +57,35 @@ Run: `pnpm -F @airing-cal/sync-worker test -- --test-name-pattern="unchanged 659
 
 Expected: FAIL because the current Workflow creates 659 full-component jobs and Queue receives messages. Confirm the failure is an assertion mismatch, not fixture or pagination setup failure.
 
-- [ ] **Step 4: Commit and push the red regression**
+- [ ] **Step 4: Add focused RED tests for component due selection**
 
-Run `git diff --check`, stage only `workflow.test.ts` plus the corresponding completed 1.1/1.2 checkboxes in `tasks.md`, commit as `test: expose unchanged sync KV amplification`, and push the current branch. Preserve the failing-test evidence in the implementation log/commit body because the branch is intentionally red at this TDD checkpoint.
+In `refresh-planner.test.ts`, cover complete/unexpired => `null`, missing detail => `['detail','meta']`, changed image source => only the changed image component, and the exact `nextSubjectRefreshAt` boundary => due. Run the focused tests and confirm the missing-module/export failure.
+
+- [ ] **Step 5: Implement basic component due filtering and integrate it**
+
+Define explicit input/cached-state/candidate types in `refresh-planner.ts`. Use `nextSubjectRefreshAt(subjectId, cachedAt) <= now`; do not introduce another TTL formula. In `workflow-core.ts`, read detail/meta/image/refresh state in bounded chunks, call the pure planner, and stage only non-null candidates. Shadow must still create no Queue messages. Do not add budget or priority selection in this task.
+
+- [ ] **Step 6: Run focused tests and verify GREEN**
+
+Run:
+
+```bash
+pnpm -F @airing-cal/storage test
+pnpm -F @airing-cal/sync-worker test
+pnpm -F @airing-cal/sync-worker typecheck
+```
+
+Expected: all pass, including the 659 regression, with no subject refresh/meta/image PUTs from planning.
+
+- [ ] **Step 7: Commit and push the complete RED→GREEN task**
+
+Run `git diff --check`, stage the tests, basic planner, Workflow integration, and completed OpenSpec tasks 1.1/1.2 and 2.1. Commit as `fix: skip media planning for fresh subjects` and push the feature branch. Preserve the RED command/failure summary and GREEN command/pass summary in the subagent report; do not commit an intentionally failing tree.
 
 ### Task 2: Bounded component planner and shared UTC-day budget
 
 **Files:**
-- Create: `apps/sync-worker/src/refresh-planner.ts`
-- Create: `apps/sync-worker/src/refresh-planner.test.ts`
+- Modify: `apps/sync-worker/src/refresh-planner.ts`
+- Modify: `apps/sync-worker/src/refresh-planner.test.ts`
 - Modify: `apps/sync-worker/src/workflow-core.ts`
 - Modify: `apps/sync-worker/src/workflow.test.ts`
 - Modify: `apps/sync-worker/src/snapshot-coordinator.ts`
@@ -71,21 +94,21 @@ Run `git diff --check`, stage only `workflow.test.ts` plus the corresponding com
 
 **Interfaces:**
 - Consumes: `nextSubjectRefreshAt`, `subjectDetailKey`, `subjectMetaKey`, `imageStatusKey`, `subjectRefreshKey`, `MediaRefreshComponent`, `MediaRefreshJobV3` from `@airing-cal/storage`.
-- Produces: `planSubjectRefresh(input, cached, now): RefreshCandidate | null`, `selectRefreshCandidates(candidates, utcDay, limits): RefreshSelection`, and the existing `SNAPSHOT_COORDINATOR` Durable Object endpoint `POST /reserve-media` accepting `{ date, requested, allow_over_soft }` and returning `{ granted, consumed, soft_limit, hard_limit }`.
+- Produces: `selectRefreshCandidates(candidates, utcDay, limits): RefreshSelection` layered on the Task 1 candidate interface, and the existing `SNAPSHOT_COORDINATOR` Durable Object endpoint `POST /reserve-media` accepting `{ date, requested, allow_over_soft }` and returning `{ granted, consumed, soft_limit, hard_limit }`.
 
 - [ ] **Step 1: Write planner RED tests**
 
-In `refresh-planner.test.ts`, cover complete/unexpired => `null`, missing detail => `['detail','meta']`, changed image source => only the changed image component, exact `nextSubjectRefreshAt` boundary => due, hot before cold before retry ordering, deterministic `subject_id % 7` cold membership, 80 ordinary => 50 selected, and 60 new/changed => 60 selected but 101 => 100.
+In `refresh-planner.test.ts`, cover hot before cold before retry ordering, deterministic `subject_id % 7` cold membership, 80 ordinary => 50 selected, and 60 new/changed => 60 selected but 101 => 100.
 
 - [ ] **Step 2: Run planner tests and verify RED**
 
 Run: `pnpm -F @airing-cal/sync-worker test -- --test-name-pattern="refresh planner"`
 
-Expected: module-not-found or missing-export failure for `refresh-planner.ts`.
+Expected: missing `selectRefreshCandidates` export or selection assertion failures.
 
 - [ ] **Step 3: Implement the pure planner and make it GREEN**
 
-Define explicit cached-state and priority types in `refresh-planner.ts`. Use `nextSubjectRefreshAt(subjectId, cachedAt) <= now`; do not introduce another TTL formula. Sort by numeric priority then subject ID. Return counters `{ candidates, selected, deferred, by_priority }` with the selected component arrays. Run the focused planner tests until all pass.
+Extend the Task 1 candidate with explicit priority data. Sort by numeric priority then subject ID. Return counters `{ candidates, selected, deferred, by_priority }` with the selected component arrays. Run the focused planner tests until all pass.
 
 - [ ] **Step 4: Write budget coordinator RED tests**
 
@@ -123,7 +146,7 @@ Expected: all pass, including the 659 regression; no Workflow step exceeds the e
 
 - [ ] **Step 10: Commit and push bounded planning atomically**
 
-Mark tasks 2.1/2.2 complete, run `git diff --check`, stage only planner/budget/Workflow/config/type/task files, commit as `fix: bound daily media refresh planning`, and push.
+Mark task 2.2 complete, run `git diff --check`, stage only planner/budget/Workflow/test/task files, commit as `fix: bound daily media refresh planning`, and push.
 
 ### Task 3: Media consumer semantic compare-before-write
 
