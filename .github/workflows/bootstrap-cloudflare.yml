@@ -19,5 +19,10 @@ jobs:
       - id: provision
         name: Create or reuse Cloudflare resources
         run: node scripts/provision-cloudflare-resources.mjs
-      - name: Report provisioned D1 database id
-        run: echo "d1_database_id=${{ steps.provision.outputs.d1_database_id }}"
+      - id: resolve
+        name: Resolve and verify Cloudflare resources
+        run: node scripts/resolve-cloudflare-resources.mjs
+      - name: Report verified resource ids
+        run: |
+          echo "d1_database_id=${{ steps.resolve.outputs.d1_database_id }}"
+          echo "kv_namespace_id=${{ steps.resolve.outputs.kv_namespace_id }}"

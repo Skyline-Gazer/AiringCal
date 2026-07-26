@@ -26,4 +26,7 @@
 - Review result: spec compliance APPROVED; code quality APPROVED.
 - Resolved findings: D1/KV/Queue page iteration, R2 cursor iteration, already-exists complete re-list, D1 Edit permission documentation, compatibility-stage wording.
 - Checkoff: OpenSpec 1.1–1.2 complete; plan Task 1 and OpenSpec 1.3 remain pending until production bootstrap evidence exists.
+- Resolver gate TDD RED: worker-common workflow test failed 11/12 because bootstrap did not run the read-only resolver after provision.
+- Resolver gate TDD GREEN: bootstrap now runs provision → read-only resolver → safe report using resolver-confirmed D1/KV outputs; focused worker-common 12/12, resource scripts 17/17, full test/typecheck/build, OpenSpec strict and diff check passed.
+- Resolver gate scope audit: no runtime D1/data R2 binding or Task 2 code was added; OpenSpec 1.3 remains unchecked until the updated workflow succeeds against production resources.
 - Production bootstrap evidence: pending

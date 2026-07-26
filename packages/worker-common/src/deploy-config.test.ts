@@ -147,6 +147,14 @@ test('CI validates every code push while bootstrap is manual', () => {
   assert.match(bootstrap, /workflow_dispatch:/)
   assert.doesNotMatch(bootstrap, /\npush:/)
   assert.match(bootstrap, /node scripts\/provision-cloudflare-resources\.mjs/)
+  assert.match(bootstrap, /id:\s*resolve[\s\S]*?node scripts\/resolve-cloudflare-resources\.mjs/, 'bootstrap should resolve every provisioned resource with the same production credentials')
+  assert.match(bootstrap, /steps\.resolve\.outputs\.d1_database_id/, 'bootstrap should report the resolver-confirmed D1 database id')
+  assert.match(bootstrap, /steps\.resolve\.outputs\.kv_namespace_id/, 'bootstrap should report the resolver-confirmed KV namespace id')
+  const provisionIndex = bootstrap.indexOf('node scripts/provision-cloudflare-resources.mjs')
+  const resolveIndex = bootstrap.indexOf('node scripts/resolve-cloudflare-resources.mjs')
+  const reportIndex = bootstrap.indexOf('steps.resolve.outputs.d1_database_id')
+  assert.ok(provisionIndex < resolveIndex, 'bootstrap should resolve resources only after provisioning succeeds')
+  assert.ok(resolveIndex < reportIndex, 'bootstrap should report only resolver-confirmed outputs')
 })
 
 test('manual Workflow trigger uses GitHub secrets without exposing a public sync endpoint', () => {
