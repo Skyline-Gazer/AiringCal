@@ -11,7 +11,7 @@ function requiredEnv(name, env = process.env) {
   return value
 }
 
-async function apiRequest(fetchImpl, token, path, init = {}) {
+async function apiResponse(fetchImpl, token, path, init = {}) {
   const response = await fetchImpl(`https://api.cloudflare.com/client/v4${path}`, {
     ...init,
     signal: init.signal ?? AbortSignal.timeout(API_TIMEOUT_MS),
@@ -29,23 +29,90 @@ async function apiRequest(fetchImpl, token, path, init = {}) {
     apiError.errors = errors
     throw apiError
   }
-  return body.result
+  return body
+}
+
+async function apiRequest(fetchImpl, token, path, init = {}) {
+  return (await apiResponse(fetchImpl, token, path, init)).result
 }
 
 function findByName(items, names, expected) {
   return items.find((item) => names.some((name) => item?.[name] === expected))
 }
 
-function d1Databases(result) {
+function resultItems(result, property) {
   if (Array.isArray(result)) return result
-  if (Array.isArray(result?.databases)) return result.databases
+  if (Array.isArray(result?.[property])) return result[property]
   if (Array.isArray(result?.result)) return result.result
   return []
 }
 
+function totalPages(resultInfo) {
+  if (Number.isFinite(resultInfo?.total_pages)) return resultInfo.total_pages
+  if (Number.isFinite(resultInfo?.total_count) && Number.isFinite(resultInfo?.per_page) && resultInfo.per_page > 0) {
+    return Math.ceil(resultInfo.total_count / resultInfo.per_page)
+  }
+  return undefined
+}
+
+async function listAll(context, path, { property, query, pagination = 'page' } = {}) {
+  const { fetchImpl, token } = context
+  const collected = []
+  let page = 1
+  let cursor
+
+  while (true) {
+    const pageQuery = new URLSearchParams(query)
+    if (pagination === 'cursor' && cursor) pageQuery.set('cursor', cursor)
+    if (pagination === 'page' && page > 1) pageQuery.set('page', String(page))
+    const response = await apiResponse(fetchImpl, token, `${path}${pageQuery.size > 0 ? `?${pageQuery}` : ''}`)
+    collected.push(...resultItems(response.result, property))
+
+    if (pagination === 'cursor') {
+      const nextCursor = response.result_info?.cursor
+      if (typeof nextCursor !== 'string' || nextCursor.length === 0 || nextCursor === cursor) break
+      cursor = nextCursor
+      continue
+    }
+
+    const currentPage = Number.isFinite(response.result_info?.page) ? response.result_info.page : page
+    const lastPage = totalPages(response.result_info)
+    if (!Number.isFinite(lastPage) || currentPage >= lastPage) break
+    page = currentPage + 1
+  }
+
+  return collected
+}
+
+function listD1Databases(context) {
+  return listAll(context, `/accounts/${context.accountId}/d1/database`, {
+    property: 'databases',
+    query: new URLSearchParams({ per_page: '10000' }),
+  })
+}
+
+function listKvNamespaces(context) {
+  return listAll(context, `/accounts/${context.accountId}/storage/kv/namespaces`, {
+    property: 'namespaces',
+    query: new URLSearchParams({ per_page: '1000', order: 'title', direction: 'asc' }),
+  })
+}
+
+function listR2Buckets(context) {
+  return listAll(context, `/accounts/${context.accountId}/r2/buckets`, {
+    property: 'buckets',
+    query: new URLSearchParams({ per_page: '1000' }),
+    pagination: 'cursor',
+  })
+}
+
+function listQueues(context) {
+  return listAll(context, `/accounts/${context.accountId}/queues`, { property: 'queues' })
+}
+
 async function ensureD1Database(context, name) {
   const { fetchImpl, token, accountId } = context
-  const list = async () => d1Databases(await apiRequest(fetchImpl, token, `/accounts/${accountId}/d1/database`))
+  const list = () => listD1Databases(context)
   const existing = findByName(await list(), ['name'], name)
   if (existing?.uuid) return existing
 
@@ -65,8 +132,7 @@ async function ensureD1Database(context, name) {
 
 async function ensureKvNamespace(context, title) {
   const { fetchImpl, token, accountId } = context
-  const query = new URLSearchParams({ per_page: '1000', order: 'title', direction: 'asc' })
-  const list = async () => apiRequest(fetchImpl, token, `/accounts/${accountId}/storage/kv/namespaces?${query}`)
+  const list = () => listKvNamespaces(context)
   const existing = findByName(await list(), ['title'], title)
   if (existing?.id) return existing
 
@@ -86,9 +152,8 @@ async function ensureKvNamespace(context, title) {
 
 async function ensureR2Bucket(context, name) {
   const { fetchImpl, token, accountId } = context
-  const listResult = await apiRequest(fetchImpl, token, `/accounts/${accountId}/r2/buckets`)
-  const buckets = Array.isArray(listResult) ? listResult : listResult?.buckets ?? []
-  const existing = findByName(buckets, ['name'], name)
+  const list = () => listR2Buckets(context)
+  const existing = findByName(await list(), ['name'], name)
   if (existing) return existing
 
   try {
@@ -97,16 +162,18 @@ async function ensureR2Bucket(context, name) {
       body: JSON.stringify({ name }),
     })
   } catch (error) {
-    if (error.errors?.some((item) => /already exists/i.test(item.message ?? ''))) return { name }
+    if (error.errors?.some((item) => /already exists/i.test(item.message ?? ''))) {
+      const createdByRace = findByName(await list(), ['name'], name)
+      if (createdByRace) return createdByRace
+    }
     throw error
   }
 }
 
 async function ensureQueue(context, queueName) {
   const { fetchImpl, token, accountId } = context
-  const listResult = await apiRequest(fetchImpl, token, `/accounts/${accountId}/queues`)
-  const queues = Array.isArray(listResult) ? listResult : listResult?.queues ?? []
-  const existing = findByName(queues, ['queue_name', 'name'], queueName)
+  const list = () => listQueues(context)
+  const existing = findByName(await list(), ['queue_name', 'name'], queueName)
   if (existing) return existing
 
   try {
@@ -115,7 +182,10 @@ async function ensureQueue(context, queueName) {
       body: JSON.stringify({ queue_name: queueName }),
     })
   } catch (error) {
-    if (error.errors?.some((item) => /already exists/i.test(item.message ?? ''))) return { queue_name: queueName }
+    if (error.errors?.some((item) => /already exists/i.test(item.message ?? ''))) {
+      const createdByRace = findByName(await list(), ['queue_name', 'name'], queueName)
+      if (createdByRace) return createdByRace
+    }
     throw error
   }
 }

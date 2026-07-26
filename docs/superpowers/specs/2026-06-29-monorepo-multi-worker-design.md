@@ -666,7 +666,7 @@ Worker secrets
 Cron schedule in sync-worker config
 ```
 
-After initial provisioning, GitHub Actions resolves D1, both R2 buckets, KV and Queue before upload. During the compatibility phase it creates and verifies D1/data R2 only; Worker runtime bindings and accesses remain unchanged until a later release phase.
+After initial provisioning, GitHub Actions resolves D1, both R2 buckets, KV and Queue before upload. During the compatibility phase bootstrap still prepares or reuses all five resource types, and the resolver verifies all five; only D1/data R2 preparation is newly added in this phase. Worker runtime bindings and accesses remain unchanged until a later release phase.
 
 ### Target Workflow
 
@@ -713,7 +713,7 @@ The workflow should explicitly set minimum GitHub token permissions. For a simpl
 
 Cloudflare API token permissions must be documented as two tiers:
 
-- Initial provisioning token: can create/manage KV, R2, Queues, Workers, and required bindings.
+- Initial provisioning token: can create/manage D1, KV, R2, Queues, Workers, and required bindings.
 - Routine deploy token: can deploy Workers and read/use existing resources.
 
 Routine deploys should not require broad resource creation permissions.

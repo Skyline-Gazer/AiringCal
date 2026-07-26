@@ -11,7 +11,7 @@ function requiredEnv(name, env) {
   return value
 }
 
-async function apiRequest(fetchImpl, token, path) {
+async function apiResponse(fetchImpl, token, path) {
   const response = await fetchImpl(`https://api.cloudflare.com/client/v4${path}`, {
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     signal: AbortSignal.timeout(API_TIMEOUT_MS),
@@ -22,7 +22,7 @@ async function apiRequest(fetchImpl, token, path) {
     const message = errors.map((error) => `${error.code ?? 'unknown'} ${error.message ?? ''}`.trim()).join('; ')
     throw new Error(message || `Cloudflare API request failed: ${response.status}`)
   }
-  return body.result
+  return body
 }
 
 function items(result, property) {
@@ -30,6 +30,43 @@ function items(result, property) {
   if (Array.isArray(result?.[property])) return result[property]
   if (Array.isArray(result?.result)) return result.result
   return []
+}
+
+function totalPages(resultInfo) {
+  if (Number.isFinite(resultInfo?.total_pages)) return resultInfo.total_pages
+  if (Number.isFinite(resultInfo?.total_count) && Number.isFinite(resultInfo?.per_page) && resultInfo.per_page > 0) {
+    return Math.ceil(resultInfo.total_count / resultInfo.per_page)
+  }
+  return undefined
+}
+
+async function listAll(context, path, { property, query, pagination = 'page' } = {}) {
+  const { fetchImpl, token } = context
+  const collected = []
+  let page = 1
+  let cursor
+
+  while (true) {
+    const pageQuery = new URLSearchParams(query)
+    if (pagination === 'cursor' && cursor) pageQuery.set('cursor', cursor)
+    if (pagination === 'page' && page > 1) pageQuery.set('page', String(page))
+    const response = await apiResponse(fetchImpl, token, `${path}${pageQuery.size > 0 ? `?${pageQuery}` : ''}`)
+    collected.push(...items(response.result, property))
+
+    if (pagination === 'cursor') {
+      const nextCursor = response.result_info?.cursor
+      if (typeof nextCursor !== 'string' || nextCursor.length === 0 || nextCursor === cursor) break
+      cursor = nextCursor
+      continue
+    }
+
+    const currentPage = Number.isFinite(response.result_info?.page) ? response.result_info.page : page
+    const lastPage = totalPages(response.result_info)
+    if (!Number.isFinite(lastPage) || currentPage >= lastPage) break
+    page = currentPage + 1
+  }
+
+  return collected
 }
 
 function missingResource(name) {
@@ -41,25 +78,34 @@ export async function resolveCloudflareResources({ env = process.env, fetchImpl 
   const accountId = requiredEnv('CLOUDFLARE_ACCOUNT_ID', env)
   if (!fetchImpl) throw new Error('fetch is required')
 
-  const query = new URLSearchParams({ per_page: '1000', order: 'title', direction: 'asc' })
+  const context = { fetchImpl, token }
   const [databases, namespaces, r2Result, queues] = await Promise.all([
-    apiRequest(fetchImpl, token, `/accounts/${accountId}/d1/database`),
-    apiRequest(fetchImpl, token, `/accounts/${accountId}/storage/kv/namespaces?${query}`),
-    apiRequest(fetchImpl, token, `/accounts/${accountId}/r2/buckets`),
-    apiRequest(fetchImpl, token, `/accounts/${accountId}/queues`),
+    listAll(context, `/accounts/${accountId}/d1/database`, {
+      property: 'databases',
+      query: new URLSearchParams({ per_page: '10000' }),
+    }),
+    listAll(context, `/accounts/${accountId}/storage/kv/namespaces`, {
+      property: 'namespaces',
+      query: new URLSearchParams({ per_page: '1000', order: 'title', direction: 'asc' }),
+    }),
+    listAll(context, `/accounts/${accountId}/r2/buckets`, {
+      property: 'buckets',
+      query: new URLSearchParams({ per_page: '1000' }),
+      pagination: 'cursor',
+    }),
+    listAll(context, `/accounts/${accountId}/queues`, { property: 'queues' }),
   ])
 
-  const database = items(databases, 'databases').find((item) => item?.name === CLOUDFLARE_RESOURCES.d1DatabaseName)
+  const database = databases.find((item) => item?.name === CLOUDFLARE_RESOURCES.d1DatabaseName)
   if (!database?.uuid) throw missingResource(`D1 database ${CLOUDFLARE_RESOURCES.d1DatabaseName}`)
-  const namespace = items(namespaces, 'namespaces').find((item) => item?.title === CLOUDFLARE_RESOURCES.kvNamespaceTitle)
+  const namespace = namespaces.find((item) => item?.title === CLOUDFLARE_RESOURCES.kvNamespaceTitle)
   if (!namespace?.id) throw missingResource(`KV namespace ${CLOUDFLARE_RESOURCES.kvNamespaceTitle}`)
-  const buckets = items(r2Result, 'buckets')
-  const dataBucket = buckets.find((item) => item?.name === CLOUDFLARE_RESOURCES.dataBucketName)
+  const dataBucket = r2Result.find((item) => item?.name === CLOUDFLARE_RESOURCES.dataBucketName)
   if (!dataBucket) throw missingResource(`data R2 bucket ${CLOUDFLARE_RESOURCES.dataBucketName}`)
-  const imageBucket = buckets.find((item) => item?.name === CLOUDFLARE_RESOURCES.imageBucketName)
+  const imageBucket = r2Result.find((item) => item?.name === CLOUDFLARE_RESOURCES.imageBucketName)
   if (!imageBucket) throw missingResource(`image R2 bucket ${CLOUDFLARE_RESOURCES.imageBucketName}`)
   for (const queueName of CLOUDFLARE_RESOURCES.queueNames) {
-    if (!items(queues, 'queues').some((item) => item?.queue_name === queueName || item?.name === queueName)) {
+    if (!queues.some((item) => item?.queue_name === queueName || item?.name === queueName)) {
       throw missingResource(`Queue ${queueName}`)
     }
   }

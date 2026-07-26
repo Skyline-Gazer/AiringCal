@@ -156,7 +156,7 @@ KV 比较特殊：`wrangler.toml` 里的 `kv_namespaces.id` 不是 namespace tit
 id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 ```
 
-常规 deploy 只读解析实际 KV namespace ID，同时验证 D1、两个 R2 bucket、KV 与 Queue；资源不存在时会明确失败并提示先运行 bootstrap，不会在发布途中创建资源。当前兼容阶段只创建并验证 D1/data R2，checked-in Worker config 尚未添加 D1 或 data R2 runtime binding，也不会访问这些资源。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
+常规 deploy 只读解析实际 KV namespace ID，同时验证 D1、两个 R2 bucket、KV 与 Queue；资源不存在时会明确失败并提示先运行 bootstrap，不会在发布途中创建资源。当前兼容阶段的 bootstrap 仍会准备或复用全部五类资源（D1、data R2、image R2、KV 与 Queue），resolver 也会验证全部五类；本阶段新增的资源准备仅为 D1 和 data R2，checked-in Worker config 尚未添加 D1 或 data R2 runtime binding，也不会访问这些资源。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
 
 `SNAPSHOT_COORDINATOR` 与 `SUBJECT_REFRESH_COORDINATOR` 是 SQLite-backed Durable Object binding，migration tag 分别为 `snapshot-coordinator-v1` 与 `subject-refresh-coordinator-v1`。migration 只新增 class，不在自动部署或回退中删除。live Workflow 通过前者分配/提交 generation；Media Queue 按 subject ID 路由到后者，并在覆盖 bgm.tv、KV 与 R2 await 的串行互斥区内完成 generation gate、detail/meta/image/R2 副作用、失败状态与完成标记。最高已接受 generation 在任何副作用前持久化，即使新任务失败，迟到旧任务也只能返回 obsolete。V2/legacy 消息按 generation 0 兼容，不能覆盖已经接受的更高 V3 generation。
 
@@ -192,6 +192,7 @@ Cloudflare Dashboard -> My Profile -> API Tokens -> Create custom token。
 | 范围 | 权限组 | 级别 | 用途 |
 |------|--------|------|------|
 | Account | `Workers Scripts` | `Edit` | 部署 4 个 Worker script、Workflow binding 与 Worker Cron trigger |
+| Account | `D1` | `Edit` | 手动 bootstrap 创建或复用 D1 database；当前 workflow 共用同一个 token |
 | Account | `Workers KV Storage` | `Edit` | 部署 KV binding |
 | Account | `Workers R2 Storage` | `Edit` | 部署 R2 binding |
 | Account | `Queues` | `Edit` | 部署 Queue binding |
