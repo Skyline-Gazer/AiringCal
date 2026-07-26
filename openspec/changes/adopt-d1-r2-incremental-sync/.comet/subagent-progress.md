@@ -25,8 +25,11 @@
 - Fix GREEN evidence: 17/17 compatibility tests; full test/typecheck/build; OpenSpec strict; diff check.
 - Review result: spec compliance APPROVED; code quality APPROVED.
 - Resolved findings: D1/KV/Queue page iteration, R2 cursor iteration, already-exists complete re-list, D1 Edit permission documentation, compatibility-stage wording.
-- Checkoff: OpenSpec 1.1–1.2 complete; plan Task 1 and OpenSpec 1.3 remain pending until production bootstrap evidence exists.
+- Checkoff: OpenSpec 1.1–1.3 and plan Task 1 complete; the production bootstrap barrier passed before Task 2 began.
 - Resolver gate TDD RED: worker-common workflow test failed 11/12 because bootstrap did not run the read-only resolver after provision.
 - Resolver gate TDD GREEN: bootstrap now runs provision → read-only resolver → safe report using resolver-confirmed D1/KV outputs; focused worker-common 12/12, resource scripts 17/17, full test/typecheck/build, OpenSpec strict and diff check passed.
-- Resolver gate scope audit: no runtime D1/data R2 binding or Task 2 code was added; OpenSpec 1.3 remains unchecked until the updated workflow succeeds against production resources.
-- Production bootstrap evidence: pending
+- Resolver gate scope audit: no runtime D1/data R2 binding or Task 2 code was added.
+- Resolver gate commit: `791acb95cc0777df8f1dd8fdbe6b662182120bcb`; independent spec and quality review both APPROVED with no findings.
+- Production bootstrap evidence: GitHub Actions run `30208798689` (`https://github.com/markd3ng/AiringCal/actions/runs/30208798689`) succeeded at `791acb95cc0777df8f1dd8fdbe6b662182120bcb`.
+- Production resources: D1 `airing-cal-state` (`7b56ac09-369a-4912-a2a3-8a09ede05cf1`), data R2 `airing-cal-data`, image R2 `airing-cal-images`, KV namespace `e0c01d4da9c64b59badb2005dd644562`, Queue `airing-cal-media`.
+- Production resolver result: provision replay succeeded, then the read-only resolver verified all five resource classes and returned the same canonical D1/KV IDs; workflow logs masked credentials and exposed no request headers.

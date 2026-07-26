@@ -166,7 +166,7 @@ git diff --check
 
 Expected: all PASS; existing Wrangler files contain no D1/data R2 binding yet.
 
-- [ ] **Step 6: Review, mark OpenSpec 1.1–1.2 complete, commit and push the compatibility SHA**
+- [x] **Step 6: Review, mark OpenSpec 1.1–1.2 complete, commit and push the compatibility SHA**
 
 ```bash
 git add scripts .github/workflows/bootstrap-cloudflare.yml README.md docs/superpowers/specs/2026-06-29-monorepo-multi-worker-design.md openspec/changes/adopt-d1-r2-incremental-sync
@@ -176,13 +176,13 @@ git push -u origin feature/20260722/adopt-d1-r2-incremental-sync
 
 Expected: independent spec and quality reviews approve; pushed SHA contains no binding-dependent runtime.
 
-- [ ] **Step 7: Mandatory production bootstrap checkpoint**
+- [x] **Step 7: Mandatory production bootstrap checkpoint**
 
 Dispatch the manual `Bootstrap Cloudflare Resources` workflow at the accepted SHA, wait for success, and verify its logs expose a canonical `d1_database_id` without secrets. Then run the read-only resolver with production credentials.
 
 Expected: D1 `airing-cal-state`, R2 `airing-cal-data`, R2 `airing-cal-images`, KV and Queue all resolve. **Do not begin Task 2 until this checkpoint passes.**
 
-- [ ] **Step 8: Record the production resource evidence, mark OpenSpec 1.3 complete, commit and push**
+- [x] **Step 8: Record the production resource evidence, mark OpenSpec 1.3 complete, commit and push**
 
 Record the workflow URL, run ID, canonical D1 ID, resource names and read-only resolver result in `.comet/subagent-progress.md`. Do not record credentials or API response headers.
 
