@@ -229,23 +229,23 @@ Mark task 2.3 complete, run `git diff --check`, commit only storage/media tests,
 - Consumes: Workflow result/run state and existing scheduled trigger.
 - Produces: aggregate run fields/logs for total/priority candidates, planner selected, logical granted, budget deferred, confirmed/uncertain outcome, and skipped subjects; checked-in daily Cron configuration and matching operational documentation.
 
-- [ ] **Step 1: Verify Cron configuration before editing**
+- [x] **Step 1: Verify Cron configuration before editing**
 
 Run `pnpm exec wrangler deploy --help`, inspect installed Wrangler config types/source for `[triggers].crons`, and confirm Cloudflare Cron uses UTC. Record the verified daily expression corresponding to 04:00 Asia/Shanghai; do not infer an unverified config key.
 
-- [ ] **Step 2: Write RED tests for schedule and aggregate counters**
+- [x] **Step 2: Write RED tests for schedule and aggregate counters**
 
 Change `deploy-config.test.ts` to require the verified daily expression and forbid `0 */4 * * *`. Add Workflow assertions for candidates by priority, planner selected, logical granted, budget deferred, confirmed/uncertain outcome, and skipped-subject counters on unchanged, soft/hard-limited, partially consumed, exhausted, shadow, uncertain, and post-reservation-error runs. Run the focused tests and confirm failure against current config/result shape.
 
-- [ ] **Step 3: Implement daily schedule and aggregate observability**
+- [x] **Step 3: Implement daily schedule and aggregate observability**
 
 Update only the verified Wrangler Cron value. Extend `SyncRun`/Workflow output with aggregate counters without adding per-subject metric keys; update counter state only at existing bounded run-write points.
 
-- [ ] **Step 4: Update synchronized documentation and constraints**
+- [x] **Step 4: Update synchronized documentation and constraints**
 
 Use `rg` to find every four-hour schedule and unconditional-refresh statement. Update README, architecture, deployment/runbook, resource/environment tables, and health/metric descriptions to document daily 04:00 Asia/Shanghai, UTC budget sharing, soft 50/hard 100, seven-day cold shard, shadow zero-enqueue, and unchanged zero-write behavior. Do not document D1/R2 runtime behavior in this stopgap change.
 
-- [ ] **Step 5: Run focused and full verification**
+- [x] **Step 5: Run focused and full verification**
 
 Run:
 
@@ -263,7 +263,7 @@ git diff --check
 
 Expected: every command exits 0. If a test/build behaves unexpectedly, stop and apply the systematic-debugging skill before changing production code.
 
-- [ ] **Step 6: Commit and push schedule/docs/verification atomically**
+- [x] **Step 6: Commit and push schedule/docs/verification atomically**
 
 Mark tasks 3.1–3.3 and 4.1 complete. Commit the verified schedule, counters, tests, documentation, and task state as `fix: run bounded sync daily`, then push.
 
