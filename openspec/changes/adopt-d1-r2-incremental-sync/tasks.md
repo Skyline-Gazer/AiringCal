@@ -1,7 +1,7 @@
 ## 1. Resource Bootstrap
 
-- [ ] 1.1 Verify Wrangler D1/R2 CLI and config contracts from help, types and official docs
-- [ ] 1.2 Extend manual bootstrap and resource resolve to create/reuse `airing-cal-state` and `airing-cal-data` without changing runtime bindings
+- [x] 1.1 Verify Wrangler D1/R2 CLI and config contracts from help, types and official docs
+- [x] 1.2 Extend manual bootstrap and resource resolve to create/reuse `airing-cal-state` and `airing-cal-data` without changing runtime bindings
 - [ ] 1.3 Add D1 ID materialization, tests and documentation, commit/push, then run bootstrap before binding-dependent deployment
 
 ## 2. D1 State Model
