@@ -18,3 +18,5 @@ branch_status: pending
 created_at: 2026-07-22
 verified_at: null
 archived: false
+handoff_context: openspec/changes/adopt-d1-r2-incremental-sync/.comet/handoff/design-context.json
+handoff_hash: 722984f75288c7f96ea7128784af8c0f46c64ecad1d4d54a328a568c741e291f

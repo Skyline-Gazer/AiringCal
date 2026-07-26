@@ -1,0 +1,19 @@
+{
+  "change": "adopt-d1-r2-incremental-sync",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "722984f75288c7f96ea7128784af8c0f46c64ecad1d4d54a328a568c741e291f",
+  "files": [
+    { "path": "openspec/changes/adopt-d1-r2-incremental-sync/proposal.md", "sha256": "8f8aaa349029b95ae6faa710be3b6b2eb826162b487fbab869ddeb572ebe81ad" },
+    { "path": "openspec/changes/adopt-d1-r2-incremental-sync/design.md", "sha256": "ebe35c83815c333be2cb0cdd1a373c80d00670417f4cbe82e8a5fb1b9254c002" },
+    { "path": "openspec/changes/adopt-d1-r2-incremental-sync/tasks.md", "sha256": "a864c0847d27938d25c5c5da51ad68eefe7279c9705619c46c74b3c3af467b85" },
+    { "path": "openspec/changes/adopt-d1-r2-incremental-sync/specs/cache-refresh-lifecycle/spec.md", "sha256": "05065c51cf1537130c0dc0734d7e5b6d69a01fd1d7c483bc8320e20c64115074" },
+    { "path": "openspec/changes/adopt-d1-r2-incremental-sync/specs/cloudflare-state-resources/spec.md", "sha256": "98caaba0b97d1840cd78f05a1a49b11432b675a98426ea5612b4fb763e944874" },
+    { "path": "openspec/changes/adopt-d1-r2-incremental-sync/specs/durable-sync-workflow/spec.md", "sha256": "4d1d32fabe8451be9cadf2c90b37d899bfbf9a464ea669405f732667f3909ad9" },
+    { "path": "openspec/changes/adopt-d1-r2-incremental-sync/specs/immutable-public-snapshot/spec.md", "sha256": "53d1637cc98c34d3406f0660c280855903206f455b789e9b744d474e9fceb59e" },
+    { "path": "openspec/changes/adopt-d1-r2-incremental-sync/specs/incremental-state-store/spec.md", "sha256": "fedd4df29f842fe7152b47db6842c00a1c94d58b166147aaa15dd427552cf6cd" },
+    { "path": "openspec/changes/adopt-d1-r2-incremental-sync/specs/project-quality-gates/spec.md", "sha256": "e9c47a8e4b79c0a4651b69e57614e4b95e6c1bac54d8e094ff50f3d8b8d02ef2" }
+  ]
+}
