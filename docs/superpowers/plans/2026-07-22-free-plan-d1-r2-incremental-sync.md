@@ -16,7 +16,7 @@ base-ref: 913362307b04f2eec7152084344eb3a8027274ad
 
 ## Global Constraints
 
-- 基线必须保持为 `913362307b04f2eec7152084344eb3a8027274ad`；在隔离 worktree 中从该 SHA 创建 `feature/20260722/adopt-d1-r2-incremental-sync`。
+- 验证与完整变更统计的 `base-ref` 必须保持为 `913362307b04f2eec7152084344eb3a8027274ad`；隔离 worktree 的 `feature/20260722/adopt-d1-r2-incremental-sync` 从已包含本计划与 Comet build 决策的当前 `dev` 创建，实施代码开始前记录该分支起点。
 - 修改任何 CLI flag、Wrangler config key 或 Cloudflare API call 前，必须用当前安装版 `wrangler --help`、`node_modules/wrangler/config-schema.json` 或源码验证；bgm.tv API 交互必须先核对 `docs/example/api/bgm-api.json`。
 - 强制两阶段发布：Task 1 的 bootstrap/resolve 兼容提交必须先通过评审、commit、push，并在生产成功创建/复用资源；Task 2 及以后才允许加入 migration、binding 或读取 `env.AIRING_CAL_D1`/`env.AIRING_CAL_DATA_R2` 的 runtime。
 - 资源名称固定：D1 `airing-cal-state`、data R2 `airing-cal-data`、image R2 `airing-cal-images`、KV `airing-cal-kv`、Queue `airing-cal-media`。
