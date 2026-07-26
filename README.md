@@ -124,8 +124,10 @@ Worker Cron 来自 checked-in `wrangler.toml`；routine deploy 只同步代码�
 
 | 类型 | 名称 |
 |------|------|
+| D1 database | `airing-cal-state` |
+| R2 data bucket | `airing-cal-data` |
 | KV namespace title | `airing-cal-kv` |
-| R2 bucket | `airing-cal-images` |
+| R2 image bucket | `airing-cal-images` |
 | Queue | `airing-cal-media` |
 | Service binding | `READ_WORKER -> airing-cal-read` |
 | Service binding | `SYNC_WORKER -> airing-cal-sync` |
@@ -142,6 +144,8 @@ Worker Cron 来自 checked-in `wrangler.toml`；routine deploy 只同步代码�
 Cloudflare 资源创建已经与常规部署分离。首次部署或资源缺失时，在 GitHub Actions 中手动运行 `Bootstrap Cloudflare Resources`（手动 bootstrap workflow）：
 
 - 创建或复用 KV namespace `airing-cal-kv`，并把实际 namespace ID 注入后续 Worker deploy config。
+- 创建或复用 D1 database `airing-cal-state`，并记录其 Cloudflare UUID。
+- 创建或复用 R2 data bucket `airing-cal-data`。
 - 创建或复用 R2 bucket `airing-cal-images`。
 - 创建或复用 Queue `airing-cal-media`。
 - 后续 Wrangler deploy 会按 checked-in 配置确认 `airing-cal-frontend` 的 service bindings 指向 `airing-cal-read` 和 `airing-cal-sync`。
@@ -152,7 +156,7 @@ KV 比较特殊：`wrangler.toml` 里的 `kv_namespaces.id` 不是 namespace tit
 id = "<AIRING_CAL_KV_NAMESPACE_ID>"
 ```
 
-常规 deploy 只读解析实际 KV namespace ID，注入临时 deploy config，再交给 Wrangler dry-run/deploy；资源不存在时会明确失败并提示先运行 bootstrap，不会在发布途中创建资源。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
+常规 deploy 只读解析实际 KV namespace ID，同时验证 D1、两个 R2 bucket、KV 与 Queue；资源不存在时会明确失败并提示先运行 bootstrap，不会在发布途中创建资源。当前兼容阶段只创建并验证 D1/data R2，checked-in Worker config 尚未添加 D1 或 data R2 runtime binding，也不会访问这些资源。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
 
 `SNAPSHOT_COORDINATOR` 与 `SUBJECT_REFRESH_COORDINATOR` 是 SQLite-backed Durable Object binding，migration tag 分别为 `snapshot-coordinator-v1` 与 `subject-refresh-coordinator-v1`。migration 只新增 class，不在自动部署或回退中删除。live Workflow 通过前者分配/提交 generation；Media Queue 按 subject ID 路由到后者，并在覆盖 bgm.tv、KV 与 R2 await 的串行互斥区内完成 generation gate、detail/meta/image/R2 副作用、失败状态与完成标记。最高已接受 generation 在任何副作用前持久化，即使新任务失败，迟到旧任务也只能返回 obsolete。V2/legacy 消息按 generation 0 兼容，不能覆盖已经接受的更高 V3 generation。
 

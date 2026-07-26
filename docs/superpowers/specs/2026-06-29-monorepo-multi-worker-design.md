@@ -655,16 +655,18 @@ The current workflow performs too many deployment-time infrastructure mutations:
 Cloudflare resources are provisioned once outside normal deploy runs:
 
 ```text
+D1 database: airing-cal-state
+R2 data bucket: airing-cal-data
 KV namespace title: airing-cal-kv
 KV namespace id: copied into each Worker config as kv_namespaces.id
-R2 bucket: airing-cal-images
+R2 image bucket: airing-cal-images
 Queue: airing-cal-media
 Service bindings
 Worker secrets
 Cron schedule in sync-worker config
 ```
 
-After initial provisioning, GitHub Actions deploys against stable resource identifiers checked into environment-specific Wrangler configs or injected through safe environment-specific config templates that are not rewritten by shell scripts during deployment.
+After initial provisioning, GitHub Actions resolves D1, both R2 buckets, KV and Queue before upload. During the compatibility phase it creates and verifies D1/data R2 only; Worker runtime bindings and accesses remain unchanged until a later release phase.
 
 ### Target Workflow
 

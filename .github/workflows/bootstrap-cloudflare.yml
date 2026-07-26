@@ -16,5 +16,8 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Create or reuse Cloudflare resources
+      - id: provision
+        name: Create or reuse Cloudflare resources
         run: node scripts/provision-cloudflare-resources.mjs
+      - name: Report provisioned D1 database id
+        run: echo "d1_database_id=${{ steps.provision.outputs.d1_database_id }}"

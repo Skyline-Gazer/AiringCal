@@ -58,6 +58,37 @@ test('materialize-wrangler-config rejects missing or invalid KV namespace ids', 
   )
 })
 
+test('materialize-wrangler-config replaces and validates a checked-in D1 placeholder', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airing-cal-wrangler-config-'))
+  const source = join(dir, 'wrangler.toml')
+  const target = join(dir, 'deploy', 'wrangler.toml')
+  const namespaceId = '0123456789abcdef0123456789abcdef'
+  const d1DatabaseId = '11111111-1111-4111-8111-111111111111'
+
+  writeFileSync(source, 'kv = "<AIRING_CAL_KV_NAMESPACE_ID>"\nd1 = "<AIRING_CAL_D1_DATABASE_ID>"\n')
+
+  assert.throws(
+    () => execFileSync(process.execPath, [script, source, target], {
+      env: { ...process.env, AIRING_CAL_KV_NAMESPACE_ID: namespaceId },
+      stdio: 'pipe',
+    }),
+    /Command failed/,
+  )
+  assert.throws(
+    () => execFileSync(process.execPath, [script, source, target], {
+      env: { ...process.env, AIRING_CAL_KV_NAMESPACE_ID: namespaceId, AIRING_CAL_D1_DATABASE_ID: 'not-a-uuid' },
+      stdio: 'pipe',
+    }),
+    /Command failed/,
+  )
+
+  execFileSync(process.execPath, [script, source, target], {
+    env: { ...process.env, AIRING_CAL_KV_NAMESPACE_ID: namespaceId, AIRING_CAL_D1_DATABASE_ID: d1DatabaseId },
+  })
+
+  assert.equal(readFileSync(target, 'utf8'), `kv = "${namespaceId}"\nd1 = "${d1DatabaseId}"\n`)
+})
+
 test('materialize-wrangler-config injects build vars when provided without requiring KV placeholder', () => {
   const dir = mkdtempSync(join(tmpdir(), 'airing-cal-wrangler-config-'))
   const source = join(dir, 'apps', 'frontend-worker', 'wrangler.toml')
