@@ -1,5 +1,5 @@
 workflow: full
-phase: design
+phase: build
 context_compression: off
 build_mode: null
 build_pause: null
@@ -10,7 +10,7 @@ isolation: null
 verify_mode: null
 auto_transition: true
 base_ref: 974323a6bc89a3514b4c814664548ff1ac8d9440
-design_doc: null
+design_doc: docs/superpowers/specs/2026-07-22-free-plan-d1-r2-incremental-sync-design.md
 plan: null
 verify_result: pending
 verification_report: null
