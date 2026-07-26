@@ -211,8 +211,15 @@ Mark task 2.3 complete, run `git diff --check`, commit only storage/media tests,
 
 **Files:**
 - Modify: `apps/sync-worker/src/scheduled-trigger.test.ts`
+- Modify: `apps/sync-worker/src/index.ts`
+- Modify: `apps/sync-worker/src/sync-worker.test.ts`
 - Modify: `apps/sync-worker/src/workflow.test.ts`
+- Modify: `apps/sync-worker/src/workflow-core.ts`
 - Modify: `apps/sync-worker/wrangler.toml`
+- Modify: `apps/read-worker/src/index.ts`
+- Modify: `apps/read-worker/src/index.test.ts`
+- Modify: `packages/storage/src/index.ts`
+- Modify: `packages/storage/src/index.test.ts`
 - Modify: `packages/worker-common/src/deploy-config.test.ts`
 - Modify: `README.md`
 - Modify: relevant architecture/deployment documents found by `rg -n "0 \*/4|每四小时|four.hours|refresh_jobs" README.md docs .github apps packages`
@@ -220,7 +227,7 @@ Mark task 2.3 complete, run `git diff --check`, commit only storage/media tests,
 
 **Interfaces:**
 - Consumes: Workflow result/run state and existing scheduled trigger.
-- Produces: aggregate run fields/logs for `refresh_candidates`, `refresh_selected`, `refresh_deferred`, and `avoided_writes`; checked-in daily Cron configuration and matching operational documentation.
+- Produces: aggregate run fields/logs for total/priority candidates, planner selected, logical granted, budget deferred, confirmed/uncertain outcome, and skipped subjects; checked-in daily Cron configuration and matching operational documentation.
 
 - [ ] **Step 1: Verify Cron configuration before editing**
 
@@ -228,7 +235,7 @@ Run `pnpm exec wrangler deploy --help`, inspect installed Wrangler config types/
 
 - [ ] **Step 2: Write RED tests for schedule and aggregate counters**
 
-Change `deploy-config.test.ts` to require the verified daily expression and forbid `0 */4 * * *`. Add Workflow assertions for candidates/selected/deferred/avoided-write counters on unchanged, soft-limited, and hard-limited runs. Run the focused tests and confirm failure against current config/result shape.
+Change `deploy-config.test.ts` to require the verified daily expression and forbid `0 */4 * * *`. Add Workflow assertions for candidates by priority, planner selected, logical granted, budget deferred, confirmed/uncertain outcome, and skipped-subject counters on unchanged, soft/hard-limited, partially consumed, exhausted, shadow, uncertain, and post-reservation-error runs. Run the focused tests and confirm failure against current config/result shape.
 
 - [ ] **Step 3: Implement daily schedule and aggregate observability**
 
@@ -259,6 +266,16 @@ Expected: every command exits 0. If a test/build behaves unexpectedly, stop and 
 - [ ] **Step 6: Commit and push schedule/docs/verification atomically**
 
 Mark tasks 3.1–3.3 and 4.1 complete. Commit the verified schedule, counters, tests, documentation, and task state as `fix: run bounded sync daily`, then push.
+
+### Task 5: Production deployment evidence
+
+**Files:**
+- Modify: `openspec/changes/stop-kv-write-amplification/tasks.md`
+- Create or modify: the verification report selected by the Comet verify phase
+
+**Interfaces:**
+- Consumes: exact pushed and reviewed feature SHA, repository deployment workflow, production health/API endpoints, Cloudflare Workflow and KV metrics.
+- Produces: immutable deployment evidence and the 24-hour acceptance result required to close OpenSpec task 4.2.
 
 - [ ] **Step 7: Prepare production deployment evidence**
 

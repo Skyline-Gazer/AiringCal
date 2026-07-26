@@ -537,8 +537,8 @@ async function fetch(request: Request, env: SyncEnv): Promise<Response> {
 }
 
 function shouldRunSync(scheduledTime: number): boolean {
-  const hour = new Date(scheduledTime).getUTCHours()
-  return hour === 20
+  const scheduledAt = new Date(scheduledTime)
+  return scheduledAt.getUTCHours() === 20 && scheduledAt.getUTCMinutes() === 0
 }
 
 async function recordCronStatus(env: SyncEnv, statusKey: 'last' | 'last_skip', status: Record<string, unknown>): Promise<void> {

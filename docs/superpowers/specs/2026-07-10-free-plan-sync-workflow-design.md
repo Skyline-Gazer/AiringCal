@@ -25,13 +25,13 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 5. `plan-refresh-{chunk}` 每 10 个 subject 有界读取 refresh/detail/meta/image KV，只为缺失、变化、到期或应重试组件生成确定性候选 V3 job。
 6. live 候选按 new/changed、hot due、7 日 cold shard、retry 排序；scheduled/manual live 通过 `SnapshotCoordinator` 共享 UTC 自然日 soft limit 50 / hard limit 100。shadow 不预留预算且不投递 Media Queue。
 7. coordinator 以稳定 reservation 先占逻辑预算并最多调用一次 Queue producer；确认歧义时 fail-closed 保留预算、不重发。随后 `SnapshotCoordinator.commit()` 原子接受最新 generation 的完整 manifest；媒体预算耗尽或投递结果 uncertain 均不阻塞 snapshot 发布，较旧 Workflow 返回 `obsolete`。
-8. `finalize` 更新 summary、`sync:meta` 与最终 `SyncRun`。
+8. `finalize` 更新 summary、`sync:meta` 与最终 `SyncRun`；若 commit/finalize 失败，`record-error` 保留此前已到达的最新聚合计数。
 
 所有外部 fetch、KV 和 Queue 副作用都位于 `step.do()`。step 名不使用时间或随机值，返回值只包含 staging key、count 和校验摘要。401/403 抛 `NonRetryableError`；429、5xx、timeout 和 network error按 45 秒 timeout、最多 3 次指数退避处理。
 
 ## 数据模型与兼容
 
-- `sync:run:{instanceId}`：3 天 TTL，保存 Workflow 应用状态。
+- `sync:run:{instanceId}`：3 天 TTL，保存 Workflow 应用状态，以及 total subjects、eligible candidates/by-priority、planner selected、logical granted、budget deferred、confirmed/uncertain producer outcome 与 skipped subjects。`refresh_jobs` 仅是 logical granted 的兼容 alias；Workflow 不把异步 consumer 的推算值命名为实际 KV writes。
 - `sync:staging:{instanceId}:*`：24 小时 TTL，保存 step 间大 payload。
 - `snapshot:shadow:{instanceId}:*`：shadow 审计数据，不影响正式读取。
 - `snapshot:active`：包含 instance、generation、恰好五类 collection + summary + calendar keys 与 digests 的完整 manifest；V3 manifest 存在时禁止逐 key legacy fallback。

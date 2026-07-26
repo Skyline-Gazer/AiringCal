@@ -128,9 +128,9 @@ GET /image/:contentHash?w=<宽度>&fmt=webp|avif|jpeg
 
 ### 内部端点
 
-```
-POST /__cron/sync   （由 Cloudflare Cron Triggers 触发，需 secret header 校验）
-```
+当前没有 HTTP Cron 端点。生产自动同步由 `airing-cal-sync` Worker 的
+`scheduled` handler 创建 live Workflow instance；手动运行、查询、重启和终止
+通过 Cloudflare Workflow 控制面完成，不暴露带 secret header 的同步路由。
 
 ## KV 存储
 
@@ -230,26 +230,21 @@ interface StorageAdapter {
 ### 执行流程
 
 ```
-Cron 触发 → Worker /__cron/sync（校验 secret header）
-  1. 遍历 BANGUMI_USERS 中的每个用户
-     GET /v0/users/{user}/collections?subject_type=2
-     分页获取，每页 50 条，请求间隔 200ms（控制 rate limit）
-  2. 对所有去重后的 subject_id
-     GET /v0/subjects/{subject_id} 获取条目详情 + 图片
-     对 images.large URL 下载并计算 content hash
-     触发图片缓存预热（fire-and-forget，不阻塞同步）
-  3. 按 SYNC_MODE 合并
-     merge：所有用户取并集，同一条目以最新 updated_at 为准
-     primary：以 BANGUMI_PRIMARY_USER 的数据为准（写回同步在管理页面手动触发）
-  4. 写入 KV：collections:merged, calendar
-  5. 更新元数据时间戳
+Worker Cron scheduled event → production.ts → 创建 live SyncWorkflow instance
+  1. Workflow 分页获取 BANGUMI_USERS 的 collections（每页 50 条）与 calendar，写入 instance staging KV
+  2. 生成五类 collection、calendar 与 summary 的 generation-scoped snapshot，提交前不改变 active pointer
+  3. 每 10 个 subject 有界读取 detail/meta/image/refresh 状态，只为缺失、源变化、到期或 retry 生成候选
+  4. 候选按 new/changed、hot due、7 日 cold shard、retry 排序；普通任务 soft limit 50，只有 new/changed 可到 hard limit 100
+  5. scheduled/manual live 共享 UTC 自然日预算；SnapshotCoordinator 先持久化逻辑 reservation，再最多尝试一次 Queue producer
+  6. budget exhausted 或 producer outcome uncertain 都不阻塞 snapshot commit；shadow 不预留预算、不投递 Queue
+  7. Media Worker 异步获取 subject detail 与图片，并对 detail/meta/image/refresh 做 compare-before-write
 ```
 
-### Stale-while-revalidate
+Workflow 不逐个同步请求 subject detail、下载图片或 fire-and-forget 预热；这些媒体副作用只由 Queue consumer 执行。未变化且缓存完整、未到期的 subject 不入队，也不产生逐 subject KV PUT。
 
-前端发起 `/api/collections` 请求时：
-- KV 数据未过期（距上次更新 < 5 分钟）→ 直接返回
-- KV 数据已过期 → 先返回旧数据，后台异步刷新
+### 公开读取
+
+前端发起 `/api/collections` 或 `/api/calendar` 请求时，Read Worker 跟随 `snapshot:active` 一次读取同一 generation 的完整 manifest；读请求不会触发后台业务同步。
 
 ## 多账户同步（管理页面）
 
@@ -312,7 +307,6 @@ URL：`https://<worker域名>/manage`。不在前端 widget 中暴露入口，�
 [vars]
 SYNC_MODE = "merge"            # merge | primary
 NSFW_SHOW = "true"
-SYNC_INTERVAL = "4h"
 
 # Secrets（不提交 git）
 BANGUMI_TOKEN                  # bgm.tv OAuth access token（cron 同步用）

@@ -162,24 +162,28 @@ test('media budget shares a UTC day across scheduled and manual reservations and
     consumed: 40,
     soft_limit: 50,
     hard_limit: 100,
+    submission: 'confirmed',
   })
   assert.deepEqual(await reserve('2026-07-22', 20, false), {
     granted: 10,
     consumed: 50,
     soft_limit: 50,
     hard_limit: 100,
+    submission: 'confirmed',
   })
   assert.deepEqual(await reserve('2026-07-22', 75, true), {
     granted: 50,
     consumed: 100,
     soft_limit: 50,
     hard_limit: 100,
+    submission: 'confirmed',
   })
   assert.deepEqual(await reserve('2026-07-22', 1, true), {
     granted: 0,
     consumed: 100,
     soft_limit: 50,
     hard_limit: 100,
+    submission: 'not_needed',
   })
   now = Date.parse('2026-07-23T00:01:00Z')
   assert.deepEqual(await reserve('2026-07-23', 8, false), {
@@ -187,6 +191,7 @@ test('media budget shares a UTC day across scheduled and manual reservations and
     consumed: 8,
     soft_limit: 50,
     hard_limit: 100,
+    submission: 'confirmed',
   })
 })
 
@@ -207,7 +212,7 @@ test('media budget replays one stable reservation without consuming or enqueuein
   const first = await (await reserveRequest(coordinator, body)).json()
   const replay = await (await reserveRequest(coordinator, body)).json()
 
-  assert.deepEqual(first, { granted: 40, consumed: 40, soft_limit: 50, hard_limit: 100 })
+  assert.deepEqual(first, { granted: 40, consumed: 40, soft_limit: 50, hard_limit: 100, submission: 'confirmed' })
   assert.deepEqual(replay, first)
   assert.equal(queue.messages.length, 40)
 })
@@ -230,8 +235,8 @@ test('media budget keeps an accepted queue batch consumed when its response is l
   const first = await (await reserveRequest(coordinator, body)).json()
   const retried = await (await reserveRequest(coordinator, body)).json()
 
-  assert.deepEqual(first, { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100 })
-  assert.deepEqual(retried, { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100 })
+  assert.deepEqual(first, { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100, submission: 'uncertain' })
+  assert.deepEqual(retried, { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100, submission: 'uncertain' })
   assert.equal(queue.messages.length, 1)
   assert.equal(queue.sendCalls, 1)
 })
@@ -255,7 +260,7 @@ test('media budget replays a durable marker without resending after confirmation
   await assert.rejects(() => reserveRequest(coordinator, body), /confirmation persistence interrupted/)
   const replay = await (await reserveRequest(coordinator, body)).json()
 
-  assert.deepEqual(replay, { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100 })
+  assert.deepEqual(replay, { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100, submission: 'uncertain' })
   assert.equal(queue.messages.length, 1)
   assert.equal(queue.sendCalls, 1)
 })
@@ -339,6 +344,7 @@ test('media budget grants a mixed reservation privileged headroom without lettin
     consumed: 60,
     soft_limit: 50,
     hard_limit: 100,
+    submission: 'confirmed',
   })
   assert.equal(queue.messages.length, 60)
 })

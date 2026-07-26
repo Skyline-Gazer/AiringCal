@@ -18,14 +18,16 @@ interface SnapshotCoordinatorEnv {
 }
 
 type CommitResult = { status: 'committed' | 'obsolete'; generation: number }
-type MediaBudgetResult = { granted: number; consumed: number; soft_limit: number; hard_limit: number }
+type MediaSubmission = 'confirmed' | 'uncertain' | 'not_needed'
+type MediaBudgetCounters = { granted: number; consumed: number; soft_limit: number; hard_limit: number }
+type MediaBudgetResult = MediaBudgetCounters & { submission: MediaSubmission }
 type MediaReservation = {
   date: string
   budget_date?: string
   requested: number
   privileged_requested: number
   job_ids: string[]
-  result: MediaBudgetResult
+  result: MediaBudgetCounters
   submission?: 'reserved' | 'confirmed' | 'uncertain' | 'not_needed'
 }
 
@@ -90,7 +92,12 @@ export class SnapshotCoordinatorCore {
         || existing.job_ids.length !== jobIds.length
         || existing.job_ids.some((jobId, index) => jobId !== jobIds[index])
       ) throw new Error(`Media reservation ${reservationId} payload mismatch`)
-      return existing.result
+      return {
+        ...existing.result,
+        submission: existing.submission === 'confirmed' || existing.submission === 'not_needed'
+          ? existing.submission
+          : 'uncertain',
+      }
     }
 
     const budgetDate = new Date(this.clock()).toISOString().slice(0, 10)
@@ -112,7 +119,7 @@ export class SnapshotCoordinatorCore {
         result,
         submission: 'not_needed',
       })
-      return result
+      return { ...result, submission: 'not_needed' }
     }
 
     const privileged = Math.min(requested, privilegedRequested)
@@ -140,20 +147,20 @@ export class SnapshotCoordinatorCore {
     const budgetWrite = this.storage.put(MEDIA_BUDGET_KEY, { date: budgetDate, consumed: nextConsumed })
     const reservationWrite = this.storage.put(reservationKey, reservation)
     await Promise.all([budgetWrite, reservationWrite])
-    if (granted === 0) return result
+    if (granted === 0) return { ...result, submission: 'not_needed' }
 
     if (!this.queue) {
       await this.storage.put(reservationKey, { ...reservation, submission: 'uncertain' })
-      return result
+      return { ...result, submission: 'uncertain' }
     }
     try {
       await this.queue.sendBatch(jobs.slice(0, granted).map((body) => ({ body, contentType: 'json' as const })))
     } catch {
       await this.storage.put(reservationKey, { ...reservation, submission: 'uncertain' })
-      return result
+      return { ...result, submission: 'uncertain' }
     }
     await this.storage.put(reservationKey, { ...reservation, submission: 'confirmed' })
-    return result
+    return { ...result, submission: 'confirmed' }
   }
 }
 

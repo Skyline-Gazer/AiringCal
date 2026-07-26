@@ -114,7 +114,7 @@ collections 使用 bgm.tv OpenAPI 允许的 `limit=50` 分页，并受 120 秒�
 
 `/api/health` 仍保留 `data.cron.last` 作为迁移兼容字段，`data.cron.next_at` 按每日 20:00 UTC 计算；最近 instance 优先来自 initialize 阶段写入的 `sync:current`，因此 running 或硬中断实例不必等待 finalize 才可见。最近 instance 来自 schedule 时，cron 字段由对应 Workflow run 的同一个 effective status 派生，不再返回旧 Queue 遗留状态或出现 `stale/running` 分裂。`data.collections.updated_at` 优先使用当前 active snapshot 的发布时间。新的权威应用状态仍是 `data.workflow`，Cloudflare 控制面状态是最终依据。
 
-`/api/health` 的 `data.workflow` 暴露最近 instance 的 `instance_id`、mode、source、stage、heartbeat、完成时间、计数和脱敏错误。聚合计数包括媒体候选 `refresh_candidates`、planner 选中 `refresh_selected`、留待后续 `refresh_deferred`、实际 Queue 任务 `refresh_jobs` 与未触发媒体写路径的 `avoided_writes`；这些字段只写入已有 run 记录，不创建逐 subject 指标 key。`queued`、`running` 或 `retrying` run 超过 20 分钟没有 heartbeat 时，应用侧返回 `status: "stale"` 与 `stale: true`；实际恢复、重启或终止仍以 Cloudflare Workflow instance 控制面状态为准。
+`/api/health` 的 `data.workflow` 暴露最近 instance 的 `instance_id`、mode、source、stage、heartbeat、完成时间、计数和脱敏错误。聚合计数包含 eligible candidates `refresh_candidates` 及 `refresh_candidates_by_priority`、planner 选中 `refresh_selected`、逻辑获批 `refresh_granted`、预算留待后续 `refresh_deferred`（等于 `refresh_candidates - refresh_granted`）、producer 已确认/不确定的 `refresh_confirmed` / `refresh_uncertain`，以及预留前跳过的 `refresh_skipped`（等于 `subject_count - refresh_candidates`）。`refresh_jobs` 是 `refresh_granted` 的兼容 alias，只表示逻辑预算获批，不表示 Queue 一定物理接收；异步 consumer 的真实 KV PUT 只能从 consumer 与 Cloudflare 指标观察，Workflow 不推算实际写入数。成功或失败 run 都保留已到达的最新聚合值；这些字段只写入已有 run 记录，不创建逐 subject 指标 key。`queued`、`running` 或 `retrying` run 超过 20 分钟没有 heartbeat 时，应用侧返回 `status: "stale"` 与 `stale: true`；实际恢复、重启或终止仍以 Cloudflare Workflow instance 控制面状态为准。
 
 Worker Cron 来自 checked-in `wrangler.toml`；routine deploy 只同步代码与配置，不主动触发 live instance。
 
@@ -308,7 +308,7 @@ KV key：
 | `snapshot:summary` | `airing-cal-sync` | 数量摘要 |
 | `sync:meta` | `airing-cal-sync` | 最近同步元信息 |
 | `sync:current` | `SyncWorkflow` | initialize 阶段写入的当前 live instance 与 generation 指针 |
-| `sync:run:{instanceId}` | `SyncWorkflow` | instance stage、heartbeat、`refresh_candidates` / `refresh_selected` / `refresh_deferred` / `refresh_jobs` / `avoided_writes` 聚合计数与错误，TTL 3 天 |
+| `sync:run:{instanceId}` | `SyncWorkflow` | instance stage、heartbeat、candidates/by-priority、selected、granted、budget-deferred、confirmed/uncertain、skipped 聚合计数与错误，TTL 3 天 |
 | `sync:staging:{instanceId}:*` | `SyncWorkflow` | step 间 payload，TTL 24 小时 |
 | `snapshot:shadow:{instanceId}:*` | `SyncWorkflow` | shadow 快照与审计数据，不参与正式读取 |
 | `snapshot:version:{instanceId}:*` | `SyncWorkflow` | live 的版本化 snapshot；全部写完后由 `snapshot:active` 原子切换，read-worker 优先读取该版本 |

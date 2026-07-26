@@ -12,7 +12,7 @@
 ## 3. Daily Scheduling and Observability
 
 - [ ] 3.1 Verify Wrangler Cron configuration syntax and change the production trigger to daily 04:00 Asia/Shanghai
-- [ ] 3.2 Add run counters for candidates, selected, deferred and avoided writes without adding per-subject KV state
+- [ ] 3.2 Add closed run counters for candidates by priority, planner selection, logical grants, budget-deferred, confirmed/uncertain and skipped subjects without per-subject metric state
 - [ ] 3.3 Update README, architecture and deployment assertions for daily sync, QoS and zero-write semantics
 
 ## 4. Verification and Release

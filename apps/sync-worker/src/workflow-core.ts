@@ -193,9 +193,18 @@ export async function runSyncWorkflow(
   subject_count: number
   refresh_jobs: number
   refresh_candidates: number
+  refresh_candidates_by_priority: {
+    new_or_changed: number
+    hot: number
+    cold: number
+    retry: number
+  }
   refresh_selected: number
+  refresh_granted: number
   refresh_deferred: number
-  avoided_writes: number
+  refresh_confirmed: number
+  refresh_uncertain: number
+  refresh_skipped: number
 }> {
   const scheduled = Boolean(event.schedule)
   const mode = scheduled ? 'live' : event.payload?.mode
@@ -219,9 +228,13 @@ export async function runSyncWorkflow(
     subject_count: 0,
     refresh_jobs: 0,
     refresh_candidates: 0,
+    refresh_candidates_by_priority: { new_or_changed: 0, hot: 0, cold: 0, retry: 0 },
     refresh_selected: 0,
+    refresh_granted: 0,
     refresh_deferred: 0,
-    avoided_writes: 0,
+    refresh_confirmed: 0,
+    refresh_uncertain: 0,
+    refresh_skipped: 0,
     error: null,
   }
 
@@ -349,10 +362,6 @@ export async function runSyncWorkflow(
     })
 
     const planOutputs: StepOutput[] = []
-    let refreshJobs = 0
-    let refreshCandidates = 0
-    let refreshSelected = 0
-    let refreshDeferred = 0
     for (let chunkIndex = 0; mode === 'live' && chunkIndex < (prepared.refreshChunks ?? 0); chunkIndex++) {
       const output = await step.do(`plan-refresh-${chunkIndex}`, STORAGE_STEP, async () => {
         const allInputs = await getJson<RefreshInput[]>(env.AIRING_CAL_KV, prepared.refreshInputKey ?? '') ?? []
@@ -394,9 +403,15 @@ export async function runSyncWorkflow(
         soft: 50,
         hard: 100,
       })
-      refreshCandidates = selection.candidates
-      refreshSelected = selection.selected.length
-      refreshDeferred = selection.deferred
+      run = {
+        ...run,
+        subject_count: prepared.count,
+        refresh_candidates: selection.candidates,
+        refresh_candidates_by_priority: selection.by_priority,
+        refresh_selected: selection.selected.length,
+        refresh_deferred: selection.candidates,
+        refresh_skipped: Math.max(0, prepared.count - selection.candidates),
+      }
       const jobs: MediaRefreshJobV3[] = selection.selected.map((candidate) => ({
         version: 3,
         generation: run.generation ?? 0,
@@ -406,10 +421,22 @@ export async function runSyncWorkflow(
         components: candidate.components,
         images: candidate.images,
       }))
-      let granted = 0
+      let reservation: {
+        granted: number
+        consumed: number
+        soft_limit: number
+        hard_limit: number
+        submission: 'confirmed' | 'uncertain' | 'not_needed'
+      } = {
+        granted: 0,
+        consumed: 0,
+        soft_limit: 50,
+        hard_limit: 100,
+        submission: 'not_needed',
+      }
       if (selection.selected.length > 0) {
-        const reservation = await step.do('reserve-media', STORAGE_STEP, async () => {
-          const result = await coordinatorRequest<{ granted: number; consumed: number; soft_limit: number; hard_limit: number }>(env, '/reserve-media', {
+        reservation = await step.do('reserve-media', STORAGE_STEP, async () => {
+          const result = await coordinatorRequest<typeof reservation>(env, '/reserve-media', {
             date: utcDay,
             reservation_id: `${event.instanceId}:media`,
             requested: selection.selected.length,
@@ -418,10 +445,17 @@ export async function runSyncWorkflow(
           })
           return result
         })
-        granted = reservation.granted
       }
-      run = { ...run, stage: 'enqueue', heartbeat_at: nowSeconds() }
-      refreshJobs = granted
+      run = {
+        ...run,
+        stage: 'enqueue',
+        heartbeat_at: nowSeconds(),
+        refresh_jobs: reservation.granted,
+        refresh_granted: reservation.granted,
+        refresh_deferred: Math.max(0, selection.candidates - reservation.granted),
+        refresh_confirmed: reservation.submission === 'confirmed' ? reservation.granted : 0,
+        refresh_uncertain: reservation.submission === 'uncertain' ? reservation.granted : 0,
+      }
 
       await step.do('commit-live-snapshot', STORAGE_STEP, async () => {
         const manifest: SnapshotManifest = {
@@ -447,11 +481,7 @@ export async function runSyncWorkflow(
         heartbeat_at: completedAt,
         completed_at: completedAt,
         subject_count: prepared.count,
-        refresh_jobs: refreshJobs,
-        refresh_candidates: refreshCandidates,
-        refresh_selected: refreshSelected,
-        refresh_deferred: refreshDeferred,
-        avoided_writes: Math.max(0, prepared.count - refreshJobs),
+        refresh_skipped: Math.max(0, prepared.count - run.refresh_candidates),
       }
       await writeRun(env, run)
       const currentMeta = await getJson<Record<string, unknown>>(env.AIRING_CAL_KV, syncMetaKey()) ?? {}
@@ -468,11 +498,15 @@ export async function runSyncWorkflow(
       instance_id: event.instanceId,
       status: 'ok',
       subject_count: prepared.count,
-      refresh_jobs: refreshJobs,
-      refresh_candidates: refreshCandidates,
-      refresh_selected: refreshSelected,
-      refresh_deferred: refreshDeferred,
-      avoided_writes: Math.max(0, prepared.count - refreshJobs),
+      refresh_jobs: run.refresh_jobs,
+      refresh_candidates: run.refresh_candidates,
+      refresh_candidates_by_priority: run.refresh_candidates_by_priority,
+      refresh_selected: run.refresh_selected,
+      refresh_granted: run.refresh_granted,
+      refresh_deferred: run.refresh_deferred,
+      refresh_confirmed: run.refresh_confirmed,
+      refresh_uncertain: run.refresh_uncertain,
+      refresh_skipped: run.refresh_skipped,
     }
   } catch (error) {
     await step.do('record-error', STORAGE_STEP, async () => {

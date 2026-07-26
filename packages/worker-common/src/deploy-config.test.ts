@@ -190,9 +190,10 @@ test('README documents the Free Plan Cron bridge without a native Workflow sched
   for (const fragment of ['Cloudflare Workflows Free Plan 不支持原生 Workflow schedule', 'Cron handler 只创建 Workflow instance', '0 20 * * *', '`sync:run:{instanceId}`', '`sync:staging:{instanceId}:*`', '`snapshot:shadow:{instanceId}:*`', 'workflows trigger airing-cal-sync', 'workflows instances describe', 'workflows instances restart', 'workflows instances terminate']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document shadow Workflow operations: ${fragment}`)
   }
-  for (const fragment of ['UTC 自然日', 'soft limit 50', 'hard limit 100', '7 个 UTC 日', 'shadow 不预留预算且不投递 Media Queue', '未变化 subject 不产生逐 subject KV 写入', 'fail-closed', '`refresh_candidates`', '`refresh_selected`', '`refresh_deferred`', '`avoided_writes`']) {
+  for (const fragment of ['UTC 自然日', 'soft limit 50', 'hard limit 100', '7 个 UTC 日', 'shadow 不预留预算且不投递 Media Queue', '未变化 subject 不产生逐 subject KV 写入', 'fail-closed', '`refresh_candidates`', '`refresh_candidates_by_priority`', '`refresh_selected`', '`refresh_granted`', '`refresh_deferred`', '`refresh_confirmed`', '`refresh_uncertain`', '`refresh_skipped`', '`refresh_jobs` 是 `refresh_granted` 的兼容 alias']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document bounded refresh behavior: ${fragment}`)
   }
+  assert.doesNotMatch(readme, /`avoided_writes`/)
   assert.doesNotMatch(readme, /^schedules\s*=/m)
   for (const fragment of ['BANGUMI_GIT_COMMIT_SHA', 'BANGUMI_GIT_REPOSITORY_URL', '绑定自定义域名不需要改任何 repository URL 变量']) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document optional frontend build metadata: ${fragment}`)

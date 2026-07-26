@@ -25,9 +25,18 @@ export interface SyncRun {
   subject_count: number
   refresh_jobs: number
   refresh_candidates: number
+  refresh_candidates_by_priority: {
+    new_or_changed: number
+    hot: number
+    cold: number
+    retry: number
+  }
   refresh_selected: number
+  refresh_granted: number
   refresh_deferred: number
-  avoided_writes: number
+  refresh_confirmed: number
+  refresh_uncertain: number
+  refresh_skipped: number
   error: string | null
 }
 

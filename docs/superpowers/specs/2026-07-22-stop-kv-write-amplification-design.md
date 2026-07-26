@@ -49,7 +49,7 @@ It writes when content, source URL/hash, error/retry state, tombstone state, or 
 
 ### Observability
 
-Each run reports aggregate counters for total subjects, due candidates, candidates by priority, selected, deferred, queue messages, and avoided writes. Counters belong to the bounded run result/log stream; they do not create per-subject metric keys.
+Each run reports aggregate counters with explicit, closed semantics: total subjects; eligible due candidates and candidates by priority; planner-selected candidates; logical grants; budget-deferred candidates (`candidates - logical_grants`); confirmed and uncertain producer outcomes; and subjects skipped before reservation (`total_subjects - candidates`). `refresh_jobs` remains a compatibility alias for logical grants, never a claim about physical Queue delivery. The Workflow does not label any estimate as actual KV writes because asynchronous consumer PUTs are only observable in the consumer and Cloudflare metrics. Error runs preserve the latest counters reached before failure. Counters belong to the bounded run result/log stream and do not create per-subject metric keys.
 
 ## Failure Semantics
 

@@ -252,16 +252,19 @@ Public JSON endpoints may remain under the frontend Worker as BFF routes, but th
 
 ```text
 sync-worker cron/manual trigger
-  -> validate/refresh token
-  -> fetch collections
-  -> fetch calendar
-  -> read current subject meta and image status
-  -> build snapshot with available data
-  -> enqueue media jobs for missing/stale work
-  -> write snapshot and sync metadata
+  -> create/run SyncWorkflow
+  -> fetch collections and calendar into instance staging
+  -> publish generation-scoped snapshot inputs
+  -> bounded reads of current detail/meta/image/refresh state
+  -> select due candidates by priority and shared UTC-day budget
+  -> reserve logical grants in SnapshotCoordinator
+  -> submit one Queue batch with confirmed/uncertain outcome
+  -> commit the snapshot independently of media convergence
 ```
 
-The first sync may produce a snapshot before every image and NSFW meta entry is complete. Later media jobs and later sync generations improve the snapshot.
+Scheduled and manual live runs share soft limit 50 / hard limit 100; cold work uses one of seven UTC-day shards. Shadow runs publish isolated audit snapshots without reservation or Queue submission. The first live sync may produce a snapshot before every image and NSFW meta entry is complete. Later media jobs and later sync generations improve the snapshot.
+
+Each `SyncRun` reports total subjects, eligible candidates and their priority distribution, planner-selected candidates, logical grants, budget-deferred candidates (`candidates - grants`), confirmed/uncertain producer outcomes, and subjects skipped before reservation (`total - candidates`). `refresh_jobs` is only a compatibility alias for logical grants. These run counters do not claim the asynchronous consumer's physical Queue delivery or actual KV PUT count and do not add per-subject metric keys.
 
 ### Media Queue Flow
 
@@ -600,6 +603,8 @@ Bindings:
 ```text
 AIRING_CAL_KV KV
 MEDIA_QUEUE queue producer
+SYNC_WORKFLOW Workflow binding
+SNAPSHOT_COORDINATOR Durable Object
 ```
 
 Secrets and vars:

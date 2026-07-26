@@ -1522,6 +1522,32 @@ test('scheduled sync skips every UTC hour except the daily 20:00 trigger', async
   }
 })
 
+test('scheduled sync also skips after the exact daily 20:00 UTC minute', async () => {
+  const kv = new MockKV()
+  const originalFetch = globalThis.fetch
+  let fetchCount = 0
+  globalThis.fetch = (async () => {
+    fetchCount += 1
+    throw new Error('unexpected fetch')
+  }) as typeof globalThis.fetch
+
+  try {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 1, 0) } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async () => {} },
+      BANGUMI_TOKEN: 'token-a',
+      BANGUMI_USERS: 'alice',
+      SYNC_MODE: 'merge',
+    } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+
+    assert.equal(fetchCount, 0)
+    assert.equal((kv.values.get('sync:meta') as any).cron.last_skip.status, 'skipped')
+    assert.equal((kv.values.get('sync:meta') as any).cron.effective_schedule, '0 20 * * *')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('queue trigger runs sync immediately without cron hour gating', async () => {
   const kv = new MockKV()
   const queueMessages: unknown[] = []

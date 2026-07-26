@@ -118,9 +118,10 @@ class MockSnapshotCoordinator {
   reservations: any[] = []
   requests: string[] = []
   private budget: { date: string; consumed: number } | null = null
-  private reservationResults = new Map<string, { granted: number; consumed: number; soft_limit: number; hard_limit: number }>()
+  private reservationResults = new Map<string, { granted: number; consumed: number; soft_limit: number; hard_limit: number; submission: 'confirmed' | 'not_needed' }>()
   private queueMessages: unknown[] = []
   loseNextReservationResponse = false
+  failCommit = false
 
   constructor(private kv: MockKV, readonly generation = 7, private maxGrant = Number.POSITIVE_INFINITY) {}
 
@@ -153,14 +154,20 @@ class MockSnapshotCoordinator {
               if (existing) return Response.json(existing)
               const previousBudget = this.budget
               if (previousBudget && body.date < previousBudget.date) {
-                return Response.json({ granted: 0, consumed: previousBudget.consumed, soft_limit: 50, hard_limit: 100 })
+                return Response.json({ granted: 0, consumed: previousBudget.consumed, soft_limit: 50, hard_limit: 100, submission: 'not_needed' })
               }
               const consumed = previousBudget && previousBudget.date === body.date ? previousBudget.consumed : 0
               const privileged = Math.min(body.requested, body.privileged_requested)
               const privilegedGranted = Math.min(privileged, Math.max(0, 100 - consumed))
               const ordinaryGranted = Math.min(body.requested - privileged, Math.max(0, 50 - consumed - privilegedGranted))
               const granted = Math.min(privilegedGranted + ordinaryGranted, this.maxGrant)
-              const result = { granted, consumed: consumed + granted, soft_limit: 50, hard_limit: 100 }
+              const result = {
+                granted,
+                consumed: consumed + granted,
+                soft_limit: 50,
+                hard_limit: 100,
+                submission: granted > 0 ? 'confirmed' as const : 'not_needed' as const,
+              }
               this.budget = { date: body.date, consumed: result.consumed }
               this.reservationResults.set(body.reservation_id, result)
               this.queueMessages.push(...body.jobs.slice(0, granted))
@@ -170,6 +177,7 @@ class MockSnapshotCoordinator {
               }
               return Response.json(result)
             }
+            if (this.failCommit) return Response.json({ error: 'commit failed' }, { status: 503 })
             this.commits.push(body.manifest)
             this.kv.values.set('snapshot:active', body.manifest)
             return Response.json({ status: 'committed', generation: body.generation })
@@ -364,16 +372,24 @@ test('live workflow plans component jobs and reserves the shared media budget be
       subject_count: 100,
       refresh_jobs: 50,
       refresh_candidates: 100,
+      refresh_candidates_by_priority: { new_or_changed: 0, hot: 100, cold: 0, retry: 0 },
       refresh_selected: 50,
+      refresh_granted: 50,
       refresh_deferred: 50,
-      avoided_writes: 50,
+      refresh_confirmed: 50,
+      refresh_uncertain: 0,
+      refresh_skipped: 0,
     })
     assert.deepEqual(kv.values.get('sync:run:live-1'), {
       ...(kv.values.get('sync:run:live-1') as Record<string, unknown>),
       refresh_candidates: 100,
+      refresh_candidates_by_priority: { new_or_changed: 0, hot: 100, cold: 0, retry: 0 },
       refresh_selected: 50,
+      refresh_granted: 50,
       refresh_deferred: 50,
-      avoided_writes: 50,
+      refresh_confirmed: 50,
+      refresh_uncertain: 0,
+      refresh_skipped: 0,
     })
     const lastEnqueueIndex = Math.max(...step.names.map((name, index) => name.startsWith('enqueue-refresh-') ? index : -1))
     assert.equal(step.names.indexOf('commit-live-snapshot') > lastEnqueueIndex, true)
@@ -416,7 +432,20 @@ test('live workflow commits the snapshot when media budget grants zero', async (
     assert.equal(coordinator.reservations[0].requested, 1)
     assert.equal(coordinator.reservations[0].privileged_requested, 1)
     assert.equal(queueMessages.length, 0)
-    assert.equal(result.refresh_jobs, 0)
+    assert.deepEqual(result, {
+      instance_id: 'budget-exhausted',
+      status: 'ok',
+      subject_count: 1,
+      refresh_jobs: 0,
+      refresh_candidates: 1,
+      refresh_candidates_by_priority: { new_or_changed: 1, hot: 0, cold: 0, retry: 0 },
+      refresh_selected: 1,
+      refresh_granted: 0,
+      refresh_deferred: 1,
+      refresh_confirmed: 0,
+      refresh_uncertain: 0,
+      refresh_skipped: 0,
+    })
     assert.equal(coordinator.commits.length, 1)
     assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'budget-exhausted')
   } finally {
@@ -472,7 +501,7 @@ test('live workflow gives mixed new and ordinary candidates only privileged hard
   }) as typeof globalThis.fetch
 
   try {
-    await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
+    const result = await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
       instanceId: 'mixed-priority',
       payload: { mode: 'live', source: 'manual' },
     }, step, (message) => new TestNonRetryableError(message))
@@ -481,6 +510,20 @@ test('live workflow gives mixed new and ordinary candidates only privileged hard
     assert.equal(coordinator.reservations[0].privileged_requested, 10)
     assert.deepEqual((queueMessages as any[]).map(({ subject_id }) => subject_id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     assert.equal(coordinator.consumed, 60)
+    assert.deepEqual(result, {
+      instance_id: 'mixed-priority',
+      status: 'ok',
+      subject_count: 50,
+      refresh_jobs: 10,
+      refresh_candidates: 50,
+      refresh_candidates_by_priority: { new_or_changed: 10, hot: 40, cold: 0, retry: 0 },
+      refresh_selected: 50,
+      refresh_granted: 10,
+      refresh_deferred: 40,
+      refresh_confirmed: 10,
+      refresh_uncertain: 0,
+      refresh_skipped: 0,
+    })
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -516,9 +559,13 @@ test('live workflow reports hard-limited aggregate refresh counters', async () =
       subject_count: 101,
       refresh_jobs: 100,
       refresh_candidates: 101,
+      refresh_candidates_by_priority: { new_or_changed: 101, hot: 0, cold: 0, retry: 0 },
       refresh_selected: 100,
+      refresh_granted: 100,
       refresh_deferred: 1,
-      avoided_writes: 1,
+      refresh_confirmed: 100,
+      refresh_uncertain: 0,
+      refresh_skipped: 0,
     })
   } finally {
     globalThis.fetch = originalFetch
@@ -592,9 +639,13 @@ test('unchanged 659-subject workflow enqueues no media and performs no subject K
       subject_count: 659,
       refresh_jobs: 0,
       refresh_candidates: 0,
+      refresh_candidates_by_priority: { new_or_changed: 0, hot: 0, cold: 0, retry: 0 },
       refresh_selected: 0,
+      refresh_granted: 0,
       refresh_deferred: 0,
-      avoided_writes: 659,
+      refresh_confirmed: 0,
+      refresh_uncertain: 0,
+      refresh_skipped: 659,
     })
   } finally {
     globalThis.fetch = originalFetch
@@ -643,7 +694,20 @@ test('live workflow commits the snapshot after an ambiguous queue submission wit
       payload: { mode: 'live', source: 'manual' },
     }, step, (message) => new TestNonRetryableError(message))
 
-    assert.equal(result.refresh_jobs, 1)
+    assert.deepEqual(result, {
+      instance_id: 'live-enqueue-failure',
+      status: 'ok',
+      subject_count: 1,
+      refresh_jobs: 1,
+      refresh_candidates: 1,
+      refresh_candidates_by_priority: { new_or_changed: 1, hot: 0, cold: 0, retry: 0 },
+      refresh_selected: 1,
+      refresh_granted: 1,
+      refresh_deferred: 0,
+      refresh_confirmed: 0,
+      refresh_uncertain: 1,
+      refresh_skipped: 0,
+    })
     assert.equal(queueCalls, 1)
     assert.equal(queueMessages.length, 1)
     assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'live-enqueue-failure')
@@ -652,6 +716,81 @@ test('live workflow commits the snapshot after an ambiguous queue submission wit
       consumed: 1,
     })
     assert.equal((coordinatorState.values.get('mediaReservation:live-enqueue-failure:media') as any).submission, 'uncertain')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('shadow workflow reports every prepared subject as skipped without planning or reserving', async () => {
+  const kv = new MockKV()
+  const step = new FakeStep(kv)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) return Response.json({ total: 2, data: [collection(1), collection(2)] })
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    const result = await runSyncWorkflow(workflowEnv(kv, []), {
+      instanceId: 'shadow-counters',
+      payload: { mode: 'shadow', source: 'manual' },
+    }, step, (message) => new TestNonRetryableError(message))
+
+    assert.deepEqual(result, {
+      instance_id: 'shadow-counters',
+      status: 'ok',
+      subject_count: 2,
+      refresh_jobs: 0,
+      refresh_candidates: 0,
+      refresh_candidates_by_priority: { new_or_changed: 0, hot: 0, cold: 0, retry: 0 },
+      refresh_selected: 0,
+      refresh_granted: 0,
+      refresh_deferred: 0,
+      refresh_confirmed: 0,
+      refresh_uncertain: 0,
+      refresh_skipped: 2,
+    })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('post-reservation snapshot failure persists the latest truthful counters on the error run', async () => {
+  const kv = new MockKV()
+  const coordinator = new MockSnapshotCoordinator(kv)
+  coordinator.failCommit = true
+  const step = new FakeStep(kv)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) return Response.json({ total: 1, data: [collection(1)] })
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await assert.rejects(() => runSyncWorkflow(workflowEnv(kv, [], coordinator), {
+      instanceId: 'post-reservation-error',
+      payload: { mode: 'live', source: 'manual' },
+    }, step, (message) => new TestNonRetryableError(message)), /Snapshot coordinator \/commit failed \(503\)/)
+
+    assert.deepEqual(kv.values.get('sync:run:post-reservation-error'), {
+      ...(kv.values.get('sync:run:post-reservation-error') as Record<string, unknown>),
+      status: 'error',
+      stage: 'enqueue',
+      subject_count: 1,
+      refresh_jobs: 1,
+      refresh_candidates: 1,
+      refresh_candidates_by_priority: { new_or_changed: 1, hot: 0, cold: 0, retry: 0 },
+      refresh_selected: 1,
+      refresh_granted: 1,
+      refresh_deferred: 0,
+      refresh_confirmed: 1,
+      refresh_uncertain: 0,
+      refresh_skipped: 0,
+    })
   } finally {
     globalThis.fetch = originalFetch
   }
