@@ -12,6 +12,8 @@ class MockKV {
   externalCallsByStep = new Map<string, number>()
   failingGets = new Set<string>()
   nullGets = new Set<string>()
+  nullOnceGets = new Set<string>()
+  replacementGets = new Map<string, unknown>()
 
   private recordCall() {
     if (!this.activeStep) return
@@ -23,6 +25,8 @@ class MockKV {
     assert.equal(type, 'json')
     if (this.failingGets.has(key)) throw new Error(`KV read failed for ${key}`)
     if (this.nullGets.has(key)) return null
+    if (this.nullOnceGets.delete(key)) return null
+    if (this.replacementGets.has(key)) return this.replacementGets.get(key)
     return this.values.get(key) ?? null
   }
 
@@ -309,6 +313,64 @@ test('workflow never prepares or commits deletion-capable input when a staged co
     )
     assert.equal(coordinator.commits.length, 0)
     assert.equal(step.names.includes('publish-calendar'), false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('workflow rejects staged collection content whose digest differs from the fetched page', async () => {
+  const kv = new MockKV()
+  kv.replacementGets.set(syncStagingKey('tampered-staging', 'collections:0:0'), [collection(999)])
+  const coordinator = new MockSnapshotCoordinator(kv)
+  const step = new FakeStep(kv)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) return Response.json({ total: 1, data: [collection(1)] })
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await assert.rejects(
+      runSyncWorkflow(workflowEnv(kv, [], coordinator), {
+        instanceId: 'tampered-staging',
+        payload: { mode: 'shadow', source: 'manual' },
+      }, step, (message) => new TestNonRetryableError(message)),
+      /digest/i,
+    )
+    assert.equal(coordinator.commits.length, 0)
+    assert.equal(step.names.includes('publish-calendar'), false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('workflow accepts the same subject for two users while retaining a stable observation across step retry', async () => {
+  const kv = new MockKV()
+  kv.nullOnceGets.add(syncStagingKey('multi-user-retry', 'collections:1:0'))
+  const coordinator = new MockSnapshotCoordinator(kv)
+  const step = new FakeStep(kv)
+  const env = workflowEnv(kv, [], coordinator)
+  env.BANGUMI_USERS = 'alice,bob'
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) return Response.json({ total: 1, data: [collection(1)] })
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await runSyncWorkflow(env, {
+      instanceId: 'multi-user-retry',
+      payload: { mode: 'shadow', source: 'manual' },
+    }, step, (message) => new TestNonRetryableError(message))
+
+    assert.equal(step.attempts.get('prepare-snapshot-inputs'), 2)
+    const run = kv.values.get('sync:run:multi-user-retry') as { started_at: number }
+    const prepared = kv.values.get(syncStagingKey('multi-user-retry', 'prepared')) as { observedAt: number }
+    assert.equal(prepared.observedAt, run.started_at)
   } finally {
     globalThis.fetch = originalFetch
   }

@@ -96,7 +96,17 @@ test('same-run replay of first missing does not confirm deletion', async () => {
   })
 
   assert.deepEqual(plan.confirmedDeleted, [])
-  assert.deepEqual(plan.firstMissing, [current])
+  assert.deepEqual(plan.firstMissing, [])
+})
+
+test('clock regression before missing_since produces zero deletion-state mutations', async () => {
+  const current: CollectionRow = { ...(await normalized()).row, missing_since: observedAt + 1 }
+  const plan = await planCollectionDiff({
+    current: [current], incoming: [], observedAt, complete: true,
+  })
+
+  assert.deepEqual(plan.firstMissing, [])
+  assert.deepEqual(plan.confirmedDeleted, [])
 })
 
 test('composite user and subject identity isolates otherwise identical subject ids', async () => {
@@ -236,4 +246,26 @@ test('incomplete fetch never marks missing or deleted', async () => {
 
   assert.deepEqual(plan.firstMissing, [])
   assert.deepEqual(plan.confirmedDeleted, [])
+})
+
+test('mutation arrays are stable by user and subject regardless of input page order', async () => {
+  const currentA = { ...(await normalized()).row, user_id: 'z-user', subject_id: 3 }
+  const currentB = { ...(await normalized()).row, user_id: 'a-user', subject_id: 2 }
+  const currentC = { ...(await normalized()).row, user_id: 'a-user', subject_id: 1 }
+  const incoming = await Promise.all([
+    normalizeCollection('z-user', collection({ subject_id: 3, rate: 9 })),
+    normalizeCollection('a-user', collection({ subject_id: 2, rate: 9 })),
+    normalizeCollection('a-user', collection({ subject_id: 4 })),
+  ])
+  const plan = await planCollectionDiff({
+    current: [currentA, currentB, currentC],
+    incoming: [incoming[0]!, incoming[2]!, incoming[1]!],
+    observedAt: observedAt + 1,
+    complete: true,
+  })
+
+  const keys = (rows: CollectionRow[]) => rows.map((row) => `${row.user_id}:${row.subject_id}`)
+  assert.deepEqual(keys(plan.inserts), ['a-user:4'])
+  assert.deepEqual(keys(plan.updates), ['a-user:2', 'z-user:3'])
+  assert.deepEqual(keys(plan.firstMissing), ['a-user:1'])
 })

@@ -176,11 +176,16 @@ export async function planCollectionDiff({
         firstMissing.push({ ...previous, missing_since: observedAt })
       } else if (observedAt > previous.missing_since) {
         confirmedDeleted.push({ ...previous, deleted_at: observedAt })
-      } else {
-        firstMissing.push(previous)
       }
     }
   }
 
+  const compareRows = (left: CollectionRow, right: CollectionRow) =>
+    left.user_id.localeCompare(right.user_id) || left.subject_id - right.subject_id
+  inserts.sort(compareRows)
+  updates.sort(compareRows)
+  firstMissing.sort(compareRows)
+  confirmedDeleted.sort(compareRows)
+  restored.sort(compareRows)
   return { inserts, updates, unchanged, firstMissing, confirmedDeleted, restored }
 }

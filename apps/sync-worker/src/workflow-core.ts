@@ -261,7 +261,7 @@ export async function runSyncWorkflow(
 
     const client = new BgmClient(env.BANGUMI_TOKEN, { maxGetRetries: 0 })
     const pageOutputs: StepOutput[] = []
-    const collectionGroups: Array<{ outputs: StepOutput[] }> = []
+    const collectionGroups: Array<{ user_id: string; outputs: StepOutput[] }> = []
     for (let userIndex = 0; userIndex < users.length; userIndex++) {
       const username = users[userIndex]
       const userOutputs: StepOutput[] = []
@@ -296,7 +296,7 @@ export async function runSyncWorkflow(
         pageOutputs.push(output)
         userOutputs.push(output)
       }
-      collectionGroups.push({ outputs: userOutputs })
+      collectionGroups.push({ user_id: username, outputs: userOutputs })
     }
     run = { ...run, collection_pages: pageOutputs.length }
 
@@ -315,12 +315,24 @@ export async function runSyncWorkflow(
         pages: await Promise.all(group.outputs.map(async (output) => ({
           offset: output.offset ?? -1,
           total: output.total ?? -1,
-          data: await getJson<BgmCollection[]>(env.AIRING_CAL_KV, output.key),
+          data: await (async () => {
+            const data = await getJson<BgmCollection[]>(env.AIRING_CAL_KV, output.key)
+            if (data !== null && await digest(data) !== output.digest) {
+              throw new Error(`Staged collection digest mismatch: ${output.key}`)
+            }
+            return data
+          })(),
         }))),
         pageLimit: PAGE_LIMIT,
+        user_id: group.user_id,
       })))
-      const fetched = assembleFullFetch(groups, await getJson(env.AIRING_CAL_KV, calendarOutput.key))
-      const { collections, calendar } = fetched
+      const fetched = assembleFullFetch(
+        groups,
+        await getJson(env.AIRING_CAL_KV, calendarOutput.key),
+        run.started_at,
+      )
+      const collections = fetched.collections.map(({ collection }) => collection)
+      const { calendar } = fetched
       const merged = mergeCollections(collections)
       const snapshotKeys: Partial<Record<CollectionType, string>> = {}
       for (const type of COLLECTION_TYPES) {
@@ -342,7 +354,12 @@ export async function runSyncWorkflow(
       await putJson(env.AIRING_CAL_KV, refreshInputKey, refreshInputs, SYNC_STAGING_TTL_SECONDS)
       const refreshChunks = Math.ceil(ids.length / REFRESH_CHUNK_SIZE)
       const key = syncStagingKey(event.instanceId, 'prepared')
-      await putJson(env.AIRING_CAL_KV, key, { snapshotKeys, refreshInputKey, refreshChunks }, SYNC_STAGING_TTL_SECONDS)
+      await putJson(env.AIRING_CAL_KV, key, {
+        snapshotKeys,
+        refreshInputKey,
+        refreshChunks,
+        observedAt: fetched.observedAt,
+      }, SYNC_STAGING_TTL_SECONDS)
       return { key, snapshotKeys, refreshInputKey, refreshChunks, count: ids.length, digest: await digest(ids) }
     })
     const summary: Record<string, number> = {}
