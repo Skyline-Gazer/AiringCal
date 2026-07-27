@@ -1,5 +1,13 @@
 export const packageBoundary = '@airing-cal/storage'
 
+export {
+  canonicalJson,
+  canonicalize,
+  collectionContentHash,
+  sha256Canonical,
+} from './canonical-json.ts'
+export type { CollectionContentInput } from './canonical-json.ts'
+
 export type {
   AppStateRow,
   BudgetSubmissionStatus,

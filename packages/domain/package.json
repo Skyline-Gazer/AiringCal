@@ -11,6 +11,9 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test"
   },
+  "dependencies": {
+    "@airing-cal/storage": "workspace:*"
+  },
   "devDependencies": {
     "@types/node": "^26.0.0"
   }

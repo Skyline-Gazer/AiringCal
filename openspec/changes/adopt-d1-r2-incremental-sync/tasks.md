@@ -18,7 +18,7 @@
 
 ## 4. Immutable R2 Publication
 
-- [ ] 4.1 Define and validate PublicSnapshotV1/PublicSnapshotPointerV1 and deterministic content hashing
+- [x] 4.1 Define and validate PublicSnapshotV1/PublicSnapshotPointerV1 and deterministic content hashing
 - [ ] 4.2 Implement D1 commit → R2 put → R2 verify → KV pointer publication with no-op hash short circuit
 - [ ] 4.3 Add failure-injection and replay tests proving old pointer survival and zero writes on identical input
 

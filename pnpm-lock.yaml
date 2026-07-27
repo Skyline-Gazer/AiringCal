@@ -106,6 +106,10 @@ importers:
         version: 26.0.0
 
   packages/domain:
+    dependencies:
+      '@airing-cal/storage':
+        specifier: workspace:*
+        version: link:../storage
     devDependencies:
       '@types/node':
         specifier: ^26.0.0

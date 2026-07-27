@@ -1,5 +1,12 @@
 export const packageBoundary = '@airing-cal/domain'
 
+export {
+  buildPublicSnapshot,
+  parsePublicSnapshotV1,
+  snapshotObjectKey,
+} from './public-snapshot.ts'
+export type { PublicSnapshotInput } from './public-snapshot.ts'
+
 export type CollectionType = 'want' | 'watched' | 'watching' | 'on_hold' | 'dropped'
 
 export interface ImageRef {

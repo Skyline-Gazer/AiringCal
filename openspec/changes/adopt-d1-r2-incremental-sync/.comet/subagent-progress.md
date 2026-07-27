@@ -52,3 +52,19 @@
 - Review-fix GREEN evidence: focused migration 2/2; storage typecheck and 13/13 tests; full repository typecheck/test/build check; OpenSpec strict and diff check pass.
 - Final review result: fresh spec compliance APPROVED and code quality APPROVED with no Critical, Important, or Minor findings.
 - Task 2 checkoff: plan Steps 1–5 and OpenSpec 2.1 complete; implementation commits `8a9fc2c1a650afd65e4fb79baee9e9f5bf5514b8` and `40c92e1fa2b981d5e29e6cacfc93739e0eaf1aaa` are pushed.
+
+## Task 3 Implementation
+
+- Plan task: `Task 3: 规范 JSON、业务 hash 与公开契约`
+- OpenSpec mappings:
+  - `2.2 Implement typed D1 adapters, stable canonical JSON/hash helpers and row mapping tests`
+  - `4.1 Define and validate PublicSnapshotV1/PublicSnapshotPointerV1 and deterministic content hashing`
+- Stage: `review-pending`
+- Implementation base: `f671fb3`
+- RED evidence: focused canonical/snapshot suite failed because `canonical-json.ts` and `public-snapshot.ts` did not exist.
+- GREEN evidence: focused 12/12; storage 21/21; domain 33/33; package and full-repository typecheck/test/build checks pass.
+- Canonical contract: recursive plain-object key ordering, array order preservation, explicit `undefined` to `null`, UTF-8 SHA-256, lowercase 64-character hex and non-finite number rejection.
+- Collection hash scope: detects rate, tags, comment, collection type and episode/volume progress while excluding upstream timestamps and runtime observation/publication fields.
+- Snapshot contract: groups all five collection types, derives summary, retains calendar/image/NSFW projections, excludes envelope fields from content hash, rejects unknown schema versions and produces the exact immutable object key.
+- Scope audit: no collection diff, R2 publication, Worker runtime binding or legacy read-path change was introduced.
+- Checkoff: OpenSpec 4.1 is complete. OpenSpec 2.2 remains open because Task 5 still must provide the typed D1 adapter and remaining row-mapping evidence.
