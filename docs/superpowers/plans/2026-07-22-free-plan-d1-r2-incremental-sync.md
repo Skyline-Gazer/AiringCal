@@ -382,7 +382,7 @@ git push
 - `CollectionDiffPlan = { inserts: CollectionRow[]; updates: CollectionRow[]; unchanged: number; firstMissing: CollectionRow[]; confirmedDeleted: CollectionRow[]; restored: CollectionRow[] }`.
 - `complete: false` must return no first-missing/deletion transitions.
 
-- [ ] **Step 1: Verify bgm.tv fields before mapper work**
+- [x] **Step 1: Verify bgm.tv fields before mapper work**
 
 Run:
 
@@ -392,7 +392,7 @@ rg -n 'UserSubjectCollection|Subject|updated_at|ep_status|vol_status|rate|tags|c
 
 Expected: every mapped field is present in the checked-in contract or existing generated/client types. Do not invent fields.
 
-- [ ] **Step 2: Write RED table-driven planner tests**
+- [x] **Step 2: Write RED table-driven planner tests**
 
 Cases: empty D1 insert; identical business content zero write despite new observed time; rate/tag/comment/type/progress single-row update; first missing; second successful missing; reappearance clears missing/deleted; `complete: false` produces no missing/deletion writes.
 
@@ -403,7 +403,7 @@ assert.deepEqual(failedPage.firstMissing, [])
 assert.deepEqual(failedPage.confirmedDeleted, [])
 ```
 
-- [ ] **Step 3: Run RED**
+- [x] **Step 3: Run RED**
 
 ```bash
 node --import tsx --test packages/domain/src/collection-diff.test.ts
@@ -411,11 +411,11 @@ node --import tsx --test packages/domain/src/collection-diff.test.ts
 
 Expected: FAIL because normalizer/planner are absent.
 
-- [ ] **Step 4: Implement pure normalizer/planner and full-fetch boundary**
+- [x] **Step 4: Implement pure normalizer/planner and full-fetch boundary**
 
 Map `watched` to `cold`, every other active collection state to `hot`; sort tags before hashing only when tag order is not part of the public API contract. The Workflow must construct `complete = true` only after every declared collection page and calendar succeeded; it must never pass partial pages to deletion planning.
 
-- [ ] **Step 5: Run GREEN**
+- [x] **Step 5: Run GREEN**
 
 ```bash
 node --import tsx --test packages/domain/src/collection-diff.test.ts apps/sync-worker/src/workflow.test.ts
@@ -424,7 +424,7 @@ pnpm -F @airing-cal/sync-worker test
 pnpm -F @airing-cal/sync-worker typecheck
 ```
 
-- [ ] **Step 6: Review, mark 3.1–3.2 complete, commit and push**
+- [x] **Step 6: Review, mark 3.1–3.2 complete, commit and push**
 
 ```bash
 git add packages/domain apps/sync-worker docs/example/api/bgm-api.json openspec/changes/adopt-d1-r2-incremental-sync

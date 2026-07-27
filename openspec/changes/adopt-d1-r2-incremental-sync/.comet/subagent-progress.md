@@ -83,7 +83,7 @@
 
 - Plan task: `Task 4: 收藏内存 diff 与两次缺失确认`
 - OpenSpec mappings: `3.1` complete fetch/runtime-field-free diff; `3.2` two-successful-missing and pagination-failure protection.
-- Stage: `implementation-complete; independent reviews pending`
+- Stage: `checkoff`
 - Implementation base: `7da3a61`
 - API contract evidence: checked-in `UserSubjectCollection` requires `subject_id`, `subject_type`, `rate`, `type`, `tags`, `ep_status`, `vol_status`, `updated_at` and `private`; collection `type` is 1–5; the contract warns that `updated_at` does not reliably change for rating, comment or episode progress.
 - RED evidence: focused domain and sync boundary suites failed because `collection-diff.ts` and `full-fetch-boundary.ts` were absent. The initial sandbox run was discarded because `tsx` could not create its IPC socket; the permitted rerun produced the expected missing-module failures.
@@ -128,4 +128,5 @@
 - Ultimate implementation: collection normalization derives one `comment = entry.comment ?? ''` for both D1 and content hashing; calendar subjects are rebuilt from an explicit downstream allowlist; valid root `rank` takes precedence with a documented-compatible nested fallback; scoreless ratings are omitted; Workflow stages and publishes the normalized calendar rather than the raw upstream object.
 - Ultimate OpenAPI integration evidence: the Workflow fixture uses legacy `air_date`, root `rank`, rating `count`, URL, collection counters and partial images, then asserts the exact stable public calendar output with no opaque fields.
 - Ultimate GREEN evidence: focused domain/calendar 32/32 and boundary/Workflow 36/36; package domain 66/66 and sync-worker 98/98; package and full repository typecheck; full repository test/build check; frozen lockfile; OpenSpec strict and diff check all pass.
-- Checkoff guard remains active: OpenSpec 3.1 and 3.2 await final fresh spec-compliance and code-quality approval.
+- Final fresh review result: spec compliance APPROVED and code quality APPROVED with no Critical, Important, or Minor findings.
+- Task 4 checkoff: plan Steps 1–6 and OpenSpec 3.1–3.2 complete. Implementation/fix commits `319af48d2c37ac4777c63e2f7fda35a0e4f9c895`, `2ba7b2ca0aba09237d0b0fdf540f245f9b15d194`, `a17935f2de3091df5393cac04d079e3c662f69ff`, `ea4440aa8075e5368c1a7ab088ce33350634fbcd`, `aebb84c9f2c1194512c641a95a20429d92ead7f7`, and `8a59dec9aa17dd0d813302c3852efc4b29f44e3e` are pushed.

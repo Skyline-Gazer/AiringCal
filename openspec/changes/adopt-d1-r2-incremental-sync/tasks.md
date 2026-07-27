@@ -12,8 +12,8 @@
 
 ## 3. Incremental Workflow
 
-- [ ] 3.1 Fetch complete collections/calendar and compute in-memory D1 diff that ignores runtime fields
-- [ ] 3.2 Implement first-missing and second-successful-missing deletion transitions with pagination-failure protection
+- [x] 3.1 Fetch complete collections/calendar and compute in-memory D1 diff that ignores runtime fields
+- [x] 3.2 Implement first-missing and second-successful-missing deletion transitions with pagination-failure protection
 - [ ] 3.3 Persist sync summaries and hot/cold media scheduling state without writing new legacy per-subject KV
 
 ## 4. Immutable R2 Publication
