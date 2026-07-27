@@ -21,6 +21,43 @@ export interface CollectionRow {
   deleted_at: number | null
 }
 
+export interface CollectionDiffPlanLike {
+  inserts: CollectionRow[]
+  updates: CollectionRow[]
+  unchanged: number
+  firstMissing: CollectionRow[]
+  confirmedDeleted: CollectionRow[]
+  restored: CollectionRow[]
+}
+
+export interface SyncRunUpdate {
+  stage: string
+  heartbeat_at: number
+  generation?: number | null
+  collection_count?: number
+  changed_count?: number
+  missing_count?: number
+  deleted_count?: number
+  media_selected_count?: number
+  media_granted_count?: number
+  input_hash?: string | null
+  public_hash?: string | null
+}
+
+export interface SyncRunCompletion {
+  heartbeat_at: number
+  completed_at: number
+  generation?: number | null
+  input_hash?: string | null
+  public_hash?: string | null
+}
+
+export interface SyncRunFailure {
+  heartbeat_at: number
+  completed_at: number
+  error_code: string
+}
+
 export interface SubjectMediaRow {
   subject_id: number
   detail_json: string | null

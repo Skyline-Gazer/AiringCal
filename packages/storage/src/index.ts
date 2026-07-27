@@ -7,6 +7,7 @@ export {
   persistedCollectionSubject,
   sha256Canonical,
 } from './canonical-json.ts'
+export { D1StateStore } from './d1-state-store.ts'
 export type {
   CollectionContentInput,
   PersistedCollectionSubject,
@@ -16,6 +17,7 @@ export type {
 export type {
   AppStateRow,
   BudgetSubmissionStatus,
+  CollectionDiffPlanLike,
   CollectionRow,
   D1DatabaseLike,
   D1PreparedStatementLike,
@@ -33,6 +35,9 @@ export type {
   SyncBudgetResource,
   SyncBudgetRow,
   SyncRunRow,
+  SyncRunCompletion,
+  SyncRunFailure,
+  SyncRunUpdate,
   Temperature,
 } from './d1-types.ts'
 

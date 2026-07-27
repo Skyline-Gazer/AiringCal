@@ -130,3 +130,18 @@
 - Ultimate GREEN evidence: focused domain/calendar 32/32 and boundary/Workflow 36/36; package domain 66/66 and sync-worker 98/98; package and full repository typecheck; full repository test/build check; frozen lockfile; OpenSpec strict and diff check all pass.
 - Final fresh review result: spec compliance APPROVED and code quality APPROVED with no Critical, Important, or Minor findings.
 - Task 4 checkoff: plan Steps 1–6 and OpenSpec 3.1–3.2 complete. Implementation/fix commits `319af48d2c37ac4777c63e2f7fda35a0e4f9c895`, `2ba7b2ca0aba09237d0b0fdf540f245f9b15d194`, `a17935f2de3091df5393cac04d079e3c662f69ff`, `ea4440aa8075e5368c1a7ab088ce33350634fbcd`, `aebb84c9f2c1194512c641a95a20429d92ead7f7`, and `8a59dec9aa17dd0d813302c3852efc4b29f44e3e` are pushed.
+
+## Task 5 Implementation
+
+- Plan task: `Task 5: Typed D1 adapter 与零写收藏提交`
+- OpenSpec mapping: remaining adapter and row-mapping evidence for `2.2`.
+- Stage: `review`
+- Implementation base: `297f99d`
+- RED evidence: focused adapter suite failed because `d1-state-store.ts` did not exist; no production adapter code existed before the failing test.
+- GREEN evidence: focused adapter 10/10; storage 35/35; storage and full-repository typecheck; full repository tests; build dry-runs; frozen lockfile diff; OpenSpec strict and diff check all pass.
+- Collection persistence: explicit SELECT/INSERT/UPDATE column lists, positional binds, no `last_seen_at`, no batch call for unchanged plans, one statement for one changed row, exact insert/update/first-missing/confirmed-delete/restore mappings, deterministic `(user_id, subject_id)` ordering and batches bounded to 50 statements.
+- Row boundary: collection JSON text and scalar fields are decoded and validated before returning typed rows; corrupt tags or subject JSON is rejected rather than passed downstream.
+- App state: canonical `{ schema_version: 1, value }` envelopes only; unknown versions, missing values and corrupt JSON are rejected.
+- Sync run lifecycle: start/update/complete/fail use prepared positional statements; persisted failures accept only uppercase classified error codes and reject raw body/comment/stack-like text before preparing SQL.
+- Scope audit: no budget reservation, R2 publication, runtime binding, production migration, `last_seen_at`, Task 6 planner integration or legacy public-read change was introduced.
+- Checkoff guard: OpenSpec `2.2` and plan Task 5 remain pending until fresh independent spec-compliance and code-quality reviews both approve.
