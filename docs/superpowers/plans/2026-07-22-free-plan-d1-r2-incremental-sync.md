@@ -318,7 +318,7 @@ git push
 - Produces `parsePublicSnapshotV1(value: unknown): PublicSnapshotV1`.
 - Produces `snapshotObjectKey(snapshot): string`.
 
-- [ ] **Step 1: Write RED canonicalization tests**
+- [x] **Step 1: Write RED canonicalization tests**
 
 Cover recursive key order, array order preservation, `undefined` normalization to `null`, missing optional fields supplied by the domain mapper, UTF-8, and runtime-field exclusion:
 
@@ -331,7 +331,7 @@ assert.equal(await collectionContentHash({ ...base, fetched_at: 1 }), await coll
 
 Also assert tags, comment, type and progress change hashes even when `upstream_updated_at` is unchanged.
 
-- [ ] **Step 2: Write RED snapshot schema/hash tests**
+- [x] **Step 2: Write RED snapshot schema/hash tests**
 
 Assert `generation`, `content_hash`, and `published_at` are excluded from payload hash; unknown `schema_version` throws `Unsupported public snapshot schema_version`; key is exactly:
 
@@ -339,11 +339,11 @@ Assert `generation`, `content_hash`, and `published_at` are excluded from payloa
 `snapshots/v1/${snapshot.generation}-${snapshot.content_hash}.json`
 ```
 
-- [ ] **Step 3: Implement minimal helpers**
+- [x] **Step 3: Implement minimal helpers**
 
 Recursively sort plain-object keys, preserve arrays, reject non-finite numbers, convert explicit `undefined` values to `null`, use `crypto.subtle.digest('SHA-256', TextEncoder(...))`, and return lowercase 64-char hex. `buildPublicSnapshot` groups all five collection types, calendar, summary, public image refs and NSFW projection.
 
-- [ ] **Step 4: Run GREEN gates**
+- [x] **Step 4: Run GREEN gates**
 
 ```bash
 node --import tsx --test packages/storage/src/canonical-json.test.ts packages/domain/src/public-snapshot.test.ts
@@ -355,7 +355,7 @@ pnpm -F @airing-cal/domain typecheck
 
 Expected: all PASS and repeated content yields identical hash.
 
-- [ ] **Step 5: Review, mark 2.2 and 4.1 complete, commit and push**
+- [x] **Step 5: Review, mark 4.1 complete, leave 2.2 open for Task 5 adapters, commit and push**
 
 ```bash
 git add packages/storage packages/domain openspec/changes/adopt-d1-r2-incremental-sync
