@@ -38,7 +38,7 @@
 
 - Plan task: `Task 2: D1 migration 与 typed state contracts`
 - OpenSpec mapping: `2.1 Add migrations for collection_items, subject_media, sync_runs, sync_budget and app_state without secondary indexes`
-- Stage: `implementation-review-ready`
+- Stage: `checkoff`
 - Implementation base: `a268d4f`
 - CLI/config evidence: installed Wrangler `d1 migrations apply/list` help confirms database positional plus `--local`, `--persist-to`, and `--config`; `d1 execute` help confirms `--command` and `--json`; installed Wrangler types confirm `d1_databases` and `migrations_dir`.
 - RED evidence: focused migration suite failed 2/2 because `migrations/0001_d1_authoritative_state.sql` and `packages/storage/wrangler.d1-test.toml` did not exist.
@@ -46,7 +46,9 @@
 - Contract scope: exports typed D1 rows, database/statement structural interfaces, and versioned public snapshot/pointer shapes; error persistence exposes classified `error_code` only.
 - Schema scope: no `CREATE INDEX`, foreign key, runtime Worker binding, production migration, canonical JSON/hash helper, or Task 3 implementation.
 - Verification: storage typecheck and 12/12 tests; full repository typecheck/test/build check; OpenSpec strict; diff check all pass.
-- Quality review round: `1/2 REJECTED → fixed, re-review ready`.
+- Quality review round: `1/2 REJECTED → fixed; 2/2 APPROVED`.
 - Review-fix RED evidence: exact PRAGMA expectation failed because SQLite reported `app_state.key` as `notnull=0`; concrete public payload type test failed compilation because collections/calendar/summary were unknown.
 - Review-fix implementation: all TEXT primary keys are explicitly `NOT NULL`; migration tests lock every application column's type, nullability, default and PK ordinal, reject NULL primary-key inserts, assert required CHECK constraints and clean temporary D1/log state; public snapshot contracts now expose concrete collection, calendar, summary, image-reference and NSFW projections.
 - Review-fix GREEN evidence: focused migration 2/2; storage typecheck and 13/13 tests; full repository typecheck/test/build check; OpenSpec strict and diff check pass.
+- Final review result: fresh spec compliance APPROVED and code quality APPROVED with no Critical, Important, or Minor findings.
+- Task 2 checkoff: plan Steps 1–5 and OpenSpec 2.1 complete; implementation commits `8a9fc2c1a650afd65e4fb79baee9e9f5bf5514b8` and `40c92e1fa2b981d5e29e6cacfc93739e0eaf1aaa` are pushed.

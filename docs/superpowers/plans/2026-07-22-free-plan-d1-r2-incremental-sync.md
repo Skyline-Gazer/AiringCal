@@ -212,7 +212,7 @@ Expected: task 1.3 is checked only after production evidence exists; Task 2 may 
 - Produces `PublicSnapshotV1`, `PublicSnapshotPointerV1`, `D1DatabaseLike`, `D1PreparedStatementLike`.
 - Schema tables: `collection_items`, `subject_media`, `sync_runs`, `sync_budget`, `app_state`; helper table `sync_budget_reservations` is permitted solely for stable reservation idempotency.
 
-- [ ] **Step 1: Write RED migration-shape and idempotency tests**
+- [x] **Step 1: Write RED migration-shape and idempotency tests**
 
 Read the SQL and assert all primary keys, required columns, foreign-key-free deployability, and no `CREATE INDEX`. Create a test-only local Wrangler config:
 
@@ -236,7 +236,7 @@ Apply the migration twice to isolated local D1 state using the verified command:
 
 Expected RED: migration/config do not exist. The test must inspect `sqlite_schema` and require exactly the intended tables plus Wrangler’s migration bookkeeping.
 
-- [ ] **Step 2: Define exact TypeScript contracts**
+- [x] **Step 2: Define exact TypeScript contracts**
 
 Use integer epoch seconds and JSON text at the database boundary:
 
@@ -272,11 +272,11 @@ export interface PublicSnapshotPointerV1 {
 
 `SyncRunRow.error_code` stores only a classified error code; no upstream body/comment field exists.
 
-- [ ] **Step 3: Implement migration**
+- [x] **Step 3: Implement migration**
 
 Create tables with `PRIMARY KEY (user_id, subject_id)`, `PRIMARY KEY (date, resource)`, and `PRIMARY KEY (key)` as designed. `sync_budget_reservations` uses `reservation_id TEXT PRIMARY KEY`, immutable request fingerprint/result JSON, and `submission_status CHECK (...)`. Do not add secondary indexes or triggers that update unchanged rows.
 
-- [ ] **Step 4: Run GREEN gates**
+- [x] **Step 4: Run GREEN gates**
 
 Run:
 
@@ -289,7 +289,7 @@ git diff --check
 
 Expected: migration applies once, replay reports no pending migration rather than duplicating schema; typecheck/test PASS.
 
-- [ ] **Step 5: Review, mark 2.1 complete, commit and push**
+- [x] **Step 5: Review, mark 2.1 complete, commit and push**
 
 ```bash
 git add migrations packages/storage openspec/changes/adopt-d1-r2-incremental-sync
