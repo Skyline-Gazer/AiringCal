@@ -56,6 +56,7 @@ test('normalizeCollection creates a hot row and explicit subject_type public pro
   assert.equal(value.row.temperature, 'hot')
   assert.equal(value.row.first_seen_at, 0)
   assert.equal(value.row.changed_at, 0)
+  assert.equal(value.row.state_version, 1)
   assert.equal(value.row.missing_since, null)
   assert.equal(value.row.deleted_at, null)
   assert.equal(value.public_item.type, 2)
@@ -199,6 +200,7 @@ for (const [name, mutate] of [
     assert.equal(plan.updates.length, 1)
     assert.equal(plan.updates[0]?.first_seen_at, observedAt)
     assert.equal(plan.updates[0]?.changed_at, observedAt + 1)
+    assert.equal(plan.updates[0]?.state_version, before.row.state_version + 1)
   })
 }
 
@@ -211,6 +213,7 @@ test('first complete missing observation sets missing_since without deleting', a
   assert.equal(plan.firstMissing.length, 1)
   assert.equal(plan.firstMissing[0]?.missing_since, observedAt + 86_400)
   assert.equal(plan.firstMissing[0]?.deleted_at, null)
+  assert.equal(plan.firstMissing[0]?.state_version, current.state_version + 1)
 })
 
 test('second complete missing observation confirms deletion', async () => {
@@ -225,6 +228,7 @@ test('second complete missing observation confirms deletion', async () => {
   assert.equal(plan.confirmedDeleted.length, 1)
   assert.equal(plan.confirmedDeleted[0]?.missing_since, observedAt + 86_400)
   assert.equal(plan.confirmedDeleted[0]?.deleted_at, observedAt + 172_800)
+  assert.equal(plan.confirmedDeleted[0]?.state_version, current.state_version + 1)
 })
 
 test('restored collection clears missing and deleted state even when content is unchanged', async () => {
@@ -244,6 +248,41 @@ test('restored collection clears missing and deleted state even when content is 
   assert.equal(plan.restored.length, 1)
   assert.equal(plan.restored[0]?.missing_since, null)
   assert.equal(plan.restored[0]?.deleted_at, null)
+  assert.equal(plan.restored[0]?.state_version, current.state_version + 1)
+})
+
+test('state_version advances every real transition and preserves same-second business changes', async () => {
+  const original = (await normalized()).row
+  const changed = await normalizeCollection('ian', collection({ rate: 9 }))
+  const business = await planCollectionDiff({
+    current: [original],
+    incoming: [changed],
+    observedAt,
+    complete: true,
+  })
+  assert.equal(business.updates[0]?.state_version, 2)
+
+  const firstMissing = await planCollectionDiff({
+    current: [business.updates[0]!],
+    incoming: [],
+    observedAt: observedAt + 1,
+    complete: true,
+  })
+  assert.equal(firstMissing.firstMissing[0]?.state_version, 3)
+  const deleted = await planCollectionDiff({
+    current: [firstMissing.firstMissing[0]!],
+    incoming: [],
+    observedAt: observedAt + 2,
+    complete: true,
+  })
+  assert.equal(deleted.confirmedDeleted[0]?.state_version, 4)
+  const restored = await planCollectionDiff({
+    current: [deleted.confirmedDeleted[0]!],
+    incoming: [changed],
+    observedAt: observedAt + 3,
+    complete: true,
+  })
+  assert.equal(restored.restored[0]?.state_version, 5)
 })
 
 test('incomplete fetch never marks missing or deleted', async () => {

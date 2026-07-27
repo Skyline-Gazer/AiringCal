@@ -98,6 +98,7 @@ test('collection content hash excludes runtime observation fields', async () => 
       fetched_at: 999,
       first_seen_at: 999,
       changed_at: 999,
+      state_version: 999,
       missing_since: 999,
       deleted_at: 999,
       generation: 999,

@@ -10,6 +10,7 @@ CREATE TABLE collection_items (
   upstream_updated_at TEXT,
   subject_json TEXT NOT NULL,
   content_hash TEXT NOT NULL,
+  state_version INTEGER NOT NULL DEFAULT 1,
   temperature TEXT NOT NULL CHECK (temperature IN ('hot', 'cold')),
   first_seen_at INTEGER NOT NULL,
   changed_at INTEGER NOT NULL,

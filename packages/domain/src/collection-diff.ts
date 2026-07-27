@@ -108,6 +108,7 @@ export async function normalizeCollection(
       upstream_updated_at: entry.updated_at,
       subject_json: subjectJson,
       content_hash: contentHash,
+      state_version: 1,
       temperature: entry.type === 2 ? 'cold' : 'hot',
       first_seen_at: 0,
       changed_at: 0,
@@ -148,7 +149,7 @@ export async function planCollectionDiff({
     seen.set(incoming.row.user_id, seenSubjects)
     const previous = current.get(incoming.row.user_id)?.get(incoming.row.subject_id)
     if (!previous) {
-      inserts.push({ ...incoming.row, first_seen_at: observedAt, changed_at: observedAt })
+      inserts.push({ ...incoming.row, state_version: 1, first_seen_at: observedAt, changed_at: observedAt })
       continue
     }
     if (
@@ -161,6 +162,7 @@ export async function planCollectionDiff({
     }
     const next = {
       ...incoming.row,
+      state_version: previous.state_version + 1,
       first_seen_at: previous.first_seen_at,
       changed_at: previous.content_hash === incoming.row.content_hash ? previous.changed_at : observedAt,
       missing_since: null,
@@ -174,9 +176,9 @@ export async function planCollectionDiff({
     for (const previous of currentRows) {
       if (seen.get(previous.user_id)?.has(previous.subject_id) || previous.deleted_at !== null) continue
       if (previous.missing_since === null) {
-        firstMissing.push({ ...previous, missing_since: observedAt })
+        firstMissing.push({ ...previous, state_version: previous.state_version + 1, missing_since: observedAt })
       } else if (observedAt > previous.missing_since) {
-        confirmedDeleted.push({ ...previous, deleted_at: observedAt })
+        confirmedDeleted.push({ ...previous, state_version: previous.state_version + 1, deleted_at: observedAt })
       }
     }
   }

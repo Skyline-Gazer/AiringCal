@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import test from 'node:test'
 import type {
   CollectionDiffPlanLike,
@@ -37,6 +38,7 @@ class RecordingStatement implements D1PreparedStatementLike {
   constructor(
     readonly sql: string,
     private readonly rows: Record<string, unknown>[],
+    private readonly resolveFirst?: (binds: unknown[]) => Record<string, unknown> | null,
   ) {}
 
   bind(...values: unknown[]): D1PreparedStatementLike {
@@ -45,6 +47,7 @@ class RecordingStatement implements D1PreparedStatementLike {
   }
 
   async first<T = Record<string, unknown>>(): Promise<T | null> {
+    if (this.resolveFirst) return this.resolveFirst(this.binds) as T | null
     return (this.rows[0] as T | undefined) ?? null
   }
 
@@ -74,7 +77,11 @@ class RecordingD1 implements D1DatabaseLike {
   private batchIndex = 0
 
   prepare(sql: string): D1PreparedStatementLike {
-    const statement = new RecordingStatement(sql, this.rows)
+    const statement = new RecordingStatement(sql, this.rows, (binds) => {
+      if (!sql.startsWith('SELECT status FROM sync_runs')) return this.rows[0] ?? null
+      const status = this.syncStatuses.get(String(binds[0]))
+      return status === undefined ? null : { status }
+    })
     this.prepared.push(statement)
     return statement
   }
@@ -104,15 +111,23 @@ class RecordingD1 implements D1DatabaseLike {
         const instanceId = String(binds.at(-1))
         const status = this.syncStatuses.get(instanceId)
         const guarded = sql.includes("status NOT IN ('ok', 'error')")
-        changes = guarded && (status === 'ok' || status === 'error') ? 0 : 1
+        changes = status === undefined || (guarded && (status === 'ok' || status === 'error')) ? 0 : 1
         if (changes === 1) this.syncStatuses.set(instanceId, 'ok')
       }
       if (changes === undefined && sql.startsWith("UPDATE sync_runs SET status = 'error'")) {
         const instanceId = String(binds.at(-1))
         const status = this.syncStatuses.get(instanceId)
         const guarded = sql.includes("status NOT IN ('ok', 'error')")
-        changes = guarded && (status === 'ok' || status === 'error') ? 0 : 1
+        changes = status === undefined || (guarded && (status === 'ok' || status === 'error')) ? 0 : 1
         if (changes === 1) this.syncStatuses.set(instanceId, 'error')
+      }
+      if (
+        changes === undefined
+        && sql.startsWith('UPDATE sync_runs SET stage = ?')
+      ) {
+        const instanceId = String(binds.at(-1))
+        const status = this.syncStatuses.get(instanceId)
+        changes = status === undefined || status === 'ok' || status === 'error' ? 0 : 1
       }
       return result<T>(changes ?? 1)
     })
@@ -139,6 +154,75 @@ class RecordingD1 implements D1DatabaseLike {
   }
 }
 
+class SqliteStatement implements D1PreparedStatementLike {
+  private binds: unknown[] = []
+  constructor(readonly sql: string, private readonly database: DatabaseSync) {}
+  bind(...values: unknown[]): D1PreparedStatementLike {
+    this.binds = values
+    return this
+  }
+  async first<T = Record<string, unknown>>(): Promise<T | null> {
+    return (this.database.prepare(this.sql).get(...this.binds as SQLInputValue[]) as T | undefined) ?? null
+  }
+  async run<T = Record<string, unknown>>(): Promise<D1ResultLike<T>> {
+    const applied = this.database.prepare(this.sql).run(...this.binds as SQLInputValue[])
+    return result<T>(Number(applied.changes))
+  }
+  async all<T = Record<string, unknown>>(): Promise<D1ResultLike<T>> {
+    return result<T>(0, this.database.prepare(this.sql).all(...this.binds as SQLInputValue[]) as T[])
+  }
+  async raw<T = unknown[]>(): Promise<T[]> {
+    return this.database.prepare(this.sql).all(...this.binds as SQLInputValue[]).map((row) => Object.values(row) as T)
+  }
+}
+
+class SqliteD1 implements D1DatabaseLike {
+  private readonly database = new DatabaseSync(':memory:')
+  constructor() {
+    this.database.exec(`
+      CREATE TABLE collection_items (
+        user_id TEXT NOT NULL,
+        subject_id INTEGER NOT NULL,
+        collection_type INTEGER NOT NULL,
+        rate INTEGER,
+        tags_json TEXT NOT NULL,
+        comment TEXT NOT NULL,
+        ep_status INTEGER NOT NULL,
+        vol_status INTEGER NOT NULL,
+        upstream_updated_at TEXT,
+        subject_json TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        state_version INTEGER NOT NULL DEFAULT 1,
+        temperature TEXT NOT NULL,
+        first_seen_at INTEGER NOT NULL,
+        changed_at INTEGER NOT NULL,
+        missing_since INTEGER,
+        deleted_at INTEGER,
+        PRIMARY KEY (user_id, subject_id)
+      )
+    `)
+  }
+  prepare(sql: string): D1PreparedStatementLike {
+    return new SqliteStatement(sql, this.database)
+  }
+  async batch<T = Record<string, unknown>>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> {
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      const results: D1ResultLike<T>[] = []
+      for (const statement of statements) results.push(await statement.run<T>())
+      this.database.exec('COMMIT')
+      return results
+    } catch (error) {
+      this.database.exec('ROLLBACK')
+      throw error
+    }
+  }
+  async exec(sql: string): Promise<{ count: number; duration: number }> {
+    this.database.exec(sql)
+    return { count: 0, duration: 0 }
+  }
+}
+
 function collection(overrides: Partial<CollectionRow> = {}): CollectionRow {
   return {
     user_id: 'alice',
@@ -152,6 +236,7 @@ function collection(overrides: Partial<CollectionRow> = {}): CollectionRow {
     upstream_updated_at: '2026-07-27T00:00:00Z',
     subject_json: '{"private":false,"subject":null,"subject_type":2}',
     content_hash: 'a'.repeat(64),
+    state_version: 1,
     temperature: 'hot',
     first_seen_at: 100,
     changed_at: 100,
@@ -226,7 +311,7 @@ test('applyCollectionDiff uses one prepared positional statement for one changed
   const fake = new RecordingD1()
   const plan = emptyPlan()
   plan.unchanged = 0
-  plan.updates = [collection({ rate: 9, content_hash: 'b'.repeat(64), changed_at: 200 })]
+  plan.updates = [collection({ rate: 9, content_hash: 'b'.repeat(64), state_version: 2, changed_at: 200 })]
 
   assert.deepEqual(await new D1StateStore(fake).applyCollectionDiff(plan), { rowsWritten: 1 })
   assert.equal(fake.batchCalls.length, 1)
@@ -264,7 +349,8 @@ test('collection inserts replay safely after a committed chunk and a later batch
 
   await assert.rejects(new D1StateStore(fake).applyCollectionDiff(plan), /simulated D1 batch failure/)
   assert.equal(fake.insertedCollections.size, 50)
-  assert.match(fake.batchCalls[0]?.[0]?.sql ?? '', /ON CONFLICT\(user_id, subject_id\) DO NOTHING$/)
+  assert.match(fake.batchCalls[0]?.[0]?.sql ?? '', /ON CONFLICT\(user_id, subject_id\) DO UPDATE SET/)
+  assert.match(fake.batchCalls[0]?.[0]?.sql ?? '', /excluded\.changed_at.*excluded\.content_hash.*COLLATE BINARY/)
 
   fake.throwBeforeBatchAt = null
   const replay = await new D1StateStore(fake).applyCollectionDiff(plan)
@@ -276,11 +362,11 @@ test('applyCollectionDiff maps every transition to correct SQL and binds in stab
   const fake = new RecordingD1()
   const plan: CollectionDiffPlanLike = {
     inserts: [collection({ user_id: 'zoe', subject_id: 9 })],
-    updates: [collection({ user_id: 'bob', subject_id: 8, rate: 9 })],
+    updates: [collection({ user_id: 'bob', subject_id: 8, rate: 9, state_version: 2 })],
     unchanged: 7,
-    firstMissing: [collection({ user_id: 'alice', subject_id: 7, missing_since: 200 })],
-    confirmedDeleted: [collection({ user_id: 'alice', subject_id: 6, missing_since: 100, deleted_at: 200 })],
-    restored: [collection({ user_id: 'alice', subject_id: 5, missing_since: null, deleted_at: null })],
+    firstMissing: [collection({ user_id: 'alice', subject_id: 7, state_version: 2, missing_since: 200 })],
+    confirmedDeleted: [collection({ user_id: 'alice', subject_id: 6, state_version: 2, missing_since: 100, deleted_at: 200 })],
+    restored: [collection({ user_id: 'alice', subject_id: 5, state_version: 2, missing_since: null, deleted_at: null })],
   }
 
   const result = await new D1StateStore(fake).applyCollectionDiff(plan)
@@ -290,10 +376,9 @@ test('applyCollectionDiff maps every transition to correct SQL and binds in stab
   assert.equal(statements.length, 5)
   assert.deepEqual(statements.map(({ sql, binds }) => {
     if (sql.startsWith('INSERT')) return binds.slice(0, 2)
-    if (sql.startsWith('UPDATE collection_items SET deleted_at')) return binds.slice(1, 3)
-    if (sql.includes('(missing_since IS NOT NULL')) return binds.slice(-3, -1)
-    if (sql.includes('changed_at <')) return binds.slice(-3, -1)
-    return binds.slice(-2)
+    if (sql.startsWith('UPDATE collection_items SET deleted_at')) return binds.slice(2, 4)
+    if (sql.startsWith('UPDATE collection_items SET missing_since')) return binds.slice(2, 4)
+    return binds.slice(-3, -1)
   }), [
     ['alice', 5],
     ['alice', 6],
@@ -303,11 +388,11 @@ test('applyCollectionDiff maps every transition to correct SQL and binds in stab
   ])
   assert.match(statements[0]?.sql ?? '', /^UPDATE collection_items SET collection_type = \?/)
   assert.match(statements[1]?.sql ?? '', /^UPDATE collection_items SET deleted_at = \?/)
-  assert.deepEqual(statements[1]?.binds, [200, 'alice', 6, 100])
-  assert.match(statements[1]?.sql ?? '', /missing_since = \? AND deleted_at IS NULL$/)
+  assert.deepEqual(statements[1]?.binds, [200, 2, 'alice', 6, 1])
+  assert.match(statements[1]?.sql ?? '', /state_version = \?$/)
   assert.match(statements[2]?.sql ?? '', /^UPDATE collection_items SET missing_since = \?/)
-  assert.deepEqual(statements[2]?.binds, [200, 'alice', 7])
-  assert.match(statements[2]?.sql ?? '', /missing_since IS NULL AND deleted_at IS NULL$/)
+  assert.deepEqual(statements[2]?.binds, [200, 2, 'alice', 7, 1])
+  assert.match(statements[2]?.sql ?? '', /state_version = \?$/)
   assert.match(statements[3]?.sql ?? '', /^UPDATE collection_items SET collection_type = \?/)
   assert.match(statements[4]?.sql ?? '', /^INSERT INTO collection_items \(/)
 })
@@ -317,17 +402,15 @@ test('collection CAS ignores stale missing, deletion and restore transitions and
   fake.nextChanges = [0, 0, 0]
   const plan = emptyPlan()
   plan.unchanged = 0
-  plan.firstMissing = [collection({ subject_id: 1, missing_since: 200 })]
-  plan.confirmedDeleted = [collection({ subject_id: 2, missing_since: 100, deleted_at: 200 })]
-  plan.restored = [collection({ subject_id: 3, changed_at: 150 })]
+  plan.firstMissing = [collection({ subject_id: 1, state_version: 2, missing_since: 200 })]
+  plan.confirmedDeleted = [collection({ subject_id: 2, state_version: 2, missing_since: 100, deleted_at: 200 })]
+  plan.restored = [collection({ subject_id: 3, state_version: 2, changed_at: 150 })]
 
   const applied = await new D1StateStore(fake).applyCollectionDiff(plan)
 
   assert.equal(applied.rowsWritten, 0)
   const statements = fake.batchCalls.flat()
-  assert.match(statements[0]?.sql ?? '', /missing_since IS NULL AND deleted_at IS NULL$/)
-  assert.match(statements[1]?.sql ?? '', /missing_since = \? AND deleted_at IS NULL$/)
-  assert.match(statements[2]?.sql ?? '', /changed_at <= \?.*\(missing_since IS NOT NULL OR deleted_at IS NOT NULL\)$/)
+  assert.ok(statements.every(({ sql }) => /state_version = \?$/.test(sql)))
 })
 
 test('business updates require a strictly newer changed_at against delayed overwrite and replay', async () => {
@@ -335,12 +418,91 @@ test('business updates require a strictly newer changed_at against delayed overw
   fake.nextChanges = [0]
   const plan = emptyPlan()
   plan.unchanged = 0
-  plan.updates = [collection({ changed_at: 200, content_hash: 'b'.repeat(64) })]
+  plan.updates = [collection({ state_version: 2, changed_at: 200, content_hash: 'b'.repeat(64) })]
 
   assert.equal((await new D1StateStore(fake).applyCollectionDiff(plan)).rowsWritten, 0)
   const statement = fake.batchCalls[0]?.[0]
-  assert.match(statement?.sql ?? '', /changed_at < \? AND missing_since IS NULL AND deleted_at IS NULL$/)
-  assert.deepEqual(statement?.binds.slice(-3), ['alice', 23080, 200])
+  assert.match(statement?.sql ?? '', /state_version = \?$/)
+  assert.deepEqual(statement?.binds.slice(-3), ['alice', 23080, 1])
+})
+
+test('state_version CAS rejects stale transitions across business, missing, delete and restore sequences', async () => {
+  const database = new SqliteD1()
+  const store = new D1StateStore(database)
+  const initial = collection({ state_version: 1, changed_at: 100 })
+  const insert = emptyPlan()
+  insert.unchanged = 0
+  insert.inserts = [initial]
+  assert.equal((await store.applyCollectionDiff(insert)).rowsWritten, 1)
+
+  const business = collection({
+    rate: 9,
+    content_hash: 'b'.repeat(64),
+    state_version: 2,
+    changed_at: 100,
+  })
+  const businessPlan = emptyPlan()
+  businessPlan.unchanged = 0
+  businessPlan.updates = [business]
+  assert.equal((await store.applyCollectionDiff(businessPlan)).rowsWritten, 1)
+
+  const staleMissingPlan = emptyPlan()
+  staleMissingPlan.unchanged = 0
+  staleMissingPlan.firstMissing = [collection({ state_version: 2, missing_since: 101 })]
+  assert.equal((await store.applyCollectionDiff(staleMissingPlan)).rowsWritten, 0)
+
+  const missingPlan = emptyPlan()
+  missingPlan.unchanged = 0
+  missingPlan.firstMissing = [{ ...business, state_version: 3, missing_since: 101 }]
+  assert.equal((await store.applyCollectionDiff(missingPlan)).rowsWritten, 1)
+  const deletePlan = emptyPlan()
+  deletePlan.unchanged = 0
+  deletePlan.confirmedDeleted = [{ ...business, state_version: 4, missing_since: 101, deleted_at: 102 }]
+  assert.equal((await store.applyCollectionDiff(deletePlan)).rowsWritten, 1)
+  const restorePlan = emptyPlan()
+  restorePlan.unchanged = 0
+  restorePlan.restored = [{ ...business, state_version: 5, missing_since: null, deleted_at: null }]
+  assert.equal((await store.applyCollectionDiff(restorePlan)).rowsWritten, 1)
+  const newMissingPlan = emptyPlan()
+  newMissingPlan.unchanged = 0
+  newMissingPlan.firstMissing = [{ ...business, state_version: 6, missing_since: 103 }]
+  assert.equal((await store.applyCollectionDiff(newMissingPlan)).rowsWritten, 1)
+  const newDeletePlan = emptyPlan()
+  newDeletePlan.unchanged = 0
+  newDeletePlan.confirmedDeleted = [{ ...business, state_version: 7, missing_since: 103, deleted_at: 104 }]
+  assert.equal((await store.applyCollectionDiff(newDeletePlan)).rowsWritten, 1)
+  assert.equal((await store.applyCollectionDiff(restorePlan)).rowsWritten, 0)
+
+  const [final] = await store.listCollectionRows()
+  assert.equal(final?.state_version, 7)
+  assert.equal(final?.deleted_at, 104)
+})
+
+test('divergent inserts converge by changed_at then binary content_hash regardless of arrival order', async () => {
+  const older = collection({ changed_at: 100, content_hash: 'a'.repeat(64), rate: 7 })
+  const newer = collection({ changed_at: 101, content_hash: 'b'.repeat(64), rate: 9 })
+  const equalTimeWinner = collection({ changed_at: 100, content_hash: 'f'.repeat(64), rate: 10 })
+  const asInsert = (row: CollectionRow): CollectionDiffPlanLike => ({
+    inserts: [row],
+    updates: [],
+    unchanged: 0,
+    firstMissing: [],
+    confirmedDeleted: [],
+    restored: [],
+  })
+
+  for (const order of [[older, newer], [newer, older]]) {
+    const store = new D1StateStore(new SqliteD1())
+    for (const row of order) await store.applyCollectionDiff(asInsert(row))
+    assert.equal((await store.listCollectionRows())[0]?.content_hash, newer.content_hash)
+    assert.equal((await store.applyCollectionDiff(asInsert(newer))).rowsWritten, 0)
+  }
+
+  for (const order of [[older, equalTimeWinner], [equalTimeWinner, older]]) {
+    const store = new D1StateStore(new SqliteD1())
+    for (const row of order) await store.applyCollectionDiff(asInsert(row))
+    assert.equal((await store.listCollectionRows())[0]?.content_hash, equalTimeWinner.content_hash)
+  }
 })
 
 test('applyCollectionDiff splits deterministic writes into batches of at most 50', async () => {
@@ -377,16 +539,27 @@ test('app_state writes canonical version-one envelopes and reads their values', 
   ])
 
   fake.rows = [{ value_json: statement?.binds[1] }]
-  assert.deepEqual(await store.getAppState('public:pending'), { a: 1, z: 2 })
+  assert.deepEqual(await store.getAppState('public:pending', (value) => value), { a: 1, z: 2 })
 })
 
 test('app_state rejects unknown versions and corrupt JSON', async () => {
   const fake = new RecordingD1()
   const store = new D1StateStore(fake)
   fake.rows = [{ value_json: '{"schema_version":2,"value":{}}' }]
-  await assert.rejects(store.getAppState('x'), /Unsupported app_state schema_version/)
+  await assert.rejects(store.getAppState('x', (value) => value), /Unsupported app_state schema_version/)
   fake.rows = [{ value_json: '{broken' }]
-  await assert.rejects(store.getAppState('x'), /Invalid app_state JSON/)
+  await assert.rejects(store.getAppState('x', (value) => value), /Invalid app_state JSON/)
+})
+
+test('getAppState requires a runtime decoder while raw reads are explicit', async () => {
+  const fake = new RecordingD1()
+  fake.rows = [{ value_json: '{"schema_version":1,"value":{"ok":true}}' }]
+  const store = new D1StateStore(fake)
+  if (false) {
+    // @ts-expect-error typed app-state reads require a runtime decoder
+    await store.getAppState('x')
+  }
+  assert.deepEqual(await store.getAppStateUnknown('x'), { ok: true })
 })
 
 test('app_state decoder rejects invalid per-key values at runtime', async () => {
@@ -424,6 +597,7 @@ test('sync run lifecycle uses positional binds and persists only classified erro
     input_hash: 'a'.repeat(64),
     public_hash: 'b'.repeat(64),
   })
+  await store.startSyncRun(syncRun({ instance_id: 'run-2', stage: 'initialize' }))
   await store.failSyncRun('run-2', {
     heartbeat_at: 130,
     completed_at: 130,
@@ -431,16 +605,16 @@ test('sync run lifecycle uses positional binds and persists only classified erro
   })
 
   const statements = fake.batchCalls.flat()
-  assert.equal(statements.length, 5)
+  assert.equal(statements.length, 6)
   assert.ok(statements.every(({ sql, binds }) => (sql.match(/\?/g) ?? []).length === binds.length))
   assert.match(statements[0]?.sql ?? '', /^INSERT INTO sync_runs \(/)
   assert.match(statements[0]?.sql ?? '', /ON CONFLICT\(instance_id\) DO NOTHING$/)
   assert.match(statements[2]?.sql ?? '', /^UPDATE sync_runs SET stage = \?/)
   assert.match(statements[3]?.sql ?? '', /^UPDATE sync_runs SET status = 'ok'/)
   assert.match(statements[3]?.sql ?? '', /status NOT IN \('ok', 'error'\)$/)
-  assert.match(statements[4]?.sql ?? '', /^UPDATE sync_runs SET status = 'error'/)
-  assert.match(statements[4]?.sql ?? '', /status NOT IN \('ok', 'error'\)$/)
-  assert.ok(statements[4]?.binds.includes('UPSTREAM_RATE_LIMITED'))
+  assert.match(statements[5]?.sql ?? '', /^UPDATE sync_runs SET status = 'error'/)
+  assert.match(statements[5]?.sql ?? '', /status NOT IN \('ok', 'error'\)$/)
+  assert.ok(statements[5]?.binds.includes('UPSTREAM_RATE_LIMITED'))
   assert.equal(JSON.stringify(statements).includes('raw body'), false)
 })
 
@@ -454,25 +628,47 @@ test('committed completion survives response loss and catch-path failure', async
     store.completeSyncRun('lost', { heartbeat_at: 120, completed_at: 120 }),
     /response loss/,
   )
-  await store.failSyncRun('lost', {
-    heartbeat_at: 121,
-    completed_at: 121,
-    error_code: 'INTERNAL_ERROR',
-  })
+  await assert.rejects(
+    store.failSyncRun('lost', {
+      heartbeat_at: 121,
+      completed_at: 121,
+      error_code: 'INTERNAL_ERROR',
+    }),
+    /already terminal: ok/,
+  )
 
   assert.equal(fake.syncStatuses.get('lost'), 'ok')
 })
 
+test('sync lifecycle rejects missing runs and keeps same terminal replay idempotent', async () => {
+  const fake = new RecordingD1()
+  const store = new D1StateStore(fake)
+  await assert.rejects(
+    store.updateSyncRun('missing', { stage: 'collections', heartbeat_at: 1 }),
+    /Sync run not found: missing/,
+  )
+  await assert.rejects(
+    store.completeSyncRun('missing', { heartbeat_at: 1, completed_at: 1 }),
+    /Sync run not found: missing/,
+  )
+  await store.startSyncRun(syncRun({ instance_id: 'same' }))
+  await store.completeSyncRun('same', { heartbeat_at: 2, completed_at: 2 })
+  await store.completeSyncRun('same', { heartbeat_at: 3, completed_at: 3 })
+  assert.equal(fake.syncStatuses.get('same'), 'ok')
+})
+
 test('updateSyncRun never binds explicit undefined optional values', async () => {
   const fake = new RecordingD1()
-  await new D1StateStore(fake).updateSyncRun('run-1', {
+  const store = new D1StateStore(fake)
+  await store.startSyncRun(syncRun())
+  await store.updateSyncRun('run-1', {
     stage: 'collections',
     heartbeat_at: 110,
     generation: undefined,
     input_hash: undefined,
     collection_count: 0,
   })
-  const statement = fake.batchCalls[0]?.[0]
+  const statement = fake.batchCalls[1]?.[0]
   assert.equal(statement?.binds.includes(undefined), false)
   assert.doesNotMatch(statement?.sql ?? '', /generation|input_hash/)
   assert.match(statement?.sql ?? '', /collection_count = \?/)
@@ -486,7 +682,7 @@ test('batch result validation rejects missing or unsuccessful D1 results', async
   }
   const plan = emptyPlan()
   plan.unchanged = 0
-  plan.updates = [collection({ changed_at: 200, content_hash: 'b'.repeat(64) })]
+  plan.updates = [collection({ state_version: 2, changed_at: 200, content_hash: 'b'.repeat(64) })]
   await assert.rejects(
     new D1StateStore(new InvalidResultD1()).applyCollectionDiff(plan),
     /D1 batch result cardinality mismatch/,

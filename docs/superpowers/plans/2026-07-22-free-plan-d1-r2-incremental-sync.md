@@ -255,6 +255,7 @@ export interface CollectionRow {
   upstream_updated_at: string | null
   subject_json: string
   content_hash: string
+  state_version: number
   temperature: Temperature
   first_seen_at: number
   changed_at: number
@@ -271,6 +272,7 @@ export interface PublicSnapshotPointerV1 {
 ```
 
 `SyncRunRow.error_code` stores only a classified error code; no upstream body/comment field exists.
+`CollectionRow.state_version` is an optimistic-concurrency revision initialized to `1`; it is excluded from business hashes and public snapshots.
 
 - [x] **Step 3: Implement migration**
 
@@ -449,6 +451,7 @@ git push
 - Produces `applyCollectionDiff(plan: CollectionDiffPlan): Promise<{ rowsWritten: number }>` using one D1 batch after planning.
 - Produces `getAppState<T>(key): Promise<T | undefined>`, `putAppState<T>(key, value): Promise<void>`.
 - Produces `startSyncRun`, `updateSyncRun`, `completeSyncRun`, `failSyncRun`.
+- Every collection mutation uses exact `state_version` compare-and-set. Concurrent inserts converge by `(changed_at, content_hash BINARY)`; the winner increments the stored revision while preserving the earliest `first_seen_at`.
 
 - [ ] **Step 1: Write RED adapter tests with a recording D1 fake**
 

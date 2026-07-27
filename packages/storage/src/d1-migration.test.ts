@@ -53,6 +53,7 @@ const expectedColumns: Record<string, ExpectedColumn[]> = {
     column('upstream_updated_at', 'TEXT', 0),
     column('subject_json', 'TEXT', 1),
     column('content_hash', 'TEXT', 1),
+    column('state_version', 'INTEGER', 1, '1'),
     column('temperature', 'TEXT', 1),
     column('first_seen_at', 'INTEGER', 1),
     column('changed_at', 'INTEGER', 1),
@@ -136,6 +137,7 @@ test('migration defines only the authoritative tables and reservation helper wit
   assert.match(sql, /PRIMARY KEY\s*\(\s*date\s*,\s*resource\s*\)/i)
   assert.match(sql, /reservation_id\s+TEXT\s+NOT NULL\s+PRIMARY KEY/i)
   assert.match(sql, /temperature\s+TEXT\s+NOT NULL\s+CHECK\s*\(\s*temperature\s+IN\s*\(\s*'hot'\s*,\s*'cold'\s*\)\s*\)/i)
+  assert.match(sql, /state_version\s+INTEGER\s+NOT NULL\s+DEFAULT\s+1/i)
   assert.match(sql, /nsfw\s+INTEGER\s+NOT NULL\s+DEFAULT\s+0\s+CHECK\s*\(\s*nsfw\s+IN\s*\(\s*0\s*,\s*1\s*\)\s*\)/i)
   assert.match(sql, /reserved\s+INTEGER\s+NOT NULL\s+DEFAULT\s+0\s+CHECK\s*\(\s*reserved\s*>=\s*0\s*\)/i)
   assert.match(sql, /consumed\s+INTEGER\s+NOT NULL\s+DEFAULT\s+0\s+CHECK\s*\(\s*consumed\s*>=\s*0\s*\)/i)

@@ -14,6 +14,8 @@ export interface CollectionRow {
   upstream_updated_at: string | null
   subject_json: string
   content_hash: string
+  /** Optimistic-concurrency revision only; excluded from business hashes and public snapshots. */
+  state_version: number
   temperature: Temperature
   first_seen_at: number
   changed_at: number

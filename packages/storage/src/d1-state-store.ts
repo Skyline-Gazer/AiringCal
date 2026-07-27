@@ -23,6 +23,7 @@ const COLLECTION_COLUMNS = [
   'upstream_updated_at',
   'subject_json',
   'content_hash',
+  'state_version',
   'temperature',
   'first_seen_at',
   'changed_at',
@@ -31,12 +32,12 @@ const COLLECTION_COLUMNS = [
 ] as const
 
 const COLLECTION_SELECT = `SELECT ${COLLECTION_COLUMNS.join(', ')} FROM collection_items ORDER BY user_id, subject_id`
-const COLLECTION_INSERT = `INSERT INTO collection_items (${COLLECTION_COLUMNS.join(', ')}) VALUES (${COLLECTION_COLUMNS.map(() => '?').join(', ')}) ON CONFLICT(user_id, subject_id) DO NOTHING`
+const COLLECTION_INSERT = `INSERT INTO collection_items (${COLLECTION_COLUMNS.join(', ')}) VALUES (${COLLECTION_COLUMNS.map(() => '?').join(', ')}) ON CONFLICT(user_id, subject_id) DO UPDATE SET collection_type = excluded.collection_type, rate = excluded.rate, tags_json = excluded.tags_json, comment = excluded.comment, ep_status = excluded.ep_status, vol_status = excluded.vol_status, upstream_updated_at = excluded.upstream_updated_at, subject_json = excluded.subject_json, content_hash = excluded.content_hash, state_version = collection_items.state_version + 1, temperature = excluded.temperature, first_seen_at = MIN(collection_items.first_seen_at, excluded.first_seen_at), changed_at = excluded.changed_at, missing_since = excluded.missing_since, deleted_at = excluded.deleted_at WHERE excluded.changed_at > collection_items.changed_at OR (excluded.changed_at = collection_items.changed_at AND excluded.content_hash > collection_items.content_hash COLLATE BINARY)`
 const COLLECTION_UPDATE_FIELDS = COLLECTION_COLUMNS.slice(2).map((column) => `${column} = ?`).join(', ')
-const COLLECTION_UPDATE = `UPDATE collection_items SET ${COLLECTION_UPDATE_FIELDS} WHERE user_id = ? AND subject_id = ? AND changed_at < ? AND missing_since IS NULL AND deleted_at IS NULL`
-const COLLECTION_RESTORE = `UPDATE collection_items SET ${COLLECTION_UPDATE_FIELDS} WHERE user_id = ? AND subject_id = ? AND changed_at <= ? AND (missing_since IS NOT NULL OR deleted_at IS NOT NULL)`
-const FIRST_MISSING_UPDATE = 'UPDATE collection_items SET missing_since = ? WHERE user_id = ? AND subject_id = ? AND missing_since IS NULL AND deleted_at IS NULL'
-const CONFIRMED_DELETED_UPDATE = 'UPDATE collection_items SET deleted_at = ? WHERE user_id = ? AND subject_id = ? AND missing_since = ? AND deleted_at IS NULL'
+const COLLECTION_UPDATE = `UPDATE collection_items SET ${COLLECTION_UPDATE_FIELDS} WHERE user_id = ? AND subject_id = ? AND state_version = ?`
+const COLLECTION_RESTORE = `UPDATE collection_items SET ${COLLECTION_UPDATE_FIELDS} WHERE user_id = ? AND subject_id = ? AND state_version = ?`
+const FIRST_MISSING_UPDATE = 'UPDATE collection_items SET missing_since = ?, state_version = ? WHERE user_id = ? AND subject_id = ? AND state_version = ?'
+const CONFIRMED_DELETED_UPDATE = 'UPDATE collection_items SET deleted_at = ?, state_version = ? WHERE user_id = ? AND subject_id = ? AND state_version = ?'
 const MAX_BATCH_STATEMENTS = 50
 const CLASSIFIED_ERROR_CODE = /^[A-Z][A-Z0-9_]{1,63}$/
 
@@ -114,12 +115,20 @@ function decodeCollectionRow(raw: Record<string, unknown>): CollectionRow {
     upstream_updated_at: nullableString(raw.upstream_updated_at, 'upstream_updated_at'),
     subject_json: validateJson(requireString(raw.subject_json, 'subject_json'), 'subject_json'),
     content_hash: requireString(raw.content_hash, 'content_hash'),
+    state_version: requireInteger(raw.state_version, 'state_version'),
     temperature,
     first_seen_at: requireInteger(raw.first_seen_at, 'first_seen_at'),
     changed_at: requireInteger(raw.changed_at, 'changed_at'),
     missing_since: nullableInteger(raw.missing_since, 'missing_since'),
     deleted_at: nullableInteger(raw.deleted_at, 'deleted_at'),
   }
+}
+
+function priorStateVersion(row: CollectionRow): number {
+  if (!Number.isSafeInteger(row.state_version) || row.state_version <= 1) {
+    throw new Error('Invalid planned collection state_version')
+  }
+  return row.state_version - 1
 }
 
 function assertClassifiedErrorCode(errorCode: string | null): void {
@@ -159,6 +168,16 @@ export class D1StateStore {
     return results.reduce((total, result, index) => total + appliedChanges(result, index), 0)
   }
 
+  private async syncRunStatus(instanceId: string): Promise<string | undefined> {
+    const row = await this.database
+      .prepare('SELECT status FROM sync_runs WHERE instance_id = ?')
+      .bind(instanceId)
+      .first<{ status: unknown }>()
+    if (row === null) return undefined
+    if (typeof row.status !== 'string') throw new Error(`Invalid sync run status: ${instanceId}`)
+    return row.status
+  }
+
   async listCollectionRows(): Promise<CollectionRow[]> {
     const result = await this.database.prepare(COLLECTION_SELECT).all<Record<string, unknown>>()
     return result.results.map(decodeCollectionRow)
@@ -175,7 +194,7 @@ export class D1StateStore {
           ...collectionUpdateValues(row),
           row.user_id,
           row.subject_id,
-          row.changed_at,
+          priorStateVersion(row),
         ),
       })
     }
@@ -188,7 +207,7 @@ export class D1StateStore {
           ...collectionUpdateValues(row),
           row.user_id,
           row.subject_id,
-          row.changed_at,
+          priorStateVersion(row),
         ),
       })
     }
@@ -207,7 +226,13 @@ export class D1StateStore {
         userId: row.user_id,
         subjectId: row.subject_id,
         order: 2,
-        statement: this.database.prepare(FIRST_MISSING_UPDATE).bind(row.missing_since, row.user_id, row.subject_id),
+        statement: this.database.prepare(FIRST_MISSING_UPDATE).bind(
+          row.missing_since,
+          row.state_version,
+          row.user_id,
+          row.subject_id,
+          priorStateVersion(row),
+        ),
       })
     }
     for (const row of plan.confirmedDeleted) {
@@ -217,9 +242,10 @@ export class D1StateStore {
         order: 1,
         statement: this.database.prepare(CONFIRMED_DELETED_UPDATE).bind(
           row.deleted_at,
+          row.state_version,
           row.user_id,
           row.subject_id,
-          row.missing_since,
+          priorStateVersion(row),
         ),
       })
     }
@@ -234,7 +260,7 @@ export class D1StateStore {
     return { rowsWritten }
   }
 
-  async getAppState<T>(key: string, decode?: (value: unknown) => T): Promise<T | undefined> {
+  async getAppStateUnknown(key: string): Promise<unknown | undefined> {
     const row = await this.database
       .prepare('SELECT value_json FROM app_state WHERE key = ?')
       .bind(key)
@@ -254,7 +280,12 @@ export class D1StateStore {
     const envelope = parsed as Record<string, unknown>
     if (envelope.schema_version !== 1) throw new Error('Unsupported app_state schema_version')
     if (!Object.hasOwn(envelope, 'value')) throw new Error('Invalid app_state JSON')
-    return decode ? decode(envelope.value) : envelope.value as T
+    return envelope.value
+  }
+
+  async getAppState<T>(key: string, decode: (value: unknown) => T): Promise<T | undefined> {
+    const value = await this.getAppStateUnknown(key)
+    return value === undefined ? undefined : decode(value)
   }
 
   async putAppState<T>(key: string, value: T): Promise<void> {
@@ -275,7 +306,10 @@ export class D1StateStore {
     const statement = this.database.prepare(
       `INSERT INTO sync_runs (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) ON CONFLICT(instance_id) DO NOTHING`,
     ).bind(...columns.map((column) => row[column]))
-    await this.executeBatch([statement])
+    const changes = await this.executeBatch([statement])
+    if (changes === 0 && await this.syncRunStatus(row.instance_id) === undefined) {
+      throw new Error(`Sync run not found after start: ${row.instance_id}`)
+    }
   }
 
   async updateSyncRun(instanceId: string, update: SyncRunUpdate): Promise<void> {
@@ -288,7 +322,13 @@ export class D1StateStore {
     const statement = this.database.prepare(
       `UPDATE sync_runs SET ${columns.map((column) => `${column} = ?`).join(', ')} WHERE instance_id = ? AND status NOT IN ('ok', 'error')`,
     ).bind(...columns.map((column) => update[column]), instanceId)
-    await this.executeBatch([statement])
+    const changes = await this.executeBatch([statement])
+    if (changes === 0) {
+      const status = await this.syncRunStatus(instanceId)
+      if (status === undefined) throw new Error(`Sync run not found: ${instanceId}`)
+      if (status === 'ok' || status === 'error') throw new Error(`Sync run already terminal: ${status}`)
+      throw new Error(`Sync run update not applied: ${instanceId}`)
+    }
   }
 
   async completeSyncRun(instanceId: string, completion: SyncRunCompletion): Promise<void> {
@@ -302,7 +342,14 @@ export class D1StateStore {
       completion.public_hash ?? null,
       instanceId,
     )
-    await this.executeBatch([statement])
+    const changes = await this.executeBatch([statement])
+    if (changes === 0) {
+      const status = await this.syncRunStatus(instanceId)
+      if (status === undefined) throw new Error(`Sync run not found: ${instanceId}`)
+      if (status === 'ok') return
+      if (status === 'error') throw new Error('Sync run already terminal: error')
+      throw new Error(`Sync run completion not applied: ${instanceId}`)
+    }
   }
 
   async failSyncRun(instanceId: string, failure: SyncRunFailure): Promise<void> {
@@ -310,6 +357,13 @@ export class D1StateStore {
     const statement = this.database.prepare(
       "UPDATE sync_runs SET status = 'error', heartbeat_at = ?, completed_at = ?, error_code = ? WHERE instance_id = ? AND status NOT IN ('ok', 'error')",
     ).bind(failure.heartbeat_at, failure.completed_at, failure.error_code, instanceId)
-    await this.executeBatch([statement])
+    const changes = await this.executeBatch([statement])
+    if (changes === 0) {
+      const status = await this.syncRunStatus(instanceId)
+      if (status === undefined) throw new Error(`Sync run not found: ${instanceId}`)
+      if (status === 'error') return
+      if (status === 'ok') throw new Error('Sync run already terminal: ok')
+      throw new Error(`Sync run failure not applied: ${instanceId}`)
+    }
   }
 }
