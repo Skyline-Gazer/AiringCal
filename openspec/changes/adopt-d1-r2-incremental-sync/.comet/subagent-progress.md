@@ -33,3 +33,16 @@
 - Production bootstrap evidence: GitHub Actions run `30208798689` (`https://github.com/markd3ng/AiringCal/actions/runs/30208798689`) succeeded at `791acb95cc0777df8f1dd8fdbe6b662182120bcb`.
 - Production resources: D1 `airing-cal-state` (`7b56ac09-369a-4912-a2a3-8a09ede05cf1`), data R2 `airing-cal-data`, image R2 `airing-cal-images`, KV namespace `e0c01d4da9c64b59badb2005dd644562`, Queue `airing-cal-media`.
 - Production resolver result: provision replay succeeded, then the read-only resolver verified all five resource classes and returned the same canonical D1/KV IDs; workflow logs masked credentials and exposed no request headers.
+
+## Task 2 Implementation
+
+- Plan task: `Task 2: D1 migration 与 typed state contracts`
+- OpenSpec mapping: `2.1 Add migrations for collection_items, subject_media, sync_runs, sync_budget and app_state without secondary indexes`
+- Stage: `implementation-review-ready`
+- Implementation base: `a268d4f`
+- CLI/config evidence: installed Wrangler `d1 migrations apply/list` help confirms database positional plus `--local`, `--persist-to`, and `--config`; `d1 execute` help confirms `--command` and `--json`; installed Wrangler types confirm `d1_databases` and `migrations_dir`.
+- RED evidence: focused migration suite failed 2/2 because `migrations/0001_d1_authoritative_state.sql` and `packages/storage/wrangler.d1-test.toml` did not exist.
+- GREEN evidence: focused migration suite 2/2; isolated local migration applies once and replay reports no pending migrations; `sqlite_schema` and `pragma_table_info` match the five authoritative tables, reservation helper, and Wrangler bookkeeping exactly.
+- Contract scope: exports typed D1 rows, database/statement structural interfaces, and versioned public snapshot/pointer shapes; error persistence exposes classified `error_code` only.
+- Schema scope: no `CREATE INDEX`, foreign key, runtime Worker binding, production migration, canonical JSON/hash helper, or Task 3 implementation.
+- Verification: storage typecheck and 12/12 tests; full repository typecheck/test/build check; OpenSpec strict; diff check all pass.

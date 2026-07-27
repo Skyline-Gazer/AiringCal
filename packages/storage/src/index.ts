@@ -1,5 +1,22 @@
 export const packageBoundary = '@airing-cal/storage'
 
+export type {
+  AppStateRow,
+  BudgetSubmissionStatus,
+  CollectionRow,
+  D1DatabaseLike,
+  D1PreparedStatementLike,
+  D1ResultLike,
+  PublicSnapshotPointerV1,
+  PublicSnapshotV1,
+  SubjectMediaRow,
+  SyncBudgetReservationRow,
+  SyncBudgetResource,
+  SyncBudgetRow,
+  SyncRunRow,
+  Temperature,
+} from './d1-types.ts'
+
 export type CollectionType = 'want' | 'watched' | 'watching' | 'on_hold' | 'dropped'
 export type ImageSourceSize = 'common' | 'large'
 export const SUBJECT_DETAIL_TTL_SECONDS = 60 * 60 * 24 * 7
