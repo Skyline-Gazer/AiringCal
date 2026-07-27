@@ -133,6 +133,30 @@ test('assembleFullFetch retains user identity for the same subject across users'
   assert.deepEqual(result.collections.map(({ user_id }) => user_id), ['alice', 'bob'])
 })
 
+test('assembleFullFetch rejects duplicate user groups', () => {
+  assert.throws(() => assembleFullFetch([
+    { user_id: 'alice', pages: [{ offset: 0, total: 0, data: [] }], pageLimit: 50 },
+    { user_id: 'alice', pages: [{ offset: 0, total: 0, data: [] }], pageLimit: 50 },
+  ], [], 123), /duplicate collection user/i)
+})
+
+test('assembleFullFetch accepts the OpenAPI-compatible minimal calendar item', () => {
+  const minimal = [{
+    weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+    items: [{ id: 1, type: 2, name: 'A', name_cn: '', summary: '', date: '' }],
+  }]
+  const result = assembleFullFetch(
+    [{ user_id: 'alice', pages: [{ offset: 0, total: 0, data: [] }], pageLimit: 50 }],
+    minimal,
+    123,
+  )
+
+  assert.equal(result.calendar[0]?.items[0]?.eps, 0)
+  assert.deepEqual(result.calendar[0]?.items[0]?.images, {
+    large: '', common: '', medium: '', small: '', grid: '',
+  })
+})
+
 test('assembleFullFetch reuses the supplied stable workflow observation', () => {
   const input = [{ user_id: 'alice', pages: [{ offset: 0, total: 0, data: [] }], pageLimit: 50 }]
   assert.equal(assembleFullFetch(input, [], 456).observedAt, 456)

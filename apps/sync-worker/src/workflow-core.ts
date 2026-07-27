@@ -326,9 +326,13 @@ export async function runSyncWorkflow(
         pageLimit: PAGE_LIMIT,
         user_id: group.user_id,
       })))
+      const stagedCalendar = await getJson(env.AIRING_CAL_KV, calendarOutput.key)
+      if (stagedCalendar !== null && await digest(stagedCalendar) !== calendarOutput.digest) {
+        throw new Error(`Staged calendar digest mismatch: ${calendarOutput.key}`)
+      }
       const fetched = assembleFullFetch(
         groups,
-        await getJson(env.AIRING_CAL_KV, calendarOutput.key),
+        stagedCalendar,
         run.started_at,
       )
       const collections = fetched.collections.map(({ collection }) => collection)

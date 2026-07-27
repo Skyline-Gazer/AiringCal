@@ -346,6 +346,45 @@ test('workflow rejects staged collection content whose digest differs from the f
   }
 })
 
+test('workflow rejects a structurally valid staged calendar whose digest differs from the fetched payload', async () => {
+  const kv = new MockKV()
+  const fetchedCalendar = [{
+    weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+    items: [{
+      id: 1, type: 2, name: 'A', name_cn: '', summary: '', date: '', eps: 1,
+      images: { large: '', common: '', medium: '', small: '', grid: '' },
+      rating: { score: 0, rank: 0, total: 0 },
+    }],
+  }]
+  kv.replacementGets.set(syncStagingKey('tampered-calendar', 'calendar'), [{
+    ...fetchedCalendar[0],
+    weekday: { ...fetchedCalendar[0]!.weekday, cn: '被篡改' },
+  }])
+  const coordinator = new MockSnapshotCoordinator(kv)
+  const step = new FakeStep(kv)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) return Response.json({ total: 0, data: [] })
+    if (text.endsWith('/calendar')) return Response.json(fetchedCalendar)
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await assert.rejects(
+      runSyncWorkflow(workflowEnv(kv, [], coordinator), {
+        instanceId: 'tampered-calendar',
+        payload: { mode: 'shadow', source: 'manual' },
+      }, step, (message) => new TestNonRetryableError(message)),
+      /calendar digest/i,
+    )
+    assert.equal(coordinator.commits.length, 0)
+    assert.equal(step.names.includes('publish-calendar'), false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('workflow accepts the same subject for two users while retaining a stable observation across step retry', async () => {
   const kv = new MockKV()
   kv.nullOnceGets.add(syncStagingKey('multi-user-retry', 'collections:1:0'))

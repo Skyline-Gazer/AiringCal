@@ -180,8 +180,10 @@ export async function planCollectionDiff({
     }
   }
 
-  const compareRows = (left: CollectionRow, right: CollectionRow) =>
-    left.user_id.localeCompare(right.user_id) || left.subject_id - right.subject_id
+  const compareRows = (left: CollectionRow, right: CollectionRow) => {
+    const userOrder = left.user_id < right.user_id ? -1 : left.user_id > right.user_id ? 1 : 0
+    return userOrder || left.subject_id - right.subject_id
+  }
   inserts.sort(compareRows)
   updates.sort(compareRows)
   firstMissing.sort(compareRows)

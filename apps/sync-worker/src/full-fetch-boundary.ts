@@ -27,41 +27,83 @@ function isSafeNonNegativeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0
 }
 
-function isCalendarSubject(value: unknown): boolean {
-  if (!isRecord(value) || !isSafeNonNegativeInteger(value.id) || value.id === 0) return false
-  if (![1, 2, 3, 4, 6].includes(value.type as number)) return false
+function normalizeCalendarSubject(value: unknown): BgmCalendarItem['items'][number] | null {
+  if (!isRecord(value) || !isSafeNonNegativeInteger(value.id) || value.id === 0) return null
+  if (![1, 2, 3, 4, 6].includes(value.type as number)) return null
   if (
     typeof value.name !== 'string'
     || typeof value.name_cn !== 'string'
     || typeof value.summary !== 'string'
-    || !isSafeNonNegativeInteger(value.eps)
-    || !isRecord(value.images)
-  ) return false
-  for (const size of ['large', 'common', 'medium', 'small', 'grid']) {
-    if (typeof value.images[size] !== 'string') return false
+  ) return null
+  if (value.eps !== undefined && !isSafeNonNegativeInteger(value.eps)) return null
+  if (value.images !== undefined) {
+    if (!isRecord(value.images)) return null
+    for (const size of ['large', 'common', 'medium', 'small', 'grid']) {
+      if (value.images[size] !== undefined && typeof value.images[size] !== 'string') return null
+    }
   }
-  if (!isRecord(value.rating) || typeof value.rating.score !== 'number' || !Number.isFinite(value.rating.score)) {
-    return false
+  if (value.rating !== undefined) {
+    if (!isRecord(value.rating)) return null
+    if (value.rating.score !== undefined && (typeof value.rating.score !== 'number' || !Number.isFinite(value.rating.score))) {
+      return null
+    }
+    if (value.rating.total !== undefined && !isSafeNonNegativeInteger(value.rating.total)) return null
+    if (value.rating.rank !== undefined && !isSafeNonNegativeInteger(value.rating.rank)) return null
   }
-  if (!isSafeNonNegativeInteger(value.rating.total)) return false
-  if (value.rating.rank !== undefined && !isSafeNonNegativeInteger(value.rating.rank)) return false
-  if (value.eps_count !== undefined && !isSafeNonNegativeInteger(value.eps_count)) return false
-  if (value.total_episodes !== undefined && !isSafeNonNegativeInteger(value.total_episodes)) return false
-  if (value.nsfw !== undefined && typeof value.nsfw !== 'boolean') return false
-  if (value.date !== undefined && typeof value.date !== 'string') return false
-  return true
+  if (value.eps_count !== undefined && !isSafeNonNegativeInteger(value.eps_count)) return null
+  if (value.total_episodes !== undefined && !isSafeNonNegativeInteger(value.total_episodes)) return null
+  if (value.nsfw !== undefined && typeof value.nsfw !== 'boolean') return null
+  if (value.date !== undefined && typeof value.date !== 'string') return null
+  if (value.air_date !== undefined && typeof value.air_date !== 'string') return null
+  const images = isRecord(value.images) ? value.images : {}
+  const rating = isRecord(value.rating) && typeof value.rating.score === 'number'
+    ? {
+        score: value.rating.score,
+        rank: isSafeNonNegativeInteger(value.rating.rank) ? value.rating.rank : 0,
+        total: isSafeNonNegativeInteger(value.rating.total) ? value.rating.total : 0,
+      }
+    : undefined
+  return {
+    ...value,
+    id: value.id,
+    type: value.type as number,
+    name: value.name,
+    name_cn: value.name_cn,
+    summary: value.summary,
+    nsfw: value.nsfw === true,
+    date: typeof value.date === 'string' ? value.date : typeof value.air_date === 'string' ? value.air_date : '',
+    eps: isSafeNonNegativeInteger(value.eps) ? value.eps : 0,
+    images: {
+      large: typeof images.large === 'string' ? images.large : '',
+      common: typeof images.common === 'string' ? images.common : '',
+      medium: typeof images.medium === 'string' ? images.medium : '',
+      small: typeof images.small === 'string' ? images.small : '',
+      grid: typeof images.grid === 'string' ? images.grid : '',
+    },
+    ...(rating ? { rating } : {}),
+  } as BgmCalendarItem['items'][number]
 }
 
-function isCalendar(value: unknown): value is BgmCalendarItem[] {
-  return Array.isArray(value) && value.every((day) => {
-    if (!isRecord(day) || !isRecord(day.weekday) || !Array.isArray(day.items)) return false
+function normalizeCalendar(value: unknown): BgmCalendarItem[] | null {
+  if (!Array.isArray(value)) return null
+  const result: BgmCalendarItem[] = []
+  for (const day of value) {
+    if (!isRecord(day) || !isRecord(day.weekday) || !Array.isArray(day.items)) return null
     const weekday = day.weekday
-    return typeof weekday.en === 'string'
-      && typeof weekday.cn === 'string'
-      && typeof weekday.ja === 'string'
-      && Number.isSafeInteger(weekday.id)
-      && day.items.every(isCalendarSubject)
-  })
+    if (
+      typeof weekday.en !== 'string'
+      || typeof weekday.cn !== 'string'
+      || typeof weekday.ja !== 'string'
+      || !Number.isSafeInteger(weekday.id)
+    ) return null
+    const items = day.items.map(normalizeCalendarSubject)
+    if (items.some((item) => item === null)) return null
+    result.push({
+      weekday: { en: weekday.en, cn: weekday.cn, ja: weekday.ja, id: weekday.id as number },
+      items: items as BgmCalendarItem['items'],
+    })
+  }
+  return result
 }
 
 export function assembleFullFetch(
@@ -69,9 +111,11 @@ export function assembleFullFetch(
   calendar: unknown,
   observedAt: number,
 ): CompleteFullFetch {
-  if (!isCalendar(calendar)) throw new Error('Incomplete calendar fetch')
+  const normalizedCalendar = normalizeCalendar(calendar)
+  if (normalizedCalendar === null) throw new Error('Incomplete calendar fetch')
   if (!isSafeNonNegativeInteger(observedAt)) throw new Error('Invalid full-fetch observation')
   const collections: Array<{ user_id: string; collection: BgmCollection }> = []
+  const userIds = new Set<string>()
   for (const group of groups) {
     if (
       typeof group.user_id !== 'string'
@@ -82,6 +126,8 @@ export function assembleFullFetch(
     ) {
       throw new Error('Incomplete collection fetch')
     }
+    if (userIds.has(group.user_id)) throw new Error(`Duplicate collection user: ${group.user_id}`)
+    userIds.add(group.user_id)
     const declaredTotal = group.pages[0]?.total
     if (!Number.isSafeInteger(declaredTotal) || (declaredTotal as number) < 0) {
       throw new Error('Incomplete collection fetch')
@@ -112,5 +158,5 @@ export function assembleFullFetch(
     }
     if (subjectIds.size !== declaredTotal) throw new Error('Incomplete collection fetch')
   }
-  return { collections, calendar, observedAt, complete: true }
+  return { collections, calendar: normalizedCalendar, observedAt, complete: true }
 }

@@ -269,3 +269,13 @@ test('mutation arrays are stable by user and subject regardless of input page or
   assert.deepEqual(keys(plan.updates), ['a-user:2', 'z-user:3'])
   assert.deepEqual(keys(plan.firstMissing), ['a-user:1'])
 })
+
+test('mutation ordering uses fixed JS code units for case punctuation and non-ASCII users', async () => {
+  const users = ['中', 'a', '_', 'A', '-']
+  const incoming = await Promise.all(users.map((user_id) => normalizeCollection(user_id, collection())))
+  const plan = await planCollectionDiff({
+    current: [], incoming, observedAt, complete: true,
+  })
+
+  assert.deepEqual(plan.inserts.map(({ user_id }) => user_id), ['-', 'A', '_', 'a', '中'])
+})
