@@ -62,9 +62,13 @@
 - Stage: `review-pending`
 - Implementation base: `f671fb3`
 - RED evidence: focused canonical/snapshot suite failed because `canonical-json.ts` and `public-snapshot.ts` did not exist.
-- GREEN evidence: focused 12/12; storage 21/21; domain 33/33; package and full-repository typecheck/test/build checks pass.
+- GREEN evidence: focused 19/19; storage 23/23; domain 38/38; package and full-repository typecheck/test/build checks pass.
 - Canonical contract: recursive plain-object key ordering, array order preservation, explicit `undefined` to `null`, UTF-8 SHA-256, lowercase 64-character hex and non-finite number rejection.
-- Collection hash scope: detects rate, tags, comment, collection type and episode/volume progress while excluding upstream timestamps and runtime observation/publication fields.
-- Snapshot contract: groups all five collection types, derives summary, retains calendar/image/NSFW projections, excludes envelope fields from content hash, rejects unknown schema versions and produces the exact immutable object key.
+- Collection hash scope: detects rate, tags, comment, collection type, episode/volume progress, public `updated_at`, and explicit public subject projection changes while excluding runtime observation/publication fields and opaque subject keys.
+- Snapshot contract: groups all five collection types, derives summary, retains calendar/image/NSFW projections, excludes envelope fields from content hash, deeply validates every nested field and summary invariant, verifies its own hash, rejects unknown schema/collection types and produces the exact immutable object key.
 - Scope audit: no collection diff, R2 publication, Worker runtime binding or legacy read-path change was introduced.
 - Checkoff: OpenSpec 4.1 is complete. OpenSpec 2.2 remains open because Task 5 still must provide the typed D1 adapter and remaining row-mapping evidence.
+- Review/fix round: `1/2 REJECTED → fixed; fresh re-review pending`.
+- Review-fix RED evidence: 9/17 focused assertions failed for public timestamp hashing, subject allowlisting, publication envelope, unknown collection types and deep/self-consistent snapshot parsing; a second RED cycle failed 2/9 for invalid envelope values and bucket/identity invariants.
+- Review-fix implementation: `upstream_updated_at` now participates as public `updated_at`; subject object/JSON use an explicit OpenAPI-backed public allowlist; snapshots carry validated `published_at`; the async parser validates exact nested contracts, five buckets, counters, image/NSFW fields and lowercase SHA-256 before recomputing the stable payload hash.
+- Review-fix GREEN evidence: focused 19/19; storage 23/23; domain 38/38; full repository test/typecheck/build check; frozen lockfile; OpenSpec strict and diff check all pass.

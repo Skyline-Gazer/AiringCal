@@ -22,6 +22,7 @@ test('PublicSnapshotV1 exposes concrete collection, calendar, summary, image and
     schema_version: 1,
     generation: 7,
     content_hash: 'sha256:public',
+    published_at: 1_722_000_000,
     collections: {
       want: [],
       watched: [],

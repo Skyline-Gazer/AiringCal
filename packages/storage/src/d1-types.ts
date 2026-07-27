@@ -154,6 +154,7 @@ export interface PublicSnapshotV1 {
   schema_version: 1
   generation: number
   content_hash: string
+  published_at: number
   collections: Record<'want' | 'watched' | 'watching' | 'on_hold' | 'dropped', PublicCollectionItemV1[]>
   calendar: PublicCalendarDayV1[]
   summary: PublicSnapshotSummaryV1

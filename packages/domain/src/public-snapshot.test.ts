@@ -5,6 +5,7 @@ import type {
   PublicCollectionItemV1,
   PublicSnapshotV1,
 } from '@airing-cal/storage'
+import { sha256Canonical } from '@airing-cal/storage'
 import {
   buildPublicSnapshot,
   parsePublicSnapshotV1,
@@ -78,10 +79,12 @@ test('buildPublicSnapshot groups all five collection types and projects summary,
       collectionItem(5, 5),
     ],
     calendar,
+    published_at: 1_722_000_000,
   }, 41)
 
   assert.equal(snapshot.schema_version, 1)
   assert.equal(snapshot.generation, 41)
+  assert.equal(snapshot.published_at, 1_722_000_000)
   assert.match(snapshot.content_hash, /^[0-9a-f]{64}$/)
   assert.deepEqual(Object.fromEntries(
     Object.entries(snapshot.collections).map(([key, items]) => [key, items.map((item) => item.subject_id)]),
@@ -117,26 +120,119 @@ test('snapshot content hash excludes generation, content_hash and published_at e
   const second = await buildPublicSnapshot({ ...input, content_hash: 'also-ignored', published_at: 999 }, 2)
 
   assert.equal(first.content_hash, second.content_hash)
+  assert.equal(first.published_at, 100)
+  assert.equal(second.published_at, 999)
 })
 
 test('snapshot parser round-trips the known schema and rejects unknown schema precisely', async () => {
   const snapshot = await buildPublicSnapshot({
     collections: [collectionItem(1, 1)],
     calendar,
+    published_at: 100,
   }, 3)
 
-  assert.deepEqual(parsePublicSnapshotV1(JSON.parse(JSON.stringify(snapshot))), snapshot)
-  assert.throws(
-    () => parsePublicSnapshotV1({ ...snapshot, schema_version: 2 }),
+  assert.deepEqual(await parsePublicSnapshotV1(JSON.parse(JSON.stringify(snapshot))), snapshot)
+  await assert.rejects(
+    parsePublicSnapshotV1({ ...snapshot, schema_version: 2 }),
     (error: unknown) => error instanceof Error
       && error.message === 'Unsupported public snapshot schema_version',
   )
+})
+
+test('snapshot parser deeply rejects malformed nested fields, counters and envelope values', async () => {
+  const snapshot = await buildPublicSnapshot({
+    collections: [collectionItem(1, 1)],
+    calendar,
+    published_at: 100,
+  }, 3)
+  const invalidValues: unknown[] = [
+    { ...snapshot, generation: -1 },
+    { ...snapshot, generation: 1.5 },
+    { ...snapshot, published_at: -1 },
+    { ...snapshot, published_at: 1.5 },
+    { ...snapshot, content_hash: 'A'.repeat(64) },
+    { ...snapshot, content_hash: 'a'.repeat(63) },
+    { ...snapshot, collections: { ...snapshot.collections, want: [{}] } },
+    { ...snapshot, collections: { ...snapshot.collections, want: [{ ...snapshot.collections.want[0], nsfw: 1 }] } },
+    { ...snapshot, collections: { ...snapshot.collections, want: [{ ...snapshot.collections.want[0], images: { common: {}, large: null } }] } },
+    { ...snapshot, calendar: [{ ...snapshot.calendar[0], weekday: { ...snapshot.calendar[0]?.weekday, id: '7' } }] },
+    { ...snapshot, calendar: [{ ...snapshot.calendar[0], items: [{ ...snapshot.calendar[0]?.items[0], nsfw: 'yes' }] }] },
+    { ...snapshot, summary: { ...snapshot.summary, want: 2, _total: 2 } },
+  ]
+
+  for (const value of invalidValues) {
+    await assert.rejects(parsePublicSnapshotV1(value), /Invalid public snapshot/)
+  }
+})
+
+test('snapshot parser rejects a structurally valid payload whose content hash is stale', async () => {
+  const snapshot = await buildPublicSnapshot({
+    collections: [collectionItem(1, 1)],
+    calendar,
+    published_at: 100,
+  }, 3)
+  const changed = structuredClone(snapshot)
+  changed.collections.want[0]!.name = 'Tampered'
+
+  await assert.rejects(parsePublicSnapshotV1(changed), /Invalid public snapshot content_hash/)
+})
+
+test('buildPublicSnapshot rejects unknown collection types', async () => {
+  await assert.rejects(
+    buildPublicSnapshot({
+      collections: [collectionItem(1, 99)],
+      calendar,
+      published_at: 100,
+    }, 1),
+    /Unsupported collection_type: 99/,
+  )
+})
+
+test('buildPublicSnapshot rejects invalid generation and publication timestamps', async () => {
+  const input = {
+    collections: [collectionItem(1, 1)],
+    calendar,
+    published_at: 100,
+  }
+  await assert.rejects(buildPublicSnapshot(input, -1), /Invalid snapshot generation/)
+  await assert.rejects(buildPublicSnapshot({ ...input, published_at: 1.5 }, 1), /Invalid snapshot published_at/)
+})
+
+test('snapshot parser enforces collection bucket and calendar identity invariants', async () => {
+  const snapshot = await buildPublicSnapshot({
+    collections: [collectionItem(1, 1)],
+    calendar,
+    published_at: 100,
+  }, 1)
+  const wrongBucket = structuredClone(snapshot)
+  wrongBucket.collections.watched = wrongBucket.collections.want
+  wrongBucket.collections.want = []
+  wrongBucket.summary = { want: 0, watched: 1, watching: 0, on_hold: 0, dropped: 0, _total: 1 }
+  wrongBucket.content_hash = await sha256Canonical({
+    schema_version: 1,
+    collections: wrongBucket.collections,
+    calendar: wrongBucket.calendar,
+    summary: wrongBucket.summary,
+  })
+
+  await assert.rejects(parsePublicSnapshotV1(wrongBucket), /Invalid public snapshot/)
+
+  const wrongCalendarIdentity = structuredClone(snapshot)
+  wrongCalendarIdentity.calendar[0]!.items[0]!.subject_id = 999
+  wrongCalendarIdentity.content_hash = await sha256Canonical({
+    schema_version: 1,
+    collections: wrongCalendarIdentity.collections,
+    calendar: wrongCalendarIdentity.calendar,
+    summary: wrongCalendarIdentity.summary,
+  })
+  await assert.rejects(parsePublicSnapshotV1(wrongCalendarIdentity), /Invalid public snapshot/)
 })
 
 test('snapshot object key is exact and content-addressed', async () => {
   const snapshot: PublicSnapshotV1 = await buildPublicSnapshot({
     collections: [collectionItem(1, 1)],
     calendar,
+    published_at: 100,
   }, 9)
 
   assert.equal(

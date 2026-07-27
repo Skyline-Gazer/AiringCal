@@ -64,7 +64,7 @@ const baseCollection = {
   generation: 7,
 }
 
-test('collection content hash detects every public business field without trusting upstream timestamp', async () => {
+test('collection content hash detects every public business field including public updated_at', async () => {
   const original = await collectionContentHash(baseCollection)
   const changes = [
     { rate: 9 },
@@ -73,6 +73,7 @@ test('collection content hash detects every public business field without trusti
     { collection_type: 2 },
     { ep_status: 5 },
     { vol_status: 2 },
+    { upstream_updated_at: '2026-07-21T00:00:00Z' },
   ]
 
   for (const change of changes) {
@@ -84,12 +85,11 @@ test('collection content hash detects every public business field without trusti
   }
 })
 
-test('collection content hash excludes upstream and runtime fields', async () => {
+test('collection content hash excludes runtime observation fields', async () => {
   assert.equal(
     await collectionContentHash(baseCollection),
     await collectionContentHash({
       ...baseCollection,
-      upstream_updated_at: '2099-01-01T00:00:00Z',
       fetched_at: 999,
       first_seen_at: 999,
       changed_at: 999,
@@ -100,6 +100,60 @@ test('collection content hash excludes upstream and runtime fields', async () =>
       heartbeat_at: 999,
       published_at: 999,
     }),
+  )
+})
+
+test('collection content hash only includes allowlisted public subject fields', async () => {
+  const original = await collectionContentHash(baseCollection)
+  assert.equal(
+    await collectionContentHash({
+      ...baseCollection,
+      subject: {
+        ...baseCollection.subject,
+        locked: true,
+        platform: 'TV',
+        rating: { score: 9.9, rank: 1, total: 999 },
+        collection: { doing: 999 },
+        nested_runtime: { fetched_at: 999, request_id: 'request-2' },
+      },
+    }),
+    original,
+  )
+
+  for (const subjectChange of [
+    { name: 'B' },
+    { name_cn: 'B CN' },
+    { summary: 'Changed summary' },
+    { date: '2026-07-28' },
+    { type: 6 },
+    { eps: 13 },
+    { total_episodes: 13 },
+    { nsfw: true },
+    { images: { common: 'https://example.com/common.jpg', large: 'https://example.com/large.jpg' } },
+  ]) {
+    assert.notEqual(
+      await collectionContentHash({
+        ...baseCollection,
+        subject: { ...baseCollection.subject, ...subjectChange },
+      }),
+      original,
+      `expected subject.${Object.keys(subjectChange)[0]} to affect the business hash`,
+    )
+  }
+})
+
+test('collection content hash applies the same allowlist to subject_json', async () => {
+  const fromObject = await collectionContentHash(baseCollection)
+  assert.equal(
+    await collectionContentHash({
+      ...baseCollection,
+      subject: undefined,
+      subject_json: JSON.stringify({
+        ...baseCollection.subject,
+        runtime_only: { trace_id: 'ignored' },
+      }),
+    }),
+    fromObject,
   )
 })
 

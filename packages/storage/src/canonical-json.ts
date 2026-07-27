@@ -13,6 +13,22 @@ export interface CollectionContentInput {
   [runtimeField: string]: unknown
 }
 
+interface SubjectBusinessProjection {
+  id: unknown
+  type: unknown
+  name: unknown
+  name_cn: unknown
+  summary: unknown
+  date: unknown
+  eps: unknown
+  total_episodes: unknown
+  nsfw: unknown
+  images: {
+    common: unknown
+    large: unknown
+  } | null
+}
+
 function isPlainObject(value: object): value is Record<string, unknown> {
   const prototype = Object.getPrototypeOf(value)
   return prototype === Object.prototype || prototype === null
@@ -56,7 +72,36 @@ function parseJsonOr<T>(value: string | undefined, fallback: T): unknown {
   return JSON.parse(value) as unknown
 }
 
+function subjectBusinessProjection(value: unknown): SubjectBusinessProjection | null {
+  if (!isPlainObjectValue(value)) return null
+  const images = isPlainObjectValue(value.images)
+    ? {
+        common: value.images.common ?? null,
+        large: value.images.large ?? null,
+      }
+    : null
+  return {
+    id: value.id ?? null,
+    type: value.type ?? null,
+    name: value.name ?? null,
+    name_cn: value.name_cn ?? null,
+    summary: value.summary ?? null,
+    date: value.date ?? null,
+    eps: value.eps ?? null,
+    total_episodes: value.total_episodes ?? null,
+    nsfw: value.nsfw ?? null,
+    images,
+  }
+}
+
+function isPlainObjectValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && isPlainObject(value)
+}
+
 export async function collectionContentHash(input: CollectionContentInput): Promise<string> {
+  const subject = input.subject === undefined
+    ? parseJsonOr(input.subject_json, null)
+    : input.subject
   return sha256Canonical({
     user_id: input.user_id,
     subject_id: input.subject_id,
@@ -66,6 +111,7 @@ export async function collectionContentHash(input: CollectionContentInput): Prom
     comment: input.comment ?? '',
     ep_status: input.ep_status,
     vol_status: input.vol_status,
-    subject: input.subject ?? parseJsonOr(input.subject_json, null),
+    upstream_updated_at: input.upstream_updated_at ?? null,
+    subject: subjectBusinessProjection(subject),
   })
 }
