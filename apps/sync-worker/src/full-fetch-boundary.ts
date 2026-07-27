@@ -30,11 +30,9 @@ function isSafeNonNegativeInteger(value: unknown): value is number {
 function normalizeCalendarSubject(value: unknown): BgmCalendarItem['items'][number] | null {
   if (!isRecord(value) || !isSafeNonNegativeInteger(value.id) || value.id === 0) return null
   if (![1, 2, 3, 4, 6].includes(value.type as number)) return null
-  if (
-    typeof value.name !== 'string'
-    || typeof value.name_cn !== 'string'
-    || typeof value.summary !== 'string'
-  ) return null
+  for (const field of ['name', 'name_cn', 'summary']) {
+    if (value[field] !== undefined && typeof value[field] !== 'string') return null
+  }
   if (value.eps !== undefined && !isSafeNonNegativeInteger(value.eps)) return null
   if (value.images !== undefined) {
     if (!isRecord(value.images)) return null
@@ -67,9 +65,9 @@ function normalizeCalendarSubject(value: unknown): BgmCalendarItem['items'][numb
     ...value,
     id: value.id,
     type: value.type as number,
-    name: value.name,
-    name_cn: value.name_cn,
-    summary: value.summary,
+    name: typeof value.name === 'string' ? value.name : '',
+    name_cn: typeof value.name_cn === 'string' ? value.name_cn : '',
+    summary: typeof value.summary === 'string' ? value.summary : '',
     nsfw: value.nsfw === true,
     date: typeof value.date === 'string' ? value.date : typeof value.air_date === 'string' ? value.air_date : '',
     eps: isSafeNonNegativeInteger(value.eps) ? value.eps : 0,

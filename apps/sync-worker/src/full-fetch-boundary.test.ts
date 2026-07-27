@@ -143,7 +143,7 @@ test('assembleFullFetch rejects duplicate user groups', () => {
 test('assembleFullFetch accepts the OpenAPI-compatible minimal calendar item', () => {
   const minimal = [{
     weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
-    items: [{ id: 1, type: 2, name: 'A', name_cn: '', summary: '', date: '' }],
+    items: [{ id: 1, type: 2 }],
   }]
   const result = assembleFullFetch(
     [{ user_id: 'alice', pages: [{ offset: 0, total: 0, data: [] }], pageLimit: 50 }],
@@ -151,6 +151,9 @@ test('assembleFullFetch accepts the OpenAPI-compatible minimal calendar item', (
     123,
   )
 
+  assert.equal(result.calendar[0]?.items[0]?.name, '')
+  assert.equal(result.calendar[0]?.items[0]?.name_cn, '')
+  assert.equal(result.calendar[0]?.items[0]?.summary, '')
   assert.equal(result.calendar[0]?.items[0]?.eps, 0)
   assert.deepEqual(result.calendar[0]?.items[0]?.images, {
     large: '', common: '', medium: '', small: '', grid: '',

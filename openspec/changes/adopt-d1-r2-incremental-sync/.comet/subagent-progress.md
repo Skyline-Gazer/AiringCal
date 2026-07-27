@@ -116,3 +116,9 @@
 - Third-fix GREEN evidence: domain focused 25/25; boundary focused 17/17; Workflow focused 17/17; full repository storage 25/domain 65/sync-worker 96 plus all other tests; full typecheck/build check, frozen lockfile, OpenSpec strict and diff check pass.
 - Task 5 integration guard: consume complete collection entries as `{ user_id, collection }` through D1 normalization and diff planning; do not flatten user identity before authoritative row mapping.
 - Checkoff guard: OpenSpec 3.1 and 3.2 remain pending until the next fresh independent spec-compliance and code-quality reviews both approve.
+- Final-final spec review: `REJECTED → fixed; fresh dual approval still pending`.
+- Final-final finding: checked-in `Legacy_SubjectSmall` declares no required property list, so the calendar boundary still incorrectly rejected otherwise valid subjects that omitted `name`, `name_cn` or `summary`.
+- Final-final RED evidence: the genuinely minimal calendar subject `{ id: 1, type: 2 }` failed the focused boundary suite 1/17 with `Incomplete calendar fetch`.
+- Final-final implementation: `id` and `type` remain required as local subject identity/discriminator inputs; absent optional `name`, `name_cn` and `summary` normalize to stable empty strings, while present non-string values remain malformed.
+- Final-final GREEN evidence: boundary focused 17/17; sync-worker 96/96 and package typecheck; full repository test/typecheck/build check; frozen lockfile; OpenSpec strict and diff check all pass.
+- Checkoff guard remains active: OpenSpec 3.1 and 3.2 are still pending.
