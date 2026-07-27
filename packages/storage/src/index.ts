@@ -38,6 +38,7 @@ export type {
   SyncRunRow,
   SyncRunCompletion,
   SyncRunFailure,
+  SyncTerminalTransitionResult,
   SyncRunUpdate,
   Temperature,
 } from './d1-types.ts'

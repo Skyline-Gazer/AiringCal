@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { getCachedSubjectDetail, KVStorage, nextSubjectRefreshAt, packageBoundary, putJsonIfChanged, subjectDetailKey } from './index.ts'
+import type { SyncTerminalTransitionResult } from './index.ts'
 
 class MockKV {
   values = new Map<string, unknown>()
@@ -40,6 +41,8 @@ test('putJsonIfChanged writes missing and changed records but skips unchanged no
 
 test('storage package boundary exposes its package name', () => {
   assert.equal(packageBoundary, '@airing-cal/storage')
+  const terminalResult: SyncTerminalTransitionResult = { outcome: 'applied', terminal: 'ok' }
+  assert.deepEqual(terminalResult, { outcome: 'applied', terminal: 'ok' })
 })
 
 test('getCachedSubjectDetail returns fresh cached subject detail without upstream fetch', async () => {

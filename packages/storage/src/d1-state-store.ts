@@ -47,6 +47,7 @@ interface PendingWrite {
   userId: string
   subjectId: number
   order: number
+  kind: 'insert' | 'mutation'
   planned: CollectionRow
   statement: D1PreparedStatementLike
 }
@@ -188,7 +189,18 @@ export class D1StateStore {
 
   private async reconcileCollectionNoChange(write: PendingWrite): Promise<void> {
     const current = await this.collectionRow(write.userId, write.subjectId)
-    if (current && COLLECTION_COLUMNS.every((column) => current[column] === write.planned[column])) return
+    const exact = current && COLLECTION_COLUMNS.every((column) => current[column] === write.planned[column])
+    if (exact) return
+    if (
+      write.kind === 'insert'
+      && current
+      && current.state_version === 1
+      && current.missing_since === null
+      && current.deleted_at === null
+      && current.first_seen_at <= write.planned.first_seen_at
+      && COLLECTION_COLUMNS.every((column) =>
+        column === 'first_seen_at' || current[column] === write.planned[column])
+    ) return
     throw new Error(`Stale collection diff conflict: ${write.userId}:${write.subjectId}`)
   }
 
@@ -214,6 +226,7 @@ export class D1StateStore {
         userId: row.user_id,
         subjectId: row.subject_id,
         order,
+        kind: 'mutation',
         planned: row,
         statement: this.database.prepare(COLLECTION_UPDATE).bind(
           ...collectionUpdateValues(row),
@@ -228,6 +241,7 @@ export class D1StateStore {
         userId: row.user_id,
         subjectId: row.subject_id,
         order,
+        kind: 'mutation',
         planned: row,
         statement: this.database.prepare(COLLECTION_RESTORE).bind(
           ...collectionUpdateValues(row),
@@ -244,6 +258,7 @@ export class D1StateStore {
         userId: row.user_id,
         subjectId: row.subject_id,
         order: 4,
+        kind: 'insert',
         planned: row,
         statement: this.database.prepare(COLLECTION_INSERT).bind(...collectionValues(row)),
       })
@@ -254,6 +269,7 @@ export class D1StateStore {
         userId: row.user_id,
         subjectId: row.subject_id,
         order: 2,
+        kind: 'mutation',
         planned: row,
         statement: this.database.prepare(FIRST_MISSING_UPDATE).bind(
           row.missing_since,
@@ -269,6 +285,7 @@ export class D1StateStore {
         userId: row.user_id,
         subjectId: row.subject_id,
         order: 1,
+        kind: 'mutation',
         planned: row,
         statement: this.database.prepare(CONFIRMED_DELETED_UPDATE).bind(
           row.deleted_at,

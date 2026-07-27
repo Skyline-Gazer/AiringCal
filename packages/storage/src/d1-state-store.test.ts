@@ -568,6 +568,29 @@ test('divergent initial inserts converge without advancing the initial revision'
   }
 })
 
+test('winning initial insert replay accepts an earlier preserved first_seen_at only', async () => {
+  const store = new D1StateStore(new SqliteD1())
+  const first = collection({ first_seen_at: 100, changed_at: 100, content_hash: 'a'.repeat(64), rate: 7 })
+  const winner = collection({ first_seen_at: 200, changed_at: 101, content_hash: 'b'.repeat(64), rate: 9 })
+  const asInsert = (row: CollectionRow): CollectionDiffPlanLike => ({
+    inserts: [row],
+    updates: [],
+    unchanged: 0,
+    firstMissing: [],
+    confirmedDeleted: [],
+    restored: [],
+  })
+
+  assert.equal((await store.applyCollectionDiff(asInsert(first))).rowsWritten, 1)
+  assert.equal((await store.applyCollectionDiff(asInsert(winner))).rowsWritten, 1)
+  assert.equal((await store.applyCollectionDiff(asInsert(winner))).rowsWritten, 0)
+  const [stored] = await store.listCollectionRows()
+  assert.equal(stored?.first_seen_at, 100)
+  assert.equal(stored?.state_version, 1)
+  assert.equal(stored?.missing_since, null)
+  assert.equal(stored?.deleted_at, null)
+})
+
 test('delayed insert after missing and deletion cannot clear transitioned state', async () => {
   const store = new D1StateStore(new SqliteD1())
   const initial = collection({ changed_at: 100 })
