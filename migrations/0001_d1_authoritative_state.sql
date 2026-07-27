@@ -36,7 +36,7 @@ CREATE TABLE subject_media (
 );
 
 CREATE TABLE sync_runs (
-  instance_id TEXT PRIMARY KEY,
+  instance_id TEXT NOT NULL PRIMARY KEY,
   status TEXT NOT NULL,
   stage TEXT NOT NULL,
   generation INTEGER,
@@ -64,7 +64,7 @@ CREATE TABLE sync_budget (
 );
 
 CREATE TABLE sync_budget_reservations (
-  reservation_id TEXT PRIMARY KEY,
+  reservation_id TEXT NOT NULL PRIMARY KEY,
   date TEXT NOT NULL,
   resource TEXT NOT NULL CHECK (resource IN ('media')),
   request_fingerprint TEXT NOT NULL,
@@ -75,7 +75,7 @@ CREATE TABLE sync_budget_reservations (
 );
 
 CREATE TABLE app_state (
-  key TEXT PRIMARY KEY,
+  key TEXT NOT NULL PRIMARY KEY,
   value_json TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );

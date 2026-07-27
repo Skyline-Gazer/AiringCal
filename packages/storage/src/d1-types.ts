@@ -82,13 +82,81 @@ export interface AppStateRow {
   updated_at: number
 }
 
+export interface PublicImageRefV1 {
+  hash: string
+  uri: string
+  r2_key: string
+}
+
+export interface PublicSubjectImagesV1 {
+  common: PublicImageRefV1 | null
+  large: PublicImageRefV1 | null
+}
+
+export interface PublicCollectionItemV1 {
+  subject_id: number
+  name: string
+  name_cn: string
+  summary: string
+  images: PublicSubjectImagesV1
+  eps: number
+  total_episodes: number
+  ep_status: number
+  vol_status: number
+  type: number
+  collection_type: number
+  rate: number
+  nsfw: boolean
+  date: string
+  tags: string[]
+  updated_at: string
+}
+
+export interface PublicCalendarSubjectV1 {
+  subject_id: number
+  id: number
+  type: number
+  name: string
+  name_cn: string
+  summary: string
+  images: PublicSubjectImagesV1
+  nsfw: boolean
+  date: string
+  eps: number
+  total_episodes: number
+  rating?: {
+    score: number
+    rank: number
+    total: number
+  }
+}
+
+export interface PublicCalendarDayV1 {
+  weekday: {
+    en: string
+    cn: string
+    ja: string
+    id: number
+  }
+  items: PublicCalendarSubjectV1[]
+}
+
+export interface PublicSnapshotSummaryV1 {
+  want: number
+  watched: number
+  watching: number
+  on_hold: number
+  dropped: number
+  _total: number
+}
+
 export interface PublicSnapshotV1 {
   schema_version: 1
   generation: number
   content_hash: string
-  collections: Record<'want' | 'watched' | 'watching' | 'on_hold' | 'dropped', unknown[]>
-  calendar: unknown
-  summary: unknown
+  collections: Record<'want' | 'watched' | 'watching' | 'on_hold' | 'dropped', PublicCollectionItemV1[]>
+  calendar: PublicCalendarDayV1[]
+  summary: PublicSnapshotSummaryV1
 }
 
 export interface PublicSnapshotPointerV1 {

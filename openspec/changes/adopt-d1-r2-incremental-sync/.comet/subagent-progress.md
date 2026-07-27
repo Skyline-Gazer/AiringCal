@@ -46,3 +46,7 @@
 - Contract scope: exports typed D1 rows, database/statement structural interfaces, and versioned public snapshot/pointer shapes; error persistence exposes classified `error_code` only.
 - Schema scope: no `CREATE INDEX`, foreign key, runtime Worker binding, production migration, canonical JSON/hash helper, or Task 3 implementation.
 - Verification: storage typecheck and 12/12 tests; full repository typecheck/test/build check; OpenSpec strict; diff check all pass.
+- Quality review round: `1/2 REJECTED → fixed, re-review ready`.
+- Review-fix RED evidence: exact PRAGMA expectation failed because SQLite reported `app_state.key` as `notnull=0`; concrete public payload type test failed compilation because collections/calendar/summary were unknown.
+- Review-fix implementation: all TEXT primary keys are explicitly `NOT NULL`; migration tests lock every application column's type, nullability, default and PK ordinal, reject NULL primary-key inserts, assert required CHECK constraints and clean temporary D1/log state; public snapshot contracts now expose concrete collection, calendar, summary, image-reference and NSFW projections.
+- Review-fix GREEN evidence: focused migration 2/2; storage typecheck and 13/13 tests; full repository typecheck/test/build check; OpenSpec strict and diff check pass.
