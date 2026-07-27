@@ -42,6 +42,7 @@ test('canonical SHA-256 is stable across object insertion order', async () => {
 const baseCollection = {
   user_id: 'alice',
   subject_id: 23080,
+  subject_type: 2,
   collection_type: 3,
   rate: 8,
   tags: ['daily'],
@@ -70,6 +71,7 @@ test('collection content hash detects every public business field including publ
     { rate: 9 },
     { tags: ['daily', 'favorite'] },
     { comment: 'excellent' },
+    { subject_type: 6 },
     { collection_type: 2 },
     { ep_status: 5 },
     { vol_status: 2 },
@@ -161,6 +163,7 @@ test('collection content hash supplies stable defaults for missing optional busi
   const required = {
     user_id: 'alice',
     subject_id: 23080,
+    subject_type: 2,
     collection_type: 3,
     ep_status: 0,
     vol_status: 0,

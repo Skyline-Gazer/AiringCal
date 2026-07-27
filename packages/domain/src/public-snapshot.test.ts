@@ -198,6 +198,53 @@ test('buildPublicSnapshot rejects invalid generation and publication timestamps'
   await assert.rejects(buildPublicSnapshot({ ...input, published_at: 1.5 }, 1), /Invalid snapshot published_at/)
 })
 
+test('buildPublicSnapshot rejects typed inputs that violate the shared public snapshot semantics', async () => {
+  const invalidInputs = [
+    {
+      collections: [collectionItem(1, 1, { rate: -1 })],
+      calendar,
+      published_at: 100,
+    },
+    {
+      collections: [collectionItem(1, 1, {
+        images: {
+          common: { hash: 'invalid', uri: '/image/invalid', r2_key: 'images/invalid/original' },
+          large: null,
+        },
+      })],
+      calendar,
+      published_at: 100,
+    },
+    {
+      collections: [collectionItem(1, 1)],
+      calendar: [{
+        ...calendar[0]!,
+        items: [{ ...calendar[0]!.items[0]!, subject_id: 999 }],
+      }],
+      published_at: 100,
+    },
+  ]
+
+  for (const input of invalidInputs) {
+    await assert.rejects(buildPublicSnapshot(input, 1), /Invalid public snapshot/)
+  }
+})
+
+test('every snapshot returned by the builder asynchronously round-trips through the parser', async () => {
+  for (const generation of [0, 1, 99]) {
+    const snapshot = await buildPublicSnapshot({
+      collections: [
+        collectionItem(generation + 1, 1),
+        collectionItem(generation + 101, 3, { nsfw: true }),
+      ],
+      calendar,
+      published_at: generation,
+    }, generation)
+
+    assert.deepEqual(await parsePublicSnapshotV1(structuredClone(snapshot)), snapshot)
+  }
+})
+
 test('snapshot parser enforces collection bucket and calendar identity invariants', async () => {
   const snapshot = await buildPublicSnapshot({
     collections: [collectionItem(1, 1)],

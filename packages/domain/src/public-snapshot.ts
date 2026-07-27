@@ -88,13 +88,15 @@ export async function buildPublicSnapshot(
     summary: summarize(collections),
   }
 
-  return {
+  const snapshot: PublicSnapshotV1 = {
     schema_version: 1,
     generation,
     content_hash: await sha256Canonical(snapshotPayload(stable)),
     published_at: input.published_at,
     ...stable,
   }
+  if (!validateSnapshotStructure(snapshot)) throw new Error('Invalid public snapshot')
+  return snapshot
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -216,10 +218,8 @@ function parseCollections(value: unknown): PublicSnapshotV1['collections'] | nul
   return value as unknown as PublicSnapshotV1['collections']
 }
 
-export async function parsePublicSnapshotV1(value: unknown): Promise<PublicSnapshotV1> {
-  if (!isRecord(value) || value.schema_version !== 1) {
-    throw new Error('Unsupported public snapshot schema_version')
-  }
+function validateSnapshotStructure(value: unknown): PublicSnapshotV1 | null {
+  if (!isRecord(value) || value.schema_version !== 1) return null
   const collections = parseCollections(value.collections)
   if (
     !hasExactKeys(value, [
@@ -235,10 +235,17 @@ export async function parsePublicSnapshotV1(value: unknown): Promise<PublicSnaps
     || !value.calendar.every(isCalendarDay)
     || !isSummary(value.summary, collections)
   ) {
-    throw new Error('Invalid public snapshot')
+    return null
   }
+  return value as unknown as PublicSnapshotV1
+}
 
-  const snapshot = value as unknown as PublicSnapshotV1
+export async function parsePublicSnapshotV1(value: unknown): Promise<PublicSnapshotV1> {
+  if (!isRecord(value) || value.schema_version !== 1) {
+    throw new Error('Unsupported public snapshot schema_version')
+  }
+  const snapshot = validateSnapshotStructure(value)
+  if (!snapshot) throw new Error('Invalid public snapshot')
   if (await sha256Canonical(snapshotPayload(snapshot)) !== snapshot.content_hash) {
     throw new Error('Invalid public snapshot content_hash')
   }

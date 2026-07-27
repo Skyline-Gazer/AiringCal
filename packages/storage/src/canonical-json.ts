@@ -1,6 +1,7 @@
 export interface CollectionContentInput {
   user_id: string
   subject_id: number
+  subject_type: number
   collection_type: number
   rate?: number | null
   tags?: string[]
@@ -105,6 +106,7 @@ export async function collectionContentHash(input: CollectionContentInput): Prom
   return sha256Canonical({
     user_id: input.user_id,
     subject_id: input.subject_id,
+    subject_type: input.subject_type,
     collection_type: input.collection_type,
     rate: input.rate ?? null,
     tags: input.tags ?? parseJsonOr(input.tags_json, []),
