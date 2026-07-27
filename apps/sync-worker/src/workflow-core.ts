@@ -27,6 +27,7 @@ import {
   type RefreshCandidate,
   type RefreshPlannerInput,
 } from './refresh-planner.ts'
+import { assembleFullFetch } from './full-fetch-boundary.ts'
 
 const COLLECTION_TYPES: CollectionType[] = ['want', 'watched', 'watching', 'on_hold', 'dropped']
 const PAGE_LIMIT = 50
@@ -259,8 +260,10 @@ export async function runSyncWorkflow(
 
     const client = new BgmClient(env.BANGUMI_TOKEN, { maxGetRetries: 0 })
     const pageOutputs: StepOutput[] = []
+    const collectionGroups: Array<{ outputs: StepOutput[]; expectedTotal: number }> = []
     for (let userIndex = 0; userIndex < users.length; userIndex++) {
       const username = users[userIndex]
+      const userOutputs: StepOutput[] = []
       const first = await step.do(pageStepName(userIndex, 0), NETWORK_STEP, async () => {
         const page = await fetchCollectionPage(client, username, 0, nonRetryable)
         const key = syncStagingKey(event.instanceId, `collections:${userIndex}:0`)
@@ -271,6 +274,7 @@ export async function runSyncWorkflow(
       })
       run = { ...run, stage: 'collections' }
       pageOutputs.push(first)
+      userOutputs.push(first)
       const pages = Math.ceil((first.total ?? 0) / PAGE_LIMIT)
       for (let pageIndex = 1; pageIndex < pages; pageIndex++) {
         const output = await step.do(pageStepName(userIndex, pageIndex), NETWORK_STEP, async () => {
@@ -283,7 +287,9 @@ export async function runSyncWorkflow(
         })
         run = { ...run, stage: 'collections' }
         pageOutputs.push(output)
+        userOutputs.push(output)
       }
+      collectionGroups.push({ outputs: userOutputs, expectedTotal: first.total ?? 0 })
     }
     run = { ...run, collection_pages: pageOutputs.length }
 
@@ -298,9 +304,13 @@ export async function runSyncWorkflow(
     run = { ...run, stage: 'calendar' }
 
     const prepared = await step.do('prepare-snapshot-inputs', STORAGE_STEP, async () => {
-      const collectionPages = await Promise.all(pageOutputs.map((output) => getJson<BgmCollection[]>(env.AIRING_CAL_KV, output.key)))
-      const collections = collectionPages.flatMap((page) => page ?? [])
-      const calendar = await getJson<any[]>(env.AIRING_CAL_KV, calendarOutput.key) ?? []
+      const groups = await Promise.all(collectionGroups.map(async (group) => ({
+        data: (await Promise.all(group.outputs.map((output) => getJson<BgmCollection[]>(env.AIRING_CAL_KV, output.key))))
+          .reduce<BgmCollection[] | null>((all, page) => all === null || page === null ? null : [...all, ...page], []),
+        expectedTotal: group.expectedTotal,
+      })))
+      const fetched = assembleFullFetch(groups, await getJson(env.AIRING_CAL_KV, calendarOutput.key))
+      const { collections, calendar } = fetched
       const merged = mergeCollections(collections)
       const snapshotKeys: Partial<Record<CollectionType, string>> = {}
       for (const type of COLLECTION_TYPES) {

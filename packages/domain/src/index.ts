@@ -6,6 +6,13 @@ export {
   snapshotObjectKey,
 } from './public-snapshot.ts'
 export type { PublicSnapshotInput } from './public-snapshot.ts'
+export { normalizeCollection, planCollectionDiff } from './collection-diff.ts'
+export type {
+  CollectionDiffInput,
+  CollectionDiffPlan,
+  CollectionInput,
+  NormalizedCollection,
+} from './collection-diff.ts'
 
 export type CollectionType = 'want' | 'watched' | 'watching' | 'on_hold' | 'dropped'
 

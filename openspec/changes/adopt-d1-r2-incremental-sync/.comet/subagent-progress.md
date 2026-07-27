@@ -78,3 +78,18 @@
 - Final review result: fresh spec compliance APPROVED and code quality APPROVED with no Critical or Important findings.
 - Task 4 guard: normalization must preserve top-level `subject_type` in the normalized public projection while passing it explicitly to `collectionContentHash`, because the current D1 row has no separate `subject_type` column.
 - Task 3 checkoff: plan Steps 1–5 and OpenSpec 4.1 complete; OpenSpec 2.2 remains open for Task 5 typed adapters/row mapping. Commits `148f3e660046c9c2c1e9375e00e3172260df7eda`, `4da7cdaba95ccc7e2f8e3d93d2c902fcfb16246b`, and `b316fdb03a39caca50861e8af6aeb37c516bfc8c` are pushed.
+
+## Task 4 Implementation
+
+- Plan task: `Task 4: 收藏内存 diff 与两次缺失确认`
+- OpenSpec mappings: `3.1` complete fetch/runtime-field-free diff; `3.2` two-successful-missing and pagination-failure protection.
+- Stage: `implementation-complete; independent reviews pending`
+- Implementation base: `7da3a61`
+- API contract evidence: checked-in `UserSubjectCollection` requires `subject_id`, `subject_type`, `rate`, `type`, `tags`, `ep_status`, `vol_status`, `updated_at` and `private`; collection `type` is 1–5; the contract warns that `updated_at` does not reliably change for rating, comment or episode progress.
+- RED evidence: focused domain and sync boundary suites failed because `collection-diff.ts` and `full-fetch-boundary.ts` were absent. The initial sandbox run was discarded because `tsx` could not create its IPC socket; the permitted rerun produced the expected missing-module failures.
+- GREEN evidence: domain 57/57 and sync-worker 79/79; both package typechecks; full repository test/typecheck/build check; frozen lockfile; OpenSpec strict and diff check pass.
+- Diff contract: explicit inserts, updates, unchanged count, first missing, confirmed deletion and restoration; identical business input performs no row transition despite a new observation time; incomplete fetches never advance missing/deletion state.
+- Normalization contract: top-level `subject_type` is passed explicitly into the stable content hash and retained as the public projection `type`; watched is cold and all other collection states are hot.
+- Full-fetch boundary: Workflow only receives `complete: true` after every staged collection page is present, per-user counts equal the first-page declared totals, and calendar staging is present.
+- Scope audit: no D1 adapter/persistence, budget, R2 publication, runtime binding or legacy public-read change was introduced.
+- Review/fix round: `0/2; pending`.
