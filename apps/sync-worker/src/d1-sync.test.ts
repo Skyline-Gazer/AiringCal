@@ -130,12 +130,12 @@ class RecordingStore implements D1IncrementalSyncStore {
 
 async function run(store: RecordingStore, input = completeInput(), submitMedia?: (
   request: BudgetReservationRequest,
-) => Promise<BudgetReservationResult>) {
+) => Promise<BudgetReservationResult>, now = input.observedAt, instanceId = 'run-1') {
   return runD1IncrementalSync({
     env: {},
-    instanceId: 'run-1',
+    instanceId,
     completeInput: input,
-    now: observedAt,
+    now,
     store,
     submitMedia: submitMedia ?? (async () => store.reservation),
   })
@@ -143,13 +143,16 @@ async function run(store: RecordingStore, input = completeInput(), submitMedia?:
 
 test('unchanged input writes no collection rows while changed input writes exactly one', async () => {
   const store = new RecordingStore()
-  const initial = await run(store)
+  const initial = await run(store, completeInput(), undefined, observedAt, 'initial')
   assert.equal(initial.rowsWritten, 1)
 
-  const unchanged = await run(store)
+  const unchanged = await run(store, completeInput(), undefined, observedAt + 1, 'unchanged')
   assert.equal(unchanged.rowsWritten, 0)
 
-  const changed = await run(store, completeInput([collection(1, 'alice', 9)]))
+  const changed = await run(store, {
+    ...completeInput([collection(1, 'alice', 9)]),
+    observedAt: observedAt + 2,
+  }, undefined, observedAt + 2, 'changed')
   assert.equal(changed.rowsWritten, 1)
 })
 
@@ -158,6 +161,21 @@ test('partial input is rejected before a missing transition can be committed', a
   const partial = { ...completeInput([]), complete: false as const }
   await assert.rejects(run(store, partial as unknown as CompleteFullFetch), /complete full fetch/i)
   assert.equal(store.applied.length, 0)
+})
+
+test('first complete miss remains public and only the second later miss is removed', async () => {
+  const store = new RecordingStore()
+  await run(store, completeInput(), undefined, observedAt, 'present')
+
+  const first = await run(store, { ...completeInput([]), observedAt: observedAt + 1 }, undefined, observedAt + 1, 'first-missing')
+  assert.equal(first.firstMissing, 1)
+  assert.equal(first.deleted, 0)
+  assert.deepEqual(first.publicationInput.collections.map(({ subject_id }) => subject_id), [1])
+
+  const second = await run(store, { ...completeInput([]), observedAt: observedAt + 2 }, undefined, observedAt + 2, 'confirmed-missing')
+  assert.equal(second.firstMissing, 0)
+  assert.equal(second.deleted, 1)
+  assert.deepEqual(second.publicationInput.collections, [])
 })
 
 test('multi-user rows retain identity and the planner receives the stable observedAt', async () => {
@@ -223,6 +241,68 @@ test('media budget or Queue failure cannot revoke publication eligibility', asyn
     deferred: 0,
   })
   assert.equal(store.completed.length, 1)
+})
+
+test('calendar-only subjects remain eligible for D1 media scheduling', async () => {
+  const store = new RecordingStore()
+  const input: CompleteFullFetch = {
+    ...completeInput([]),
+    calendar: [{
+      weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+      items: [{
+        id: 14,
+        type: 2,
+        name: 'Calendar only',
+        name_cn: '',
+        summary: '',
+        nsfw: false,
+        date: '',
+        eps: 0,
+        images: { common: '', large: '', medium: '', small: '', grid: '' },
+        rating: { score: 0, rank: 0, total: 0 },
+      }],
+    }],
+  }
+  const requests: BudgetReservationRequest[] = []
+  await run(store, input, async (request) => {
+    requests.push(request)
+    return { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100, submission: 'submitted' }
+  })
+  assert.deepEqual(requests[0]?.jobs.map((job: any) => job.subject_id), [14])
+})
+
+test('cold watched media is eligible exactly once across seven UTC shards without an expiry gate', async () => {
+  const selected: number[] = []
+  for (let day = 0; day < 7; day++) {
+    const store = new RecordingStore()
+    await run(store, completeInput([
+      { ...collection(7, 'alice'), collection: { ...collection(7, 'alice').collection, type: 2 } },
+    ]), undefined, observedAt, `cold-seed-${day}`)
+    store.mediaRows = [{
+      subject_id: 7,
+      detail_json: '{}',
+      detail_hash: 'a'.repeat(64),
+      media_hash: null,
+      nsfw: 0,
+      source_image_common_url: 'https://images.example/7/common.jpg',
+      source_image_large_url: 'https://images.example/7/large.jpg',
+      r2_image_common_key: null,
+      r2_image_large_key: null,
+      checked_at: observedAt,
+      next_refresh_at: null,
+      retry_count: 0,
+      retry_after: null,
+      error_code: null,
+    }]
+    const dayNow = observedAt + day * 86_400
+    await run(store, { ...completeInput([
+      { ...collection(7, 'alice'), collection: { ...collection(7, 'alice').collection, type: 2 } },
+    ]), observedAt: dayNow }, async (request) => {
+      selected.push(...request.jobs.map((job: any) => job.subject_id))
+      return { granted: request.jobs.length, consumed: request.jobs.length, soft_limit: 50, hard_limit: 100, submission: 'submitted' }
+    }, dayNow, `cold-day-${day}`)
+  }
+  assert.deepEqual(selected, [7])
 })
 
 test('unchanged due hot, current cold shard and retry rows become ordered media candidates', async () => {

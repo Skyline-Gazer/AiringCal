@@ -201,3 +201,21 @@
 - Review round: spec compliance APPROVED. Initial quality review REJECTED the claim-to-marker crash window; focused RED reproduced it; the atomic transition fix passed 40/40. Fresh quality review APPROVED and independently reran 40/40.
 - Scope audit: no Task 7 Workflow orchestration, R2 publication, runtime binding or legacy public-read migration was introduced. OpenSpec `3.3` remains unchecked until Task 7 persists and consumes the scheduler state.
 - Task 6 checkoff: plan Steps 1–5 and OpenSpec 2.3 complete.
+
+## Task 7 Implementation
+
+- Plan task: `Task 7: D1 incremental Workflow orchestration`
+- OpenSpec mapping: remaining orchestration and no-legacy-write portion of `3.3`.
+- Stage: `review-fix`
+- Implementation base: `e305553`
+- Initial RED evidence: `d1-sync.test.ts` failed with `ERR_MODULE_NOT_FOUND` because `d1-sync.ts` did not exist; the shadow Workflow integration test then failed because the D1 runner was never called.
+- Initial GREEN evidence: focused orchestration/Workflow/state-store suite 59/59; sync-worker full package 113/113; sync-worker and storage typecheck; full repository typecheck; scripts 21/21; OpenSpec strict and diff check passed.
+- Behavioral evidence: unchanged/one-change D1 row counts, complete-input deletion guard, multi-user composite identity, stable `observedAt`, classified run lifecycle, D1 media reservation counters, hot/cold/retry ordering, cold cursor, bounded one-time stale replan, non-stale error propagation, legacy shadow publication ordering and zero new per-subject KV writes.
+- Host limitation: the equivalent all-repository test run passed 383/384; only the isolated Wrangler D1 migration test failed because the sandbox denied localhost listen (`EPERM 127.0.0.1`). A sandbox-external rerun was requested and rejected by the host usage limit. Wrangler dry-runs completed for all four Workers, while attempts to write Wrangler debug logs under user Preferences were sandbox-denied.
+- Frozen-lock evidence: the lockfile was unchanged and resolution was skipped. Reinstall recreated `node_modules` but sandbox DNS could not fetch the one missing cached OpenSpec tarball; the required external retry was rejected by the same host usage limit. OpenSpec strict had passed immediately before this host-only dependency disruption.
+- Initial implementation commit: `d65bd93f0568ef1d9b80c610894f3e734e0d7280`, pushed.
+- Spec review round: `1/2 REJECTED → fixing`.
+- Review findings: first-missing rows were prematurely absent from publication input; shadow reservation could submit to the legacy KV-writing media consumer; cold scheduling incorrectly required `next_refresh_at`; Task 7 evidence was not yet tracked.
+- Review-fix RED evidence: first/second missing publication, seven-day cold scheduling and calendar-only scheduling regressions were added. The host-limited frozen reinstall initially left the worktree without workspace links; after restoring only ignored local workspace symlinks from the verified pnpm layout, the new focused tests executed normally.
+- Review-fix implementation: publication input is derived from the winning post-diff active D1 rows; first missing remains public and confirmed deletion is excluded. Shadow D1 reservation deliberately has no Queue binding and therefore records an uncertain occupied reservation without reaching the legacy media consumer; Task 8 must add the D1-only consumer before submission. Watched media enters the deterministic cold shard/cursor independent of expiry; hot remains expiry-gated. Calendar-only subjects remain media candidates.
+- Review-fix GREEN evidence: orchestration/Workflow/state-store focused suite 62/62; sync-worker and storage typecheck; diff check pass.

@@ -36,9 +36,6 @@ const MAX_STALE_REPLANS = 1
 
 export interface D1IncrementalSyncEnv {
   AIRING_CAL_D1?: D1DatabaseLike
-  MEDIA_QUEUE?: {
-    sendBatch(messages: Array<{ body: MediaRefreshJobV3; contentType?: 'json' }>): Promise<unknown>
-  }
 }
 
 export interface D1IncrementalSyncStore {
@@ -132,6 +129,55 @@ function mergePublicCollections(items: PublicCollectionItemV1[]): PublicCollecti
   return [...bySubject.values()]
 }
 
+function activeRowsAfterPlan(current: CollectionRow[], plan: CollectionDiffPlan): CollectionRow[] {
+  const rows = new Map(current.map((row) => [`${row.user_id}\0${row.subject_id}`, row]))
+  for (const row of [
+    ...plan.inserts,
+    ...plan.updates,
+    ...plan.restored,
+    ...plan.firstMissing,
+    ...plan.confirmedDeleted,
+  ]) {
+    rows.set(`${row.user_id}\0${row.subject_id}`, row)
+  }
+  return [...rows.values()].filter(({ deleted_at }) => deleted_at === null)
+}
+
+function publicItemFromRow(row: CollectionRow): PublicCollectionItemV1 {
+  const envelope = JSON.parse(row.subject_json) as {
+    subject_type: number
+    subject: {
+      name?: string | null
+      name_cn?: string | null
+      summary?: string | null
+      date?: string | null
+      eps?: number | null
+      total_episodes?: number | null
+      nsfw?: boolean | null
+    } | null
+  }
+  const subject = envelope.subject
+  const tags = JSON.parse(row.tags_json) as string[]
+  return {
+    subject_id: row.subject_id,
+    name: subject?.name ?? '',
+    name_cn: subject?.name_cn ?? '',
+    summary: subject?.summary ?? '',
+    images: { common: null, large: null },
+    eps: subject?.eps ?? 0,
+    total_episodes: subject?.total_episodes ?? 0,
+    ep_status: row.ep_status,
+    vol_status: row.vol_status,
+    type: envelope.subject_type,
+    collection_type: row.collection_type,
+    rate: row.rate ?? 0,
+    nsfw: subject?.nsfw ?? false,
+    date: subject?.date ?? '',
+    tags,
+    updated_at: row.upstream_updated_at ?? '',
+  }
+}
+
 function planMediaCandidates(
   completeInput: CompleteFullFetch,
   mediaRows: SubjectMediaRow[],
@@ -159,6 +205,19 @@ function planMediaCandidates(
       },
     })
   }
+  for (const day of completeInput.calendar) {
+    for (const subject of day.items) {
+      if (bySubject.has(subject.id)) continue
+      bySubject.set(subject.id, {
+        title: subject.name_cn || subject.name || String(subject.id),
+        hot: false,
+        images: {
+          ...(subject.images?.common ? { common: subject.images.common } : {}),
+          ...(subject.images?.large ? { large: subject.images.large } : {}),
+        },
+      })
+    }
+  }
   const candidates: RefreshCandidate[] = []
   for (const [subjectId, input] of bySubject) {
     const media = mediaBySubject.get(subjectId)
@@ -178,6 +237,8 @@ function planMediaCandidates(
         ],
         priority: 'new_or_changed',
       })
+    } else if (!input.hot) {
+      candidates.push({ subject_id: subjectId, ...input, components: ['detail', 'meta', 'image_common', 'image_large'], priority: 'cold' })
     } else if (media.retry_count > 0 && media.retry_after !== null && media.retry_after <= now) {
       candidates.push({ subject_id: subjectId, ...input, components: ['detail', 'meta', 'image_common', 'image_large'], priority: 'retry' })
     } else if (media.next_refresh_at !== null && media.next_refresh_at <= now) {
@@ -185,7 +246,7 @@ function planMediaCandidates(
         subject_id: subjectId,
         ...input,
         components: ['detail', 'meta', 'image_common', 'image_large'],
-        priority: input.hot ? 'hot' : 'cold',
+        priority: 'hot',
       })
     }
   }
@@ -246,6 +307,7 @@ export async function runD1IncrementalSync({
     const incoming = await Promise.all(completeInput.collections.map(({ user_id, collection }) =>
       normalizeCollection(user_id, collection)))
     let plan: CollectionDiffPlan | undefined
+    let winningCurrent: CollectionRow[] | undefined
     let rowsWritten = 0
     for (let attempt = 0; attempt <= MAX_STALE_REPLANS; attempt++) {
       const current = await store.listCollectionRows()
@@ -257,16 +319,17 @@ export async function runD1IncrementalSync({
       })
       try {
         rowsWritten = (await store.applyCollectionDiff(plan)).rowsWritten
+        winningCurrent = current
         break
       } catch (error) {
         if (!(error instanceof StaleCollectionDiffError) || attempt === MAX_STALE_REPLANS) throw error
         plan = undefined
       }
     }
-    if (!plan) throw new Error('Collection diff reconciliation failed')
+    if (!plan || !winningCurrent) throw new Error('Collection diff reconciliation failed')
 
     const publicInput = await publicationInput(
-      mergePublicCollections(incoming.map(({ public_item }) => public_item)),
+      mergePublicCollections(activeRowsAfterPlan(winningCurrent, plan).map(publicItemFromRow)),
       completeInput,
     )
     const mediaRows = await store.listSubjectMediaRows()
@@ -290,7 +353,7 @@ export async function runD1IncrementalSync({
     }
     const submitMedia = suppliedSubmitMedia ?? (database
       ? (budgetRequest: BudgetReservationRequest<MediaRefreshJobV3>) =>
-          reserveAndSubmitMedia(database, env.MEDIA_QUEUE, budgetRequest, now)
+          reserveAndSubmitMedia(database, undefined, budgetRequest, now)
       : undefined)
     if (!submitMedia) throw new Error('D1 media submission is unavailable')
     const reservation = jobs.length === 0
