@@ -1,4 +1,10 @@
 import { canonicalJson } from './canonical-json.ts'
+import {
+  claimDailyBudgetReservation,
+  markBudgetSubmission,
+  reserveDailyBudget,
+  type BudgetReservationRequest,
+} from './d1-budget.ts'
 import type {
   CollectionDiffPlanLike,
   CollectionRow,
@@ -188,6 +194,21 @@ export class D1StateStore {
     private readonly database: D1DatabaseLike,
     private readonly now: () => number = () => Math.floor(Date.now() / 1000),
   ) {}
+
+  reserveDailyBudget(request: BudgetReservationRequest) {
+    return reserveDailyBudget(this.database, request, this.now())
+  }
+
+  claimDailyBudgetReservation(request: BudgetReservationRequest) {
+    return claimDailyBudgetReservation(this.database, request, this.now())
+  }
+
+  markBudgetSubmission(
+    reservationId: string,
+    submission: 'submitted' | 'uncertain',
+  ) {
+    return markBudgetSubmission(this.database, reservationId, submission, this.now())
+  }
 
   private async executeBatch(statements: D1PreparedStatementLike[]): Promise<number> {
     return (await this.executeBatchChanges(statements)).reduce((total, changes) => total + changes, 0)

@@ -185,3 +185,19 @@
 - Revision GREEN evidence: migration apply/replay and schema assertions 2/2; focused domain/adapter 50/50; storage 48/48, domain 67/67 and sync-worker 98/98; full repository tests, typecheck and build dry-runs; frozen lockfile, OpenSpec strict and diff checks all pass.
 - Absolute final review result: spec compliance APPROVED and code quality APPROVED with no Critical, Important, or Minor findings.
 - Task 5 checkoff: plan Steps 1–4 and OpenSpec 2.2 complete. The typed adapter, state revision model, replay reconciliation and structured stale-conflict contract are approved and pushed through `2ddf277111edea5c4c17b4f4a6736fdb8f3e0e90`.
+
+## Task 6 Implementation
+
+- Plan task: `Task 6: D1 原子 QoS reservation 与七日冷热调度`
+- OpenSpec mapping: `2.3` atomic daily budget reservation/consumption; scheduler-only evidence toward `3.3`.
+- Stage: `checkoff`
+- Implementation base: `3f24898`
+- API evidence: generated workerd types expose `D1Database.batch`, `D1DatabaseSession.batch`, `withSession` sequential-consistency semantics and Queue `sendBatch`; Cloudflare D1 documentation confirms one `batch` is a SQL transaction that executes sequentially and rolls the whole sequence back on failure.
+- RED evidence: focused suites failed because `d1-budget.ts`, `positiveMod` and the D1 media submission path were absent. The review-fix RED reproduced a committed claim followed by a crash before submission marking: replay returned permanent `reserved`, sent zero Queue messages and left one reserved slot.
+- Atomic budget contract: one real D1 batch creates/reuses the daily budget row, claims the stable fingerprinted reservation, updates occupied capacity and reads back the stored result. Replay returns byte-equivalent results; changed payloads reject; concurrent final-slot claims keep total occupied at or below hard limit.
+- Submission state machine: a second atomic batch moves `reserved` capacity to `consumed` while acquiring the `reserved → uncertain` Queue-attempt right. Only the caller whose transition reports one applied change may send. Successful sends advance to `submitted`; ambiguous sends and post-send confirmation failures remain fail-closed as `uncertain` without replaying Queue work.
+- Scheduler contract: `positiveMod` supports negative IDs; priority is `new_or_changed → hot → cold → retry`; duplicate subjects merge components at their strongest priority; watched subjects cover seven UTC shards exactly once; deferred cold IDs are emitted as a serializable cursor and resume before the next day's shard.
+- GREEN evidence: focused budget/planner/coordinator 40/40; storage 63/63 and sync-worker 104/104 before the review fix; both package typechecks after the fix. Full repository tests/typecheck passed before the focused crash-window fix; the external rerun was blocked before process start by the host approval usage limit, not a test failure. OpenSpec strict, frozen lockfile and diff check pass after the fix.
+- Review round: spec compliance APPROVED. Initial quality review REJECTED the claim-to-marker crash window; focused RED reproduced it; the atomic transition fix passed 40/40. Fresh quality review APPROVED and independently reran 40/40.
+- Scope audit: no Task 7 Workflow orchestration, R2 publication, runtime binding or legacy public-read migration was introduced. OpenSpec `3.3` remains unchecked until Task 7 persists and consumes the scheduler state.
+- Task 6 checkoff: plan Steps 1–5 and OpenSpec 2.3 complete.

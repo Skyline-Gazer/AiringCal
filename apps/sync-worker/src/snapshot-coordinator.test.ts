@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { MediaRefreshJobV3, SnapshotManifest } from '@airing-cal/storage'
-import { SnapshotCoordinator, SnapshotCoordinatorCore } from './snapshot-coordinator.ts'
+import {
+  claimDailyBudgetReservation,
+  type D1DatabaseLike,
+  type MediaRefreshJobV3,
+  type SnapshotManifest,
+} from '@airing-cal/storage'
+import {
+  reserveAndSubmitMedia,
+  SnapshotCoordinator,
+  SnapshotCoordinatorCore,
+} from './snapshot-coordinator.ts'
 
 class MemoryState {
   values = new Map<string, unknown>()
@@ -377,4 +386,90 @@ test('media budget serializes concurrent reservations below the hard limit', asy
   assert.equal(results.reduce((total, { granted }) => total + granted, 0), 100)
   assert.equal(Math.max(...results.map(({ consumed }) => consumed)), 100)
   assert.equal(queue.messages.length, 100)
+})
+
+test('D1 reservation submits Queue at most once and replay preserves uncertain capacity', async () => {
+  const { TransactionalBudgetD1 } = await import('../../../packages/storage/src/testing/transactional-budget-d1.ts')
+  const database = new TransactionalBudgetD1()
+  const queue = new MemoryQueue()
+  queue.acceptThenLoseResponseNext = true
+  const budgetRequest = {
+    date: '2026-07-27',
+    resource: 'media' as const,
+    reservationId: 'workflow-d1:media',
+    jobs: mediaJobs(1),
+    privilegedCount: 1,
+    softLimit: 50,
+    hardLimit: 100,
+  }
+
+  const first = await reserveAndSubmitMedia(database as D1DatabaseLike, queue, budgetRequest, 1_000)
+  const replay = await reserveAndSubmitMedia(database as D1DatabaseLike, queue, budgetRequest, 1_001)
+
+  assert.equal(first.submission, 'uncertain')
+  assert.equal(JSON.stringify(replay), JSON.stringify(first))
+  assert.equal(queue.sendCalls, 1)
+  assert.deepEqual(database.budget('2026-07-27'), { reserved: 0, consumed: 1 })
+})
+
+test('reserved replay recovers a crash after claim and concurrent replays grant one Queue attempt', async () => {
+  const { TransactionalBudgetD1 } = await import('../../../packages/storage/src/testing/transactional-budget-d1.ts')
+  const database = new TransactionalBudgetD1()
+  const queue = new MemoryQueue()
+  const budgetRequest = {
+    date: '2026-07-27',
+    resource: 'media' as const,
+    reservationId: 'crashed-after-claim:media',
+    jobs: mediaJobs(1),
+    privilegedCount: 1,
+    softLimit: 50,
+    hardLimit: 100,
+  }
+  const claim = await claimDailyBudgetReservation(database, budgetRequest, 1_000)
+  assert.equal(claim.result.submission, 'reserved')
+
+  const replays = await Promise.all([
+    reserveAndSubmitMedia(database, queue, budgetRequest, 1_001),
+    reserveAndSubmitMedia(database, queue, budgetRequest, 1_001),
+  ])
+
+  assert.equal(replays.every(({ submission }) => submission === 'submitted' || submission === 'uncertain'), true)
+  assert.equal(queue.sendCalls, 1)
+  assert.deepEqual(database.budget('2026-07-27'), { reserved: 0, consumed: 1 })
+})
+
+test('media exhaustion and ambiguous Queue result do not prevent snapshot publication', async () => {
+  const { TransactionalBudgetD1 } = await import('../../../packages/storage/src/testing/transactional-budget-d1.ts')
+  const database = new TransactionalBudgetD1()
+  const queue = new MemoryQueue()
+  queue.acceptThenLoseResponseNext = true
+  const coordinator = new SnapshotCoordinatorCore(new MemoryState(), new MemoryKV())
+  const generation = await coordinator.allocate('publication-survives-media')
+
+  const media = await reserveAndSubmitMedia(database as D1DatabaseLike, queue, {
+    date: '2026-07-27',
+    resource: 'media',
+    reservationId: 'ambiguous:media',
+    jobs: mediaJobs(100),
+    privilegedCount: 100,
+    softLimit: 50,
+    hardLimit: 100,
+  }, 1_000)
+  const exhausted = await reserveAndSubmitMedia(database as D1DatabaseLike, queue, {
+    date: '2026-07-27',
+    resource: 'media',
+    reservationId: 'exhausted:media',
+    jobs: mediaJobs(1, 101),
+    privilegedCount: 1,
+    softLimit: 50,
+    hardLimit: 100,
+  }, 1_001)
+  const publication = await coordinator.commit(
+    generation,
+    manifest('publication-survives-media', generation),
+  )
+
+  assert.equal(media.submission, 'uncertain')
+  assert.equal(exhausted.granted, 0)
+  assert.deepEqual(publication, { status: 'committed', generation })
 })

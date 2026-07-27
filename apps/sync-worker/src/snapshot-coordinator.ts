@@ -1,4 +1,14 @@
-import { snapshotActiveKey, type MediaRefreshJobV3, type SnapshotManifest } from '@airing-cal/storage'
+import {
+  claimDailyBudgetReservation,
+  markBudgetSubmission,
+  snapshotActiveKey,
+  transitionBudgetSubmission,
+  type BudgetReservationRequest,
+  type BudgetReservationResult,
+  type D1DatabaseLike,
+  type MediaRefreshJobV3,
+  type SnapshotManifest,
+} from '@airing-cal/storage'
 
 interface CoordinatorStorage {
   get<T>(key: string): Promise<T | undefined>
@@ -14,6 +24,41 @@ interface SnapshotCoordinatorEnv {
   AIRING_CAL_KV: JsonKV
   MEDIA_QUEUE: {
     sendBatch(messages: Array<{ body: MediaRefreshJobV3; contentType?: 'json' }>): Promise<unknown>
+  }
+}
+
+interface MediaQueueLike {
+  sendBatch(messages: Array<{ body: MediaRefreshJobV3; contentType?: 'json' }>): Promise<unknown>
+}
+
+export async function reserveAndSubmitMedia(
+  database: D1DatabaseLike,
+  queue: MediaQueueLike | undefined,
+  request: BudgetReservationRequest<MediaRefreshJobV3>,
+  now = Math.floor(Date.now() / 1000),
+): Promise<BudgetReservationResult> {
+  const claim = await claimDailyBudgetReservation(database, request, now)
+  if (claim.result.granted === 0) {
+    if (claim.result.submission !== 'reserved') return claim.result
+    return markBudgetSubmission(database, request.reservationId, 'submitted', now)
+  }
+  if (claim.result.submission !== 'reserved') return claim.result
+
+  const attempt = await transitionBudgetSubmission(database, request.reservationId, 'uncertain', now)
+  if (!attempt.transitioned || !queue) return attempt.result
+  try {
+    await queue.sendBatch(
+      request.jobs
+        .slice(0, claim.result.granted)
+        .map((body) => ({ body, contentType: 'json' as const })),
+    )
+  } catch {
+    return attempt.result
+  }
+  try {
+    return await markBudgetSubmission(database, request.reservationId, 'submitted', now)
+  } catch {
+    return attempt.result
   }
 }
 

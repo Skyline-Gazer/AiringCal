@@ -3,11 +3,17 @@ import test from 'node:test'
 import { nextSubjectRefreshAt } from '@airing-cal/storage'
 import {
   planSubjectRefresh,
+  positiveMod,
   selectRefreshCandidates,
   type RefreshCandidate,
   type RefreshPlannerInput,
   type RefreshPriority,
 } from './refresh-planner.ts'
+
+test('positiveMod maps negative subject IDs into the seven valid shards', () => {
+  assert.deepEqual(Array.from({ length: 7 }, (_, index) => positiveMod(index - 7, 7)), [0, 1, 2, 3, 4, 5, 6])
+  assert.throws(() => positiveMod(1, 0), /positive integer/)
+})
 
 const input: RefreshPlannerInput = {
   subject_id: 42,
@@ -207,4 +213,51 @@ test('refresh planner lets new or changed candidates cross soft without carrying
   assert.equal(selection.selected.length, 60)
   assert.equal(selection.selected.every(({ priority }) => priority === 'new_or_changed'), true)
   assert.equal(selection.deferred, 40)
+})
+
+test('refresh planner deduplicates a subject and merges components at its strongest priority', () => {
+  const selection = selectRefreshCandidates([
+    { ...candidate(7, 'retry'), components: ['detail'] },
+    { ...candidate(7, 'new_or_changed'), components: ['image_common'] },
+    { ...candidate(7, 'hot'), components: ['meta'] },
+  ], '2026-07-22', { soft: 50, hard: 100 })
+
+  assert.equal(selection.selected.length, 1)
+  assert.equal(selection.selected[0]?.priority, 'new_or_changed')
+  assert.deepEqual(selection.selected[0]?.components, ['detail', 'meta', 'image_common'])
+})
+
+test('persisted deferred cold cursor resumes IDs before the current day shard', () => {
+  const first = selectRefreshCandidates(
+    Array.from({ length: 60 }, (_, index) => candidate(index * 7 + 3, 'cold')),
+    '2026-07-22',
+    { soft: 50, hard: 100 },
+  )
+  assert.equal(first.selected.length, 50)
+  assert.deepEqual(first.cold_cursor.subject_ids, Array.from({ length: 10 }, (_, index) => (index + 50) * 7 + 3))
+
+  const resumed = selectRefreshCandidates(
+    [
+      ...first.cold_cursor.subject_ids.map((subjectId) => candidate(subjectId, 'cold')),
+      candidate(4, 'cold'),
+    ],
+    '2026-07-23',
+    { soft: 50, hard: 100 },
+    first.cold_cursor,
+  )
+  assert.deepEqual(resumed.selected.map(({ subject_id }) => subject_id), [...first.cold_cursor.subject_ids, 4])
+  assert.deepEqual(resumed.cold_cursor.subject_ids, [])
+})
+
+test('budget exhaustion preserves deferred order across hot cold and retry', () => {
+  const selection = selectRefreshCandidates([
+    ...Array.from({ length: 49 }, (_, index) => candidate(index + 100, 'new_or_changed')),
+    candidate(1, 'hot'),
+    candidate(3, 'cold'),
+    candidate(2, 'retry'),
+  ], '2026-07-22', { soft: 50, hard: 50 })
+
+  assert.deepEqual(selection.selected.slice(-1).map(({ subject_id }) => subject_id), [1])
+  assert.deepEqual(selection.deferred_candidates.map(({ priority }) => priority), ['cold', 'retry'])
+  assert.deepEqual(selection.cold_cursor.subject_ids, [3])
 })

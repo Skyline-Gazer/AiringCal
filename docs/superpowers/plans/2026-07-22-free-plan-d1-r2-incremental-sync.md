@@ -508,19 +508,19 @@ git push
 - Produces priority order `new_or_changed → hot → cold → retry`.
 - Existing Durable Object `/reserve-media` path is removed from the new Workflow only after D1 tests prove parity; legacy compatibility may remain unused until later cleanup.
 
-- [ ] **Step 1: Write RED budget replay/concurrency tests**
+- [x] **Step 1: Write RED budget replay/concurrency tests**
 
 Use a D1 fake capable of serializing transactions. Two concurrent calls for the last slot must yield grants `[0, 1]` in either order, total reserved/consumed `<= 100`; same `reservationId` returns byte-equivalent result; changed payload with same ID throws `reservation payload mismatch`; uncertain submission remains occupied and replay does not invoke Queue.
 
-- [ ] **Step 2: Write RED hot/cold tests**
+- [x] **Step 2: Write RED hot/cold tests**
 
 For seven consecutive UTC date shards, each watched subject appears exactly once when budget is ample. Assert source change/new uses privileged headroom, hot expiry precedes cold, cold precedes retry, same subject merges to one job, and a persisted cursor resumes deferred cold IDs.
 
-- [ ] **Step 3: Implement reservation and planner**
+- [x] **Step 3: Implement reservation and planner**
 
 Use a stable request fingerprint, `INSERT ... ON CONFLICT DO NOTHING` for the reservation claim, then read the stored result. Update budget and reservation status within the same D1 transaction/session supported by the verified Workers D1 API. Queue submission occurs at most once after commit; ambiguous result writes `uncertain`, never releases grant.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 ```bash
 node --import tsx --test packages/storage/src/d1-budget.test.ts apps/sync-worker/src/refresh-planner.test.ts apps/sync-worker/src/snapshot-coordinator.test.ts
@@ -530,7 +530,7 @@ pnpm -F @airing-cal/storage typecheck
 pnpm -F @airing-cal/sync-worker typecheck
 ```
 
-- [ ] **Step 5: Review, mark 2.3 and scheduler portion of 3.3 complete, commit and push**
+- [x] **Step 5: Review, mark 2.3 and scheduler portion of 3.3 complete, commit and push**
 
 ```bash
 git add packages/storage apps/sync-worker openspec/changes/adopt-d1-r2-incremental-sync

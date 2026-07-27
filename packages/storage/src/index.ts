@@ -8,6 +8,18 @@ export {
   sha256Canonical,
 } from './canonical-json.ts'
 export { D1StateStore, StaleCollectionDiffError } from './d1-state-store.ts'
+export {
+  claimDailyBudgetReservation,
+  markBudgetSubmission,
+  reserveDailyBudget,
+  transitionBudgetSubmission,
+} from './d1-budget.ts'
+export type {
+  BudgetReservationClaim,
+  BudgetReservationRequest,
+  BudgetReservationResult,
+  BudgetSubmissionTransition,
+} from './d1-budget.ts'
 export type {
   CollectionContentInput,
   PersistedCollectionSubject,

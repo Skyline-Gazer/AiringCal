@@ -8,7 +8,7 @@
 
 - [x] 2.1 Add migrations for collection_items, subject_media, sync_runs, sync_budget and app_state without secondary indexes
 - [x] 2.2 Implement typed D1 adapters, stable canonical JSON/hash helpers and row mapping tests
-- [ ] 2.3 Implement atomic daily budget reservation/consumption and concurrency tests
+- [x] 2.3 Implement atomic daily budget reservation/consumption and concurrency tests
 
 ## 3. Incremental Workflow
 
