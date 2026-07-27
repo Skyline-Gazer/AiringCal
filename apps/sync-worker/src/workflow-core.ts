@@ -15,6 +15,7 @@ import {
   SYNC_RUN_TTL_SECONDS,
   SYNC_STAGING_TTL_SECONDS,
   type CollectionType,
+  type D1DatabaseLike,
   type MediaRefreshJobV3,
   type SnapshotManifest,
   type SyncRun,
@@ -28,6 +29,7 @@ import {
   type RefreshPlannerInput,
 } from './refresh-planner.ts'
 import { assembleFullFetch } from './full-fetch-boundary.ts'
+import { runD1IncrementalSync, type D1SyncResult } from './d1-sync.ts'
 
 const COLLECTION_TYPES: CollectionType[] = ['want', 'watched', 'watching', 'on_hold', 'dropped']
 const PAGE_LIMIT = 50
@@ -51,6 +53,11 @@ export interface SyncWorkflowEnv {
   }
   BANGUMI_TOKEN: string
   BANGUMI_USERS: string
+  AIRING_CAL_D1?: D1DatabaseLike
+}
+
+export interface SyncWorkflowDependencies {
+  runD1IncrementalSync?: typeof runD1IncrementalSync
 }
 
 export interface WorkflowStepLike {
@@ -72,6 +79,7 @@ interface StepOutput {
   keys?: string[]
   snapshotKeys?: Partial<Record<CollectionType, string>>
   refreshInputKey?: string
+  completeInputKey?: string
   refreshChunks?: number
   candidates?: RefreshCandidate[]
   planning_errors?: Array<{ subject_id: number; error: string }>
@@ -189,6 +197,7 @@ export async function runSyncWorkflow(
   event: SyncWorkflowEventLike,
   step: WorkflowStepLike,
   nonRetryable: NonRetryableFactory,
+  dependencies: SyncWorkflowDependencies = {},
 ): Promise<{
   instance_id: string
   status: 'ok'
@@ -358,16 +367,28 @@ export async function runSyncWorkflow(
       }))
       const refreshInputKey = syncStagingKey(event.instanceId, 'refresh-inputs')
       await putJson(env.AIRING_CAL_KV, refreshInputKey, refreshInputs, SYNC_STAGING_TTL_SECONDS)
+      const completeInputKey = syncStagingKey(event.instanceId, 'complete-input')
+      await putJson(env.AIRING_CAL_KV, completeInputKey, fetched, SYNC_STAGING_TTL_SECONDS)
       const refreshChunks = Math.ceil(ids.length / REFRESH_CHUNK_SIZE)
       const key = syncStagingKey(event.instanceId, 'prepared')
       await putJson(env.AIRING_CAL_KV, key, {
         snapshotKeys,
         calendarInputKey,
+        completeInputKey,
         refreshInputKey,
         refreshChunks,
         observedAt: fetched.observedAt,
       }, SYNC_STAGING_TTL_SECONDS)
-      return { key, snapshotKeys, calendarInputKey, refreshInputKey, refreshChunks, count: ids.length, digest: await digest(ids) }
+      return {
+        key,
+        snapshotKeys,
+        calendarInputKey,
+        refreshInputKey,
+        completeInputKey,
+        refreshChunks,
+        count: ids.length,
+        digest: await digest(ids),
+      }
     })
     const summary: Record<string, number> = {}
     const publishedOutputs: StepOutput[] = []
@@ -404,6 +425,28 @@ export async function runSyncWorkflow(
       await putJson(env.AIRING_CAL_KV, key, value, SYNC_RUN_TTL_SECONDS)
       return { key, count: 1, digest: await digest(value) }
     })
+
+    if (mode === 'shadow' && env.AIRING_CAL_D1) {
+      await step.do('persist-d1-shadow', STORAGE_STEP, async () => {
+        const completeInput = await getJson<ReturnType<typeof assembleFullFetch>>(
+          env.AIRING_CAL_KV,
+          prepared.completeInputKey ?? '',
+        )
+        if (completeInput?.complete !== true) throw new Error('Missing complete D1 sync input')
+        const runner = dependencies.runD1IncrementalSync ?? runD1IncrementalSync
+        const result: D1SyncResult = await runner({
+          env,
+          instanceId: event.instanceId,
+          completeInput,
+          now: completeInput.observedAt,
+        })
+        return {
+          key: syncRunKey(event.instanceId),
+          count: result.rowsWritten,
+          digest: result.publicationInput.content_hash,
+        }
+      })
+    }
 
     const planOutputs: StepOutput[] = []
     for (let chunkIndex = 0; mode === 'live' && chunkIndex < (prepared.refreshChunks ?? 0); chunkIndex++) {

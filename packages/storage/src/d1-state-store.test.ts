@@ -344,6 +344,32 @@ test('listCollectionRows rejects zero and negative state revisions', async () =>
   }
 })
 
+test('listSubjectMediaRows decodes explicit scheduling state and rejects corrupt rows', async () => {
+  const database = new RecordingD1()
+  database.rows = [{
+    subject_id: 23080,
+    detail_json: null,
+    detail_hash: null,
+    media_hash: null,
+    nsfw: 0,
+    source_image_common_url: null,
+    source_image_large_url: null,
+    r2_image_common_key: null,
+    r2_image_large_key: null,
+    checked_at: 100,
+    next_refresh_at: 200,
+    retry_count: 0,
+    retry_after: null,
+    error_code: null,
+  }]
+  const store = new D1StateStore(database)
+  assert.deepEqual(await store.listSubjectMediaRows(), database.rows)
+  assert.match(database.prepared.at(-1)?.sql ?? '', /^SELECT subject_id, detail_json/)
+
+  database.rows = [{ ...database.rows[0], nsfw: 2 }]
+  await assert.rejects(store.listSubjectMediaRows(), /subject_media\.nsfw/)
+})
+
 test('collection insert plans require the exact initial state revision', async () => {
   for (const stateVersion of [0, -1, 2]) {
     const plan = emptyPlan()

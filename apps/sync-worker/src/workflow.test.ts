@@ -932,6 +932,64 @@ test('shadow workflow reports every prepared subject as skipped without planning
   }
 })
 
+test('shadow workflow runs the D1 incremental adapter after preserving legacy snapshot publication', async () => {
+  const kv = new MockKV()
+  const step = new FakeStep(kv)
+  const calls: Array<{ instanceId: string; observedAt: number; complete: boolean; legacyPublished: boolean }> = []
+  const env = {
+    ...workflowEnv(kv, []),
+    AIRING_CAL_D1: {} as never,
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) return Response.json({ total: 1, data: [collection(1)] })
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await runSyncWorkflow(env, {
+      instanceId: 'shadow-d1',
+      payload: { mode: 'shadow', source: 'manual' },
+    }, step, (message) => new TestNonRetryableError(message), {
+      runD1IncrementalSync: async ({ instanceId, completeInput }) => {
+        calls.push({
+          instanceId,
+          observedAt: completeInput.observedAt,
+          complete: completeInput.complete,
+          legacyPublished: kv.values.has('snapshot:shadow:shadow-d1:summary'),
+        })
+        return {
+          rowsWritten: 1,
+          firstMissing: 0,
+          deleted: 0,
+          restored: 0,
+          publicationInput: {
+            collections: [],
+            calendar: [],
+            published_at: completeInput.observedAt,
+            content_hash: 'a'.repeat(64),
+          },
+          media: { candidates: 0, granted: 0, confirmed: 0, uncertain: 0, deferred: 0 },
+          runId: instanceId,
+        }
+      },
+    })
+
+    assert.deepEqual(calls, [{
+      instanceId: 'shadow-d1',
+      observedAt: (kv.values.get('sync:run:shadow-d1') as { started_at: number }).started_at,
+      complete: true,
+      legacyPublished: true,
+    }])
+    assert.equal(step.names.includes('persist-d1-shadow'), true)
+    assert.equal(kv.subjectPuts().length, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('post-reservation snapshot failure persists the latest truthful counters on the error run', async () => {
   const kv = new MockKV()
   const coordinator = new MockSnapshotCoordinator(kv)

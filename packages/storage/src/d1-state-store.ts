@@ -16,6 +16,7 @@ import type {
   SyncRunRow,
   SyncTerminalTransitionResult,
   SyncRunUpdate,
+  SubjectMediaRow,
 } from './d1-types.ts'
 
 const COLLECTION_COLUMNS = [
@@ -40,6 +41,23 @@ const COLLECTION_COLUMNS = [
 
 const COLLECTION_SELECT = `SELECT ${COLLECTION_COLUMNS.join(', ')} FROM collection_items ORDER BY user_id, subject_id`
 const COLLECTION_SELECT_ONE = `SELECT ${COLLECTION_COLUMNS.join(', ')} FROM collection_items WHERE user_id = ? AND subject_id = ?`
+const SUBJECT_MEDIA_COLUMNS = [
+  'subject_id',
+  'detail_json',
+  'detail_hash',
+  'media_hash',
+  'nsfw',
+  'source_image_common_url',
+  'source_image_large_url',
+  'r2_image_common_key',
+  'r2_image_large_key',
+  'checked_at',
+  'next_refresh_at',
+  'retry_count',
+  'retry_after',
+  'error_code',
+] as const
+const SUBJECT_MEDIA_SELECT = `SELECT ${SUBJECT_MEDIA_COLUMNS.join(', ')} FROM subject_media ORDER BY subject_id`
 const COLLECTION_INSERT = `INSERT INTO collection_items (${COLLECTION_COLUMNS.join(', ')}) VALUES (${COLLECTION_COLUMNS.map(() => '?').join(', ')}) ON CONFLICT(user_id, subject_id) DO UPDATE SET collection_type = excluded.collection_type, rate = excluded.rate, tags_json = excluded.tags_json, comment = excluded.comment, ep_status = excluded.ep_status, vol_status = excluded.vol_status, upstream_updated_at = excluded.upstream_updated_at, subject_json = excluded.subject_json, content_hash = excluded.content_hash, state_version = collection_items.state_version, temperature = excluded.temperature, first_seen_at = MIN(collection_items.first_seen_at, excluded.first_seen_at), changed_at = excluded.changed_at, missing_since = excluded.missing_since, deleted_at = excluded.deleted_at WHERE collection_items.state_version = 1 AND collection_items.missing_since IS NULL AND collection_items.deleted_at IS NULL AND (excluded.changed_at > collection_items.changed_at OR (excluded.changed_at = collection_items.changed_at AND excluded.content_hash > collection_items.content_hash COLLATE BINARY))`
 const COLLECTION_UPDATE_FIELDS = COLLECTION_COLUMNS.slice(2).map((column) => `${column} = ?`).join(', ')
 const COLLECTION_UPDATE = `UPDATE collection_items SET ${COLLECTION_UPDATE_FIELDS} WHERE user_id = ? AND subject_id = ? AND state_version = ?`
@@ -157,6 +175,31 @@ function decodeCollectionRow(raw: Record<string, unknown>): CollectionRow {
   }
 }
 
+function decodeSubjectMediaRow(raw: Record<string, unknown>): SubjectMediaRow {
+  const nsfw = requireInteger(raw.nsfw, 'nsfw')
+  if (nsfw !== 0 && nsfw !== 1) throw new Error('Invalid subject_media.nsfw')
+  const detailJson = nullableString(raw.detail_json, 'detail_json')
+  if (detailJson !== null) validateJson(detailJson, 'detail_json')
+  const retryCount = requireInteger(raw.retry_count, 'retry_count')
+  if (retryCount < 0) throw new Error('Invalid subject_media.retry_count')
+  return {
+    subject_id: requirePositiveInteger(raw.subject_id, 'subject_id'),
+    detail_json: detailJson,
+    detail_hash: nullableString(raw.detail_hash, 'detail_hash'),
+    media_hash: nullableString(raw.media_hash, 'media_hash'),
+    nsfw,
+    source_image_common_url: nullableString(raw.source_image_common_url, 'source_image_common_url'),
+    source_image_large_url: nullableString(raw.source_image_large_url, 'source_image_large_url'),
+    r2_image_common_key: nullableString(raw.r2_image_common_key, 'r2_image_common_key'),
+    r2_image_large_key: nullableString(raw.r2_image_large_key, 'r2_image_large_key'),
+    checked_at: nullableInteger(raw.checked_at, 'checked_at'),
+    next_refresh_at: nullableInteger(raw.next_refresh_at, 'next_refresh_at'),
+    retry_count: retryCount,
+    retry_after: nullableInteger(raw.retry_after, 'retry_after'),
+    error_code: nullableString(raw.error_code, 'error_code'),
+  }
+}
+
 function priorStateVersion(row: CollectionRow): number {
   if (!Number.isSafeInteger(row.state_version) || row.state_version <= 1) {
     throw new Error('Invalid planned collection state_version')
@@ -263,6 +306,11 @@ export class D1StateStore {
   async listCollectionRows(): Promise<CollectionRow[]> {
     const result = await this.database.prepare(COLLECTION_SELECT).all<Record<string, unknown>>()
     return result.results.map(decodeCollectionRow)
+  }
+
+  async listSubjectMediaRows(): Promise<SubjectMediaRow[]> {
+    const result = await this.database.prepare(SUBJECT_MEDIA_SELECT).all<Record<string, unknown>>()
+    return result.results.map(decodeSubjectMediaRow)
   }
 
   async applyCollectionDiff(plan: CollectionDiffPlanLike): Promise<{ rowsWritten: number }> {
