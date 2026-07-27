@@ -68,6 +68,7 @@ interface StepOutput {
   count: number
   digest: string
   total?: number
+  offset?: number
   keys?: string[]
   snapshotKeys?: Partial<Record<CollectionType, string>>
   refreshInputKey?: string
@@ -260,7 +261,7 @@ export async function runSyncWorkflow(
 
     const client = new BgmClient(env.BANGUMI_TOKEN, { maxGetRetries: 0 })
     const pageOutputs: StepOutput[] = []
-    const collectionGroups: Array<{ outputs: StepOutput[]; expectedTotal: number }> = []
+    const collectionGroups: Array<{ outputs: StepOutput[] }> = []
     for (let userIndex = 0; userIndex < users.length; userIndex++) {
       const username = users[userIndex]
       const userOutputs: StepOutput[] = []
@@ -270,7 +271,7 @@ export async function runSyncWorkflow(
         await putJson(env.AIRING_CAL_KV, key, page.data, SYNC_STAGING_TTL_SECONDS)
         run = { ...run, stage: 'collections', heartbeat_at: nowSeconds() }
         await writeRun(env, run)
-        return { key, count: page.data.length, total: page.total, digest: await digest(page.data) }
+        return { key, count: page.data.length, total: page.total, offset: 0, digest: await digest(page.data) }
       })
       run = { ...run, stage: 'collections' }
       pageOutputs.push(first)
@@ -283,13 +284,19 @@ export async function runSyncWorkflow(
           await putJson(env.AIRING_CAL_KV, key, page.data, SYNC_STAGING_TTL_SECONDS)
           run = { ...run, stage: 'collections', heartbeat_at: nowSeconds() }
           await writeRun(env, run)
-          return { key, count: page.data.length, digest: await digest(page.data) }
+          return {
+            key,
+            count: page.data.length,
+            total: page.total,
+            offset: pageIndex * PAGE_LIMIT,
+            digest: await digest(page.data),
+          }
         })
         run = { ...run, stage: 'collections' }
         pageOutputs.push(output)
         userOutputs.push(output)
       }
-      collectionGroups.push({ outputs: userOutputs, expectedTotal: first.total ?? 0 })
+      collectionGroups.push({ outputs: userOutputs })
     }
     run = { ...run, collection_pages: pageOutputs.length }
 
@@ -305,9 +312,12 @@ export async function runSyncWorkflow(
 
     const prepared = await step.do('prepare-snapshot-inputs', STORAGE_STEP, async () => {
       const groups = await Promise.all(collectionGroups.map(async (group) => ({
-        data: (await Promise.all(group.outputs.map((output) => getJson<BgmCollection[]>(env.AIRING_CAL_KV, output.key))))
-          .reduce<BgmCollection[] | null>((all, page) => all === null || page === null ? null : [...all, ...page], []),
-        expectedTotal: group.expectedTotal,
+        pages: await Promise.all(group.outputs.map(async (output) => ({
+          offset: output.offset ?? -1,
+          total: output.total ?? -1,
+          data: await getJson<BgmCollection[]>(env.AIRING_CAL_KV, output.key),
+        }))),
+        pageLimit: PAGE_LIMIT,
       })))
       const fetched = assembleFullFetch(groups, await getJson(env.AIRING_CAL_KV, calendarOutput.key))
       const { collections, calendar } = fetched

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { nextSubjectRefreshAt } from '@airing-cal/storage'
+import { nextSubjectRefreshAt, syncStagingKey } from '@airing-cal/storage'
 import { SnapshotCoordinator } from './snapshot-coordinator.ts'
 import { runSyncWorkflow, type SyncWorkflowEnv, type WorkflowStepLike } from './workflow-core.ts'
 
@@ -11,6 +11,7 @@ class MockKV {
   apiCallsByStep = new Map<string, number>()
   externalCallsByStep = new Map<string, number>()
   failingGets = new Set<string>()
+  nullGets = new Set<string>()
 
   private recordCall() {
     if (!this.activeStep) return
@@ -21,6 +22,7 @@ class MockKV {
     this.recordCall()
     assert.equal(type, 'json')
     if (this.failingGets.has(key)) throw new Error(`KV read failed for ${key}`)
+    if (this.nullGets.has(key)) return null
     return this.values.get(key) ?? null
   }
 
@@ -271,6 +273,42 @@ test('shadow workflow fetches 549 collections in 11 deterministic page steps wit
     assert.equal(queueMessages.length, 0)
     assert.deepEqual(coordinator.requests, [])
     assert.equal(step.names.some((name) => name.startsWith('plan-refresh-')), false)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('workflow never prepares or commits deletion-capable input when a staged collection page disappears', async () => {
+  const kv = new MockKV()
+  kv.nullGets.add(syncStagingKey('partial-staging', 'collections:0:1'))
+  const coordinator = new MockSnapshotCoordinator(kv)
+  const step = new FakeStep(kv)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      const offset = Number(new URL(text).searchParams.get('offset'))
+      return Response.json({
+        total: 51,
+        data: offset === 0
+          ? Array.from({ length: 50 }, (_, index) => collection(index + 1))
+          : [collection(51)],
+      })
+    }
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await assert.rejects(
+      runSyncWorkflow(workflowEnv(kv, [], coordinator), {
+        instanceId: 'partial-staging',
+        payload: { mode: 'shadow', source: 'manual' },
+      }, step, (message) => new TestNonRetryableError(message)),
+      /Incomplete collection fetch/,
+    )
+    assert.equal(coordinator.commits.length, 0)
+    assert.equal(step.names.includes('publish-calendar'), false)
   } finally {
     globalThis.fetch = originalFetch
   }

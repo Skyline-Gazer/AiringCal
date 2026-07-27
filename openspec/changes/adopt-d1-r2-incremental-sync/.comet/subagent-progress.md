@@ -92,4 +92,12 @@
 - Normalization contract: top-level `subject_type` is passed explicitly into the stable content hash and retained as the public projection `type`; watched is cold and all other collection states are hot.
 - Full-fetch boundary: Workflow only receives `complete: true` after every staged collection page is present, per-user counts equal the first-page declared totals, and calendar staging is present.
 - Scope audit: no D1 adapter/persistence, budget, R2 publication, runtime binding or legacy public-read change was introduced.
-- Review/fix round: `0/2; pending`.
+- Review/fix round: `1/2 REJECTED → fixed; fresh reviews pending`.
+- Review findings: the initial boundary flattened away per-page totals/offsets and could not detect total drift, duplicates or gaps; same-observation replay could confirm deletion; `private` and opaque subject fields were not handled by one stable persisted projection; composite-key/tag-order coverage was incomplete.
+- Fix RED evidence: storage failed private hash coverage 1/11; domain failed same-observation replay, private toggle and stable subject projection 3/22; boundary failed seven page/calendar integrity cases before implementation.
+- Privacy decision: OpenAPI requires collection `private` as a boolean, while the existing `PublicCollectionItemV1`, legacy merged entry and public snapshot contracts intentionally contain no such field. The authoritative persisted subject envelope and content hash therefore retain `private`, but the public item filters it out.
+- Tag decision: OpenAPI and the public contract model tags as an array, and canonical JSON preserves array order. Normalization does not sort tags; it preserves their public order and reordering changes the business hash.
+- Fix implementation: shared `persistedCollectionSubject` stores only `subject_type`, `private` and the exact allowlisted public subject projection; opaque rating, extra image sizes and runtime keys change neither the hash nor persisted JSON. Planner identity now uses nested user/subject maps, and deletion requires `observedAt > missing_since`.
+- Boundary fix: Workflow retains each page's requested offset, declared total and staged data. The boundary requires safe totals/offsets, consistent totals, exact page count/length, contiguous offsets, unique positive subject IDs per user, unique count equal to total, and a runtime calendar array.
+- Workflow regression: a vanished staged second page produces `Incomplete collection fetch`, zero coordinator commits and no publication step.
+- Fix GREEN evidence: storage 25/25, domain 62/62, sync-worker 84/84; full repository test/typecheck/build check; frozen lockfile; OpenSpec strict and diff check all pass.

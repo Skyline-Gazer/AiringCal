@@ -89,6 +89,71 @@ test('identical input at a later observation produces zero writes', async () => 
   assert.equal(plan.unchanged, 1)
 })
 
+test('same-run replay of first missing does not confirm deletion', async () => {
+  const current: CollectionRow = { ...(await normalized()).row, missing_since: observedAt }
+  const plan = await planCollectionDiff({
+    current: [current], incoming: [], observedAt, complete: true,
+  })
+
+  assert.deepEqual(plan.confirmedDeleted, [])
+  assert.deepEqual(plan.firstMissing, [current])
+})
+
+test('composite user and subject identity isolates otherwise identical subject ids', async () => {
+  const alice = await normalizeCollection('alice', collection())
+  const bob = await normalizeCollection('bob', collection())
+  const currentBob: CollectionRow = {
+    ...bob.row,
+    first_seen_at: observedAt,
+    changed_at: observedAt,
+  }
+  const plan = await planCollectionDiff({
+    current: [currentBob], incoming: [alice], observedAt: observedAt + 1, complete: true,
+  })
+
+  assert.equal(plan.inserts[0]?.user_id, 'alice')
+  assert.equal(plan.firstMissing[0]?.user_id, 'bob')
+})
+
+test('private toggle changes persisted business state without entering the public item', async () => {
+  const publicEntry = await normalizeCollection('ian', collection({ private: false }))
+  const privateEntry = await normalizeCollection('ian', collection({ private: true }))
+
+  assert.notEqual(publicEntry.row.content_hash, privateEntry.row.content_hash)
+  assert.notEqual(publicEntry.row.subject_json, privateEntry.row.subject_json)
+  assert.equal(Object.hasOwn(privateEntry.public_item, 'private'), false)
+  assert.equal(JSON.parse(privateEntry.row.subject_json).private, true)
+})
+
+test('persisted subject projection ignores opaque upstream noise but tracks public changes', async () => {
+  const original = await normalizeCollection('ian', collection())
+  const noisyInput = collection()
+  ;(noisyInput.subject as Record<string, unknown>).rating = { score: 9.9, rank: 2, total: 999 }
+  ;(noisyInput.subject as Record<string, unknown>).images = {
+    ...noisyInput.subject?.images,
+    medium: 'https://img.example/noisy-medium.jpg',
+  }
+  ;(noisyInput.subject as Record<string, unknown>).runtime_trace = 'ignored'
+  const noisy = await normalizeCollection('ian', noisyInput)
+  const changed = await normalizeCollection('ian', collection({
+    subject: { ...collection().subject!, summary: 'changed public summary' },
+  }))
+
+  assert.equal(noisy.row.content_hash, original.row.content_hash)
+  assert.equal(noisy.row.subject_json, original.row.subject_json)
+  assert.notEqual(changed.row.content_hash, original.row.content_hash)
+  assert.notEqual(changed.row.subject_json, original.row.subject_json)
+})
+
+test('tag order is preserved in projection and affects stable state', async () => {
+  const first = await normalizeCollection('ian', collection({ tags: ['TV', 'daily'] }))
+  const reordered = await normalizeCollection('ian', collection({ tags: ['daily', 'TV'] }))
+
+  assert.deepEqual(reordered.public_item.tags, ['daily', 'TV'])
+  assert.equal(reordered.row.tags_json, '["daily","TV"]')
+  assert.notEqual(reordered.row.content_hash, first.row.content_hash)
+})
+
 for (const [name, mutate] of [
   ['rate', (entry: CollectionInput) => ({ ...entry, rate: 9 })],
   ['tags', (entry: CollectionInput) => ({ ...entry, tags: ['TV', 'favorite'] })],

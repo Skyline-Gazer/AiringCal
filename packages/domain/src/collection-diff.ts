@@ -1,6 +1,7 @@
 import {
   canonicalJson,
   collectionContentHash,
+  persistedCollectionSubject,
   type CollectionRow,
   type PublicCollectionItemV1,
 } from '@airing-cal/storage'
@@ -52,10 +53,6 @@ export interface CollectionDiffInput {
   observedAt: number
 }
 
-function key(userId: string, subjectId: number): string {
-  return `${userId}\u0000${subjectId}`
-}
-
 function publicProjection(entry: CollectionInput): PublicCollectionItemV1 {
   const subject = entry.subject
   return {
@@ -82,11 +79,12 @@ export async function normalizeCollection(
   userId: string,
   entry: CollectionInput,
 ): Promise<NormalizedCollection> {
-  const subjectJson = canonicalJson(entry.subject ?? null)
+  const subjectJson = canonicalJson(persistedCollectionSubject(entry.subject_type, entry.private, entry.subject ?? null))
   const contentHash = await collectionContentHash({
     user_id: userId,
     subject_id: entry.subject_id,
     subject_type: entry.subject_type,
+    private: entry.private,
     collection_type: entry.type,
     rate: entry.rate,
     tags: entry.tags,
@@ -125,8 +123,14 @@ export async function planCollectionDiff({
   observedAt,
   complete,
 }: CollectionDiffInput): Promise<CollectionDiffPlan> {
-  const current = new Map(currentRows.map((row) => [key(row.user_id, row.subject_id), row]))
-  const seen = new Set<string>()
+  const current = new Map<string, Map<number, CollectionRow>>()
+  const seen = new Map<string, Set<number>>()
+  for (const row of currentRows) {
+    const bySubject = current.get(row.user_id) ?? new Map<number, CollectionRow>()
+    if (bySubject.has(row.subject_id)) throw new Error(`Duplicate current collection: ${row.user_id}/${row.subject_id}`)
+    bySubject.set(row.subject_id, row)
+    current.set(row.user_id, bySubject)
+  }
   const inserts: CollectionRow[] = []
   const updates: CollectionRow[] = []
   const firstMissing: CollectionRow[] = []
@@ -135,10 +139,13 @@ export async function planCollectionDiff({
   let unchanged = 0
 
   for (const incoming of incomingCollections) {
-    const incomingKey = key(incoming.row.user_id, incoming.row.subject_id)
-    if (seen.has(incomingKey)) throw new Error(`Duplicate collection: ${incoming.row.user_id}/${incoming.row.subject_id}`)
-    seen.add(incomingKey)
-    const previous = current.get(incomingKey)
+    const seenSubjects = seen.get(incoming.row.user_id) ?? new Set<number>()
+    if (seenSubjects.has(incoming.row.subject_id)) {
+      throw new Error(`Duplicate collection: ${incoming.row.user_id}/${incoming.row.subject_id}`)
+    }
+    seenSubjects.add(incoming.row.subject_id)
+    seen.set(incoming.row.user_id, seenSubjects)
+    const previous = current.get(incoming.row.user_id)?.get(incoming.row.subject_id)
     if (!previous) {
       inserts.push({ ...incoming.row, first_seen_at: observedAt, changed_at: observedAt })
       continue
@@ -164,11 +171,13 @@ export async function planCollectionDiff({
 
   if (complete) {
     for (const previous of currentRows) {
-      if (seen.has(key(previous.user_id, previous.subject_id)) || previous.deleted_at !== null) continue
+      if (seen.get(previous.user_id)?.has(previous.subject_id) || previous.deleted_at !== null) continue
       if (previous.missing_since === null) {
         firstMissing.push({ ...previous, missing_since: observedAt })
-      } else {
+      } else if (observedAt > previous.missing_since) {
         confirmedDeleted.push({ ...previous, deleted_at: observedAt })
+      } else {
+        firstMissing.push(previous)
       }
     }
   }

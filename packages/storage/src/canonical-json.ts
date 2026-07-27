@@ -2,6 +2,7 @@ export interface CollectionContentInput {
   user_id: string
   subject_id: number
   subject_type: number
+  private?: boolean
   collection_type: number
   rate?: number | null
   tags?: string[]
@@ -14,7 +15,7 @@ export interface CollectionContentInput {
   [runtimeField: string]: unknown
 }
 
-interface SubjectBusinessProjection {
+export interface SubjectBusinessProjection {
   id: unknown
   type: unknown
   name: unknown
@@ -28,6 +29,12 @@ interface SubjectBusinessProjection {
     common: unknown
     large: unknown
   } | null
+}
+
+export interface PersistedCollectionSubject {
+  subject_type: number
+  private: boolean
+  subject: SubjectBusinessProjection | null
 }
 
 function isPlainObject(value: object): value is Record<string, unknown> {
@@ -95,18 +102,39 @@ function subjectBusinessProjection(value: unknown): SubjectBusinessProjection | 
   }
 }
 
+export function persistedCollectionSubject(
+  subjectType: number,
+  isPrivate: boolean,
+  subject: unknown,
+): PersistedCollectionSubject {
+  return {
+    subject_type: subjectType,
+    private: isPrivate,
+    subject: subjectBusinessProjection(subject),
+  }
+}
+
 function isPlainObjectValue(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && isPlainObject(value)
 }
 
 export async function collectionContentHash(input: CollectionContentInput): Promise<string> {
-  const subject = input.subject === undefined
+  const storedSubject = input.subject === undefined
     ? parseJsonOr(input.subject_json, null)
     : input.subject
+  const storedEnvelope = isPlainObjectValue(storedSubject)
+    && Object.hasOwn(storedSubject, 'subject_type')
+    && Object.hasOwn(storedSubject, 'private')
+    && Object.hasOwn(storedSubject, 'subject')
+    ? storedSubject
+    : null
+  const subject = storedEnvelope?.subject ?? storedSubject
+  const isPrivate = input.private ?? (typeof storedEnvelope?.private === 'boolean' ? storedEnvelope.private : false)
   return sha256Canonical({
     user_id: input.user_id,
     subject_id: input.subject_id,
     subject_type: input.subject_type,
+    private: isPrivate,
     collection_type: input.collection_type,
     rate: input.rate ?? null,
     tags: input.tags ?? parseJsonOr(input.tags_json, []),

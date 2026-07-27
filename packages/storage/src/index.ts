@@ -4,9 +4,14 @@ export {
   canonicalJson,
   canonicalize,
   collectionContentHash,
+  persistedCollectionSubject,
   sha256Canonical,
 } from './canonical-json.ts'
-export type { CollectionContentInput } from './canonical-json.ts'
+export type {
+  CollectionContentInput,
+  PersistedCollectionSubject,
+  SubjectBusinessProjection,
+} from './canonical-json.ts'
 
 export type {
   AppStateRow,

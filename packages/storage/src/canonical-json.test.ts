@@ -4,6 +4,7 @@ import {
   canonicalJson,
   canonicalize,
   collectionContentHash,
+  persistedCollectionSubject,
   sha256Canonical,
 } from './canonical-json.ts'
 
@@ -43,6 +44,7 @@ const baseCollection = {
   user_id: 'alice',
   subject_id: 23080,
   subject_type: 2,
+  private: false,
   collection_type: 3,
   rate: 8,
   tags: ['daily'],
@@ -72,6 +74,7 @@ test('collection content hash detects every public business field including publ
     { tags: ['daily', 'favorite'] },
     { comment: 'excellent' },
     { subject_type: 6 },
+    { private: true },
     { collection_type: 2 },
     { ep_status: 5 },
     { vol_status: 2 },
@@ -156,6 +159,30 @@ test('collection content hash applies the same allowlist to subject_json', async
       }),
     }),
     fromObject,
+  )
+})
+
+test('collection content hash reads the persisted private subject envelope identically', async () => {
+  const privateCollection = { ...baseCollection, private: true }
+  assert.equal(
+    await collectionContentHash(privateCollection),
+    await collectionContentHash({
+      ...privateCollection,
+      private: undefined,
+      subject: undefined,
+      subject_json: canonicalJson(persistedCollectionSubject(
+        privateCollection.subject_type,
+        privateCollection.private,
+        privateCollection.subject,
+      )),
+    }),
+  )
+})
+
+test('collection content hash preserves tag order because it is part of the public array contract', async () => {
+  assert.notEqual(
+    await collectionContentHash({ ...baseCollection, tags: ['daily', 'favorite'] }),
+    await collectionContentHash({ ...baseCollection, tags: ['favorite', 'daily'] }),
   )
 })
 
