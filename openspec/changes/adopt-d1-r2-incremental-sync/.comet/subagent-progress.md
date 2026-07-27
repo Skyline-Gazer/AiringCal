@@ -135,7 +135,7 @@
 
 - Plan task: `Task 5: Typed D1 adapter 与零写收藏提交`
 - OpenSpec mapping: remaining adapter and row-mapping evidence for `2.2`.
-- Stage: `review`
+- Stage: `checkoff`
 - Implementation base: `297f99d`
 - RED evidence: focused adapter suite failed because `d1-state-store.ts` did not exist; no production adapter code existed before the failing test.
 - GREEN evidence: focused adapter 10/10; storage 35/35; storage and full-repository typecheck; full repository tests; build dry-runs; frozen lockfile diff; OpenSpec strict and diff check all pass.
@@ -183,4 +183,5 @@
 - Typed state/lifecycle: `getAppState` now requires a runtime decoder; explicit `getAppStateUnknown` names the raw boundary. Sync update/complete/fail query status after zero changes, reject missing rows, allow same-terminal replay, and reject opposite-terminal overwrite; response-loss completion followed by catch-path failure preserves `ok`.
 - Cross-task compatibility: the not-yet-production-applied initial migration and exact schema tests were updated in place; Task 4 planner tests cover the revision sequence. OpenSpec `2.1`, `3.1`, and `3.2` remain complete because their implemented contracts were revised before production migration/runtime binding.
 - Revision GREEN evidence: migration apply/replay and schema assertions 2/2; focused domain/adapter 50/50; storage 48/48, domain 67/67 and sync-worker 98/98; full repository tests, typecheck and build dry-runs; frozen lockfile, OpenSpec strict and diff checks all pass.
-- Checkoff guard remains active: OpenSpec `2.2` and plan Task 5 are still pending fresh independent spec-compliance and code-quality approvals.
+- Absolute final review result: spec compliance APPROVED and code quality APPROVED with no Critical, Important, or Minor findings.
+- Task 5 checkoff: plan Steps 1–4 and OpenSpec 2.2 complete. The typed adapter, state revision model, replay reconciliation and structured stale-conflict contract are approved and pushed through `2ddf277111edea5c4c17b4f4a6736fdb8f3e0e90`.

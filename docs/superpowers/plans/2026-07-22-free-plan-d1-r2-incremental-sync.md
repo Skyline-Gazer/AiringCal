@@ -454,7 +454,7 @@ git push
 - Every existing collection mutation uses exact `state_version` compare-and-set. Initial inserts require revision `1`; concurrent initial inserts converge by `(changed_at, content_hash BINARY)` while remaining revision `1` and preserving the earliest `first_seen_at`. Conflict upserts are disabled after any missing/delete/restore/business transition.
 - A zero-change collection statement MUST read back the current full row. Existing-row mutations require exact final-row equality. Insert replay additionally accepts only an initial stored row (`state_version = 1`, no missing/deleted state) whose authoritative/business fields all equal the planned row and whose preserved `first_seen_at` is earlier than or equal to the planned value. Any other difference raises exported `StaleCollectionDiffError` with stable code `STALE_COLLECTION_DIFF`. Task 7 integration MUST catch only this error type, re-list D1 rows and re-run diff planning before any publication; it MUST NOT publish from the losing plan.
 
-- [ ] **Step 1: Write RED adapter tests with a recording D1 fake**
+- [x] **Step 1: Write RED adapter tests with a recording D1 fake**
 
 Require exact statement counts:
 
@@ -467,11 +467,11 @@ assert.equal(fake.batchCalls[0].length, 1)
 
 Test row JSON decoding, corrupt app-state version rejection, error redaction, and bounded batches (maximum 50 statements per `batch` call).
 
-- [ ] **Step 2: Implement minimal repository**
+- [x] **Step 2: Implement minimal repository**
 
 Use prepared statements with positional binds and explicit column lists. Never issue an UPDATE for `unchanged`; never write `last_seen_at`. Batch only insert/update/state-transition rows and return actual statement count.
 
-- [ ] **Step 3: Run GREEN**
+- [x] **Step 3: Run GREEN**
 
 ```bash
 node --import tsx --test packages/storage/src/d1-state-store.test.ts
@@ -479,7 +479,7 @@ pnpm -F @airing-cal/storage test
 pnpm -F @airing-cal/storage typecheck
 ```
 
-- [ ] **Step 4: Review, complete remaining 2.2 evidence, commit and push**
+- [x] **Step 4: Review, complete remaining 2.2 evidence, commit and push**
 
 ```bash
 git add packages/storage openspec/changes/adopt-d1-r2-incremental-sync
