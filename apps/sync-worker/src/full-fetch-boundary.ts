@@ -48,6 +48,7 @@ function normalizeCalendarSubject(value: unknown): BgmCalendarItem['items'][numb
     if (value.rating.total !== undefined && !isSafeNonNegativeInteger(value.rating.total)) return null
     if (value.rating.rank !== undefined && !isSafeNonNegativeInteger(value.rating.rank)) return null
   }
+  if (value.rank !== undefined && !isSafeNonNegativeInteger(value.rank)) return null
   if (value.eps_count !== undefined && !isSafeNonNegativeInteger(value.eps_count)) return null
   if (value.total_episodes !== undefined && !isSafeNonNegativeInteger(value.total_episodes)) return null
   if (value.nsfw !== undefined && typeof value.nsfw !== 'boolean') return null
@@ -57,12 +58,13 @@ function normalizeCalendarSubject(value: unknown): BgmCalendarItem['items'][numb
   const rating = isRecord(value.rating) && typeof value.rating.score === 'number'
     ? {
         score: value.rating.score,
-        rank: isSafeNonNegativeInteger(value.rating.rank) ? value.rating.rank : 0,
+        rank: isSafeNonNegativeInteger(value.rank)
+          ? value.rank
+          : isSafeNonNegativeInteger(value.rating.rank) ? value.rating.rank : 0,
         total: isSafeNonNegativeInteger(value.rating.total) ? value.rating.total : 0,
       }
     : undefined
   return {
-    ...value,
     id: value.id,
     type: value.type as number,
     name: typeof value.name === 'string' ? value.name : '',
@@ -71,6 +73,8 @@ function normalizeCalendarSubject(value: unknown): BgmCalendarItem['items'][numb
     nsfw: value.nsfw === true,
     date: typeof value.date === 'string' ? value.date : typeof value.air_date === 'string' ? value.air_date : '',
     eps: isSafeNonNegativeInteger(value.eps) ? value.eps : 0,
+    ...(isSafeNonNegativeInteger(value.eps_count) ? { eps_count: value.eps_count } : {}),
+    ...(isSafeNonNegativeInteger(value.total_episodes) ? { total_episodes: value.total_episodes } : {}),
     images: {
       large: typeof images.large === 'string' ? images.large : '',
       common: typeof images.common === 'string' ? images.common : '',

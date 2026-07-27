@@ -249,6 +249,25 @@ test('shadow workflow fetches 549 collections in 11 deterministic page steps wit
   const coordinator = new MockSnapshotCoordinator(kv)
   const originalFetch = globalThis.fetch
   const calls: string[] = []
+  const openApiCalendar = [{
+    weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+    items: [{
+      id: 12,
+      url: 'https://bgm.tv/subject/12',
+      type: 2,
+      name: 'A',
+      name_cn: 'A CN',
+      summary: 'summary',
+      air_date: '2026-01-01',
+      air_weekday: 1,
+      eps: 12,
+      eps_count: 13,
+      images: { common: 'common' },
+      rating: { total: 2289, score: 7.6, count: { 10: 130 } },
+      rank: 573,
+      collection: { wish: 1 },
+    }],
+  }]
   globalThis.fetch = (async (url: string | URL | Request) => {
     const text = String(url)
     calls.push(text)
@@ -257,7 +276,7 @@ test('shadow workflow fetches 549 collections in 11 deterministic page steps wit
       const count = Math.min(50, 549 - offset)
       return Response.json({ total: 549, data: Array.from({ length: count }, (_, index) => collection(offset + index + 1)) })
     }
-    if (text.endsWith('/calendar')) return Response.json([])
+    if (text.endsWith('/calendar')) return Response.json(openApiCalendar)
     throw new Error(`unexpected fetch ${text}`)
   }) as typeof globalThis.fetch
 
@@ -273,6 +292,23 @@ test('shadow workflow fetches 549 collections in 11 deterministic page steps wit
     assert.equal(calls.some((url) => url.includes('/v0/subjects/')), false)
     assert.equal(step.outputSizes.every((size) => size < 1024 * 1024), true)
     assert.equal(kv.values.has('snapshot:shadow:shadow-commit:collections:watching'), true)
+    assert.deepEqual(kv.values.get('snapshot:shadow:shadow-commit:calendar'), [{
+      weekday: openApiCalendar[0]!.weekday,
+      items: [{
+        subject_id: 12,
+        id: 12,
+        type: 2,
+        name: 'A',
+        name_cn: 'A CN',
+        summary: 'summary',
+        images: { common: null, large: null },
+        nsfw: false,
+        date: '2026-01-01',
+        eps: 12,
+        total_episodes: 12,
+        rating: { score: 7.6, rank: 573, total: 2289 },
+      }],
+    }])
     assert.deepEqual(kv.values.get('snapshot:collections:watching'), [{ subject_id: 999, title: 'live' }])
     assert.equal(queueMessages.length, 0)
     assert.deepEqual(coordinator.requests, [])

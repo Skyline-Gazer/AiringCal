@@ -63,6 +63,15 @@ test('normalizeCollection creates a hot row and explicit subject_type public pro
   assert.match(value.row.content_hash, /^[0-9a-f]{64}$/)
 })
 
+test('normalizeCollection defaults an OpenAPI-optional comment for D1 and hashing', async () => {
+  const { comment: _comment, ...withoutComment } = collection()
+  const value = await normalizeCollection('ian', withoutComment)
+  const explicit = await normalizeCollection('ian', collection({ comment: '' }))
+
+  assert.equal(value.row.comment, '')
+  assert.equal(value.row.content_hash, explicit.row.content_hash)
+})
+
 test('normalizeCollection marks watched as cold and every other collection type as hot', async () => {
   for (const type of [1, 2, 3, 4, 5]) {
     const value = await normalized({ type })

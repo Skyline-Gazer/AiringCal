@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { transformCalendar } from '@airing-cal/domain'
 import { assembleFullFetch } from './full-fetch-boundary.ts'
 
 const entry = {
@@ -158,6 +159,62 @@ test('assembleFullFetch accepts the OpenAPI-compatible minimal calendar item', (
   assert.deepEqual(result.calendar[0]?.items[0]?.images, {
     large: '', common: '', medium: '', small: '', grid: '',
   })
+})
+
+test('assembleFullFetch allowlists checked-in legacy subjects and maps root rank', () => {
+  const result = assembleFullFetch(
+    [{ user_id: 'alice', pages: [{ offset: 0, total: 0, data: [] }], pageLimit: 50 }],
+    [{
+      weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+      items: [{
+        id: 12,
+        url: 'https://bgm.tv/subject/12',
+        type: 2,
+        name: 'A',
+        name_cn: 'A CN',
+        summary: 'summary',
+        air_date: '2026-01-01',
+        air_weekday: 1,
+        eps: 12,
+        eps_count: 13,
+        images: { common: 'common' },
+        rating: { total: 2289, score: 7.6, count: { 10: 130 } },
+        rank: 573,
+        collection: { wish: 1 },
+        opaque: 'must not escape',
+      }],
+    }],
+    123,
+  )
+
+  assert.deepEqual(result.calendar[0]?.items[0], {
+    id: 12,
+    type: 2,
+    name: 'A',
+    name_cn: 'A CN',
+    summary: 'summary',
+    nsfw: false,
+    date: '2026-01-01',
+    eps: 12,
+    eps_count: 13,
+    images: { large: '', common: 'common', medium: '', small: '', grid: '' },
+    rating: { score: 7.6, rank: 573, total: 2289 },
+  })
+  assert.equal(transformCalendar(result.calendar)[0]?.items[0]?.rating?.rank, 573)
+})
+
+test('assembleFullFetch removes optional rating without a score', () => {
+  const result = assembleFullFetch(
+    [{ user_id: 'alice', pages: [{ offset: 0, total: 0, data: [] }], pageLimit: 50 }],
+    [{
+      weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+      items: [{ id: 12, type: 2, rating: { total: 1 } }],
+    }],
+    123,
+  )
+
+  assert.equal('rating' in result.calendar[0]!.items[0]!, false)
+  assert.equal(transformCalendar(result.calendar)[0]?.items[0]?.rating, undefined)
 })
 
 test('assembleFullFetch reuses the supplied stable workflow observation', () => {

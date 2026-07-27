@@ -344,6 +344,8 @@ export async function runSyncWorkflow(
         await putJson(env.AIRING_CAL_KV, key, merged[type], SYNC_STAGING_TTL_SECONDS)
         snapshotKeys[type] = key
       }
+      const calendarInputKey = syncStagingKey(event.instanceId, 'snapshot:calendar-input')
+      await putJson(env.AIRING_CAL_KV, calendarInputKey, calendar, SYNC_STAGING_TTL_SECONDS)
       const ids = [...new Set([...collections.map((entry) => entry.subject_id), ...calendarSubjectIds(calendar)])]
       const hotIds = new Set(collections.map((entry) => entry.subject_id))
       const titles = sourceTitles(collections, calendar)
@@ -360,11 +362,12 @@ export async function runSyncWorkflow(
       const key = syncStagingKey(event.instanceId, 'prepared')
       await putJson(env.AIRING_CAL_KV, key, {
         snapshotKeys,
+        calendarInputKey,
         refreshInputKey,
         refreshChunks,
         observedAt: fetched.observedAt,
       }, SYNC_STAGING_TTL_SECONDS)
-      return { key, snapshotKeys, refreshInputKey, refreshChunks, count: ids.length, digest: await digest(ids) }
+      return { key, snapshotKeys, calendarInputKey, refreshInputKey, refreshChunks, count: ids.length, digest: await digest(ids) }
     })
     const summary: Record<string, number> = {}
     const publishedOutputs: StepOutput[] = []
@@ -389,7 +392,7 @@ export async function runSyncWorkflow(
       return { key, count: summary._total, digest: await digest(summary) }
     }))
     publishedOutputs.push(await step.do('publish-calendar', STORAGE_STEP, async () => {
-      const calendar = await getJson<any[]>(env.AIRING_CAL_KV, calendarOutput.key) ?? []
+      const calendar = await getJson<any[]>(env.AIRING_CAL_KV, prepared.calendarInputKey) ?? []
       const snapshot = transformCalendar(calendar)
       const key = targetSnapshotKey(mode, event.instanceId, 'calendar')
       await putJson(env.AIRING_CAL_KV, key, snapshot, mode === 'shadow' ? SYNC_RUN_TTL_SECONDS : undefined)

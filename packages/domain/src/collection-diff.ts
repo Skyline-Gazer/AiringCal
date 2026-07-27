@@ -11,7 +11,7 @@ export interface CollectionInput {
   subject_type: number
   rate: number
   type: number
-  comment: string
+  comment?: string
   tags: string[]
   ep_status: number
   vol_status: number
@@ -79,6 +79,7 @@ export async function normalizeCollection(
   userId: string,
   entry: CollectionInput,
 ): Promise<NormalizedCollection> {
+  const comment = entry.comment ?? ''
   const subjectJson = canonicalJson(persistedCollectionSubject(entry.subject_type, entry.private, entry.subject ?? null))
   const contentHash = await collectionContentHash({
     user_id: userId,
@@ -88,7 +89,7 @@ export async function normalizeCollection(
     collection_type: entry.type,
     rate: entry.rate,
     tags: entry.tags,
-    comment: entry.comment,
+    comment,
     ep_status: entry.ep_status,
     vol_status: entry.vol_status,
     upstream_updated_at: entry.updated_at,
@@ -101,7 +102,7 @@ export async function normalizeCollection(
       collection_type: entry.type,
       rate: entry.rate,
       tags_json: canonicalJson(entry.tags),
-      comment: entry.comment,
+      comment,
       ep_status: entry.ep_status,
       vol_status: entry.vol_status,
       upstream_updated_at: entry.updated_at,

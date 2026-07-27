@@ -232,7 +232,8 @@ export interface BgmCalendarSubjectLike {
   eps_count?: number
   total_episodes?: number
   images?: { large?: string; common?: string; medium?: string; small?: string; grid?: string }
-  rating?: { score: number; rank: number; total: number }
+  rank?: number
+  rating?: { score: number; rank?: number; total: number }
 }
 
 export interface SubjectDetailLike {
@@ -464,6 +465,13 @@ export function transformCalendar(calendar: BgmCalendarDayLike[], imageMap?: Sub
     weekday: day.weekday,
     items: day.items.map((subject) => {
       const episodeCount = calendarEpisodeCount(subject)
+      const rating = subject.rating
+        ? {
+            score: subject.rating.score,
+            rank: typeof subject.rank === 'number' ? subject.rank : subject.rating.rank ?? 0,
+            total: subject.rating.total,
+          }
+        : undefined
       return {
         subject_id: subject.id,
         id: subject.id,
@@ -476,7 +484,7 @@ export function transformCalendar(calendar: BgmCalendarDayLike[], imageMap?: Sub
         date: subject.date,
         eps: episodeCount,
         total_episodes: typeof subject.total_episodes === 'number' && subject.total_episodes > 0 ? subject.total_episodes : episodeCount,
-        ...(subject.rating ? { rating: subject.rating } : {}),
+        ...(rating ? { rating } : {}),
       }
     }),
   }))
