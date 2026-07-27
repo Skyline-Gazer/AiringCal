@@ -68,7 +68,7 @@ resource resolve 必须在任一 Worker upload 前确认 D1、data R2、image R2
 
 `last_seen_at`、同步时间、heartbeat、generation 等运行字段不进入 `content_hash`。相同业务输入不得为“更新观察时间”而改写行。
 
-所有既有行 mutation 使用精确 `state_version` compare-and-set。零写结果必须回读当前完整行：既有 mutation 只有与计划最终行完全相等时才作为 response-loss/replay no-op；insert replay 仅额外允许仍处于初始态、全部权威/业务字段相等，且数据库因 `MIN` 保留了不晚于计划值的 `first_seen_at`。其他差异均抛出稳定 stale-diff conflict；Task 7 orchestration 必须重新读取 D1 并重新规划，禁止继续发布 losing plan。两次并发同步都从“无行”规划 insert 时，仅允许仍处于初始态（`state_version = 1` 且无 missing/deleted）的行按 `(changed_at, content_hash BINARY)` 选择确定性赢家，revision 保持 `1` 并保留最早 `first_seen_at`；一旦发生过状态 transition，延迟 insert 不得清除状态。若同秒没有可恢复的真实先后顺序，content hash 的二进制顺序只用于保证收敛，下一次完整同步会再次校正权威业务状态。
+所有既有行 mutation 使用精确 `state_version` compare-and-set。零写结果必须回读当前完整行：既有 mutation 只有与计划最终行完全相等时才作为 response-loss/replay no-op；insert replay 仅额外允许仍处于初始态、全部权威/业务字段相等，且数据库因 `MIN` 保留了不晚于计划值的 `first_seen_at`。其他差异均抛出导出的 `StaleCollectionDiffError`（稳定 code `STALE_COLLECTION_DIFF`）；Task 7 orchestration 只捕获此类型并重新读取 D1、重新规划，禁止继续发布 losing plan，其他 D1/结果验证/JSON 解码错误照常失败。两次并发同步都从“无行”规划 insert 时，仅允许仍处于初始态（`state_version = 1` 且无 missing/deleted）的行按 `(changed_at, content_hash BINARY)` 选择确定性赢家，revision 保持 `1` 并保留最早 `first_seen_at`；一旦发生过状态 transition，延迟 insert 不得清除状态。若同秒没有可恢复的真实先后顺序，content hash 的二进制顺序只用于保证收敛，下一次完整同步会再次校正权威业务状态。
 
 ### 3.2 `subject_media`
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { getCachedSubjectDetail, KVStorage, nextSubjectRefreshAt, packageBoundary, putJsonIfChanged, subjectDetailKey } from './index.ts'
+import { getCachedSubjectDetail, KVStorage, nextSubjectRefreshAt, packageBoundary, putJsonIfChanged, StaleCollectionDiffError, subjectDetailKey } from './index.ts'
 import type { SyncTerminalTransitionResult } from './index.ts'
 
 class MockKV {
@@ -43,6 +43,10 @@ test('storage package boundary exposes its package name', () => {
   assert.equal(packageBoundary, '@airing-cal/storage')
   const terminalResult: SyncTerminalTransitionResult = { outcome: 'applied', terminal: 'ok' }
   assert.deepEqual(terminalResult, { outcome: 'applied', terminal: 'ok' })
+  const stale = new StaleCollectionDiffError('alice', 23080)
+  assert.equal(stale.code, 'STALE_COLLECTION_DIFF')
+  assert.equal(stale.userId, 'alice')
+  assert.equal(stale.subjectId, 23080)
 })
 
 test('getCachedSubjectDetail returns fresh cached subject detail without upstream fetch', async () => {

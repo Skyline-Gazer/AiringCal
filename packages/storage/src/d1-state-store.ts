@@ -42,6 +42,23 @@ const FIRST_MISSING_UPDATE = 'UPDATE collection_items SET missing_since = ?, sta
 const CONFIRMED_DELETED_UPDATE = 'UPDATE collection_items SET deleted_at = ?, state_version = ? WHERE user_id = ? AND subject_id = ? AND state_version = ?'
 const MAX_BATCH_STATEMENTS = 50
 const CLASSIFIED_ERROR_CODE = /^[A-Z][A-Z0-9_]{1,63}$/
+const SYNC_RUN_COLUMNS = [
+  'instance_id', 'status', 'stage', 'generation', 'collection_count', 'changed_count',
+  'missing_count', 'deleted_count', 'media_selected_count', 'media_granted_count',
+  'input_hash', 'public_hash', 'error_code', 'started_at', 'heartbeat_at', 'completed_at',
+] as const
+
+export class StaleCollectionDiffError extends Error {
+  readonly code = 'STALE_COLLECTION_DIFF'
+
+  constructor(
+    readonly userId: string,
+    readonly subjectId: number,
+  ) {
+    super(`Stale collection diff conflict: ${userId}:${subjectId}`)
+    this.name = 'StaleCollectionDiffError'
+  }
+}
 
 interface PendingWrite {
   userId: string
@@ -201,7 +218,7 @@ export class D1StateStore {
       && COLLECTION_COLUMNS.every((column) =>
         column === 'first_seen_at' || current[column] === write.planned[column])
     ) return
-    throw new Error(`Stale collection diff conflict: ${write.userId}:${write.subjectId}`)
+    throw new StaleCollectionDiffError(write.userId, write.subjectId)
   }
 
   private async syncRunStatus(instanceId: string): Promise<string | undefined> {
@@ -212,6 +229,14 @@ export class D1StateStore {
     if (row === null) return undefined
     if (typeof row.status !== 'string') throw new Error(`Invalid sync run status: ${instanceId}`)
     return row.status
+  }
+
+  private async syncRunRow(instanceId: string): Promise<Record<string, unknown> | undefined> {
+    const row = await this.database
+      .prepare(`SELECT ${SYNC_RUN_COLUMNS.join(', ')} FROM sync_runs WHERE instance_id = ?`)
+      .bind(instanceId)
+      .first<Record<string, unknown>>()
+    return row === null ? undefined : row
   }
 
   async listCollectionRows(): Promise<CollectionRow[]> {
@@ -349,17 +374,16 @@ export class D1StateStore {
 
   async startSyncRun(row: SyncRunRow): Promise<void> {
     assertClassifiedErrorCode(row.error_code)
-    const columns = [
-      'instance_id', 'status', 'stage', 'generation', 'collection_count', 'changed_count',
-      'missing_count', 'deleted_count', 'media_selected_count', 'media_granted_count',
-      'input_hash', 'public_hash', 'error_code', 'started_at', 'heartbeat_at', 'completed_at',
-    ] as const
     const statement = this.database.prepare(
-      `INSERT INTO sync_runs (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) ON CONFLICT(instance_id) DO NOTHING`,
-    ).bind(...columns.map((column) => row[column]))
+      `INSERT INTO sync_runs (${SYNC_RUN_COLUMNS.join(', ')}) VALUES (${SYNC_RUN_COLUMNS.map(() => '?').join(', ')}) ON CONFLICT(instance_id) DO NOTHING`,
+    ).bind(...SYNC_RUN_COLUMNS.map((column) => row[column]))
     const changes = await this.executeBatch([statement])
-    if (changes === 0 && await this.syncRunStatus(row.instance_id) === undefined) {
-      throw new Error(`Sync run not found after start: ${row.instance_id}`)
+    if (changes === 0) {
+      const current = await this.syncRunRow(row.instance_id)
+      if (current === undefined) throw new Error(`Sync run not found after start: ${row.instance_id}`)
+      if (!SYNC_RUN_COLUMNS.every((column) => current[column] === row[column])) {
+        throw new Error(`Sync run instance payload mismatch: ${row.instance_id}`)
+      }
     }
   }
 

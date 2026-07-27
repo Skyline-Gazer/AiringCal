@@ -169,6 +169,11 @@
 - Barrel contract: `SyncTerminalTransitionResult` is exported from `@airing-cal/storage`, with a package-boundary consumer compiled by storage typecheck.
 - Ultimate GREEN evidence: focused 7/7; storage 55/55; full repository tests/typecheck/Wrangler build dry-runs; frozen lockfile, OpenSpec strict and diff checks all pass.
 - Checkoff guard remains active: OpenSpec `2.2` and plan Task 5 are pending the final fresh independent spec-compliance and code-quality approvals.
+- Final structured-conflict fix: exported `StaleCollectionDiffError` carries stable `code = 'STALE_COLLECTION_DIFF'`, `userId` and `subjectId`; only divergent collection reconciliation throws it. Task 7 catches only this type for re-list/replan, while all unrelated D1/result/JSON errors fail normally.
+- Sync-run identity: `startSyncRun` accepts only an exact persisted input replay. Reusing an instance ID with any different start payload throws `Sync run instance payload mismatch`; exact replay remains safe after a committed response loss.
+- Final structured RED/GREEN: missing error exports failed runtime modules and barrel typecheck; focused GREEN is 10/10 plus storage typecheck. Full gates pending below.
+- Final structured gates: storage 57/57; full repository tests/typecheck/Wrangler build dry-runs; frozen lockfile, OpenSpec strict and diff checks all pass.
+- Checkoff guard remains active: OpenSpec `2.2` and plan Task 5 remain pending the final fresh independent review.
 - Fresh review round: `2/3 REJECTED → revision fix implemented; next fresh dual review pending`.
 - Revision finding: wall-clock `changed_at` was not a sufficient concurrency token for same-second divergent plans; first-writer-wins insert replay and unchecked generic app-state reads also left convergence/validation gaps, while zero-change sync transitions did not distinguish missing rows from terminal replay.
 - Revision RED evidence: migration/domain focused failed 16/29 for the missing revision column and transition increments; adapter/node:sqlite focused failed row decode, same-second mutation, stale sequence, divergent empty inserts, typed state and sync existence/terminal assertions.

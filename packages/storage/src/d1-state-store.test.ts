@@ -9,7 +9,7 @@ import type {
   D1ResultLike,
   SyncRunRow,
 } from './d1-types.ts'
-import { D1StateStore } from './d1-state-store.ts'
+import { D1StateStore, StaleCollectionDiffError } from './d1-state-store.ts'
 
 interface RecordedStatement {
   sql: string
@@ -20,6 +20,11 @@ const collectionColumns = [
   'user_id', 'subject_id', 'collection_type', 'rate', 'tags_json', 'comment', 'ep_status',
   'vol_status', 'upstream_updated_at', 'subject_json', 'content_hash', 'state_version',
   'temperature', 'first_seen_at', 'changed_at', 'missing_since', 'deleted_at',
+] as const
+const syncRunColumns = [
+  'instance_id', 'status', 'stage', 'generation', 'collection_count', 'changed_count',
+  'missing_count', 'deleted_count', 'media_selected_count', 'media_granted_count',
+  'input_hash', 'public_hash', 'error_code', 'started_at', 'heartbeat_at', 'completed_at',
 ] as const
 
 function result<T = Record<string, unknown>>(changes = 0, rows: T[] = []): D1ResultLike<T> {
@@ -77,16 +82,21 @@ class RecordingD1 implements D1DatabaseLike {
   readonly insertedCollections = new Set<string>()
   readonly collectionRows = new Map<string, Record<string, unknown>>()
   readonly syncStatuses = new Map<string, string>()
+  readonly syncRows = new Map<string, Record<string, unknown>>()
   nextChanges: number[] = []
   throwBeforeBatchAt: number | null = null
   loseCollectionResponseAt: number | null = null
   loseCompleteResponseOnce = false
+  loseStartResponseOnce = false
   private batchIndex = 0
 
   prepare(sql: string): D1PreparedStatementLike {
     const statement = new RecordingStatement(sql, this.rows, (binds) => {
       if (sql.startsWith('SELECT user_id, subject_id') && sql.includes('WHERE user_id = ?')) {
         return this.collectionRows.get(`${binds[0]}:${binds[1]}`) ?? null
+      }
+      if (sql.startsWith('SELECT instance_id, status') && sql.includes('WHERE instance_id = ?')) {
+        return this.syncRows.get(String(binds[0])) ?? null
       }
       if (!sql.startsWith('SELECT status FROM sync_runs')) return this.rows[0] ?? null
       const status = this.syncStatuses.get(String(binds[0]))
@@ -118,7 +128,10 @@ class RecordingD1 implements D1DatabaseLike {
       if (changes === undefined && sql.startsWith('INSERT INTO sync_runs')) {
         const instanceId = String(binds[0])
         changes = this.syncStatuses.has(instanceId) ? 0 : 1
-        if (changes === 1) this.syncStatuses.set(instanceId, String(binds[1]))
+        if (changes === 1) {
+          this.syncStatuses.set(instanceId, String(binds[1]))
+          this.syncRows.set(instanceId, Object.fromEntries(syncRunColumns.map((column, index) => [column, binds[index]])))
+        }
       }
       if (changes === undefined && sql.startsWith("UPDATE sync_runs SET status = 'ok'")) {
         const instanceId = String(binds.at(-1))
@@ -151,6 +164,13 @@ class RecordingD1 implements D1DatabaseLike {
     ) {
       this.loseCollectionResponseAt = null
       throw new Error('simulated collection response loss after commit')
+    }
+    if (
+      this.loseStartResponseOnce
+      && recordedStatements.some(({ sql }) => sql.startsWith('INSERT INTO sync_runs'))
+    ) {
+      this.loseStartResponseOnce = false
+      throw new Error('simulated start response loss after commit')
     }
     if (
       this.loseCompleteResponseOnce
@@ -629,10 +649,14 @@ test('overlapping revision plans force the loser to re-read and replan', async (
   const loser = emptyPlan()
   loser.updates = [{ ...initial, state_version: 2, rate: 10, content_hash: 'c'.repeat(64) }]
   await store.applyCollectionDiff(winner)
-  await assert.rejects(
-    store.applyCollectionDiff(loser),
-    /Stale collection diff conflict: alice:23080/,
-  )
+  await assert.rejects(store.applyCollectionDiff(loser), (error: unknown) => {
+    assert.equal(error instanceof StaleCollectionDiffError, true)
+    assert.equal((error as StaleCollectionDiffError).code, 'STALE_COLLECTION_DIFF')
+    assert.equal((error as StaleCollectionDiffError).userId, 'alice')
+    assert.equal((error as StaleCollectionDiffError).subjectId, 23080)
+    assert.equal((error as Error).message, 'Stale collection diff conflict: alice:23080')
+    return true
+  })
 })
 
 test('identical applied collection transition replay is a safe zero-write no-op', async () => {
@@ -727,7 +751,10 @@ test('sync run lifecycle uses positional binds and persists only classified erro
   const store = new D1StateStore(fake)
 
   await store.startSyncRun(syncRun({ stage: 'initialize' }))
-  await store.startSyncRun(syncRun({ stage: 'initialize', collection_count: 999 }))
+  await assert.rejects(
+    store.startSyncRun(syncRun({ stage: 'initialize', collection_count: 999 })),
+    /Sync run instance payload mismatch: run-1/,
+  )
   await store.updateSyncRun('run-1', {
     stage: 'collections',
     heartbeat_at: 110,
@@ -759,6 +786,27 @@ test('sync run lifecycle uses positional binds and persists only classified erro
   assert.match(statements[5]?.sql ?? '', /status NOT IN \('ok', 'error'\)$/)
   assert.ok(statements[5]?.binds.includes('UPSTREAM_RATE_LIMITED'))
   assert.equal(JSON.stringify(statements).includes('raw body'), false)
+})
+
+test('startSyncRun accepts exact replay but rejects instance id reuse with different payload', async () => {
+  const fake = new RecordingD1()
+  const store = new D1StateStore(fake)
+  const initial = syncRun({ instance_id: 'replay', stage: 'initialize', started_at: 100 })
+  await store.startSyncRun(initial)
+  await store.startSyncRun(initial)
+  await assert.rejects(
+    store.startSyncRun({ ...initial, stage: 'collections' }),
+    /Sync run instance payload mismatch: replay/,
+  )
+})
+
+test('startSyncRun exact replay is safe after committed response loss', async () => {
+  const fake = new RecordingD1()
+  const store = new D1StateStore(fake)
+  const initial = syncRun({ instance_id: 'lost-start', stage: 'initialize' })
+  fake.loseStartResponseOnce = true
+  await assert.rejects(store.startSyncRun(initial), /start response loss/)
+  await store.startSyncRun(initial)
 })
 
 test('committed completion survives response loss and catch-path failure', async () => {

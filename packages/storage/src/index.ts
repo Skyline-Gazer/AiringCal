@@ -7,7 +7,7 @@ export {
   persistedCollectionSubject,
   sha256Canonical,
 } from './canonical-json.ts'
-export { D1StateStore } from './d1-state-store.ts'
+export { D1StateStore, StaleCollectionDiffError } from './d1-state-store.ts'
 export type {
   CollectionContentInput,
   PersistedCollectionSubject,

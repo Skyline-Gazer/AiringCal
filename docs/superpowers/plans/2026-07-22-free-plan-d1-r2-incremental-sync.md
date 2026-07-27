@@ -452,7 +452,7 @@ git push
 - Produces `getAppState<T>(key): Promise<T | undefined>`, `putAppState<T>(key, value): Promise<void>`.
 - Produces `startSyncRun`, `updateSyncRun`, `completeSyncRun`, `failSyncRun`.
 - Every existing collection mutation uses exact `state_version` compare-and-set. Initial inserts require revision `1`; concurrent initial inserts converge by `(changed_at, content_hash BINARY)` while remaining revision `1` and preserving the earliest `first_seen_at`. Conflict upserts are disabled after any missing/delete/restore/business transition.
-- A zero-change collection statement MUST read back the current full row. Existing-row mutations require exact final-row equality. Insert replay additionally accepts only an initial stored row (`state_version = 1`, no missing/deleted state) whose authoritative/business fields all equal the planned row and whose preserved `first_seen_at` is earlier than or equal to the planned value. Any other difference raises a stale-diff conflict. Task 7 integration MUST catch that conflict, re-list D1 rows and re-run diff planning before any publication; it MUST NOT publish from the losing plan.
+- A zero-change collection statement MUST read back the current full row. Existing-row mutations require exact final-row equality. Insert replay additionally accepts only an initial stored row (`state_version = 1`, no missing/deleted state) whose authoritative/business fields all equal the planned row and whose preserved `first_seen_at` is earlier than or equal to the planned value. Any other difference raises exported `StaleCollectionDiffError` with stable code `STALE_COLLECTION_DIFF`. Task 7 integration MUST catch only this error type, re-list D1 rows and re-run diff planning before any publication; it MUST NOT publish from the losing plan.
 
 - [ ] **Step 1: Write RED adapter tests with a recording D1 fake**
 
@@ -572,7 +572,7 @@ Also prove a 401/403 is classified non-retryable, 429/5xx/network retains bounde
 
 - [ ] **Step 2: Implement D1 orchestration behind shadow mode**
 
-Keep existing legacy snapshot publication intact. After a complete fetch, load D1, apply the pure plan, persist run counters, reserve media, and return a canonical publication input. If apply reports a stale collection diff conflict, discard the losing plan and publication input, re-list current D1 rows, and re-run pure diff planning before continuing; only the successfully reconciled plan may publish. On partial failure, fail the run without invoking diff commit. Use stable `instanceId` for replay.
+Keep existing legacy snapshot publication intact. After a complete fetch, load D1, apply the pure plan, persist run counters, reserve media, and return a canonical publication input. Catch only `StaleCollectionDiffError` (`code === 'STALE_COLLECTION_DIFF'`): discard the losing plan and publication input, re-list current D1 rows, and re-run pure diff planning before continuing; only the successfully reconciled plan may publish. All other D1, result-validation and JSON-decoding errors continue to fail the run. On partial failure, fail the run without invoking diff commit. Use stable `instanceId` for replay.
 
 - [ ] **Step 3: Run GREEN**
 
