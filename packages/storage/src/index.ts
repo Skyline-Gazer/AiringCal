@@ -20,6 +20,7 @@ export type {
   CollectionDiffPlanLike,
   CollectionRow,
   D1DatabaseLike,
+  D1MetaLike,
   D1PreparedStatementLike,
   D1ResultLike,
   PublicCalendarDayV1,

@@ -15,6 +15,22 @@ interface RecordedStatement {
   binds: unknown[]
 }
 
+function result<T = Record<string, unknown>>(changes = 0, rows: T[] = []): D1ResultLike<T> {
+  return {
+    results: rows,
+    success: true,
+    meta: {
+      duration: 0,
+      size_after: 0,
+      rows_read: rows.length,
+      rows_written: changes,
+      last_row_id: 0,
+      changed_db: changes > 0,
+      changes,
+    },
+  }
+}
+
 class RecordingStatement implements D1PreparedStatementLike {
   binds: unknown[] = []
 
@@ -33,11 +49,11 @@ class RecordingStatement implements D1PreparedStatementLike {
   }
 
   async run<T = Record<string, unknown>>(): Promise<D1ResultLike<T>> {
-    return { results: [], success: true }
+    return result<T>()
   }
 
   async all<T = Record<string, unknown>>(): Promise<D1ResultLike<T>> {
-    return { results: this.rows as T[], success: true }
+    return result<T>(0, this.rows as T[])
   }
 
   async raw<T = unknown[]>(): Promise<T[]> {
@@ -49,6 +65,13 @@ class RecordingD1 implements D1DatabaseLike {
   readonly prepared: RecordingStatement[] = []
   readonly batchCalls: RecordedStatement[][] = []
   rows: Record<string, unknown>[] = []
+  readonly insertedCollections = new Set<string>()
+  readonly syncStatuses = new Map<string, string>()
+  nextChanges: number[] = []
+  throwBeforeBatchAt: number | null = null
+  loseCollectionResponseAt: number | null = null
+  loseCompleteResponseOnce = false
+  private batchIndex = 0
 
   prepare(sql: string): D1PreparedStatementLike {
     const statement = new RecordingStatement(sql, this.rows)
@@ -57,11 +80,58 @@ class RecordingD1 implements D1DatabaseLike {
   }
 
   async batch<T = Record<string, unknown>>(statements: D1PreparedStatementLike[]): Promise<D1ResultLike<T>[]> {
-    this.batchCalls.push(statements.map((statement) => {
+    const currentBatch = this.batchIndex++
+    const recordedStatements = statements.map((statement) => {
       const recorded = statement as RecordingStatement
       return { sql: recorded.sql, binds: recorded.binds }
-    }))
-    return statements.map(() => ({ results: [], success: true }))
+    })
+    this.batchCalls.push(recordedStatements)
+    if (this.throwBeforeBatchAt === currentBatch) throw new Error('simulated D1 batch failure')
+
+    const results = recordedStatements.map(({ sql, binds }) => {
+      let changes = this.nextChanges.shift()
+      if (changes === undefined && sql.startsWith('INSERT INTO collection_items')) {
+        const key = `${binds[0]}:${binds[1]}`
+        changes = this.insertedCollections.has(key) ? 0 : 1
+        this.insertedCollections.add(key)
+      }
+      if (changes === undefined && sql.startsWith('INSERT INTO sync_runs')) {
+        const instanceId = String(binds[0])
+        changes = this.syncStatuses.has(instanceId) ? 0 : 1
+        if (changes === 1) this.syncStatuses.set(instanceId, String(binds[1]))
+      }
+      if (changes === undefined && sql.startsWith("UPDATE sync_runs SET status = 'ok'")) {
+        const instanceId = String(binds.at(-1))
+        const status = this.syncStatuses.get(instanceId)
+        const guarded = sql.includes("status NOT IN ('ok', 'error')")
+        changes = guarded && (status === 'ok' || status === 'error') ? 0 : 1
+        if (changes === 1) this.syncStatuses.set(instanceId, 'ok')
+      }
+      if (changes === undefined && sql.startsWith("UPDATE sync_runs SET status = 'error'")) {
+        const instanceId = String(binds.at(-1))
+        const status = this.syncStatuses.get(instanceId)
+        const guarded = sql.includes("status NOT IN ('ok', 'error')")
+        changes = guarded && (status === 'ok' || status === 'error') ? 0 : 1
+        if (changes === 1) this.syncStatuses.set(instanceId, 'error')
+      }
+      return result<T>(changes ?? 1)
+    })
+
+    if (
+      this.loseCollectionResponseAt === currentBatch
+      && recordedStatements.some(({ sql }) => sql.startsWith('INSERT INTO collection_items'))
+    ) {
+      this.loseCollectionResponseAt = null
+      throw new Error('simulated collection response loss after commit')
+    }
+    if (
+      this.loseCompleteResponseOnce
+      && recordedStatements.some(({ sql }) => sql.startsWith("UPDATE sync_runs SET status = 'ok'"))
+    ) {
+      this.loseCompleteResponseOnce = false
+      throw new Error('simulated response loss after commit')
+    }
+    return results
   }
 
   async exec(): Promise<{ count: number; duration: number }> {
@@ -163,8 +233,43 @@ test('applyCollectionDiff uses one prepared positional statement for one changed
   assert.equal(fake.batchCalls[0]?.length, 1)
   assert.match(fake.batchCalls[0]?.[0]?.sql ?? '', /^UPDATE collection_items SET collection_type = \?/)
   assert.equal((fake.batchCalls[0]?.[0]?.sql.match(/\?/g) ?? []).length, fake.batchCalls[0]?.[0]?.binds.length)
-  assert.deepEqual(fake.batchCalls[0]?.[0]?.binds.slice(-2), ['alice', 23080])
+  assert.deepEqual(fake.batchCalls[0]?.[0]?.binds.slice(-3, -1), ['alice', 23080])
   assert.doesNotMatch(fake.batchCalls[0]?.[0]?.sql ?? '', /last_seen/i)
+})
+
+test('collection insert replay finishes after a batch commits but its response is lost', async () => {
+  const fake = new RecordingD1()
+  const plan = emptyPlan()
+  plan.unchanged = 0
+  plan.inserts = Array.from({ length: 121 }, (_, subjectId) => collection({ subject_id: subjectId + 1 }))
+  fake.loseCollectionResponseAt = 1
+
+  await assert.rejects(
+    new D1StateStore(fake).applyCollectionDiff(plan),
+    /collection response loss after commit/,
+  )
+  assert.equal(fake.insertedCollections.size, 100)
+
+  const replay = await new D1StateStore(fake).applyCollectionDiff(plan)
+  assert.equal(replay.rowsWritten, 21)
+  assert.equal(fake.insertedCollections.size, 121)
+})
+
+test('collection inserts replay safely after a committed chunk and a later batch failure', async () => {
+  const fake = new RecordingD1()
+  const plan = emptyPlan()
+  plan.unchanged = 0
+  plan.inserts = Array.from({ length: 121 }, (_, subjectId) => collection({ subject_id: subjectId + 1 }))
+  fake.throwBeforeBatchAt = 1
+
+  await assert.rejects(new D1StateStore(fake).applyCollectionDiff(plan), /simulated D1 batch failure/)
+  assert.equal(fake.insertedCollections.size, 50)
+  assert.match(fake.batchCalls[0]?.[0]?.sql ?? '', /ON CONFLICT\(user_id, subject_id\) DO NOTHING$/)
+
+  fake.throwBeforeBatchAt = null
+  const replay = await new D1StateStore(fake).applyCollectionDiff(plan)
+  assert.equal(replay.rowsWritten, 71)
+  assert.equal(fake.insertedCollections.size, 121)
 })
 
 test('applyCollectionDiff maps every transition to correct SQL and binds in stable order', async () => {
@@ -183,8 +288,13 @@ test('applyCollectionDiff maps every transition to correct SQL and binds in stab
 
   assert.equal(result.rowsWritten, 5)
   assert.equal(statements.length, 5)
-  assert.deepEqual(statements.map(({ sql, binds }) =>
-    sql.startsWith('INSERT') ? binds.slice(0, 2) : binds.slice(-2)), [
+  assert.deepEqual(statements.map(({ sql, binds }) => {
+    if (sql.startsWith('INSERT')) return binds.slice(0, 2)
+    if (sql.startsWith('UPDATE collection_items SET deleted_at')) return binds.slice(1, 3)
+    if (sql.includes('(missing_since IS NOT NULL')) return binds.slice(-3, -1)
+    if (sql.includes('changed_at <')) return binds.slice(-3, -1)
+    return binds.slice(-2)
+  }), [
     ['alice', 5],
     ['alice', 6],
     ['alice', 7],
@@ -193,11 +303,44 @@ test('applyCollectionDiff maps every transition to correct SQL and binds in stab
   ])
   assert.match(statements[0]?.sql ?? '', /^UPDATE collection_items SET collection_type = \?/)
   assert.match(statements[1]?.sql ?? '', /^UPDATE collection_items SET deleted_at = \?/)
-  assert.deepEqual(statements[1]?.binds, [200, 'alice', 6])
+  assert.deepEqual(statements[1]?.binds, [200, 'alice', 6, 100])
+  assert.match(statements[1]?.sql ?? '', /missing_since = \? AND deleted_at IS NULL$/)
   assert.match(statements[2]?.sql ?? '', /^UPDATE collection_items SET missing_since = \?/)
   assert.deepEqual(statements[2]?.binds, [200, 'alice', 7])
+  assert.match(statements[2]?.sql ?? '', /missing_since IS NULL AND deleted_at IS NULL$/)
   assert.match(statements[3]?.sql ?? '', /^UPDATE collection_items SET collection_type = \?/)
   assert.match(statements[4]?.sql ?? '', /^INSERT INTO collection_items \(/)
+})
+
+test('collection CAS ignores stale missing, deletion and restore transitions and counts actual changes', async () => {
+  const fake = new RecordingD1()
+  fake.nextChanges = [0, 0, 0]
+  const plan = emptyPlan()
+  plan.unchanged = 0
+  plan.firstMissing = [collection({ subject_id: 1, missing_since: 200 })]
+  plan.confirmedDeleted = [collection({ subject_id: 2, missing_since: 100, deleted_at: 200 })]
+  plan.restored = [collection({ subject_id: 3, changed_at: 150 })]
+
+  const applied = await new D1StateStore(fake).applyCollectionDiff(plan)
+
+  assert.equal(applied.rowsWritten, 0)
+  const statements = fake.batchCalls.flat()
+  assert.match(statements[0]?.sql ?? '', /missing_since IS NULL AND deleted_at IS NULL$/)
+  assert.match(statements[1]?.sql ?? '', /missing_since = \? AND deleted_at IS NULL$/)
+  assert.match(statements[2]?.sql ?? '', /changed_at <= \?.*\(missing_since IS NOT NULL OR deleted_at IS NOT NULL\)$/)
+})
+
+test('business updates require a strictly newer changed_at against delayed overwrite and replay', async () => {
+  const fake = new RecordingD1()
+  fake.nextChanges = [0]
+  const plan = emptyPlan()
+  plan.unchanged = 0
+  plan.updates = [collection({ changed_at: 200, content_hash: 'b'.repeat(64) })]
+
+  assert.equal((await new D1StateStore(fake).applyCollectionDiff(plan)).rowsWritten, 0)
+  const statement = fake.batchCalls[0]?.[0]
+  assert.match(statement?.sql ?? '', /changed_at < \? AND missing_since IS NULL AND deleted_at IS NULL$/)
+  assert.deepEqual(statement?.binds.slice(-3), ['alice', 23080, 200])
 })
 
 test('applyCollectionDiff splits deterministic writes into batches of at most 50', async () => {
@@ -246,11 +389,29 @@ test('app_state rejects unknown versions and corrupt JSON', async () => {
   await assert.rejects(store.getAppState('x'), /Invalid app_state JSON/)
 })
 
+test('app_state decoder rejects invalid per-key values at runtime', async () => {
+  const fake = new RecordingD1()
+  fake.rows = [{ value_json: '{"schema_version":1,"value":{"generation":"bad"}}' }]
+  const decodePointer = (value: unknown): { generation: number } => {
+    if (
+      typeof value !== 'object'
+      || value === null
+      || typeof (value as { generation?: unknown }).generation !== 'number'
+    ) throw new Error('Invalid public pointer state')
+    return value as { generation: number }
+  }
+  await assert.rejects(
+    new D1StateStore(fake).getAppState('public:pending', decodePointer),
+    /Invalid public pointer state/,
+  )
+})
+
 test('sync run lifecycle uses positional binds and persists only classified error codes', async () => {
   const fake = new RecordingD1()
   const store = new D1StateStore(fake)
 
   await store.startSyncRun(syncRun({ stage: 'initialize' }))
+  await store.startSyncRun(syncRun({ stage: 'initialize', collection_count: 999 }))
   await store.updateSyncRun('run-1', {
     stage: 'collections',
     heartbeat_at: 110,
@@ -270,14 +431,87 @@ test('sync run lifecycle uses positional binds and persists only classified erro
   })
 
   const statements = fake.batchCalls.flat()
-  assert.equal(statements.length, 4)
+  assert.equal(statements.length, 5)
   assert.ok(statements.every(({ sql, binds }) => (sql.match(/\?/g) ?? []).length === binds.length))
   assert.match(statements[0]?.sql ?? '', /^INSERT INTO sync_runs \(/)
-  assert.match(statements[1]?.sql ?? '', /^UPDATE sync_runs SET stage = \?/)
-  assert.match(statements[2]?.sql ?? '', /^UPDATE sync_runs SET status = 'ok'/)
-  assert.match(statements[3]?.sql ?? '', /^UPDATE sync_runs SET status = 'error'/)
-  assert.ok(statements[3]?.binds.includes('UPSTREAM_RATE_LIMITED'))
+  assert.match(statements[0]?.sql ?? '', /ON CONFLICT\(instance_id\) DO NOTHING$/)
+  assert.match(statements[2]?.sql ?? '', /^UPDATE sync_runs SET stage = \?/)
+  assert.match(statements[3]?.sql ?? '', /^UPDATE sync_runs SET status = 'ok'/)
+  assert.match(statements[3]?.sql ?? '', /status NOT IN \('ok', 'error'\)$/)
+  assert.match(statements[4]?.sql ?? '', /^UPDATE sync_runs SET status = 'error'/)
+  assert.match(statements[4]?.sql ?? '', /status NOT IN \('ok', 'error'\)$/)
+  assert.ok(statements[4]?.binds.includes('UPSTREAM_RATE_LIMITED'))
   assert.equal(JSON.stringify(statements).includes('raw body'), false)
+})
+
+test('committed completion survives response loss and catch-path failure', async () => {
+  const fake = new RecordingD1()
+  const store = new D1StateStore(fake)
+  await store.startSyncRun(syncRun({ instance_id: 'lost', status: 'running' }))
+  fake.loseCompleteResponseOnce = true
+
+  await assert.rejects(
+    store.completeSyncRun('lost', { heartbeat_at: 120, completed_at: 120 }),
+    /response loss/,
+  )
+  await store.failSyncRun('lost', {
+    heartbeat_at: 121,
+    completed_at: 121,
+    error_code: 'INTERNAL_ERROR',
+  })
+
+  assert.equal(fake.syncStatuses.get('lost'), 'ok')
+})
+
+test('updateSyncRun never binds explicit undefined optional values', async () => {
+  const fake = new RecordingD1()
+  await new D1StateStore(fake).updateSyncRun('run-1', {
+    stage: 'collections',
+    heartbeat_at: 110,
+    generation: undefined,
+    input_hash: undefined,
+    collection_count: 0,
+  })
+  const statement = fake.batchCalls[0]?.[0]
+  assert.equal(statement?.binds.includes(undefined), false)
+  assert.doesNotMatch(statement?.sql ?? '', /generation|input_hash/)
+  assert.match(statement?.sql ?? '', /collection_count = \?/)
+})
+
+test('batch result validation rejects missing or unsuccessful D1 results', async () => {
+  class InvalidResultD1 extends RecordingD1 {
+    override async batch<T = Record<string, unknown>>(): Promise<D1ResultLike<T>[]> {
+      return []
+    }
+  }
+  const plan = emptyPlan()
+  plan.unchanged = 0
+  plan.updates = [collection({ changed_at: 200, content_hash: 'b'.repeat(64) })]
+  await assert.rejects(
+    new D1StateStore(new InvalidResultD1()).applyCollectionDiff(plan),
+    /D1 batch result cardinality mismatch/,
+  )
+
+  class FailedResultD1 extends RecordingD1 {
+    override async batch<T = Record<string, unknown>>(): Promise<D1ResultLike<T>[]> {
+      return [{ ...result<T>(), success: false } as unknown as D1ResultLike<T>]
+    }
+  }
+  await assert.rejects(
+    new D1StateStore(new FailedResultD1()).applyCollectionDiff(plan),
+    /Invalid D1 batch result/,
+  )
+})
+
+test('sync lifecycle and app-state writes share strict D1 batch result validation', async () => {
+  class InvalidWriteResultD1 extends RecordingD1 {
+    override async batch<T = Record<string, unknown>>(): Promise<D1ResultLike<T>[]> {
+      return []
+    }
+  }
+  const store = new D1StateStore(new InvalidWriteResultD1())
+  await assert.rejects(store.startSyncRun(syncRun()), /D1 batch result cardinality mismatch/)
+  await assert.rejects(store.putAppState('x', { ok: true }), /D1 batch result cardinality mismatch/)
 })
 
 test('failSyncRun rejects raw bodies, comments and stack-like text before preparing SQL', async () => {

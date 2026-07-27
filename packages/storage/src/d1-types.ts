@@ -205,10 +205,27 @@ export interface PublicSnapshotPointerV1 {
   published_at: number
 }
 
+export interface D1MetaLike {
+  duration: number
+  size_after: number
+  rows_read: number
+  rows_written: number
+  last_row_id: number
+  changed_db: boolean
+  changes: number
+  served_by_region?: string
+  served_by_colo?: string
+  served_by_primary?: boolean
+  timings?: { sql_duration_ms: number }
+  total_attempts?: number
+  [key: string]: unknown
+}
+
 export interface D1ResultLike<T = Record<string, unknown>> {
   results: T[]
-  success: boolean
-  meta?: Record<string, unknown>
+  success: true
+  meta: D1MetaLike
+  error?: never
 }
 
 export interface D1PreparedStatementLike {

@@ -4,6 +4,7 @@ import type {
   CollectionRow,
   D1DatabaseLike,
   D1PreparedStatementLike,
+  D1ResultLike,
   SyncRunCompletion,
   SyncRunFailure,
   SyncRunRow,
@@ -30,10 +31,12 @@ const COLLECTION_COLUMNS = [
 ] as const
 
 const COLLECTION_SELECT = `SELECT ${COLLECTION_COLUMNS.join(', ')} FROM collection_items ORDER BY user_id, subject_id`
-const COLLECTION_INSERT = `INSERT INTO collection_items (${COLLECTION_COLUMNS.join(', ')}) VALUES (${COLLECTION_COLUMNS.map(() => '?').join(', ')})`
-const COLLECTION_UPDATE = `UPDATE collection_items SET ${COLLECTION_COLUMNS.slice(2).map((column) => `${column} = ?`).join(', ')} WHERE user_id = ? AND subject_id = ?`
-const FIRST_MISSING_UPDATE = 'UPDATE collection_items SET missing_since = ? WHERE user_id = ? AND subject_id = ?'
-const CONFIRMED_DELETED_UPDATE = 'UPDATE collection_items SET deleted_at = ? WHERE user_id = ? AND subject_id = ?'
+const COLLECTION_INSERT = `INSERT INTO collection_items (${COLLECTION_COLUMNS.join(', ')}) VALUES (${COLLECTION_COLUMNS.map(() => '?').join(', ')}) ON CONFLICT(user_id, subject_id) DO NOTHING`
+const COLLECTION_UPDATE_FIELDS = COLLECTION_COLUMNS.slice(2).map((column) => `${column} = ?`).join(', ')
+const COLLECTION_UPDATE = `UPDATE collection_items SET ${COLLECTION_UPDATE_FIELDS} WHERE user_id = ? AND subject_id = ? AND changed_at < ? AND missing_since IS NULL AND deleted_at IS NULL`
+const COLLECTION_RESTORE = `UPDATE collection_items SET ${COLLECTION_UPDATE_FIELDS} WHERE user_id = ? AND subject_id = ? AND changed_at <= ? AND (missing_since IS NOT NULL OR deleted_at IS NOT NULL)`
+const FIRST_MISSING_UPDATE = 'UPDATE collection_items SET missing_since = ? WHERE user_id = ? AND subject_id = ? AND missing_since IS NULL AND deleted_at IS NULL'
+const CONFIRMED_DELETED_UPDATE = 'UPDATE collection_items SET deleted_at = ? WHERE user_id = ? AND subject_id = ? AND missing_since = ? AND deleted_at IS NULL'
 const MAX_BATCH_STATEMENTS = 50
 const CLASSIFIED_ERROR_CODE = /^[A-Z][A-Z0-9_]{1,63}$/
 
@@ -49,7 +52,7 @@ function collectionValues(row: CollectionRow): unknown[] {
 }
 
 function collectionUpdateValues(row: CollectionRow): unknown[] {
-  return [...COLLECTION_COLUMNS.slice(2).map((column) => row[column]), row.user_id, row.subject_id]
+  return COLLECTION_COLUMNS.slice(2).map((column) => row[column])
 }
 
 function compareWrites(left: PendingWrite, right: PendingWrite): number {
@@ -125,11 +128,36 @@ function assertClassifiedErrorCode(errorCode: string | null): void {
   }
 }
 
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function appliedChanges(result: D1ResultLike<unknown>, index: number): number {
+  if (
+    result === null
+    || typeof result !== 'object'
+    || result.success !== true
+    || result.meta === null
+    || typeof result.meta !== 'object'
+    || !isNonNegativeInteger(result.meta.changes)
+    || !isNonNegativeInteger(result.meta.rows_written)
+  ) {
+    throw new Error(`Invalid D1 batch result at index ${index}`)
+  }
+  return result.meta.changes
+}
+
 export class D1StateStore {
   constructor(
     private readonly database: D1DatabaseLike,
     private readonly now: () => number = () => Math.floor(Date.now() / 1000),
   ) {}
+
+  private async executeBatch(statements: D1PreparedStatementLike[]): Promise<number> {
+    const results = await this.database.batch(statements)
+    if (results.length !== statements.length) throw new Error('D1 batch result cardinality mismatch')
+    return results.reduce((total, result, index) => total + appliedChanges(result, index), 0)
+  }
 
   async listCollectionRows(): Promise<CollectionRow[]> {
     const result = await this.database.prepare(COLLECTION_SELECT).all<Record<string, unknown>>()
@@ -138,12 +166,30 @@ export class D1StateStore {
 
   async applyCollectionDiff(plan: CollectionDiffPlanLike): Promise<{ rowsWritten: number }> {
     const writes: PendingWrite[] = []
-    const addFullUpdate = (row: CollectionRow, order: number) => {
+    const addBusinessUpdate = (row: CollectionRow, order: number) => {
       writes.push({
         userId: row.user_id,
         subjectId: row.subject_id,
         order,
-        statement: this.database.prepare(COLLECTION_UPDATE).bind(...collectionUpdateValues(row)),
+        statement: this.database.prepare(COLLECTION_UPDATE).bind(
+          ...collectionUpdateValues(row),
+          row.user_id,
+          row.subject_id,
+          row.changed_at,
+        ),
+      })
+    }
+    const addRestore = (row: CollectionRow, order: number) => {
+      writes.push({
+        userId: row.user_id,
+        subjectId: row.subject_id,
+        order,
+        statement: this.database.prepare(COLLECTION_RESTORE).bind(
+          ...collectionUpdateValues(row),
+          row.user_id,
+          row.subject_id,
+          row.changed_at,
+        ),
       })
     }
 
@@ -155,7 +201,7 @@ export class D1StateStore {
         statement: this.database.prepare(COLLECTION_INSERT).bind(...collectionValues(row)),
       })
     }
-    for (const row of plan.updates) addFullUpdate(row, 3)
+    for (const row of plan.updates) addBusinessUpdate(row, 3)
     for (const row of plan.firstMissing) {
       writes.push({
         userId: row.user_id,
@@ -169,19 +215,26 @@ export class D1StateStore {
         userId: row.user_id,
         subjectId: row.subject_id,
         order: 1,
-        statement: this.database.prepare(CONFIRMED_DELETED_UPDATE).bind(row.deleted_at, row.user_id, row.subject_id),
+        statement: this.database.prepare(CONFIRMED_DELETED_UPDATE).bind(
+          row.deleted_at,
+          row.user_id,
+          row.subject_id,
+          row.missing_since,
+        ),
       })
     }
-    for (const row of plan.restored) addFullUpdate(row, 0)
+    for (const row of plan.restored) addRestore(row, 0)
 
     writes.sort(compareWrites)
+    let rowsWritten = 0
     for (let offset = 0; offset < writes.length; offset += MAX_BATCH_STATEMENTS) {
-      await this.database.batch(writes.slice(offset, offset + MAX_BATCH_STATEMENTS).map(({ statement }) => statement))
+      const statements = writes.slice(offset, offset + MAX_BATCH_STATEMENTS).map(({ statement }) => statement)
+      rowsWritten += await this.executeBatch(statements)
     }
-    return { rowsWritten: writes.length }
+    return { rowsWritten }
   }
 
-  async getAppState<T>(key: string): Promise<T | undefined> {
+  async getAppState<T>(key: string, decode?: (value: unknown) => T): Promise<T | undefined> {
     const row = await this.database
       .prepare('SELECT value_json FROM app_state WHERE key = ?')
       .bind(key)
@@ -201,7 +254,7 @@ export class D1StateStore {
     const envelope = parsed as Record<string, unknown>
     if (envelope.schema_version !== 1) throw new Error('Unsupported app_state schema_version')
     if (!Object.hasOwn(envelope, 'value')) throw new Error('Invalid app_state JSON')
-    return envelope.value as T
+    return decode ? decode(envelope.value) : envelope.value as T
   }
 
   async putAppState<T>(key: string, value: T): Promise<void> {
@@ -209,7 +262,7 @@ export class D1StateStore {
     const statement = this.database.prepare(
       'INSERT INTO app_state (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at',
     ).bind(key, valueJson, this.now())
-    await this.database.batch([statement])
+    await this.executeBatch([statement])
   }
 
   async startSyncRun(row: SyncRunRow): Promise<void> {
@@ -220,9 +273,9 @@ export class D1StateStore {
       'input_hash', 'public_hash', 'error_code', 'started_at', 'heartbeat_at', 'completed_at',
     ] as const
     const statement = this.database.prepare(
-      `INSERT INTO sync_runs (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
+      `INSERT INTO sync_runs (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')}) ON CONFLICT(instance_id) DO NOTHING`,
     ).bind(...columns.map((column) => row[column]))
-    await this.database.batch([statement])
+    await this.executeBatch([statement])
   }
 
   async updateSyncRun(instanceId: string, update: SyncRunUpdate): Promise<void> {
@@ -230,17 +283,17 @@ export class D1StateStore {
       'generation', 'collection_count', 'changed_count', 'missing_count', 'deleted_count',
       'media_selected_count', 'media_granted_count', 'input_hash', 'public_hash',
     ] as const
-    const present = optionalColumns.filter((column) => Object.hasOwn(update, column))
+    const present = optionalColumns.filter((column) => update[column] !== undefined)
     const columns = ['stage', 'heartbeat_at', ...present] as const
     const statement = this.database.prepare(
-      `UPDATE sync_runs SET ${columns.map((column) => `${column} = ?`).join(', ')} WHERE instance_id = ?`,
+      `UPDATE sync_runs SET ${columns.map((column) => `${column} = ?`).join(', ')} WHERE instance_id = ? AND status NOT IN ('ok', 'error')`,
     ).bind(...columns.map((column) => update[column]), instanceId)
-    await this.database.batch([statement])
+    await this.executeBatch([statement])
   }
 
   async completeSyncRun(instanceId: string, completion: SyncRunCompletion): Promise<void> {
     const statement = this.database.prepare(
-      "UPDATE sync_runs SET status = 'ok', stage = 'complete', heartbeat_at = ?, completed_at = ?, generation = COALESCE(?, generation), input_hash = COALESCE(?, input_hash), public_hash = COALESCE(?, public_hash), error_code = NULL WHERE instance_id = ?",
+      "UPDATE sync_runs SET status = 'ok', stage = 'complete', heartbeat_at = ?, completed_at = ?, generation = COALESCE(?, generation), input_hash = COALESCE(?, input_hash), public_hash = COALESCE(?, public_hash), error_code = NULL WHERE instance_id = ? AND status NOT IN ('ok', 'error')",
     ).bind(
       completion.heartbeat_at,
       completion.completed_at,
@@ -249,14 +302,14 @@ export class D1StateStore {
       completion.public_hash ?? null,
       instanceId,
     )
-    await this.database.batch([statement])
+    await this.executeBatch([statement])
   }
 
   async failSyncRun(instanceId: string, failure: SyncRunFailure): Promise<void> {
     assertClassifiedErrorCode(failure.error_code)
     const statement = this.database.prepare(
-      "UPDATE sync_runs SET status = 'error', heartbeat_at = ?, completed_at = ?, error_code = ? WHERE instance_id = ?",
+      "UPDATE sync_runs SET status = 'error', heartbeat_at = ?, completed_at = ?, error_code = ? WHERE instance_id = ? AND status NOT IN ('ok', 'error')",
     ).bind(failure.heartbeat_at, failure.completed_at, failure.error_code, instanceId)
-    await this.database.batch([statement])
+    await this.executeBatch([statement])
   }
 }
