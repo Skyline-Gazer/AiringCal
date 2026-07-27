@@ -60,6 +60,11 @@ export interface SyncRunFailure {
   error_code: string
 }
 
+export interface SyncTerminalTransitionResult {
+  outcome: 'applied' | 'already_same_terminal' | 'preserved_opposite_terminal'
+  terminal: 'ok' | 'error'
+}
+
 export interface SubjectMediaRow {
   subject_id: number
   detail_json: string | null

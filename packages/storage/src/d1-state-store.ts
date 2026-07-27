@@ -8,6 +8,7 @@ import type {
   SyncRunCompletion,
   SyncRunFailure,
   SyncRunRow,
+  SyncTerminalTransitionResult,
   SyncRunUpdate,
 } from './d1-types.ts'
 
@@ -32,7 +33,8 @@ const COLLECTION_COLUMNS = [
 ] as const
 
 const COLLECTION_SELECT = `SELECT ${COLLECTION_COLUMNS.join(', ')} FROM collection_items ORDER BY user_id, subject_id`
-const COLLECTION_INSERT = `INSERT INTO collection_items (${COLLECTION_COLUMNS.join(', ')}) VALUES (${COLLECTION_COLUMNS.map(() => '?').join(', ')}) ON CONFLICT(user_id, subject_id) DO UPDATE SET collection_type = excluded.collection_type, rate = excluded.rate, tags_json = excluded.tags_json, comment = excluded.comment, ep_status = excluded.ep_status, vol_status = excluded.vol_status, upstream_updated_at = excluded.upstream_updated_at, subject_json = excluded.subject_json, content_hash = excluded.content_hash, state_version = collection_items.state_version + 1, temperature = excluded.temperature, first_seen_at = MIN(collection_items.first_seen_at, excluded.first_seen_at), changed_at = excluded.changed_at, missing_since = excluded.missing_since, deleted_at = excluded.deleted_at WHERE excluded.changed_at > collection_items.changed_at OR (excluded.changed_at = collection_items.changed_at AND excluded.content_hash > collection_items.content_hash COLLATE BINARY)`
+const COLLECTION_SELECT_ONE = `SELECT ${COLLECTION_COLUMNS.join(', ')} FROM collection_items WHERE user_id = ? AND subject_id = ?`
+const COLLECTION_INSERT = `INSERT INTO collection_items (${COLLECTION_COLUMNS.join(', ')}) VALUES (${COLLECTION_COLUMNS.map(() => '?').join(', ')}) ON CONFLICT(user_id, subject_id) DO UPDATE SET collection_type = excluded.collection_type, rate = excluded.rate, tags_json = excluded.tags_json, comment = excluded.comment, ep_status = excluded.ep_status, vol_status = excluded.vol_status, upstream_updated_at = excluded.upstream_updated_at, subject_json = excluded.subject_json, content_hash = excluded.content_hash, state_version = collection_items.state_version, temperature = excluded.temperature, first_seen_at = MIN(collection_items.first_seen_at, excluded.first_seen_at), changed_at = excluded.changed_at, missing_since = excluded.missing_since, deleted_at = excluded.deleted_at WHERE collection_items.state_version = 1 AND collection_items.missing_since IS NULL AND collection_items.deleted_at IS NULL AND (excluded.changed_at > collection_items.changed_at OR (excluded.changed_at = collection_items.changed_at AND excluded.content_hash > collection_items.content_hash COLLATE BINARY))`
 const COLLECTION_UPDATE_FIELDS = COLLECTION_COLUMNS.slice(2).map((column) => `${column} = ?`).join(', ')
 const COLLECTION_UPDATE = `UPDATE collection_items SET ${COLLECTION_UPDATE_FIELDS} WHERE user_id = ? AND subject_id = ? AND state_version = ?`
 const COLLECTION_RESTORE = `UPDATE collection_items SET ${COLLECTION_UPDATE_FIELDS} WHERE user_id = ? AND subject_id = ? AND state_version = ?`
@@ -45,6 +47,7 @@ interface PendingWrite {
   userId: string
   subjectId: number
   order: number
+  planned: CollectionRow
   statement: D1PreparedStatementLike
 }
 
@@ -77,6 +80,12 @@ function requireInteger(value: unknown, column: string): number {
     throw new Error(`Invalid collection_items.${column}`)
   }
   return value
+}
+
+function requirePositiveInteger(value: unknown, column: string): number {
+  const integer = requireInteger(value, column)
+  if (integer < 1) throw new Error(`Invalid collection_items.${column}`)
+  return integer
 }
 
 function nullableInteger(value: unknown, column: string): number | null {
@@ -115,7 +124,7 @@ function decodeCollectionRow(raw: Record<string, unknown>): CollectionRow {
     upstream_updated_at: nullableString(raw.upstream_updated_at, 'upstream_updated_at'),
     subject_json: validateJson(requireString(raw.subject_json, 'subject_json'), 'subject_json'),
     content_hash: requireString(raw.content_hash, 'content_hash'),
-    state_version: requireInteger(raw.state_version, 'state_version'),
+    state_version: requirePositiveInteger(raw.state_version, 'state_version'),
     temperature,
     first_seen_at: requireInteger(raw.first_seen_at, 'first_seen_at'),
     changed_at: requireInteger(raw.changed_at, 'changed_at'),
@@ -163,9 +172,24 @@ export class D1StateStore {
   ) {}
 
   private async executeBatch(statements: D1PreparedStatementLike[]): Promise<number> {
+    return (await this.executeBatchChanges(statements)).reduce((total, changes) => total + changes, 0)
+  }
+
+  private async executeBatchChanges(statements: D1PreparedStatementLike[]): Promise<number[]> {
     const results = await this.database.batch(statements)
     if (results.length !== statements.length) throw new Error('D1 batch result cardinality mismatch')
-    return results.reduce((total, result, index) => total + appliedChanges(result, index), 0)
+    return results.map((result, index) => appliedChanges(result, index))
+  }
+
+  private async collectionRow(userId: string, subjectId: number): Promise<CollectionRow | undefined> {
+    const raw = await this.database.prepare(COLLECTION_SELECT_ONE).bind(userId, subjectId).first<Record<string, unknown>>()
+    return raw === null ? undefined : decodeCollectionRow(raw)
+  }
+
+  private async reconcileCollectionNoChange(write: PendingWrite): Promise<void> {
+    const current = await this.collectionRow(write.userId, write.subjectId)
+    if (current && COLLECTION_COLUMNS.every((column) => current[column] === write.planned[column])) return
+    throw new Error(`Stale collection diff conflict: ${write.userId}:${write.subjectId}`)
   }
 
   private async syncRunStatus(instanceId: string): Promise<string | undefined> {
@@ -190,6 +214,7 @@ export class D1StateStore {
         userId: row.user_id,
         subjectId: row.subject_id,
         order,
+        planned: row,
         statement: this.database.prepare(COLLECTION_UPDATE).bind(
           ...collectionUpdateValues(row),
           row.user_id,
@@ -203,6 +228,7 @@ export class D1StateStore {
         userId: row.user_id,
         subjectId: row.subject_id,
         order,
+        planned: row,
         statement: this.database.prepare(COLLECTION_RESTORE).bind(
           ...collectionUpdateValues(row),
           row.user_id,
@@ -213,10 +239,12 @@ export class D1StateStore {
     }
 
     for (const row of plan.inserts) {
+      if (row.state_version !== 1) throw new Error('Invalid collection insert state_version')
       writes.push({
         userId: row.user_id,
         subjectId: row.subject_id,
         order: 4,
+        planned: row,
         statement: this.database.prepare(COLLECTION_INSERT).bind(...collectionValues(row)),
       })
     }
@@ -226,6 +254,7 @@ export class D1StateStore {
         userId: row.user_id,
         subjectId: row.subject_id,
         order: 2,
+        planned: row,
         statement: this.database.prepare(FIRST_MISSING_UPDATE).bind(
           row.missing_since,
           row.state_version,
@@ -240,6 +269,7 @@ export class D1StateStore {
         userId: row.user_id,
         subjectId: row.subject_id,
         order: 1,
+        planned: row,
         statement: this.database.prepare(CONFIRMED_DELETED_UPDATE).bind(
           row.deleted_at,
           row.state_version,
@@ -254,8 +284,12 @@ export class D1StateStore {
     writes.sort(compareWrites)
     let rowsWritten = 0
     for (let offset = 0; offset < writes.length; offset += MAX_BATCH_STATEMENTS) {
-      const statements = writes.slice(offset, offset + MAX_BATCH_STATEMENTS).map(({ statement }) => statement)
-      rowsWritten += await this.executeBatch(statements)
+      const chunk = writes.slice(offset, offset + MAX_BATCH_STATEMENTS)
+      const changes = await this.executeBatchChanges(chunk.map(({ statement }) => statement))
+      rowsWritten += changes.reduce((total, count) => total + count, 0)
+      for (let index = 0; index < chunk.length; index++) {
+        if (changes[index] === 0) await this.reconcileCollectionNoChange(chunk[index]!)
+      }
     }
     return { rowsWritten }
   }
@@ -331,7 +365,7 @@ export class D1StateStore {
     }
   }
 
-  async completeSyncRun(instanceId: string, completion: SyncRunCompletion): Promise<void> {
+  async completeSyncRun(instanceId: string, completion: SyncRunCompletion): Promise<SyncTerminalTransitionResult> {
     const statement = this.database.prepare(
       "UPDATE sync_runs SET status = 'ok', stage = 'complete', heartbeat_at = ?, completed_at = ?, generation = COALESCE(?, generation), input_hash = COALESCE(?, input_hash), public_hash = COALESCE(?, public_hash), error_code = NULL WHERE instance_id = ? AND status NOT IN ('ok', 'error')",
     ).bind(
@@ -346,13 +380,14 @@ export class D1StateStore {
     if (changes === 0) {
       const status = await this.syncRunStatus(instanceId)
       if (status === undefined) throw new Error(`Sync run not found: ${instanceId}`)
-      if (status === 'ok') return
-      if (status === 'error') throw new Error('Sync run already terminal: error')
+      if (status === 'ok') return { outcome: 'already_same_terminal', terminal: 'ok' }
+      if (status === 'error') return { outcome: 'preserved_opposite_terminal', terminal: 'error' }
       throw new Error(`Sync run completion not applied: ${instanceId}`)
     }
+    return { outcome: 'applied', terminal: 'ok' }
   }
 
-  async failSyncRun(instanceId: string, failure: SyncRunFailure): Promise<void> {
+  async failSyncRun(instanceId: string, failure: SyncRunFailure): Promise<SyncTerminalTransitionResult> {
     assertClassifiedErrorCode(failure.error_code)
     const statement = this.database.prepare(
       "UPDATE sync_runs SET status = 'error', heartbeat_at = ?, completed_at = ?, error_code = ? WHERE instance_id = ? AND status NOT IN ('ok', 'error')",
@@ -361,9 +396,10 @@ export class D1StateStore {
     if (changes === 0) {
       const status = await this.syncRunStatus(instanceId)
       if (status === undefined) throw new Error(`Sync run not found: ${instanceId}`)
-      if (status === 'error') return
-      if (status === 'ok') throw new Error('Sync run already terminal: ok')
+      if (status === 'error') return { outcome: 'already_same_terminal', terminal: 'error' }
+      if (status === 'ok') return { outcome: 'preserved_opposite_terminal', terminal: 'ok' }
       throw new Error(`Sync run failure not applied: ${instanceId}`)
     }
+    return { outcome: 'applied', terminal: 'error' }
   }
 }

@@ -62,13 +62,13 @@ resource resolve 必须在任一 Worker upload 前确认 D1、data R2、image R2
 - bgm.tv 收藏业务字段：collection type、rate、tags、comment、episode/volume progress、上游业务时间。
 - 公开投影所需的 subject 标识和规范字段。
 - `content_hash`：只覆盖规范业务字段。
-- `state_version`：仅用于 D1 乐观并发控制，初始为 `1`，每次实际状态 mutation 加一；不进入业务 hash 或公开 snapshot。
+- `state_version`：仅用于 D1 乐观并发控制，数据库约束为正整数；初始 insert 必须精确为 `1`，每次实际既有状态 mutation 加一；不进入业务 hash 或公开 snapshot。
 - `temperature`：`hot` 或 `cold`。
 - `first_seen_at`、`changed_at`、`missing_since`、`deleted_at`。
 
 `last_seen_at`、同步时间、heartbeat、generation 等运行字段不进入 `content_hash`。相同业务输入不得为“更新观察时间”而改写行。
 
-所有既有行 mutation 使用精确 `state_version` compare-and-set，过期计划产生零写。两次并发同步都从“无行”规划 insert 时，按 `(changed_at, content_hash BINARY)` 决定确定性赢家，并保留最早 `first_seen_at`；若同秒没有可恢复的真实先后顺序，content hash 的二进制顺序只用于保证收敛，下一次完整同步会再次校正权威业务状态。
+所有既有行 mutation 使用精确 `state_version` compare-and-set。零写结果必须回读当前完整行：只有与计划最终行完全相等时才作为 response-loss/replay no-op；否则抛出稳定 stale-diff conflict，调用方必须重新读取 D1 并重新规划，禁止继续发布 losing plan。两次并发同步都从“无行”规划 insert 时，仅允许仍处于初始态（`state_version = 1` 且无 missing/deleted）的行按 `(changed_at, content_hash BINARY)` 选择确定性赢家，revision 保持 `1` 并保留最早 `first_seen_at`；一旦发生过状态 transition，延迟 insert 不得清除状态。若同秒没有可恢复的真实先后顺序，content hash 的二进制顺序只用于保证收敛，下一次完整同步会再次校正权威业务状态。
 
 ### 3.2 `subject_media`
 

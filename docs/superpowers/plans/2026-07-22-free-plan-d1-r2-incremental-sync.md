@@ -451,7 +451,8 @@ git push
 - Produces `applyCollectionDiff(plan: CollectionDiffPlan): Promise<{ rowsWritten: number }>` using one D1 batch after planning.
 - Produces `getAppState<T>(key): Promise<T | undefined>`, `putAppState<T>(key, value): Promise<void>`.
 - Produces `startSyncRun`, `updateSyncRun`, `completeSyncRun`, `failSyncRun`.
-- Every collection mutation uses exact `state_version` compare-and-set. Concurrent inserts converge by `(changed_at, content_hash BINARY)`; the winner increments the stored revision while preserving the earliest `first_seen_at`.
+- Every existing collection mutation uses exact `state_version` compare-and-set. Initial inserts require revision `1`; concurrent initial inserts converge by `(changed_at, content_hash BINARY)` while remaining revision `1` and preserving the earliest `first_seen_at`. Conflict upserts are disabled after any missing/delete/restore/business transition.
+- A zero-change collection statement MUST read back the current full row. Exact final-row equality is a safe replay; any difference raises a stale-diff conflict. Task 6 integration MUST catch that conflict, re-list D1 rows and re-run diff planning before any publication; it MUST NOT publish from the losing plan.
 
 - [ ] **Step 1: Write RED adapter tests with a recording D1 fake**
 

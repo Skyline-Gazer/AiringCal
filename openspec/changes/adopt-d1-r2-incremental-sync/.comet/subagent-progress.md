@@ -156,6 +156,15 @@
 - Final self-review implementation: all repository batch writes now share one cardinality/success/metadata validator.
 - Review-fix GREEN evidence: focused adapter 19/19; storage 44/44; full repository typecheck/tests/build dry-runs; OpenSpec strict; lockfile and diff checks all pass.
 - Checkoff guard remains active: OpenSpec `2.2` and plan Task 5 are still pending fresh independent spec-compliance and code-quality approvals.
+- Final review round: `REJECTED → invariant/reconciliation fix implemented; next fresh dual review pending`.
+- Final-review RED evidence: focused storage selected 16 tests with 11 expected failures covering migration/decoder/insert revision invariants, stale CAS reconciliation, post-transition delayed inserts, overlapping revision plans and explicit opposite-terminal outcomes.
+- Revision invariant: migration enforces `state_version >= 1`, row decoding requires a positive safe integer and insert plans require exactly revision `1`.
+- Initial-insert safety: conflict replacement is permitted only while the current row remains revision `1` with no missing/deleted state. Deterministic initial winners remain revision `1` and preserve earliest `first_seen_at`; any transitioned row rejects a delayed insert without clearing state.
+- Zero-write reconciliation: collection batch results retain per-statement `meta.changes`. Every zero-change statement reads the exact current row; exact final-row equality is a safe replay, while any difference throws `Stale collection diff conflict: user_id:subject_id`. Real SQLite tests cover identical replay, overlapping revision losers and insert → missing → delete → delayed divergent insert.
+- Task 6 integration guard: a stale collection diff conflict MUST trigger a fresh D1 list and complete replan before publication. The losing plan must never feed snapshot publication.
+- Sync terminal result: complete/fail return explicit applied, same-terminal replay or preserved-opposite-terminal outcomes. Catch-path fail-after-ok no longer masks a committed success; missing runs still throw.
+- Final-review GREEN evidence: storage 54/54 and domain 67/67; sync-worker 98/98 plus every other repository suite; full repository typecheck and Wrangler build dry-runs; migration apply/replay, frozen lockfile, OpenSpec strict and diff checks all pass.
+- Checkoff guard remains active: OpenSpec `2.2` and plan Task 5 are still pending fresh independent spec-compliance and code-quality approvals.
 - Fresh review round: `2/3 REJECTED → revision fix implemented; next fresh dual review pending`.
 - Revision finding: wall-clock `changed_at` was not a sufficient concurrency token for same-second divergent plans; first-writer-wins insert replay and unchecked generic app-state reads also left convergence/validation gaps, while zero-change sync transitions did not distinguish missing rows from terminal replay.
 - Revision RED evidence: migration/domain focused failed 16/29 for the missing revision column and transition increments; adapter/node:sqlite focused failed row decode, same-second mutation, stale sequence, divergent empty inserts, typed state and sync existence/terminal assertions.

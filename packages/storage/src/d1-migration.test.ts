@@ -137,7 +137,7 @@ test('migration defines only the authoritative tables and reservation helper wit
   assert.match(sql, /PRIMARY KEY\s*\(\s*date\s*,\s*resource\s*\)/i)
   assert.match(sql, /reservation_id\s+TEXT\s+NOT NULL\s+PRIMARY KEY/i)
   assert.match(sql, /temperature\s+TEXT\s+NOT NULL\s+CHECK\s*\(\s*temperature\s+IN\s*\(\s*'hot'\s*,\s*'cold'\s*\)\s*\)/i)
-  assert.match(sql, /state_version\s+INTEGER\s+NOT NULL\s+DEFAULT\s+1/i)
+  assert.match(sql, /state_version\s+INTEGER\s+NOT NULL\s+DEFAULT\s+1\s+CHECK\s*\(\s*state_version\s*>=\s*1\s*\)/i)
   assert.match(sql, /nsfw\s+INTEGER\s+NOT NULL\s+DEFAULT\s+0\s+CHECK\s*\(\s*nsfw\s+IN\s*\(\s*0\s*,\s*1\s*\)\s*\)/i)
   assert.match(sql, /reserved\s+INTEGER\s+NOT NULL\s+DEFAULT\s+0\s+CHECK\s*\(\s*reserved\s*>=\s*0\s*\)/i)
   assert.match(sql, /consumed\s+INTEGER\s+NOT NULL\s+DEFAULT\s+0\s+CHECK\s*\(\s*consumed\s*>=\s*0\s*\)/i)
@@ -209,5 +209,18 @@ test('migration applies idempotently to isolated local D1 and creates the exact 
     ], logPath)
     assert.notEqual(nullPrimaryKey.status, 0, `${table} accepted a NULL primary key`)
     assert.match(`${nullPrimaryKey.stderr}\n${nullPrimaryKey.stdout}`, /NOT NULL constraint failed/i)
+  }
+
+  for (const stateVersion of [0, -1]) {
+    const invalidRevision = runWrangler([
+      'd1',
+      'execute',
+      ...commonArgs,
+      '--json',
+      '--command',
+      `INSERT INTO collection_items (user_id, subject_id, collection_type, tags_json, comment, ep_status, vol_status, subject_json, content_hash, state_version, temperature, first_seen_at, changed_at) VALUES ('alice', ${100 + stateVersion}, 3, '[]', '', 0, 0, '{}', 'hash', ${stateVersion}, 'hot', 1, 1)`,
+    ], logPath)
+    assert.notEqual(invalidRevision.status, 0, `collection_items accepted state_version ${stateVersion}`)
+    assert.match(`${invalidRevision.stderr}\n${invalidRevision.stdout}`, /CHECK constraint failed/i)
   }
 })

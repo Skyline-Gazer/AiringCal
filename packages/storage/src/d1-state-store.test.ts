@@ -16,6 +16,12 @@ interface RecordedStatement {
   binds: unknown[]
 }
 
+const collectionColumns = [
+  'user_id', 'subject_id', 'collection_type', 'rate', 'tags_json', 'comment', 'ep_status',
+  'vol_status', 'upstream_updated_at', 'subject_json', 'content_hash', 'state_version',
+  'temperature', 'first_seen_at', 'changed_at', 'missing_since', 'deleted_at',
+] as const
+
 function result<T = Record<string, unknown>>(changes = 0, rows: T[] = []): D1ResultLike<T> {
   return {
     results: rows,
@@ -69,6 +75,7 @@ class RecordingD1 implements D1DatabaseLike {
   readonly batchCalls: RecordedStatement[][] = []
   rows: Record<string, unknown>[] = []
   readonly insertedCollections = new Set<string>()
+  readonly collectionRows = new Map<string, Record<string, unknown>>()
   readonly syncStatuses = new Map<string, string>()
   nextChanges: number[] = []
   throwBeforeBatchAt: number | null = null
@@ -78,6 +85,9 @@ class RecordingD1 implements D1DatabaseLike {
 
   prepare(sql: string): D1PreparedStatementLike {
     const statement = new RecordingStatement(sql, this.rows, (binds) => {
+      if (sql.startsWith('SELECT user_id, subject_id') && sql.includes('WHERE user_id = ?')) {
+        return this.collectionRows.get(`${binds[0]}:${binds[1]}`) ?? null
+      }
       if (!sql.startsWith('SELECT status FROM sync_runs')) return this.rows[0] ?? null
       const status = this.syncStatuses.get(String(binds[0]))
       return status === undefined ? null : { status }
@@ -101,6 +111,9 @@ class RecordingD1 implements D1DatabaseLike {
         const key = `${binds[0]}:${binds[1]}`
         changes = this.insertedCollections.has(key) ? 0 : 1
         this.insertedCollections.add(key)
+        if (changes === 1) {
+          this.collectionRows.set(key, Object.fromEntries(collectionColumns.map((column, index) => [column, binds[index]])))
+        }
       }
       if (changes === undefined && sql.startsWith('INSERT INTO sync_runs')) {
         const instanceId = String(binds[0])
@@ -192,7 +205,7 @@ class SqliteD1 implements D1DatabaseLike {
         upstream_updated_at TEXT,
         subject_json TEXT NOT NULL,
         content_hash TEXT NOT NULL,
-        state_version INTEGER NOT NULL DEFAULT 1,
+        state_version INTEGER NOT NULL DEFAULT 1 CHECK (state_version >= 1),
         temperature TEXT NOT NULL,
         first_seen_at INTEGER NOT NULL,
         changed_at INTEGER NOT NULL,
@@ -300,6 +313,28 @@ test('listCollectionRows rejects corrupt persisted JSON', async () => {
   )
 })
 
+test('listCollectionRows rejects zero and negative state revisions', async () => {
+  for (const stateVersion of [0, -1]) {
+    const fake = new RecordingD1()
+    fake.rows = [{ ...collection({ state_version: stateVersion }) }]
+    await assert.rejects(
+      new D1StateStore(fake).listCollectionRows(),
+      /Invalid collection_items\.state_version/,
+    )
+  }
+})
+
+test('collection insert plans require the exact initial state revision', async () => {
+  for (const stateVersion of [0, -1, 2]) {
+    const plan = emptyPlan()
+    plan.inserts = [collection({ state_version: stateVersion })]
+    await assert.rejects(
+      new D1StateStore(new RecordingD1()).applyCollectionDiff(plan),
+      /Invalid collection insert state_version/,
+    )
+  }
+})
+
 test('applyCollectionDiff performs zero D1 batches for unchanged rows', async () => {
   const fake = new RecordingD1()
   const result = await new D1StateStore(fake).applyCollectionDiff(emptyPlan())
@@ -397,7 +432,7 @@ test('applyCollectionDiff maps every transition to correct SQL and binds in stab
   assert.match(statements[4]?.sql ?? '', /^INSERT INTO collection_items \(/)
 })
 
-test('collection CAS ignores stale missing, deletion and restore transitions and counts actual changes', async () => {
+test('collection CAS rejects stale missing, deletion and restore transitions', async () => {
   const fake = new RecordingD1()
   fake.nextChanges = [0, 0, 0]
   const plan = emptyPlan()
@@ -406,21 +441,25 @@ test('collection CAS ignores stale missing, deletion and restore transitions and
   plan.confirmedDeleted = [collection({ subject_id: 2, state_version: 2, missing_since: 100, deleted_at: 200 })]
   plan.restored = [collection({ subject_id: 3, state_version: 2, changed_at: 150 })]
 
-  const applied = await new D1StateStore(fake).applyCollectionDiff(plan)
-
-  assert.equal(applied.rowsWritten, 0)
+  await assert.rejects(
+    new D1StateStore(fake).applyCollectionDiff(plan),
+    /Stale collection diff conflict: alice:1/,
+  )
   const statements = fake.batchCalls.flat()
   assert.ok(statements.every(({ sql }) => /state_version = \?$/.test(sql)))
 })
 
-test('business updates require a strictly newer changed_at against delayed overwrite and replay', async () => {
+test('business update zero-change conflicts when current state differs', async () => {
   const fake = new RecordingD1()
   fake.nextChanges = [0]
   const plan = emptyPlan()
   plan.unchanged = 0
   plan.updates = [collection({ state_version: 2, changed_at: 200, content_hash: 'b'.repeat(64) })]
 
-  assert.equal((await new D1StateStore(fake).applyCollectionDiff(plan)).rowsWritten, 0)
+  await assert.rejects(
+    new D1StateStore(fake).applyCollectionDiff(plan),
+    /Stale collection diff conflict: alice:23080/,
+  )
   const statement = fake.batchCalls[0]?.[0]
   assert.match(statement?.sql ?? '', /state_version = \?$/)
   assert.deepEqual(statement?.binds.slice(-3), ['alice', 23080, 1])
@@ -449,7 +488,10 @@ test('state_version CAS rejects stale transitions across business, missing, dele
   const staleMissingPlan = emptyPlan()
   staleMissingPlan.unchanged = 0
   staleMissingPlan.firstMissing = [collection({ state_version: 2, missing_since: 101 })]
-  assert.equal((await store.applyCollectionDiff(staleMissingPlan)).rowsWritten, 0)
+  await assert.rejects(
+    store.applyCollectionDiff(staleMissingPlan),
+    /Stale collection diff conflict: alice:23080/,
+  )
 
   const missingPlan = emptyPlan()
   missingPlan.unchanged = 0
@@ -471,14 +513,17 @@ test('state_version CAS rejects stale transitions across business, missing, dele
   newDeletePlan.unchanged = 0
   newDeletePlan.confirmedDeleted = [{ ...business, state_version: 7, missing_since: 103, deleted_at: 104 }]
   assert.equal((await store.applyCollectionDiff(newDeletePlan)).rowsWritten, 1)
-  assert.equal((await store.applyCollectionDiff(restorePlan)).rowsWritten, 0)
+  await assert.rejects(
+    store.applyCollectionDiff(restorePlan),
+    /Stale collection diff conflict: alice:23080/,
+  )
 
   const [final] = await store.listCollectionRows()
   assert.equal(final?.state_version, 7)
   assert.equal(final?.deleted_at, 104)
 })
 
-test('divergent inserts converge by changed_at then binary content_hash regardless of arrival order', async () => {
+test('divergent initial inserts converge without advancing the initial revision', async () => {
   const older = collection({ changed_at: 100, content_hash: 'a'.repeat(64), rate: 7 })
   const newer = collection({ changed_at: 101, content_hash: 'b'.repeat(64), rate: 9 })
   const equalTimeWinner = collection({ changed_at: 100, content_hash: 'f'.repeat(64), rate: 10 })
@@ -493,16 +538,91 @@ test('divergent inserts converge by changed_at then binary content_hash regardle
 
   for (const order of [[older, newer], [newer, older]]) {
     const store = new D1StateStore(new SqliteD1())
-    for (const row of order) await store.applyCollectionDiff(asInsert(row))
+    await store.applyCollectionDiff(asInsert(order[0]!))
+    if (order[1] === older) {
+      await assert.rejects(
+        store.applyCollectionDiff(asInsert(order[1])),
+        /Stale collection diff conflict: alice:23080/,
+      )
+    } else {
+      await store.applyCollectionDiff(asInsert(order[1]!))
+    }
     assert.equal((await store.listCollectionRows())[0]?.content_hash, newer.content_hash)
+    assert.equal((await store.listCollectionRows())[0]?.state_version, 1)
     assert.equal((await store.applyCollectionDiff(asInsert(newer))).rowsWritten, 0)
   }
 
   for (const order of [[older, equalTimeWinner], [equalTimeWinner, older]]) {
     const store = new D1StateStore(new SqliteD1())
-    for (const row of order) await store.applyCollectionDiff(asInsert(row))
+    await store.applyCollectionDiff(asInsert(order[0]!))
+    if (order[1] === older) {
+      await assert.rejects(
+        store.applyCollectionDiff(asInsert(order[1])),
+        /Stale collection diff conflict: alice:23080/,
+      )
+    } else {
+      await store.applyCollectionDiff(asInsert(order[1]!))
+    }
     assert.equal((await store.listCollectionRows())[0]?.content_hash, equalTimeWinner.content_hash)
+    assert.equal((await store.listCollectionRows())[0]?.state_version, 1)
   }
+})
+
+test('delayed insert after missing and deletion cannot clear transitioned state', async () => {
+  const store = new D1StateStore(new SqliteD1())
+  const initial = collection({ changed_at: 100 })
+  const insert = emptyPlan()
+  insert.inserts = [initial]
+  await store.applyCollectionDiff(insert)
+
+  const missing = emptyPlan()
+  missing.firstMissing = [{ ...initial, state_version: 2, missing_since: 101 }]
+  await store.applyCollectionDiff(missing)
+  const deleted = emptyPlan()
+  deleted.confirmedDeleted = [{ ...initial, state_version: 3, missing_since: 101, deleted_at: 102 }]
+  await store.applyCollectionDiff(deleted)
+
+  const delayed = emptyPlan()
+  delayed.inserts = [collection({ changed_at: 200, content_hash: 'f'.repeat(64), rate: 10 })]
+  await assert.rejects(
+    store.applyCollectionDiff(delayed),
+    /Stale collection diff conflict: alice:23080/,
+  )
+  const [current] = await store.listCollectionRows()
+  assert.equal(current?.state_version, 3)
+  assert.equal(current?.missing_since, 101)
+  assert.equal(current?.deleted_at, 102)
+})
+
+test('overlapping revision plans force the loser to re-read and replan', async () => {
+  const store = new D1StateStore(new SqliteD1())
+  const initial = collection()
+  const insert = emptyPlan()
+  insert.inserts = [initial]
+  await store.applyCollectionDiff(insert)
+
+  const winner = emptyPlan()
+  winner.updates = [{ ...initial, state_version: 2, rate: 9, content_hash: 'b'.repeat(64) }]
+  const loser = emptyPlan()
+  loser.updates = [{ ...initial, state_version: 2, rate: 10, content_hash: 'c'.repeat(64) }]
+  await store.applyCollectionDiff(winner)
+  await assert.rejects(
+    store.applyCollectionDiff(loser),
+    /Stale collection diff conflict: alice:23080/,
+  )
+})
+
+test('identical applied collection transition replay is a safe zero-write no-op', async () => {
+  const store = new D1StateStore(new SqliteD1())
+  const initial = collection()
+  const insert = emptyPlan()
+  insert.inserts = [initial]
+  await store.applyCollectionDiff(insert)
+
+  const update = emptyPlan()
+  update.updates = [{ ...initial, state_version: 2, rate: 9, content_hash: 'b'.repeat(64) }]
+  assert.equal((await store.applyCollectionDiff(update)).rowsWritten, 1)
+  assert.equal((await store.applyCollectionDiff(update)).rowsWritten, 0)
 })
 
 test('applyCollectionDiff splits deterministic writes into batches of at most 50', async () => {
@@ -628,13 +748,13 @@ test('committed completion survives response loss and catch-path failure', async
     store.completeSyncRun('lost', { heartbeat_at: 120, completed_at: 120 }),
     /response loss/,
   )
-  await assert.rejects(
-    store.failSyncRun('lost', {
+  assert.deepEqual(
+    await store.failSyncRun('lost', {
       heartbeat_at: 121,
       completed_at: 121,
       error_code: 'INTERNAL_ERROR',
     }),
-    /already terminal: ok/,
+    { outcome: 'preserved_opposite_terminal', terminal: 'ok' },
   )
 
   assert.equal(fake.syncStatuses.get('lost'), 'ok')
@@ -651,10 +771,54 @@ test('sync lifecycle rejects missing runs and keeps same terminal replay idempot
     store.completeSyncRun('missing', { heartbeat_at: 1, completed_at: 1 }),
     /Sync run not found: missing/,
   )
+  await assert.rejects(
+    store.failSyncRun('missing', {
+      heartbeat_at: 1,
+      completed_at: 1,
+      error_code: 'INTERNAL_ERROR',
+    }),
+    /Sync run not found: missing/,
+  )
   await store.startSyncRun(syncRun({ instance_id: 'same' }))
-  await store.completeSyncRun('same', { heartbeat_at: 2, completed_at: 2 })
-  await store.completeSyncRun('same', { heartbeat_at: 3, completed_at: 3 })
+  assert.deepEqual(
+    await store.completeSyncRun('same', { heartbeat_at: 2, completed_at: 2 }),
+    { outcome: 'applied', terminal: 'ok' },
+  )
+  assert.deepEqual(
+    await store.completeSyncRun('same', { heartbeat_at: 3, completed_at: 3 }),
+    { outcome: 'already_same_terminal', terminal: 'ok' },
+  )
   assert.equal(fake.syncStatuses.get('same'), 'ok')
+})
+
+test('opposite sync terminal transitions preserve the first terminal result explicitly', async () => {
+  const fake = new RecordingD1()
+  const store = new D1StateStore(fake)
+
+  await store.startSyncRun(syncRun({ instance_id: 'failed-first' }))
+  assert.deepEqual(
+    await store.failSyncRun('failed-first', {
+      heartbeat_at: 2,
+      completed_at: 2,
+      error_code: 'UPSTREAM_ERROR',
+    }),
+    { outcome: 'applied', terminal: 'error' },
+  )
+  assert.deepEqual(
+    await store.completeSyncRun('failed-first', { heartbeat_at: 3, completed_at: 3 }),
+    { outcome: 'preserved_opposite_terminal', terminal: 'error' },
+  )
+
+  await store.startSyncRun(syncRun({ instance_id: 'ok-first' }))
+  await store.completeSyncRun('ok-first', { heartbeat_at: 4, completed_at: 4 })
+  assert.deepEqual(
+    await store.failSyncRun('ok-first', {
+      heartbeat_at: 5,
+      completed_at: 5,
+      error_code: 'INTERNAL_ERROR',
+    }),
+    { outcome: 'preserved_opposite_terminal', terminal: 'ok' },
+  )
 })
 
 test('updateSyncRun never binds explicit undefined optional values', async () => {
