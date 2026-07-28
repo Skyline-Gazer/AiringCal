@@ -164,7 +164,6 @@ class MemoryState implements PublicationState {
     source: PublicationSourceWatermarkV1,
   ) {
     this.events.push('d1:commit-state')
-    this.allocations++
     const sourceRelation = publicationSourceRelation(source, this.publicationSource)
     if (sourceRelation === 'stale' || sourceRelation === 'conflict') return false
     if (
@@ -183,6 +182,7 @@ class MemoryState implements PublicationState {
       ) return false
       this.publicationClaim = undefined
       this.pending = structuredClone(candidate)
+      this.allocations++
       return true
     }
     if (
@@ -192,6 +192,7 @@ class MemoryState implements PublicationState {
       )
     ) return false
     this.pending = structuredClone(candidate)
+    this.allocations++
     return true
   }
 
@@ -809,7 +810,7 @@ test('a lower pending generation than public:verified is rejected before any R2 
     publicationId: 'workflow-lower-pending',
   }), /publication authorization conflict/i)
 
-  assert.deepEqual(events, [])
+  assert.deepEqual(events, ['d1:commit-state'])
   assert.equal(dataBucket.objects.size, 0)
   assert.equal(pointerKv.values.has('public:current'), false)
 })
@@ -842,7 +843,7 @@ test('a same-generation pending hash conflict is rejected before any R2 or KV wr
     publicationId: 'workflow-same-generation',
   }), /publication authorization conflict/i)
 
-  assert.deepEqual(events, [])
+  assert.deepEqual(events, ['d1:commit-state'])
   assert.equal(dataBucket.objects.size, 0)
   assert.equal(pointerKv.values.has('public:current'), false)
 })
@@ -1173,6 +1174,162 @@ test('a newer verified no-op watermarks its source before a delayed older run ca
   assert.equal(state.verified?.content_hash, verifiedA.content_hash)
   assert.equal(dataBucket.objects.size, 0)
   assert.equal(pointerKv.putValues.length, 0)
+})
+
+test('a newer source adopts matching unclaimed pending bytes without allocating a new generation or key', async () => {
+  const fixture = await changedFixture()
+  const pendingB: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 12,
+    content_hash: fixture.input.content_hash,
+    r2_key: `snapshots/v1/12-${fixture.input.content_hash}.json`,
+    published_at: NOW,
+  }
+  const sourceB = publicationSource('workflow-b', NOW, pendingB.content_hash)
+  assert.equal(await fixture.state.commitPendingPublication(pendingB, sourceB), true)
+
+  const adopted = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW + 86_400,
+    sourceObservedAt: NOW + 86_400,
+    publicationId: 'workflow-c',
+  })
+
+  assert.equal(adopted.status, 'published')
+  assert.equal(adopted.generation, pendingB.generation)
+  assert.equal(fixture.state.verified?.r2_key, pendingB.r2_key)
+  assert.equal(fixture.state.verified?.published_at, pendingB.published_at)
+  assert.equal(fixture.state.allocations, 1)
+  assert.deepEqual([...fixture.dataBucket.objects.keys()], [pendingB.r2_key])
+  assert.equal(fixture.dataBucket.objects.size, 1)
+})
+
+test('a matching pending candidate with an active older owner blocks newer source adoption before R2 or KV', async () => {
+  const fixture = await changedFixture()
+  const pendingB: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 12,
+    content_hash: fixture.input.content_hash,
+    r2_key: `snapshots/v1/12-${fixture.input.content_hash}.json`,
+    published_at: NOW,
+  }
+  const sourceB = publicationSource('workflow-b', NOW, pendingB.content_hash)
+  const ownerB = publicationOwner('workflow-b', 'attempt-b')
+  assert.equal(await fixture.state.commitPendingPublication(pendingB, sourceB), true)
+  assert.equal(
+    await fixture.state.claimPublicationWrite(pendingB, ownerB, sourceB),
+    'claimed',
+  )
+
+  const blocked = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW + 86_400,
+    sourceObservedAt: NOW + 86_400,
+    publicationId: 'workflow-c',
+  })
+
+  assert.equal(blocked.status, 'pending')
+  assert.equal(blocked.generation, pendingB.generation)
+  assert.equal(blocked.r2Puts, 0)
+  assert.equal(blocked.pointerPuts, 0)
+  assert.deepEqual(fixture.state.pending, pendingB)
+  assert.equal(fixture.state.publicationSource?.publication_id, 'workflow-b')
+  assert.equal(fixture.state.allocations, 1)
+  assert.equal(fixture.dataBucket.objects.size, 0)
+  assert.equal(fixture.pointerKv.putValues.length, 0)
+})
+
+test('a matching pending candidate becomes adoptable after the exact older claim expires', async () => {
+  const fixture = await changedFixture()
+  const pendingB: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 12,
+    content_hash: fixture.input.content_hash,
+    r2_key: `snapshots/v1/12-${fixture.input.content_hash}.json`,
+    published_at: NOW,
+  }
+  const sourceB = publicationSource('workflow-b', NOW, pendingB.content_hash)
+  const ownerB = publicationOwner('workflow-b', 'attempt-b')
+  assert.equal(await fixture.state.commitPendingPublication(pendingB, sourceB), true)
+  assert.equal(
+    await fixture.state.claimPublicationWrite(pendingB, ownerB, sourceB),
+    'claimed',
+  )
+  fixture.state.advanceLeaseClock(60)
+
+  const adopted = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW + 86_400,
+    sourceObservedAt: NOW + 86_400,
+    publicationId: 'workflow-c',
+  })
+
+  assert.equal(adopted.status, 'published')
+  assert.equal(adopted.generation, pendingB.generation)
+  assert.equal(fixture.state.verified?.r2_key, pendingB.r2_key)
+  assert.equal(fixture.state.verified?.published_at, pendingB.published_at)
+  assert.equal(fixture.state.allocations, 1)
+  assert.equal(
+    await fixture.state.confirmPublicationWrite(pendingB, ownerB, sourceB),
+    'conflict',
+  )
+  assert.deepEqual([...fixture.dataBucket.objects.keys()], [pendingB.r2_key])
+  assert.equal(fixture.dataBucket.objects.size, 1)
+})
+
+test('matching pending adoption response loss replays the same source and candidate', async () => {
+  const fixture = await changedFixture()
+  const pendingB: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 12,
+    content_hash: fixture.input.content_hash,
+    r2_key: `snapshots/v1/12-${fixture.input.content_hash}.json`,
+    published_at: NOW,
+  }
+  const sourceB = publicationSource('workflow-b', NOW, pendingB.content_hash)
+  assert.equal(await fixture.state.commitPendingPublication(pendingB, sourceB), true)
+  fixture.state.commitThenThrow = true
+
+  await assert.rejects(
+    publishPublicSnapshot({
+      state: fixture.state,
+      dataBucket: fixture.dataBucket,
+      pointerKv: fixture.pointerKv,
+      input: fixture.input,
+      now: NOW + 86_400,
+      sourceObservedAt: NOW + 86_400,
+      publicationId: 'workflow-c',
+    }),
+    /D1 commit response loss/,
+  )
+  fixture.state.commitThenThrow = false
+
+  const replay = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW + 86_401,
+    sourceObservedAt: NOW + 86_400,
+    publicationId: 'workflow-c',
+  })
+
+  assert.equal(replay.status, 'published')
+  assert.equal(replay.generation, pendingB.generation)
+  assert.equal(fixture.state.verified?.r2_key, pendingB.r2_key)
+  assert.equal(fixture.state.verified?.published_at, pendingB.published_at)
+  assert.equal(fixture.state.allocations, 1)
+  assert.deepEqual([...fixture.dataBucket.objects.keys()], [pendingB.r2_key])
+  assert.equal(fixture.dataBucket.objects.size, 1)
 })
 
 test('equal source timestamps use stable publication identity as a deterministic freshness tie-breaker', async () => {

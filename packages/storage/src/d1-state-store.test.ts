@@ -308,10 +308,12 @@ class SqliteD1 implements D1DatabaseLike {
 
 class PublicationResponseLossD1 extends SqliteD1 {
   loseNextBatchResponse = false
+  batchCalls = 0
 
   override async batch<T = Record<string, unknown>>(
     statements: D1PreparedStatementLike[],
   ): Promise<D1ResultLike<T>[]> {
+    this.batchCalls++
     const results = await super.batch<T>(statements)
     if (this.loseNextBatchResponse) {
       this.loseNextBatchResponse = false
@@ -1335,6 +1337,41 @@ test('publication freshness watermark response loss replays the exact source wit
   )
   assert.equal(await store.cleanupStalePendingPublication(verified, source), 'clean')
   assert.deepEqual(await store.getAppStateUnknown('public:source-watermark'), source)
+})
+
+test('matching pending source adoption response loss replays without reallocating its generation or key', async () => {
+  const database = new PublicationResponseLossD1()
+  const store = new D1StateStore(database)
+  const verified: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 9,
+    content_hash: '7'.repeat(64),
+    r2_key: `snapshots/v1/9-${'7'.repeat(64)}.json`,
+    published_at: 700,
+  }
+  const pending: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 10,
+    content_hash: '8'.repeat(64),
+    r2_key: `snapshots/v1/10-${'8'.repeat(64)}.json`,
+    published_at: 701,
+  }
+  const sourceB = publicationSource('workflow-b', 701, pending.content_hash)
+  const sourceC = publicationSource('workflow-c', 800, pending.content_hash)
+  await store.putAppStateIfNewer('public:verified', verified, verified.generation)
+  assert.equal(await store.commitPendingPublication(pending, sourceB), true)
+  database.loseNextBatchResponse = true
+
+  await assert.rejects(
+    store.commitPendingPublication(pending, sourceC),
+    /watermark response loss/,
+  )
+  const batchesAfterLostResponse = database.batchCalls
+  assert.equal(await store.commitPendingPublication(pending, sourceC), true)
+
+  assert.equal(database.batchCalls, batchesAfterLostResponse)
+  assert.deepEqual(await store.getPendingPublication(), pending)
+  assert.deepEqual(await store.getAppStateUnknown('public:source-watermark'), sourceC)
 })
 
 test('sync run lifecycle uses positional binds and persists only classified error codes', async () => {

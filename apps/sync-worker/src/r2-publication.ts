@@ -131,7 +131,15 @@ async function prepareCandidate(
 > {
   const pending = await readPending(state)
   if (verified?.content_hash === contentHash) return { unchanged: verified }
-  if (pending?.content_hash === contentHash) return pending
+  if (pending?.content_hash === contentHash) {
+    if (await state.commitPendingPublication(pending, source)) return pending
+    return {
+      blocked: {
+        generation: pending.generation,
+        contentHash,
+      },
+    }
+  }
 
   const generation = (verified?.generation ?? 0) + 1
   if (!Number.isSafeInteger(generation)) throw new Error('Public snapshot generation exhausted')
@@ -147,7 +155,15 @@ async function prepareCandidate(
   const currentVerified = await readVerified(state)
   const currentPending = await readPending(state)
   if (currentVerified?.content_hash === contentHash) return { unchanged: currentVerified }
-  if (currentPending?.content_hash === contentHash) return currentPending
+  if (currentPending?.content_hash === contentHash) {
+    if (await state.commitPendingPublication(currentPending, source)) return currentPending
+    return {
+      blocked: {
+        generation: currentPending.generation,
+        contentHash,
+      },
+    }
+  }
   return {
     blocked: {
       generation: currentPending?.generation ?? generation,
