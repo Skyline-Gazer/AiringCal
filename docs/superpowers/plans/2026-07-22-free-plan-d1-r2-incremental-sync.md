@@ -607,15 +607,15 @@ git push
 - Produces `refreshSubjectMediaD1(env, job): Promise<{ d1Writes; imageWrites; status }>` with status `unchanged|updated|retry_scheduled`.
 - Reads/writes `subject_media`; image bytes continue through existing `R2ImageStore` and existing object keys.
 
-- [ ] **Step 1: Write RED compare-before-write tests**
+- [x] **Step 1: Write RED compare-before-write tests**
 
 Assert same detail/media hash, source URLs and R2 refs produce zero D1/image writes; changed common image writes only that image plus one D1 row; error updates only retry classification/backoff; no new legacy per-subject KV keys are put.
 
-- [ ] **Step 2: Implement D1 media state path**
+- [x] **Step 2: Implement D1 media state path**
 
 Acquire/read the subject row, fetch detail, calculate canonical hashes, compare before each D1/R2 write, preserve existing image keys, and store `checked_at/next_refresh_at/retry_count/retry_at/error_code`. Never store upstream error bodies.
 
-- [ ] **Step 3: Run GREEN**
+- [x] **Step 3: Run GREEN**
 
 ```bash
 node --import tsx --test apps/media-worker/src/d1-media-state.test.ts apps/media-worker/src/media-worker.test.ts
@@ -623,7 +623,7 @@ pnpm -F @airing-cal/media-worker test
 pnpm -F @airing-cal/media-worker typecheck
 ```
 
-- [ ] **Step 4: Review, complete cache-refresh lifecycle coverage, commit and push**
+- [x] **Step 4: Review, complete cache-refresh lifecycle coverage, commit and push**
 
 ```bash
 git add apps/media-worker packages/storage openspec/changes/adopt-d1-r2-incremental-sync

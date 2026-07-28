@@ -226,3 +226,18 @@
 - Final review result: spec compliance APPROVED and code quality APPROVED with no blocking findings.
 - Implementation/fix commits: `d65bd93`, `0ae6aeb`, `b9df8df`, `0fe0018`, `d43a5a2`, `c30aa8d`, `7ce8924`, and `f978b3a` are pushed.
 - Task 7 checkoff: plan Steps 1–4 and OpenSpec 3.3 complete. Stage: `checkoff`.
+
+## Task 8 Implementation
+
+- Plan task: `Task 8: Media Worker D1 authoritative state`.
+- OpenSpec mapping: completes the media-consumer/cache-refresh lifecycle evidence for `3.3`; the checkbox was already completed after Task 7 orchestration.
+- Stage: `checkoff`.
+- Implementation base: `4adc8dd`.
+- RED evidence: the initial focused run passed 26/30; the missing D1 media module caused three failures and the V3 Queue path wrote legacy `subject:refresh`, `subject:detail`, `subject:meta`, and `image:status` keys. Review-fix RED cycles covered source/key mismatch, direct D1 failure KV fallback, vanished sources, terminal retry state, V2 compatibility, 24-hour tombstone suppression/renewal, and retry saturation.
+- D1/R2 contract: `subject_media` is authoritative for detail/media hashes, source URLs, image refs, NSFW, refresh and retry state. Existing content-addressed image keys and the image R2 bucket remain unchanged. Semantic no-op performs zero D1/R2 writes; a changed requested image performs only its R2 write plus one D1 row.
+- Failure contract: image non-success preserves the prior source/key pair and records classified `IMAGE_UNAVAILABLE`; D1 read/upsert failures leave V3 Queue work retryable with zero legacy KV writes; terminal auth failures clear retry state; persisted retry count saturates at tier 3.
+- Tombstone contract: confirmed 404 stores a 24-hour D1 boundary, suppresses upstream work before expiry with zero writes, re-probes at the boundary, and renews the boundary on repeated 404. Image source/key pairs and bytes are preserved.
+- GREEN evidence: focused 41/41; media-worker 49/49; storage 72/72; media-worker, storage and sync-worker typechecks; `git diff --check`.
+- Final review result: spec compliance APPROVED and code quality APPROVED with no remaining blockers.
+- Implementation/fix commits: `0ba9590`, `1051407`, `af963fe`, `b810b2f`, and `a3c7859` are pushed.
+- Task 8 checkoff: plan Steps 1–4 complete; Task 9 remained untouched.
