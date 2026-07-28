@@ -232,6 +232,25 @@ class SqliteD1 implements D1DatabaseLike {
         missing_since INTEGER,
         deleted_at INTEGER,
         PRIMARY KEY (user_id, subject_id)
+      );
+      CREATE TABLE sync_runs (
+        instance_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        generation INTEGER,
+        collection_count INTEGER NOT NULL,
+        changed_count INTEGER NOT NULL,
+        missing_count INTEGER NOT NULL,
+        deleted_count INTEGER NOT NULL,
+        media_selected_count INTEGER NOT NULL,
+        media_granted_count INTEGER NOT NULL,
+        input_hash TEXT,
+        public_hash TEXT,
+        result_json TEXT,
+        error_code TEXT,
+        started_at INTEGER NOT NULL,
+        heartbeat_at INTEGER NOT NULL,
+        completed_at INTEGER
       )
     `)
   }
@@ -427,6 +446,48 @@ test('applyCollectionDiff checkpoints replay state in the same D1 batch as colle
   assert.equal(fake.batchCalls[0]?.length, 2)
   assert.match(fake.batchCalls[0]?.[0]?.sql ?? '', /^UPDATE collection_items/)
   assert.match(fake.batchCalls[0]?.[1]?.sql ?? '', /^UPDATE sync_runs SET stage = \?/)
+})
+
+test('real adapter revalidates a persisted losing checkpoint before accepting replay', async () => {
+  const database = new SqliteD1()
+  const store = new D1StateStore(database)
+  await store.startSyncRun(syncRun({
+    instance_id: 'stale-checkpoint',
+    input_hash: 'a'.repeat(64),
+  }))
+  const initial = emptyPlan()
+  initial.unchanged = 0
+  initial.inserts = [collection()]
+  await store.applyCollectionDiff(initial)
+  const losing = emptyPlan()
+  losing.unchanged = 0
+  losing.updates = [collection({
+    rate: 9,
+    content_hash: 'b'.repeat(64),
+    state_version: 3,
+    changed_at: 200,
+  })]
+  const checkpoint = {
+    instanceId: 'stale-checkpoint',
+    update: {
+      stage: 'collections_pending',
+      heartbeat_at: 200,
+      input_hash: 'a'.repeat(64),
+      result_json: '{"schema_version":1,"collection":{"losing":true}}',
+    },
+  }
+
+  await assert.rejects(
+    store.applyCollectionDiff(losing, checkpoint),
+    /Stale collection diff conflict/,
+  )
+  assert.equal((await store.getSyncRun('stale-checkpoint'))?.result_json, checkpoint.update.result_json)
+
+  await assert.rejects(
+    store.applyCollectionDiff(losing, checkpoint),
+    /Stale collection diff conflict/,
+  )
+  assert.equal((await store.listCollectionRows())[0]?.content_hash, 'a'.repeat(64))
 })
 
 test('collection insert replay finishes after a batch commits but its response is lost', async () => {

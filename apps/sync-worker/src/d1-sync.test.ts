@@ -76,8 +76,12 @@ class RecordingStore implements D1IncrementalSyncStore {
   staleOnce = false
   applyError: Error | null = null
   crashOnNextMediaList = false
+  crashBeforeCursorPersistOnce = false
+  crashAfterCursorPersistOnce = false
   loseFailurePersistenceOnce = false
   collectionMutations = 0
+  loseApplyResponseOnce = false
+  applyResponseLossCheckpoint: 'exact' | 'missing' | 'input_mismatch' = 'exact'
   loseUpdateResponseOnce = false
   loseCompleteResponseOnce = false
   reservation: BudgetReservationResult = {
@@ -103,7 +107,17 @@ class RecordingStore implements D1IncrementalSyncStore {
     const value = this.appState.get(key)
     return value === undefined ? undefined : decode(value)
   }
-  async putAppState<T>(key: string, value: T) { this.appState.set(key, structuredClone(value)) }
+  async putAppState<T>(key: string, value: T) {
+    if (this.crashBeforeCursorPersistOnce) {
+      this.crashBeforeCursorPersistOnce = false
+      throw new Error('simulated process crash before cold cursor commit')
+    }
+    this.appState.set(key, structuredClone(value))
+    if (this.crashAfterCursorPersistOnce) {
+      this.crashAfterCursorPersistOnce = false
+      throw new Error('simulated process crash after cold cursor commit')
+    }
+  }
 
   async applyCollectionDiff(
     plan: CollectionDiffPlanLike,
@@ -136,6 +150,15 @@ class RecordingStore implements D1IncrementalSyncStore {
     this.collectionMutations += rowsWritten
     if (checkpoint && this.currentRun?.instance_id === checkpoint.instanceId) {
       this.currentRun = { ...this.currentRun, ...structuredClone(checkpoint.update) }
+    }
+    if (this.loseApplyResponseOnce) {
+      this.loseApplyResponseOnce = false
+      if (this.applyResponseLossCheckpoint === 'missing' && this.currentRun) {
+        this.currentRun.result_json = null
+      } else if (this.applyResponseLossCheckpoint === 'input_mismatch' && this.currentRun) {
+        this.currentRun.input_hash = '0'.repeat(64)
+      }
+      throw new Error('collection batch response lost after commit')
     }
     return {
       rowsWritten,
@@ -487,6 +510,33 @@ test('replay after collection commit crash returns the original result without a
   })
 })
 
+test('collection batch response loss continues only from the exact persisted checkpoint', async () => {
+  const recovered = new RecordingStore()
+  recovered.loseApplyResponseOnce = true
+
+  const result = await run(recovered, completeInput(), undefined, observedAt, 'lost-collection-response')
+
+  assert.equal(result.rowsWritten, 1)
+  assert.equal(recovered.collectionMutations, 1)
+  assert.equal(recovered.applied.length, 1)
+  assert.equal(recovered.failed.length, 0)
+  assert.equal(recovered.currentRun?.status, 'ok')
+
+  for (const checkpointMode of ['missing', 'input_mismatch'] as const) {
+    const rejected = new RecordingStore()
+    rejected.loseApplyResponseOnce = true
+    rejected.applyResponseLossCheckpoint = checkpointMode
+
+    await assert.rejects(
+      run(rejected, completeInput(), undefined, observedAt, `lost-collection-${checkpointMode}`),
+      /collection batch response lost after commit/,
+    )
+    assert.equal(rejected.collectionMutations, 1)
+    assert.equal(rejected.failed.length, 1)
+    assert.equal(rejected.currentRun?.status, 'error')
+  }
+})
+
 test('terminal run replay re-enters with the stable instance without a second start or completion', async () => {
   const store = new RecordingStore()
   const first = await run(store, completeInput(), undefined, observedAt, 'terminal-replay')
@@ -582,6 +632,85 @@ test('prepared-result update response loss recovers the checkpoint before comple
   assert.equal(store.updated.length, 1)
   assert.equal(store.completed.length, 1)
   assert.equal(store.failed.length, 0)
+  assert.equal(store.currentRun?.status, 'ok')
+})
+
+test('cold cursor commit crash replays the exact prepared media result without another reservation', async () => {
+  const utcShard = new Date(observedAt * 1000).getUTCDay()
+  const coldIds = Array.from({ length: 52 }, (_, index) => utcShard + 7 * (index + 1))
+  const watched = coldIds.map((subjectId) => {
+    const entry = collection(subjectId)
+    return { ...entry, collection: { ...entry.collection, type: 2 } }
+  })
+  const store = new RecordingStore()
+  await run(store, completeInput(watched), undefined, observedAt, 'cursor-crash-seed')
+  store.mediaRows = coldIds.map((subjectId) => mediaRow(subjectId))
+  store.crashAfterCursorPersistOnce = true
+  store.loseFailurePersistenceOnce = true
+  const requests: BudgetReservationRequest[] = []
+  const submit = async (request: BudgetReservationRequest) => {
+    requests.push(structuredClone(request))
+    return { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100, submission: 'submitted' as const }
+  }
+
+  await assert.rejects(
+    run(store, completeInput(watched), submit, observedAt, 'cursor-crash-run'),
+    /simulated process crash after cold cursor commit/,
+  )
+  assert.equal(store.currentRun?.status, 'running')
+  assert.equal(requests.length, 1)
+  const originalFingerprint = await sha256Canonical(requests[0])
+
+  const replay = await run(store, completeInput(watched), submit, observedAt, 'cursor-crash-run')
+
+  assert.equal(await sha256Canonical(requests[0]), originalFingerprint)
+  assert.equal(requests.length, 1)
+  assert.deepEqual(replay.media, {
+    candidates: 52,
+    granted: 1,
+    confirmed: 1,
+    uncertain: 0,
+    deferred: 51,
+  })
+  assert.equal(store.currentRun?.status, 'ok')
+})
+
+test('prepared replay completes a cold cursor transition interrupted before its commit', async () => {
+  const utcShard = new Date(observedAt * 1000).getUTCDay()
+  const coldIds = Array.from({ length: 52 }, (_, index) => utcShard + 7 * (index + 1))
+  const watched = coldIds.map((subjectId) => {
+    const entry = collection(subjectId)
+    return { ...entry, collection: { ...entry.collection, type: 2 } }
+  })
+  const store = new RecordingStore()
+  await run(store, completeInput(watched), undefined, observedAt, 'cursor-before-crash-seed')
+  store.mediaRows = coldIds.map((subjectId) => mediaRow(subjectId))
+  store.crashBeforeCursorPersistOnce = true
+  store.loseFailurePersistenceOnce = true
+  const requests: BudgetReservationRequest[] = []
+  const submit = async (request: BudgetReservationRequest) => {
+    requests.push(structuredClone(request))
+    return { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100, submission: 'submitted' as const }
+  }
+
+  await assert.rejects(
+    run(store, completeInput(watched), submit, observedAt, 'cursor-before-crash-run'),
+    /simulated process crash before cold cursor commit/,
+  )
+  assert.equal(store.appState.has('media:cold-cursor'), false)
+  assert.equal(requests.length, 1)
+
+  const replay = await run(store, completeInput(watched), submit, observedAt, 'cursor-before-crash-run')
+
+  assert.equal(requests.length, 1)
+  assert.deepEqual(store.appState.get('media:cold-cursor'), { subject_ids: coldIds.slice(1) })
+  assert.deepEqual(replay.media, {
+    candidates: 52,
+    granted: 1,
+    confirmed: 1,
+    uncertain: 0,
+    deferred: 51,
+  })
   assert.equal(store.currentRun?.status, 'ok')
 })
 

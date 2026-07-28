@@ -84,7 +84,9 @@ resource resolve 必须在任一 Worker upload 前确认 D1、data R2、image R2
 
 ### 3.3 `sync_runs`
 
-以 instance ID 标识一次运行，保存 status/stage、generation、计数、输入/公开 hash、开始/heartbeat/完成时间和脱敏错误。`0002_sync_run_replay_result.sql` 以 additive migration 增加 `result_json`。收藏 CAS 与绑定规范输入 hash 的 versioned `collections_pending` 检查点必须在同一个 D1 batch 中提交；检查点保存原始 diff、计数与规范公开输入，因此进程在收藏提交后崩溃时，running replay 重放同一 CAS 并沿用原始结果语义，不根据已变更状态重新计算。媒体阶段完成后以 versioned prepared result 覆盖检查点；running replay 只补 terminal transition，terminal replay 直接返回同一结果，不重复收藏实际变更、媒体预算或完成动作。运行记录用于健康、审计和 crash-safe replay，不进入公开内容 hash。
+以 instance ID 标识一次运行，保存 status/stage、generation、计数、输入/公开 hash、开始/heartbeat/完成时间和脱敏错误。`0002_sync_run_replay_result.sql` 以 additive migration 增加 `result_json`。收藏 CAS 与绑定规范输入 hash 的 versioned `collections_pending` 检查点必须在同一个 D1 batch 中提交；检查点保存原始 diff、计数与规范公开输入，因此进程在收藏提交后崩溃时，running replay 重放同一 CAS 并沿用原始结果语义，不根据已变更状态重新计算。若 batch 已提交但响应丢失，只有回读到 status 仍为 running、输入 hash 相同且 `result_json` 与本次规范检查点逐字节相同，当前执行才可继续；缺失或不匹配仍失败。stale CAS 即使同批留下 losing 检查点，恢复时也必须再次通过完整 CAS/no-op reconciliation，不能直接进入媒体或公开阶段。
+
+媒体阶段完成后以 versioned prepared result 覆盖检查点；该结果同时保存目标 cold cursor，并且必须先于 cursor 推进持久化。cursor 提交前崩溃时，running replay 幂等补写目标 cursor；cursor 提交后崩溃时，running replay 复用同一 prepared result，不重新规划媒体或重复预算动作。随后 running replay 只补 terminal transition，terminal replay 直接返回同一结果，不重复收藏实际变更、媒体预算或完成动作。运行记录用于健康、审计和 crash-safe replay，不进入公开内容 hash。
 
 ### 3.4 `sync_budget`
 

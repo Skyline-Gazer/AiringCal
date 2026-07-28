@@ -89,6 +89,7 @@ interface PreparedResultEnvelope {
   schema_version: 1
   input_hash: string
   result: D1SyncResult
+  cold_cursor?: ColdRefreshCursor
 }
 
 interface CollectionCheckpoint {
@@ -305,6 +306,27 @@ async function decodePreparedResult(
     },
     runId: raw.runId,
   }
+}
+
+function decodePreparedColdCursor(
+  resultJson: string | null,
+  expectedInputHash: string,
+): ColdRefreshCursor | undefined {
+  if (resultJson === null) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(resultJson)
+  } catch {
+    throw new Error('Invalid prepared D1 sync result JSON')
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('Invalid prepared D1 sync result')
+  }
+  const envelope = parsed as Partial<PreparedResultEnvelope>
+  if (envelope.schema_version !== 1 || envelope.input_hash !== expectedInputHash) {
+    throw new Error('D1 sync instance input mismatch')
+  }
+  return envelope.cold_cursor === undefined ? undefined : decodeColdCursor(envelope.cold_cursor)
 }
 
 function changedRows(plan: CollectionDiffPlan): CollectionRow[] {
@@ -561,6 +583,9 @@ export async function runD1IncrementalSync({
   let preparedResult = existingRun === undefined || collectionCheckpoint
     ? undefined
     : await decodePreparedResult(existingRun.result_json, completeInputHash, instanceId)
+  const preparedColdCursor = preparedResult
+    ? decodePreparedColdCursor(existingRun?.result_json ?? null, completeInputHash)
+    : undefined
   let preparedResultJson = existingRun?.result_json ?? undefined
   if (existingRun?.status === 'ok') {
     if (!preparedResult) throw new Error(`Completed D1 sync result is unavailable: ${instanceId}`)
@@ -569,6 +594,13 @@ export async function runD1IncrementalSync({
 
   try {
     if (preparedResult && preparedResultJson) {
+      if (preparedColdCursor) {
+        const currentCursor = await store.getAppState('media:cold-cursor', decodeColdCursor)
+          ?? { subject_ids: [] }
+        if (!sameCursor(currentCursor, preparedColdCursor)) {
+          await store.putAppState('media:cold-cursor', preparedColdCursor)
+        }
+      }
       const transition = await store.completeSyncRun(instanceId, {
         heartbeat_at: now,
         completed_at: now,
@@ -638,10 +670,23 @@ export async function runD1IncrementalSync({
         })
         break
       } catch (error) {
-        if (!(error instanceof StaleCollectionDiffError) || attempt === MAX_STALE_REPLANS) throw error
-        plan = undefined
-        publicInput = undefined
-        collectionCheckpoint = undefined
+        if (error instanceof StaleCollectionDiffError) {
+          if (attempt === MAX_STALE_REPLANS) throw error
+          plan = undefined
+          publicInput = undefined
+          collectionCheckpoint = undefined
+          continue
+        }
+        const persisted = await store.getSyncRun(instanceId)
+        if (
+          persisted?.status === 'running'
+          && persisted.input_hash === completeInputHash
+          && persisted.result_json === checkpointJson
+          && await decodeCollectionCheckpoint(persisted.result_json, completeInputHash)
+        ) {
+          break
+        }
+        throw error
       }
     }
     if (!plan || !publicInput) throw new Error('Collection diff reconciliation failed')
@@ -684,9 +729,6 @@ export async function runD1IncrementalSync({
         ...selection.cold_cursor.subject_ids,
       ],
     }
-    if (!sameCursor(previousCursor, nextColdCursor)) {
-      await store.putAppState('media:cold-cursor', nextColdCursor)
-    }
     const changed = changedRows(plan).length
 
     preparedResult = {
@@ -708,8 +750,8 @@ export async function runD1IncrementalSync({
       schema_version: 1,
       input_hash: completeInputHash,
       result: preparedResult,
+      cold_cursor: nextColdCursor,
     } satisfies PreparedResultEnvelope)
-
     try {
       await store.updateSyncRun(instanceId, {
         stage: 'media',
@@ -727,6 +769,9 @@ export async function runD1IncrementalSync({
     } catch (error) {
       const persisted = await store.getSyncRun(instanceId)
       if (persisted?.result_json !== preparedResultJson) throw error
+    }
+    if (!sameCursor(previousCursor, nextColdCursor)) {
+      await store.putAppState('media:cold-cursor', nextColdCursor)
     }
     const transition = await store.completeSyncRun(instanceId, {
       heartbeat_at: now,
