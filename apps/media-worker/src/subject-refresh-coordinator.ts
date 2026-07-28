@@ -65,11 +65,18 @@ export class SubjectRefreshCoordinator {
     if (decision.status !== 'process') return Response.json(decision)
     try {
       const status = await processJob(job, this.env)
+      if (status === 'retry_scheduled') {
+        return Response.json({ status, generation }, { status: 503 })
+      }
       await this.core.complete(generation, jobId)
       return Response.json({ status, generation })
     } catch (error) {
       const safeError = sanitizeErrorMessage(error instanceof Error ? error.message : String(error))
-      if ('version' in job && (job.version === 2 || job.version === 3)) {
+      if (
+        'version' in job
+        && (job.version === 2 || job.version === 3)
+        && !(job.version === 3 && this.env.AIRING_CAL_D1)
+      ) {
         const versioned = job as MediaRefreshJobV2 | MediaRefreshJobV3
         const storage = new KVStorage(this.env.AIRING_CAL_KV)
         const now = Math.floor(Date.now() / 1000)

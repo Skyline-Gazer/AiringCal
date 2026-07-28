@@ -2,8 +2,9 @@ export const appBoundary = 'media-worker'
 
 import { BgmClient, BgmHttpError, BgmNetworkError, BgmTimeoutError } from '@airing-cal/bgm-api'
 import { imageRef, isActiveNotFoundSubjectMeta, isConfirmedNotFoundSubjectMeta, subjectDetailImages, subjectMetaFromDetail, subjectMetaFromNotFound, type SubjectMeta } from '@airing-cal/domain'
-import { getCachedSubjectDetail, imageIndexKey, imageStatusKey, KVStorage, putJsonIfChanged, R2ImageStore, SUBJECT_DETAIL_TTL_SECONDS, subjectDetailKey, subjectMetaKey, subjectRefreshKey, type ImageSourceSize, type MediaRefreshJobV2, type MediaRefreshJobV3, type SubjectDetailCacheEntry, type SubjectRefreshState } from '@airing-cal/storage'
+import { getCachedSubjectDetail, imageIndexKey, imageStatusKey, KVStorage, putJsonIfChanged, R2ImageStore, SUBJECT_DETAIL_TTL_SECONDS, subjectDetailKey, subjectMetaKey, subjectRefreshKey, type D1DatabaseLike, type ImageSourceSize, type MediaRefreshJobV2, type MediaRefreshJobV3, type SubjectDetailCacheEntry, type SubjectRefreshState } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
+import { refreshSubjectMediaD1 } from './d1-media-state.ts'
 
 export interface LegacyMediaJob {
   subject_id: number
@@ -18,6 +19,7 @@ export interface LegacyMediaJob {
 export type MediaJob = LegacyMediaJob | MediaRefreshJobV2 | MediaRefreshJobV3
 
 export interface MediaEnv {
+  AIRING_CAL_D1?: D1DatabaseLike
   AIRING_CAL_KV: {
     get(key: string, type: 'json'): Promise<unknown>
     put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
@@ -247,7 +249,14 @@ async function putRefreshState(storage: KVStorage, job: MediaRefreshJobV2 | Medi
   } satisfies SubjectRefreshState, normalizeRefreshState)
 }
 
-async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | 'duplicate'> {
+async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | 'duplicate' | 'retry_scheduled'> {
+  if (isVersionedJob(job) && job.version === 3 && env.AIRING_CAL_D1) {
+    const result = await refreshSubjectMediaD1({
+      AIRING_CAL_D1: env.AIRING_CAL_D1,
+      AIRING_CAL_R2: env.AIRING_CAL_R2,
+    }, job)
+    return result.status === 'retry_scheduled' ? 'retry_scheduled' : 'processed'
+  }
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const imageStore = new R2ImageStore(env.AIRING_CAL_R2)
   const client = new BgmClient()
@@ -345,7 +354,12 @@ async function queue(batch: QueueBatch, env: MediaEnv): Promise<void> {
         }))
         if (!response.ok) throw new BgmNetworkError(`Subject refresh coordinator failed (${response.status})`)
       } else {
-        await processJob(message.body, env)
+        const status = await processJob(message.body, env)
+        if (status === 'retry_scheduled') {
+          const delays = [30, 120, 300]
+          message.retry?.({ delaySeconds: delays[Math.min(Math.max((message.attempts ?? 1) - 1, 0), delays.length - 1)] })
+          continue
+        }
       }
       message.ack?.()
     } catch (error) {

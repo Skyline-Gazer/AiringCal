@@ -132,6 +132,81 @@ test('media-worker reusable V3 media writes no unchanged business KV state', asy
   }
 })
 
+test('media-worker routes D1-only V3 jobs without new legacy per-subject KV puts', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const message = trackedBatch({
+    version: 3,
+    generation: 8,
+    job_id: 'd1-only:23080',
+    subject_id: 23080,
+    title: 'A CN',
+    components: ['detail', 'meta'],
+  })
+  const d1 = {
+    prepare() {
+      return {
+        bind() { return this },
+        async first() { return null },
+        async all() { throw new Error('unexpected all') },
+        async run() { throw new Error('unexpected run') },
+        async raw() { throw new Error('unexpected raw') },
+      }
+    },
+    async batch() {
+      return [{
+        results: [],
+        success: true,
+        meta: {
+          duration: 0,
+          size_after: 0,
+          rows_read: 0,
+          rows_written: 1,
+          last_row_id: 23080,
+          changed_db: true,
+          changes: 1,
+        },
+      }]
+    },
+    async exec() { return { count: 0, duration: 0 } },
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith('/v0/subjects/23080')) {
+      return Response.json({
+        id: 23080,
+        type: 2,
+        name: 'A',
+        name_cn: 'A CN',
+        summary: '',
+        date: '2026-01-01',
+        eps: 12,
+        total_episodes: 12,
+        nsfw: false,
+        images: {},
+      })
+    }
+    throw new Error(`unexpected fetch ${input}`)
+  }
+
+  try {
+    await worker.queue(message.batch as any, {
+      AIRING_CAL_D1: d1,
+      AIRING_CAL_KV: kv,
+      AIRING_CAL_R2: r2,
+    } as any)
+    assert.equal(message.state.acked, 1)
+    assert.deepEqual(message.state.retries, [])
+    assert.deepEqual(kv.puts.filter(({ key }) =>
+      key === 'subject:detail:23080'
+      || key === 'subject:meta:23080'
+      || key === 'image:status:23080'
+      || key === 'subject:refresh:23080'), [])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('media-worker changed image source still writes cached status', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()

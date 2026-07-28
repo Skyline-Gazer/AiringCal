@@ -58,6 +58,8 @@ const SUBJECT_MEDIA_COLUMNS = [
   'error_code',
 ] as const
 const SUBJECT_MEDIA_SELECT = `SELECT ${SUBJECT_MEDIA_COLUMNS.join(', ')} FROM subject_media ORDER BY subject_id`
+const SUBJECT_MEDIA_SELECT_ONE = `SELECT ${SUBJECT_MEDIA_COLUMNS.join(', ')} FROM subject_media WHERE subject_id = ?`
+const SUBJECT_MEDIA_UPSERT = `INSERT INTO subject_media (${SUBJECT_MEDIA_COLUMNS.join(', ')}) VALUES (${SUBJECT_MEDIA_COLUMNS.map(() => '?').join(', ')}) ON CONFLICT(subject_id) DO UPDATE SET ${SUBJECT_MEDIA_COLUMNS.slice(1).map((column) => `${column} = excluded.${column}`).join(', ')} WHERE ${SUBJECT_MEDIA_COLUMNS.slice(1).map((column) => `subject_media.${column} IS NOT excluded.${column}`).join(' OR ')}`
 const COLLECTION_INSERT = `INSERT INTO collection_items (${COLLECTION_COLUMNS.join(', ')}) VALUES (${COLLECTION_COLUMNS.map(() => '?').join(', ')}) ON CONFLICT(user_id, subject_id) DO UPDATE SET collection_type = excluded.collection_type, rate = excluded.rate, tags_json = excluded.tags_json, comment = excluded.comment, ep_status = excluded.ep_status, vol_status = excluded.vol_status, upstream_updated_at = excluded.upstream_updated_at, subject_json = excluded.subject_json, content_hash = excluded.content_hash, state_version = collection_items.state_version, temperature = excluded.temperature, first_seen_at = MIN(collection_items.first_seen_at, excluded.first_seen_at), changed_at = excluded.changed_at, missing_since = excluded.missing_since, deleted_at = excluded.deleted_at WHERE collection_items.state_version = 1 AND collection_items.missing_since IS NULL AND collection_items.deleted_at IS NULL AND (excluded.changed_at > collection_items.changed_at OR (excluded.changed_at = collection_items.changed_at AND excluded.content_hash > collection_items.content_hash COLLATE BINARY))`
 const COLLECTION_UPDATE_FIELDS = COLLECTION_COLUMNS.slice(2).map((column) => `${column} = ?`).join(', ')
 const COLLECTION_UPDATE = `UPDATE collection_items SET ${COLLECTION_UPDATE_FIELDS} WHERE user_id = ? AND subject_id = ? AND state_version = ?`
@@ -200,6 +202,10 @@ function decodeSubjectMediaRow(raw: Record<string, unknown>): SubjectMediaRow {
   }
 }
 
+function subjectMediaValues(row: SubjectMediaRow): unknown[] {
+  return SUBJECT_MEDIA_COLUMNS.map((column) => row[column])
+}
+
 function priorStateVersion(row: CollectionRow): number {
   if (!Number.isSafeInteger(row.state_version) || row.state_version <= 1) {
     throw new Error('Invalid planned collection state_version')
@@ -207,9 +213,9 @@ function priorStateVersion(row: CollectionRow): number {
   return row.state_version - 1
 }
 
-function assertClassifiedErrorCode(errorCode: string | null): void {
+function assertClassifiedErrorCode(errorCode: string | null, column = 'sync_runs.error_code'): void {
   if (errorCode !== null && !CLASSIFIED_ERROR_CODE.test(errorCode)) {
-    throw new Error('sync_runs.error_code must be a classified error code')
+    throw new Error(`${column} must be a classified error code`)
   }
 }
 
@@ -375,6 +381,21 @@ export class D1StateStore {
   async listSubjectMediaRows(): Promise<SubjectMediaRow[]> {
     const result = await this.database.prepare(SUBJECT_MEDIA_SELECT).all<Record<string, unknown>>()
     return result.results.map(decodeSubjectMediaRow)
+  }
+
+  async getSubjectMediaRow(subjectId: number): Promise<SubjectMediaRow | undefined> {
+    const row = await this.database.prepare(SUBJECT_MEDIA_SELECT_ONE)
+      .bind(subjectId)
+      .first<Record<string, unknown>>()
+    return row === null ? undefined : decodeSubjectMediaRow(row)
+  }
+
+  async putSubjectMediaRow(row: SubjectMediaRow): Promise<{ rowsWritten: number }> {
+    assertClassifiedErrorCode(row.error_code, 'subject_media.error_code')
+    const rowsWritten = await this.executeBatch([
+      this.database.prepare(SUBJECT_MEDIA_UPSERT).bind(...subjectMediaValues(row)),
+    ])
+    return { rowsWritten }
   }
 
   async applyCollectionDiff(

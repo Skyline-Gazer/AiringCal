@@ -395,6 +395,29 @@ test('listSubjectMediaRows decodes explicit scheduling state and rejects corrupt
   await assert.rejects(store.listSubjectMediaRows(), /subject_media\.nsfw/)
 })
 
+test('subject media writes report their own classified error-code column', async () => {
+  const store = new D1StateStore(new RecordingD1())
+  await assert.rejects(
+    store.putSubjectMediaRow({
+      subject_id: 23080,
+      detail_json: null,
+      detail_hash: null,
+      media_hash: null,
+      nsfw: 0,
+      source_image_common_url: null,
+      source_image_large_url: null,
+      r2_image_common_key: null,
+      r2_image_large_key: null,
+      checked_at: null,
+      next_refresh_at: null,
+      retry_count: 0,
+      retry_after: null,
+      error_code: 'raw upstream body',
+    }),
+    /subject_media\.error_code must be a classified error code/,
+  )
+})
+
 test('collection insert plans require the exact initial state revision', async () => {
   for (const stateVersion of [0, -1, 2]) {
     const plan = emptyPlan()

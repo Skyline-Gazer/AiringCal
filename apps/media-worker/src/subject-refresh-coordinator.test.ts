@@ -143,3 +143,38 @@ test('concurrent process requests stay serialized across image download awaits',
     globalThis.fetch = originalFetch
   }
 })
+
+test('a D1 binding does not suppress legacy V2 failure persistence', async () => {
+  const state = new MemoryState()
+  const kv = {
+    values: new Map<string, unknown>(),
+    async get(key: string) { return this.values.get(key) ?? null },
+    async put(key: string, value: string) { this.values.set(key, JSON.parse(value)) },
+    async delete(key: string) { this.values.delete(key) },
+  }
+  const coordinator = new SubjectRefreshCoordinator({ storage: state } as any, {
+    AIRING_CAL_D1: {},
+    AIRING_CAL_KV: kv,
+    AIRING_CAL_R2: { async get() { return null }, async put() { return {} } },
+  } as any)
+  const request = new Request('https://subject-refresh-coordinator/process', {
+    method: 'POST',
+    body: JSON.stringify({
+      version: 2,
+      job_id: 'legacy-v2:23080',
+      subject_id: 23080,
+      title: 'Legacy V2',
+      components: ['image_common'],
+      images: { common: 'https://img.example/fail.jpg' },
+    }),
+  })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => { throw new Error('network down') }
+
+  try {
+    assert.equal((await coordinator.fetch(request)).status, 503)
+    assert.equal((kv.values.get('subject:refresh:23080') as any)?.status, 'failed')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
