@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import test from 'node:test'
 import { buildPublicSnapshot } from '@airing-cal/domain'
 import {
+  D1StateStore,
   sha256Canonical,
   StaleCollectionDiffError,
   type BudgetReservationRequest,
   type BudgetReservationResult,
   type CollectionDiffPlanLike,
   type CollectionRow,
+  type D1DatabaseLike,
+  type D1PreparedStatementLike,
+  type D1ResultLike,
   type SyncRunCompletion,
   type SyncRunFailure,
   type SyncRunRow,
@@ -21,6 +27,117 @@ import {
 } from './d1-sync.ts'
 
 const observedAt = 1_785_104_400
+
+function sqliteD1Result<T = Record<string, unknown>>(changes = 0, rows: T[] = []): D1ResultLike<T> {
+  return {
+    results: rows,
+    success: true,
+    meta: {
+      duration: 0,
+      size_after: 0,
+      rows_read: rows.length,
+      rows_written: changes,
+      last_row_id: 0,
+      changed_db: changes > 0,
+      changes,
+    },
+  }
+}
+
+class SqliteD1Statement implements D1PreparedStatementLike {
+  private binds: unknown[] = []
+
+  constructor(readonly sql: string, private readonly database: DatabaseSync) {}
+
+  bind(...values: unknown[]): D1PreparedStatementLike {
+    this.binds = values
+    return this
+  }
+
+  async first<T = Record<string, unknown>>(): Promise<T | null> {
+    return (this.database.prepare(this.sql).get(...this.binds as SQLInputValue[]) as T | undefined) ?? null
+  }
+
+  async run<T = Record<string, unknown>>(): Promise<D1ResultLike<T>> {
+    const applied = this.database.prepare(this.sql).run(...this.binds as SQLInputValue[])
+    return sqliteD1Result<T>(Number(applied.changes))
+  }
+
+  async all<T = Record<string, unknown>>(): Promise<D1ResultLike<T>> {
+    return sqliteD1Result<T>(
+      0,
+      this.database.prepare(this.sql).all(...this.binds as SQLInputValue[]) as T[],
+    )
+  }
+
+  async raw<T = unknown[]>(): Promise<T[]> {
+    return this.database.prepare(this.sql).all(...this.binds as SQLInputValue[])
+      .map((row) => Object.values(row) as T)
+  }
+}
+
+class LosingMultiBatchSqliteD1 implements D1DatabaseLike {
+  private readonly database = new DatabaseSync(':memory:')
+  private lostResponse = false
+  collectionRowsWritten = 0
+  collectionBatchSizes: number[] = []
+
+  constructor() {
+    this.database.exec(readFileSync(
+      new URL('../../../migrations/0001_d1_authoritative_state.sql', import.meta.url),
+      'utf8',
+    ))
+    this.database.exec(readFileSync(
+      new URL('../../../migrations/0002_sync_run_replay_result.sql', import.meta.url),
+      'utf8',
+    ))
+  }
+
+  prepare(sql: string): D1PreparedStatementLike {
+    return new SqliteD1Statement(sql, this.database)
+  }
+
+  async batch<T = Record<string, unknown>>(
+    statements: D1PreparedStatementLike[],
+  ): Promise<D1ResultLike<T>[]> {
+    this.database.exec('BEGIN IMMEDIATE')
+    try {
+      const results: D1ResultLike<T>[] = []
+      for (const statement of statements) results.push(await statement.run<T>())
+      this.database.exec('COMMIT')
+      const collectionIndexes = statements
+        .map((statement, index) => ({ sql: (statement as SqliteD1Statement).sql, index }))
+        .filter(({ sql }) =>
+          sql.startsWith('INSERT INTO collection_items')
+          || sql.startsWith('UPDATE collection_items'))
+      if (collectionIndexes.length > 0) {
+        this.collectionBatchSizes.push(collectionIndexes.length)
+        this.collectionRowsWritten += collectionIndexes.reduce(
+          (total, { index }) => total + (results[index]?.meta.changes ?? 0),
+          0,
+        )
+      }
+      if (
+        !this.lostResponse
+        && collectionIndexes.length === 49
+        && statements.some((statement) =>
+          (statement as SqliteD1Statement).sql.startsWith('UPDATE sync_runs SET stage = ?'))
+      ) {
+        this.lostResponse = true
+        throw new Error('simulated first collection chunk response loss after commit')
+      }
+      return results
+    } catch (error) {
+      if (this.database.isTransaction) this.database.exec('ROLLBACK')
+      throw error
+    }
+  }
+
+  async exec(sql: string): Promise<{ count: number; duration: number }> {
+    this.database.exec(sql)
+    return { count: 0, duration: 0 }
+  }
+}
 
 function collection(subjectId = 1, userId = 'alice', rate = 7) {
   return {
@@ -518,7 +635,7 @@ test('collection batch response loss continues only from the exact persisted che
 
   assert.equal(result.rowsWritten, 1)
   assert.equal(recovered.collectionMutations, 1)
-  assert.equal(recovered.applied.length, 1)
+  assert.equal(recovered.applied.length, 2)
   assert.equal(recovered.failed.length, 0)
   assert.equal(recovered.currentRun?.status, 'ok')
 
@@ -535,6 +652,44 @@ test('collection batch response loss continues only from the exact persisted che
     assert.equal(rejected.failed.length, 1)
     assert.equal(rejected.currentRun?.status, 'error')
   }
+})
+
+test('real D1 multi-batch response loss reconciles the full checkpoint before publication', async () => {
+  const database = new LosingMultiBatchSqliteD1()
+  const input = completeInput(Array.from({ length: 60 }, (_, index) => collection(index + 1)))
+  const instanceId = 'real-multi-batch-response-loss'
+
+  const result = await runD1IncrementalSync({
+    env: { AIRING_CAL_D1: database },
+    instanceId,
+    completeInput: input,
+    now: observedAt,
+  })
+  const rows = await new D1StateStore(database).listCollectionRows()
+
+  assert.equal(rows.length, 60)
+  assert.equal(database.collectionRowsWritten, 60)
+  assert.deepEqual(database.collectionBatchSizes, [49, 49, 11])
+  assert.equal(result.rowsWritten, 60)
+  assert.equal(result.publicationInput.collections.length, 60)
+  assert.deepEqual(result.media, {
+    candidates: 60,
+    granted: 0,
+    confirmed: 0,
+    uncertain: 0,
+    deferred: 60,
+  })
+
+  const replay = await runD1IncrementalSync({
+    env: { AIRING_CAL_D1: database },
+    instanceId,
+    completeInput: input,
+    now: observedAt,
+  })
+
+  assert.deepEqual(replay, result)
+  assert.equal(database.collectionRowsWritten, 60)
+  assert.deepEqual(database.collectionBatchSizes, [49, 49, 11])
 })
 
 test('terminal run replay re-enters with the stable instance without a second start or completion', async () => {

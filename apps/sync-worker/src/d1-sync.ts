@@ -35,6 +35,7 @@ import {
 const MEDIA_SOFT_LIMIT = 50
 const MEDIA_HARD_LIMIT = 100
 const MAX_STALE_REPLANS = 1
+const MAX_RESPONSE_LOSS_RECONCILIATIONS = 1
 
 export interface D1IncrementalSyncEnv {
   AIRING_CAL_D1?: D1DatabaseLike
@@ -620,7 +621,10 @@ export async function runD1IncrementalSync({
     let firstMissing = collectionCheckpoint?.firstMissing ?? 0
     let deleted = collectionCheckpoint?.deleted ?? 0
     let restored = collectionCheckpoint?.restored ?? 0
-    for (let attempt = 0; attempt <= MAX_STALE_REPLANS; attempt++) {
+    let staleReplans = 0
+    let responseLossReconciliations = 0
+    let collectionApplied = false
+    while (!collectionApplied) {
       if (!plan || !publicInput) {
         const current = await store.listCollectionRows()
         plan = await planCollectionDiff({
@@ -668,10 +672,12 @@ export async function runD1IncrementalSync({
             result_json: checkpointJson,
           },
         })
-        break
+        collectionApplied = true
       } catch (error) {
         if (error instanceof StaleCollectionDiffError) {
-          if (attempt === MAX_STALE_REPLANS) throw error
+          if (staleReplans === MAX_STALE_REPLANS) throw error
+          staleReplans++
+          responseLossReconciliations = 0
           plan = undefined
           publicInput = undefined
           collectionCheckpoint = undefined
@@ -683,13 +689,17 @@ export async function runD1IncrementalSync({
           && persisted.input_hash === completeInputHash
           && persisted.result_json === checkpointJson
           && await decodeCollectionCheckpoint(persisted.result_json, completeInputHash)
+          && responseLossReconciliations < MAX_RESPONSE_LOSS_RECONCILIATIONS
         ) {
-          break
+          responseLossReconciliations++
+          continue
         }
         throw error
       }
     }
-    if (!plan || !publicInput) throw new Error('Collection diff reconciliation failed')
+    if (!collectionApplied || !plan || !publicInput) {
+      throw new Error('Collection diff reconciliation failed')
+    }
     const mediaRows = await store.listSubjectMediaRows()
     const utcDay = new Date(now * 1000).toISOString().slice(0, 10)
     const previousCursor = await store.getAppState('media:cold-cursor', decodeColdCursor) ?? { subject_ids: [] }
