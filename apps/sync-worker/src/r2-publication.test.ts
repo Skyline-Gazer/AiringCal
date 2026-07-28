@@ -20,6 +20,16 @@ import {
 
 const NOW = 1_753_632_000
 
+function publicationOwner(
+  publicationId: string,
+  attemptToken: string,
+): PublicationWriteOwner {
+  return {
+    publication_id: publicationId,
+    attempt_token: attemptToken,
+  }
+}
+
 test('publication ports accept the generated Cloudflare R2 and KV binding types', () => {
   if (false) {
     const generatedBucket = null as unknown as R2Bucket
@@ -118,7 +128,14 @@ class MemoryState implements PublicationState {
     this.events.push('d1:commit-state')
     this.allocations++
     if (this.pending !== undefined) {
-      return canonicalJson(this.pending) === canonicalJson(candidate)
+      if (canonicalJson(this.pending) === canonicalJson(candidate)) return true
+      if (
+        this.publicationClaim !== undefined
+        && this.publicationClaim.expiresAt > this.leaseNow
+      ) return false
+      this.publicationClaim = undefined
+      this.pending = structuredClone(candidate)
+      return true
     }
     if (
       !(
@@ -127,6 +144,21 @@ class MemoryState implements PublicationState {
       )
     ) return false
     this.pending = structuredClone(candidate)
+    return true
+  }
+
+  async cleanupStalePendingPublication(verified: PublicSnapshotPointerV1) {
+    if (
+      this.verified === undefined
+      || canonicalJson(this.verified) !== canonicalJson(verified)
+      || this.pending === undefined
+    ) return false
+    if (
+      this.publicationClaim !== undefined
+      && this.publicationClaim.expiresAt > this.leaseNow
+    ) return false
+    this.publicationClaim = undefined
+    this.pending = undefined
     return true
   }
 
@@ -420,6 +452,9 @@ test('identical verified content is unchanged before generation allocation or R2
     async commitPendingPublication() {
       allocations++
       throw new Error('unchanged publication allocated a generation')
+    },
+    async cleanupStalePendingPublication() {
+      return false
     },
     async confirmPublicationAuthorized() {
       throw new Error('unchanged publication requested authorization')
@@ -732,6 +767,206 @@ test('verified advancement after pending commit but before KV prevents a stale p
   assert.equal(fixture.pointerKv.values.get('public:current'), fixture.oldPointerBytes)
 })
 
+test('a failed unclaimed pending publication is superseded by later authoritative content at the same next generation', async () => {
+  const fixture = await changedFixture()
+  fixture.dataBucket.failPut = true
+  await assert.rejects(() => publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW,
+    publicationId: 'workflow-b',
+  }), /R2 PUT failure/)
+  assert.equal(fixture.state.pending?.generation, 12)
+  assert.equal(fixture.state.publicationClaim, undefined)
+
+  const inputC = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(102)],
+  })
+  fixture.dataBucket.failPut = false
+  const published = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: inputC,
+    now: NOW + 1,
+    publicationId: 'workflow-c',
+  })
+
+  assert.equal(published.status, 'published')
+  assert.equal(published.generation, 12)
+  assert.equal(fixture.state.verified?.content_hash, inputC.content_hash)
+})
+
+test('an active pending owner blocks distinct later content before R2 or KV', async () => {
+  const fixture = await changedFixture()
+  await fixture.state.commitPendingPublication({
+    schema_version: 1,
+    generation: 12,
+    content_hash: fixture.input.content_hash,
+    r2_key: `snapshots/v1/12-${fixture.input.content_hash}.json`,
+    published_at: NOW,
+  })
+  const owner = publicationOwner('workflow-b', 'attempt-b')
+  assert.equal(
+    await fixture.state.claimPublicationWrite(fixture.state.pending!, owner),
+    'claimed',
+  )
+  const inputC = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(103)],
+  })
+
+  const blocked = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: inputC,
+    now: NOW + 1,
+    publicationId: 'workflow-c',
+  })
+
+  assert.equal(blocked.status, 'pending')
+  assert.equal(blocked.generation, 12)
+  assert.equal(fixture.dataBucket.objects.size, 0)
+  assert.equal(fixture.pointerKv.putValues.length, 0)
+})
+
+test('an expired pending owner is fenced while later content supersedes and publishes', async () => {
+  const fixture = await changedFixture()
+  await fixture.state.commitPendingPublication({
+    schema_version: 1,
+    generation: 12,
+    content_hash: fixture.input.content_hash,
+    r2_key: `snapshots/v1/12-${fixture.input.content_hash}.json`,
+    published_at: NOW,
+  })
+  const owner = publicationOwner('workflow-b', 'attempt-b')
+  assert.equal(
+    await fixture.state.claimPublicationWrite(fixture.state.pending!, owner),
+    'claimed',
+  )
+  fixture.state.advanceLeaseClock(61)
+  const inputC = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(104)],
+  })
+
+  const published = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: inputC,
+    now: NOW + 1,
+    publicationId: 'workflow-c',
+  })
+
+  assert.equal(published.status, 'published')
+  assert.equal(published.generation, 12)
+  assert.equal(await fixture.state.confirmPublicationWrite(
+    {
+      schema_version: 1,
+      generation: 12,
+      content_hash: fixture.input.content_hash,
+      r2_key: `snapshots/v1/12-${fixture.input.content_hash}.json`,
+      published_at: NOW,
+    },
+    owner,
+  ), 'conflict')
+  await assert.rejects(
+    fixture.state.markPublicationPublished({
+      schema_version: 1,
+      generation: 12,
+      content_hash: fixture.input.content_hash,
+      r2_key: `snapshots/v1/12-${fixture.input.content_hash}.json`,
+      published_at: NOW,
+    }, owner),
+    /claim conflict|verified-state conflict/,
+  )
+  await fixture.state.releasePublicationWrite(fixture.state.verified!, owner)
+  assert.equal(fixture.state.verified?.content_hash, inputC.content_hash)
+})
+
+test('verified no-op cleans unclaimed stale pending but leaves an actively claimed pending untouched', async () => {
+  for (const active of [false, true]) {
+    const events: string[] = []
+    const verified = await pointerFor(emptyInput(), 5)
+    const staleInput = await publicationInput({
+      ...emptyInput(),
+      collections: [collection(active ? 106 : 105)],
+    })
+    const pending: PublicSnapshotPointerV1 = {
+      schema_version: 1,
+      generation: 6,
+      content_hash: staleInput.content_hash,
+      r2_key: `snapshots/v1/6-${staleInput.content_hash}.json`,
+      published_at: NOW,
+    }
+    const state = new MemoryState(events, { verified, pending })
+    if (active) {
+      assert.equal(
+        await state.claimPublicationWrite(
+          pending,
+          publicationOwner('workflow-b', 'attempt-b'),
+        ),
+        'claimed',
+      )
+    }
+    const result = await publishPublicSnapshot({
+      state,
+      dataBucket: new MemoryBucket(events),
+      pointerKv: new MemoryKv(events),
+      input: { ...emptyInput(), content_hash: verified.content_hash },
+      now: NOW,
+      publicationId: 'workflow-a',
+    })
+
+    assert.equal(result.status, 'unchanged')
+    assert.equal(state.pending === undefined, !active)
+    assert.equal(events.some((event) => event.startsWith('r2:')), false)
+    assert.equal(events.some((event) => event.startsWith('kv:')), false)
+  }
+})
+
+test('pending supersession response loss replays the exact replacement candidate', async () => {
+  const fixture = await changedFixture()
+  await fixture.state.commitPendingPublication({
+    schema_version: 1,
+    generation: 12,
+    content_hash: fixture.input.content_hash,
+    r2_key: `snapshots/v1/12-${fixture.input.content_hash}.json`,
+    published_at: NOW,
+  })
+  const inputC = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(107)],
+  })
+  fixture.state.commitThenThrow = true
+  await assert.rejects(() => publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: inputC,
+    now: NOW + 1,
+    publicationId: 'workflow-c',
+  }), /commit response loss/)
+  fixture.state.commitThenThrow = false
+
+  const replay = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: inputC,
+    now: NOW + 1,
+    publicationId: 'workflow-c',
+  })
+  assert.equal(replay.status, 'published')
+  assert.equal(replay.generation, 12)
+  assert.equal(fixture.state.allocations, 2)
+})
+
 test('overlapping attempts for the same publication identity cannot rewrite an older generation', async () => {
   const fixture = await changedFixture()
   const newerInput = await publicationInput({
@@ -765,36 +1000,29 @@ test('overlapping attempts for the same publication identity cannot rewrite an o
     now: NOW,
     publicationId: 'workflow-a',
   })
-  let blockedNewer = false
-  try {
-    await publishPublicSnapshot({
-      state: fixture.state,
-      dataBucket: fixture.dataBucket,
-      pointerKv: fixture.pointerKv,
-      input: newerInput,
-      now: NOW + 1,
-      publicationId: 'workflow-c',
-    })
-  } catch (error) {
-    assert.match(String(error), /publication authorization conflict/i)
-    blockedNewer = true
-  } finally {
-    releaseFirst()
-  }
+  const newerWhileBlocked = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: newerInput,
+    now: NOW + 1,
+    publicationId: 'workflow-c',
+  })
+  releaseFirst()
   const first = await firstPublication
-  if (blockedNewer) {
-    await publishPublicSnapshot({
-      state: fixture.state,
-      dataBucket: fixture.dataBucket,
-      pointerKv: fixture.pointerKv,
-      input: newerInput,
-      now: NOW + 1,
-      publicationId: 'workflow-c',
-    })
-  }
+  await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: newerInput,
+    now: NOW + 1,
+    publicationId: 'workflow-c',
+  })
 
   assert.equal(replay.status, 'pending')
   assert.equal(replay.pointerPuts, 0)
+  assert.equal(newerWhileBlocked.status, 'pending')
+  assert.equal(newerWhileBlocked.pointerPuts, 0)
   assert.equal(first.status, 'published')
   assert.deepEqual(
     fixture.pointerKv.putValues.map((value) => JSON.parse(value).generation),

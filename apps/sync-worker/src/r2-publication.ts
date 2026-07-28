@@ -16,6 +16,7 @@ export interface PublicationState {
   getVerifiedPublication(): Promise<PublicSnapshotPointerV1 | undefined>
   getPendingPublication(): Promise<PublicSnapshotPointerV1 | undefined>
   commitPendingPublication(candidate: PublicSnapshotPointerV1): Promise<boolean>
+  cleanupStalePendingPublication(verified: PublicSnapshotPointerV1): Promise<boolean>
   confirmPublicationAuthorized(
     candidate: PublicSnapshotPointerV1,
   ): Promise<'authorized' | 'already_verified' | 'conflict'>
@@ -109,7 +110,11 @@ async function prepareCandidate(
   verified: PublicSnapshotPointerV1 | undefined,
   contentHash: string,
   now: number,
-): Promise<PublicSnapshotPointerV1 | { unchanged: PublicSnapshotPointerV1 }> {
+): Promise<
+  | PublicSnapshotPointerV1
+  | { unchanged: PublicSnapshotPointerV1 }
+  | { blocked: { generation: number; contentHash: string } }
+> {
   const pending = await readPending(state)
   if (verified?.content_hash === contentHash) return { unchanged: verified }
   if (pending?.content_hash === contentHash) return pending
@@ -129,13 +134,27 @@ async function prepareCandidate(
   const currentPending = await readPending(state)
   if (currentVerified?.content_hash === contentHash) return { unchanged: currentVerified }
   if (currentPending?.content_hash === contentHash) return currentPending
-  throw new Error('Publication authorization conflict')
+  return {
+    blocked: {
+      generation: currentPending?.generation ?? generation,
+      contentHash,
+    },
+  }
 }
 
 function isUnchangedCandidate(
-  value: PublicSnapshotPointerV1 | { unchanged: PublicSnapshotPointerV1 },
+  value:
+    | PublicSnapshotPointerV1
+    | { unchanged: PublicSnapshotPointerV1 }
+    | { blocked: { generation: number; contentHash: string } },
 ): value is { unchanged: PublicSnapshotPointerV1 } {
   return Object.hasOwn(value, 'unchanged')
+}
+
+function isBlockedCandidate(
+  value: PublicSnapshotPointerV1 | { blocked: { generation: number; contentHash: string } },
+): value is { blocked: { generation: number; contentHash: string } } {
+  return Object.hasOwn(value, 'blocked')
 }
 
 async function putPointerAndConfirm(
@@ -179,6 +198,7 @@ export async function publishPublicSnapshot(
 
   const verified = await readVerified(state)
   if (verified?.content_hash === validationSnapshot.content_hash) {
+    await state.cleanupStalePendingPublication(verified)
     return {
       status: 'unchanged',
       generation: verified.generation,
@@ -190,10 +210,20 @@ export async function publishPublicSnapshot(
 
   const prepared = await prepareCandidate(state, verified, validationSnapshot.content_hash, now)
   if (isUnchangedCandidate(prepared)) {
+    await state.cleanupStalePendingPublication(prepared.unchanged)
     return {
       status: 'unchanged',
       generation: prepared.unchanged.generation,
       contentHash: prepared.unchanged.content_hash,
+      r2Puts: 0,
+      pointerPuts: 0,
+    }
+  }
+  if (isBlockedCandidate(prepared)) {
+    return {
+      status: 'pending',
+      generation: prepared.blocked.generation,
+      contentHash: prepared.blocked.contentHash,
       r2Puts: 0,
       pointerPuts: 0,
     }

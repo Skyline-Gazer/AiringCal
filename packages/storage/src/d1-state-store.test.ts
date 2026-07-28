@@ -942,7 +942,7 @@ test('publication app_state persists versioned pending candidates and atomically
   assert.equal(await store.getPendingPublication(), undefined)
 })
 
-test('publication pending allocation is monotonic, exact-replay idempotent, and rejects same-generation conflicts', async () => {
+test('publication pending allocation is monotonic, exact-replay idempotent, and supersedes an unclaimed conflict', async () => {
   const store = new D1StateStore(new SqliteD1())
   const first: PublicSnapshotPointerV1 = {
     schema_version: 1,
@@ -959,8 +959,8 @@ test('publication pending allocation is monotonic, exact-replay idempotent, and 
 
   assert.equal(await store.commitPendingPublication(first), true)
   assert.equal(await store.commitPendingPublication(first), true)
-  assert.equal(await store.commitPendingPublication(conflict), false)
-  assert.deepEqual(await store.getPendingPublication(), first)
+  assert.equal(await store.commitPendingPublication(conflict), true)
+  assert.deepEqual(await store.getPendingPublication(), conflict)
 })
 
 test('publication app_state rejects malformed pointers before publication can continue', async () => {
@@ -1162,6 +1162,86 @@ test('publication write lease rejects non-integer and non-ISO-representable cloc
     validStore.confirmPublicationWrite(candidate, owner),
     /publication lease time/,
   )
+})
+
+test('publication pending supersession is fenced by an active lease and allowed after expiry', async () => {
+  const database = new SqliteD1()
+  let now = 3_000
+  const store = new D1StateStore(database, () => now)
+  const verified: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 5,
+    content_hash: '1'.repeat(64),
+    r2_key: `snapshots/v1/5-${'1'.repeat(64)}.json`,
+    published_at: 400,
+  }
+  const pendingB: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 6,
+    content_hash: '2'.repeat(64),
+    r2_key: `snapshots/v1/6-${'2'.repeat(64)}.json`,
+    published_at: 401,
+  }
+  const pendingC: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 6,
+    content_hash: '3'.repeat(64),
+    r2_key: `snapshots/v1/6-${'3'.repeat(64)}.json`,
+    published_at: 402,
+  }
+  const ownerB = publicationOwner('workflow-b', 'attempt-b')
+  await store.putAppStateIfNewer('public:verified', verified, verified.generation)
+  assert.equal(await store.commitPendingPublication(pendingB), true)
+  assert.equal(await store.claimPublicationWrite(pendingB, ownerB), 'claimed')
+
+  assert.equal(await store.commitPendingPublication(pendingC), false)
+  assert.deepEqual(await store.getPendingPublication(), pendingB)
+
+  now += 60
+  assert.equal(await store.commitPendingPublication(pendingC), true)
+  assert.deepEqual(await store.getPendingPublication(), pendingC)
+  assert.equal(await store.confirmPublicationWrite(pendingB, ownerB), 'conflict')
+  await assert.rejects(
+    store.markPublicationPublished(pendingB, ownerB),
+    /write claim conflict/,
+  )
+  await store.releasePublicationWrite(pendingB, ownerB)
+  assert.deepEqual(await store.getPendingPublication(), pendingC)
+})
+
+test('verified no-op cleanup removes only stale pending state without an active lease', async () => {
+  const database = new SqliteD1()
+  let now = 4_000
+  const store = new D1StateStore(database, () => now)
+  const verified: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 7,
+    content_hash: '4'.repeat(64),
+    r2_key: `snapshots/v1/7-${'4'.repeat(64)}.json`,
+    published_at: 500,
+  }
+  const pending: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 8,
+    content_hash: '5'.repeat(64),
+    r2_key: `snapshots/v1/8-${'5'.repeat(64)}.json`,
+    published_at: 501,
+  }
+  const owner = publicationOwner('workflow-b', 'attempt-b')
+  await store.putAppStateIfNewer('public:verified', verified, verified.generation)
+  await store.commitPendingPublication(pending)
+  assert.equal(await store.cleanupStalePendingPublication(verified), true)
+  assert.equal(await store.getPendingPublication(), undefined)
+
+  await store.commitPendingPublication(pending)
+  await store.claimPublicationWrite(pending, owner)
+  assert.equal(await store.cleanupStalePendingPublication(verified), false)
+  assert.deepEqual(await store.getPendingPublication(), pending)
+
+  now += 60
+  assert.equal(await store.cleanupStalePendingPublication(verified), true)
+  assert.equal(await store.getPendingPublication(), undefined)
+  assert.equal(await store.confirmPublicationWrite(pending, owner), 'conflict')
 })
 
 test('sync run lifecycle uses positional binds and persists only classified error codes', async () => {

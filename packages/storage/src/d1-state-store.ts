@@ -718,43 +718,130 @@ export class D1StateStore {
   async commitPendingPublication(candidate: PublicSnapshotPointerV1): Promise<boolean> {
     const validated = decodePublicationPointer(candidate)
     const valueJson = canonicalJson({ schema_version: 1, value: validated })
-    const statement = this.database.prepare(
-      `INSERT INTO app_state (key, value_json, updated_at)
-       SELECT ?, ?, ?
-       WHERE (
-         (? = 1 AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?))
-         OR EXISTS (
-           SELECT 1 FROM app_state
-           WHERE key = ? AND updated_at = ?
-         )
-       )
-       AND (
-         NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?)
-         OR EXISTS (
-           SELECT 1 FROM app_state
+    const candidateJson = canonicalJson(validated)
+    const leaseNow = validatePublicationLeaseTime(this.now())
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { verified, pending, claim } = await this.publicationState()
+      if (
+        !(
+          (verified === undefined && validated.generation === 1)
+          || verified?.generation === validated.generation - 1
+        )
+      ) return false
+      if (pending && canonicalJson(pending) === candidateJson) return true
+      if (claim && claim.expires_at > leaseNow) return false
+
+      const statements: D1PreparedStatementLike[] = []
+      if (claim) {
+        const claimValueJson = canonicalJson({ schema_version: 1, value: claim })
+        statements.push(this.database.prepare(
+          'DELETE FROM app_state WHERE key = ? AND value_json = ? AND updated_at = ?',
+        ).bind(PUBLICATION_WRITE_CLAIM_KEY, claimValueJson, claim.candidate.generation))
+      }
+
+      if (pending === undefined) {
+        statements.push(this.database.prepare(
+          `INSERT INTO app_state (key, value_json, updated_at)
+           SELECT ?, ?, ?
+           WHERE NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?)
+             AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?)
+             AND (
+               (? = 1 AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?))
+               OR EXISTS (
+                 SELECT 1 FROM app_state
+                 WHERE key = ? AND updated_at = ?
+               )
+             )
+           ON CONFLICT(key) DO NOTHING`,
+        ).bind(
+          'public:pending',
+          valueJson,
+          validated.generation,
+          'public:pending',
+          PUBLICATION_WRITE_CLAIM_KEY,
+          validated.generation,
+          'public:verified',
+          'public:verified',
+          validated.generation - 1,
+        ))
+      } else {
+        const pendingValueJson = canonicalJson({ schema_version: 1, value: pending })
+        statements.push(this.database.prepare(
+          `UPDATE app_state
+           SET value_json = ?, updated_at = ?
            WHERE key = ? AND value_json = ? AND updated_at = ?
-         )
-       )
-       ON CONFLICT(key) DO UPDATE
-       SET value_json = excluded.value_json, updated_at = excluded.updated_at
-       WHERE app_state.value_json = excluded.value_json
-         AND app_state.updated_at = excluded.updated_at`,
-    ).bind(
-      'public:pending',
-      valueJson,
-      validated.generation,
-      validated.generation,
-      'public:verified',
-      'public:verified',
-      validated.generation - 1,
-      'public:pending',
-      'public:pending',
-      valueJson,
-      validated.generation,
-    )
-    const changes = await this.executeBatch([statement])
-    if (changes !== 0) return true
-    return await this.confirmPublicationAuthorized(validated) === 'authorized'
+             AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?)
+             AND (
+               (? = 1 AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?))
+               OR EXISTS (
+                 SELECT 1 FROM app_state
+                 WHERE key = ? AND updated_at = ?
+               )
+             )`,
+        ).bind(
+          valueJson,
+          validated.generation,
+          'public:pending',
+          pendingValueJson,
+          pending.generation,
+          PUBLICATION_WRITE_CLAIM_KEY,
+          validated.generation,
+          'public:verified',
+          'public:verified',
+          validated.generation - 1,
+        ))
+      }
+      const changes = await this.executeBatchChanges(statements)
+      if (changes.at(-1) !== 0) return true
+    }
+    return false
+  }
+
+  async cleanupStalePendingPublication(
+    verifiedCandidate: PublicSnapshotPointerV1,
+  ): Promise<boolean> {
+    const validated = decodePublicationPointer(verifiedCandidate)
+    const verifiedJson = canonicalJson(validated)
+    const verifiedValueJson = canonicalJson({ schema_version: 1, value: validated })
+    const leaseNow = validatePublicationLeaseTime(this.now())
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { verified, pending, claim } = await this.publicationState()
+      if (!verified || canonicalJson(verified) !== verifiedJson || pending === undefined) {
+        return false
+      }
+      if (claim && claim.expires_at > leaseNow) return false
+
+      const statements: D1PreparedStatementLike[] = []
+      if (claim) {
+        const claimValueJson = canonicalJson({ schema_version: 1, value: claim })
+        statements.push(this.database.prepare(
+          'DELETE FROM app_state WHERE key = ? AND value_json = ? AND updated_at = ?',
+        ).bind(PUBLICATION_WRITE_CLAIM_KEY, claimValueJson, claim.candidate.generation))
+      }
+      const pendingValueJson = canonicalJson({ schema_version: 1, value: pending })
+      statements.push(this.database.prepare(
+        `DELETE FROM app_state
+         WHERE key = ? AND value_json = ? AND updated_at = ?
+           AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?)
+           AND EXISTS (
+             SELECT 1 FROM app_state
+             WHERE key = ? AND value_json = ? AND updated_at = ?
+           )`,
+      ).bind(
+        'public:pending',
+        pendingValueJson,
+        pending.generation,
+        PUBLICATION_WRITE_CLAIM_KEY,
+        'public:verified',
+        verifiedValueJson,
+        validated.generation,
+      ))
+      const changes = await this.executeBatchChanges(statements)
+      if (changes.at(-1) !== 0) return true
+    }
+    return false
   }
 
   async confirmPublicationAuthorized(
