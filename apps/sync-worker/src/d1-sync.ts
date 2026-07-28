@@ -27,6 +27,7 @@ import {
 } from '@airing-cal/storage'
 import type { CompleteFullFetch } from './full-fetch-boundary.ts'
 import {
+  cleanupReplayArtifactIfUnreferenced,
   loadReplayArtifact,
   persistReplayArtifact,
   type LoadedReplayArtifact,
@@ -401,6 +402,18 @@ function sameCursor(left: ColdRefreshCursor, right: ColdRefreshCursor): boolean 
     && left.subject_ids.every((subjectId, index) => right.subject_ids[index] === subjectId)
 }
 
+async function cleanupReplayArtifactBestEffort(
+  store: D1IncrementalSyncStore,
+  instanceId: string,
+  artifact: LoadedReplayArtifact,
+): Promise<void> {
+  try {
+    await cleanupReplayArtifactIfUnreferenced(store, instanceId, artifact)
+  } catch {
+    // Preserve the lifecycle failure; unadopted artifact cleanup is best effort.
+  }
+}
+
 function mergePublicCollections(items: PublicCollectionItemV1[]): PublicCollectionItemV1[] {
   const bySubject = new Map<number, PublicCollectionItemV1>()
   for (const item of items) {
@@ -607,7 +620,7 @@ export async function runD1IncrementalSync({
   let preparedColdCursor: PreparedColdCursorTransition | undefined
   let preparedResultJson = existingRun?.result_json ?? undefined
   let activeArtifact: LoadedReplayArtifact | undefined
-  const supersededArtifactKeys: string[] = []
+  const supersededArtifacts: LoadedReplayArtifact[] = []
 
   try {
     if (existingRun !== undefined) {
@@ -674,6 +687,7 @@ export async function runD1IncrementalSync({
     let responseLossReconciliations = 0
     let collectionApplied = false
     let collectionArtifact = collectionCheckpoint ? activeArtifact : undefined
+    let collectionArtifactAdopted = collectionArtifact !== undefined
     while (!collectionApplied) {
       if (!plan || !publicInput) {
         const current = await store.listCollectionRows()
@@ -700,6 +714,7 @@ export async function runD1IncrementalSync({
           publicationInput: publicInput,
         }
         collectionArtifact = undefined
+        collectionArtifactAdopted = false
       }
       if (!collectionCheckpoint) throw new Error('Collection checkpoint preparation failed')
       if (!collectionArtifact) {
@@ -716,6 +731,7 @@ export async function runD1IncrementalSync({
           'collection',
           checkpointArtifactJson,
         )
+        collectionArtifactAdopted = false
       }
       const checkpointJson = collectionArtifact.manifestJson
       try {
@@ -734,22 +750,39 @@ export async function runD1IncrementalSync({
           },
         })
         collectionApplied = true
+        collectionArtifactAdopted = true
       } catch (error) {
         if (error instanceof StaleCollectionDiffError) {
-          if (staleReplans === MAX_STALE_REPLANS) throw error
+          const persisted = await store.getSyncRun(instanceId)
+          const checkpointWasAdopted = persisted?.status === 'running'
+            && persisted.input_hash === completeInputHash
+            && persisted.result_json === checkpointJson
+          if (staleReplans === MAX_STALE_REPLANS) {
+            if (!checkpointWasAdopted) {
+              await cleanupReplayArtifactBestEffort(store, instanceId, collectionArtifact)
+            }
+            throw error
+          }
           staleReplans++
           responseLossReconciliations = 0
-          supersededArtifactKeys.push(...collectionArtifact.chunkKeys)
+          if (checkpointWasAdopted) {
+            supersededArtifacts.push(collectionArtifact)
+          } else {
+            await cleanupReplayArtifactBestEffort(store, instanceId, collectionArtifact)
+          }
           plan = undefined
           publicInput = undefined
           collectionCheckpoint = undefined
           collectionArtifact = undefined
+          collectionArtifactAdopted = false
           continue
         }
         const persisted = await store.getSyncRun(instanceId)
-        const persistedArtifact = persisted?.status === 'running'
+        const checkpointWasAdopted = persisted?.status === 'running'
           && persisted.input_hash === completeInputHash
           && persisted.result_json === checkpointJson
+        if (checkpointWasAdopted) collectionArtifactAdopted = true
+        const persistedArtifact = checkpointWasAdopted
           ? await loadReplayArtifact(store, persisted.result_json, completeInputHash, instanceId)
           : undefined
         if (
@@ -761,16 +794,19 @@ export async function runD1IncrementalSync({
           responseLossReconciliations++
           continue
         }
+        if (!collectionArtifactAdopted) {
+          await cleanupReplayArtifactBestEffort(store, instanceId, collectionArtifact)
+        }
         throw error
       }
     }
     if (!collectionApplied || !plan || !publicInput) {
       throw new Error('Collection diff reconciliation failed')
     }
-    if (supersededArtifactKeys.length > 0) {
-      await store.deleteAppStateKeys(supersededArtifactKeys)
-      supersededArtifactKeys.length = 0
+    for (const supersededArtifact of supersededArtifacts) {
+      await cleanupReplayArtifactIfUnreferenced(store, instanceId, supersededArtifact)
     }
+    supersededArtifacts.length = 0
     const mediaRows = await store.listSubjectMediaRows()
     const utcDay = new Date(now * 1000).toISOString().slice(0, 10)
     const previousCursor = await store.getAppState('media:cold-cursor', decodeColdCursor) ?? { subject_ids: [] }
@@ -859,12 +895,12 @@ export async function runD1IncrementalSync({
     } catch (error) {
       const persisted = await store.getSyncRun(instanceId)
       if (persisted?.result_json !== preparedResultJson) {
-        await store.deleteAppStateKeys(preparedArtifact.chunkKeys)
+        await cleanupReplayArtifactBestEffort(store, instanceId, preparedArtifact)
         throw error
       }
     }
     if (collectionArtifact && collectionArtifact.chunkKeys.length > 0) {
-      await store.deleteAppStateKeys(collectionArtifact.chunkKeys)
+      await cleanupReplayArtifactIfUnreferenced(store, instanceId, collectionArtifact)
     }
     if (!sameCursor(previousCursor, nextColdCursor)) {
       await store.putAppStateIfNewer('media:cold-cursor', nextColdCursor, now)

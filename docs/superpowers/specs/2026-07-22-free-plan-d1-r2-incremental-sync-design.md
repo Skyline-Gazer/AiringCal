@@ -90,7 +90,9 @@ resource resolve 必须在任一 Worker upload 前确认 D1、data R2、image R2
 
 媒体阶段完成后以 versioned prepared-result manifest 覆盖检查点；该 artifact 同时保存目标 cold cursor 与单调版本，并且必须先于 cursor 推进持久化。cursor 通过 `app_state.updated_at` compare-and-set，仅允许更高版本或同版本同值写入，因此旧崩溃实例重放不能覆盖较新实例的全局 cursor。cursor 提交前崩溃时，running replay 幂等补写目标 cursor；cursor 提交后崩溃时，running replay 复用同一 prepared result，不重新规划媒体或重复预算动作。随后 running replay 只补 terminal transition，terminal replay 直接返回同一结果，不重复收藏实际变更、媒体预算或完成动作。
 
-stale artifact chunks 在替代 manifest 成功提交后删除；collection chunks 在 prepared-result manifest 成功提交后删除。最终 prepared chunks 与对应 `sync_runs` 行保持相同留存期，run-retention 清理必须先按 manifest 删除其精确 chunk keys 再删除 run 行。运行记录用于健康、审计和 crash-safe replay，不进入公开内容 hash。
+artifact manifest 必须在任何 chunk 写入前完成大小验证；若中途 chunk 写失败，仅对已确认成功写入的 keys 做 best-effort 清理，且清理错误不得覆盖原始写失败。collection apply/adoption 失败时也只清理当前 `sync_runs.result_json` 未引用的新 artifact；删除前必须重新读取 run，若 manifest 仍逐字节相同则拒绝删除。stale artifact chunks 在替代 manifest 成功提交后删除；collection chunks 在 prepared-result manifest 成功提交后删除。
+
+最终 prepared chunks 与对应 `sync_runs` 行保持相同留存期，以保留 terminal exact replay。本 Task 7 没有 sync-run expiry 选择或删除 API，因此不推测 retention 时长，也不删除当前 terminal manifest。artifact codec 提供 `cleanupReplayArtifactIfUnreferenced` 安全 hook：它重新读取对应 run，当前 `result_json` 仍引用候选 manifest 时返回不删除；只有 retention owner 已使 run 不再引用该 manifest 后才删除精确 chunk keys。后续 run-retention 实现负责选择过期 run、在自己的可恢复流程中保留已加载 manifest 直至 hook 成功，并对失败重试；Task 7 负责验证与安全清理机制，不负责 retention policy。运行记录用于健康、审计和 crash-safe replay，不进入公开内容 hash。
 
 ### 3.4 `sync_budget`
 

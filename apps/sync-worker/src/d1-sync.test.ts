@@ -200,6 +200,7 @@ class RecordingStore implements D1IncrementalSyncStore {
   loseFailurePersistenceOnce = false
   collectionMutations = 0
   loseApplyResponseOnce = false
+  loseApplyResponseCount = 0
   applyResponseLossCheckpoint: 'exact' | 'missing' | 'input_mismatch' = 'exact'
   loseUpdateResponseOnce = false
   loseCompleteResponseOnce = false
@@ -286,8 +287,9 @@ class RecordingStore implements D1IncrementalSyncStore {
     if (checkpoint && this.currentRun?.instance_id === checkpoint.instanceId) {
       this.currentRun = { ...this.currentRun, ...structuredClone(checkpoint.update) }
     }
-    if (this.loseApplyResponseOnce) {
+    if (this.loseApplyResponseOnce || this.loseApplyResponseCount > 0) {
       this.loseApplyResponseOnce = false
+      this.loseApplyResponseCount = Math.max(0, this.loseApplyResponseCount - 1)
       if (this.applyResponseLossCheckpoint === 'missing' && this.currentRun) {
         this.currentRun.result_json = null
       } else if (this.applyResponseLossCheckpoint === 'input_mismatch' && this.currentRun) {
@@ -652,12 +654,33 @@ test('stale reconciliation is bounded and non-stale storage errors propagate wit
   await assert.rejects(run(stale), StaleCollectionDiffError)
   assert.equal(stale.applied.length, 2)
   assert.equal(stale.failed[0]?.error_code, 'STALE_COLLECTION_DIFF')
+  assert.deepEqual(
+    [...stale.appState.keys()].filter((key) => key.startsWith('sync:artifact:run-1:')),
+    [],
+  )
 
   const invalid = new RecordingStore()
   invalid.applyError = new SyntaxError('upstream body must not persist')
   await assert.rejects(run(invalid), SyntaxError)
   assert.equal(invalid.failed[0]?.error_code, 'INVALID_JSON')
   assert.doesNotMatch(JSON.stringify(invalid.failed), /upstream body/)
+})
+
+test('collection apply failure removes only the newly unadopted replay artifact', async () => {
+  const store = new RecordingStore()
+  store.applyError = new Error('collection apply failed before checkpoint adoption')
+  const instanceId = 'unadopted-collection-artifact'
+
+  await assert.rejects(
+    run(store, completeInput(), undefined, observedAt, instanceId),
+    /collection apply failed before checkpoint adoption/,
+  )
+
+  const artifactKeys = [...store.appState.keys()].filter((key) =>
+    key.startsWith(`sync:artifact:${instanceId}:`))
+  assert.deepEqual(artifactKeys, [])
+  assert.equal(store.currentRun?.result_json, null)
+  assert.equal(store.currentRun?.status, 'error')
 })
 
 test('replay after collection commit crash returns the original result without a second mutation', async () => {
@@ -715,6 +738,24 @@ test('collection batch response loss continues only from the exact persisted che
     assert.equal(rejected.failed.length, 1)
     assert.equal(rejected.currentRun?.status, 'error')
   }
+})
+
+test('repeated response loss preserves chunks for the exact manifest still referenced by the run', async () => {
+  const store = new RecordingStore()
+  store.loseApplyResponseCount = 2
+  const instanceId = 'referenced-collection-artifact'
+
+  await assert.rejects(
+    run(store, completeInput(), undefined, observedAt, instanceId),
+    /collection batch response lost after commit/,
+  )
+
+  assert.ok(store.currentRun?.result_json)
+  const manifest = JSON.parse(store.currentRun.result_json)
+  const artifactKeys = [...store.appState.keys()].filter((key) =>
+    key.startsWith(`sync:artifact:${instanceId}:`))
+  assert.equal(artifactKeys.length, manifest.artifact.chunk_count)
+  assert.equal(store.currentRun.status, 'error')
 })
 
 test('real D1 multi-batch response loss reconciles the full checkpoint before publication', async () => {

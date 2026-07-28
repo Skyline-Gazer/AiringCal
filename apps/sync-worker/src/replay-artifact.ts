@@ -28,6 +28,11 @@ export interface LoadedReplayArtifact {
 export interface ReplayArtifactStore {
   getAppState<T>(key: string, decode: (value: unknown) => T): Promise<T | undefined>
   putAppState<T>(key: string, value: T): Promise<void>
+  deleteAppStateKeys(keys: string[]): Promise<void>
+}
+
+export interface ReplayArtifactCleanupStore extends ReplayArtifactStore {
+  getSyncRun(instanceId: string): Promise<{ result_json: string | null } | undefined>
 }
 
 function artifactChunkKey(instanceId: string, aggregateHash: string, index: number): string {
@@ -53,9 +58,6 @@ export async function persistReplayArtifact(
   const aggregateHash = await sha256Canonical(artifactJson)
   const chunkHashes = await Promise.all(chunks.map((chunk) => sha256Canonical(chunk)))
   const chunkKeys = chunks.map((_, index) => artifactChunkKey(instanceId, aggregateHash, index))
-  for (let index = 0; index < chunks.length; index++) {
-    await store.putAppState(chunkKeys[index]!, chunks[index]!)
-  }
   const manifestJson = canonicalJson({
     schema_version: 2,
     input_hash: inputHash,
@@ -69,6 +71,20 @@ export async function persistReplayArtifact(
   } satisfies ReplayArtifactManifestEnvelope)
   if (utf8Length(manifestJson) >= REPLAY_ARTIFACT_MANIFEST_MAX_BYTES) {
     throw new Error('Replay artifact manifest exceeds bounded size')
+  }
+  const writtenChunkKeys: string[] = []
+  try {
+    for (let index = 0; index < chunks.length; index++) {
+      await store.putAppState(chunkKeys[index]!, chunks[index]!)
+      writtenChunkKeys.push(chunkKeys[index]!)
+    }
+  } catch (error) {
+    try {
+      if (writtenChunkKeys.length > 0) await store.deleteAppStateKeys(writtenChunkKeys)
+    } catch {
+      // Preserve the originating chunk-write failure; cleanup is best effort.
+    }
+    throw error
   }
   return { artifactJson, manifestJson, kind, chunkKeys }
 }
@@ -144,4 +160,20 @@ export async function loadReplayArtifact(
     kind: artifact.kind,
     chunkKeys,
   }
+}
+
+export async function cleanupReplayArtifactIfUnreferenced(
+  store: ReplayArtifactCleanupStore,
+  instanceId: string,
+  artifact: LoadedReplayArtifact,
+): Promise<boolean> {
+  if (artifact.chunkKeys.length === 0) return false
+  const keyPrefix = `sync:artifact:${instanceId}:`
+  if (!artifact.chunkKeys.every((key) => key.startsWith(keyPrefix))) {
+    throw new Error('Replay artifact cleanup instance mismatch')
+  }
+  const currentRun = await store.getSyncRun(instanceId)
+  if (currentRun?.result_json === artifact.manifestJson) return false
+  await store.deleteAppStateKeys(artifact.chunkKeys)
+  return true
 }
