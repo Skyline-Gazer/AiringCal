@@ -220,10 +220,18 @@ export interface PublicationWriteOwner {
   attempt_token: string
 }
 
+export interface PublicationSourceWatermarkV1 {
+  schema_version: 1
+  source_observed_at: number
+  publication_id: string
+  content_hash: string
+}
+
 export type PublicationPendingCleanupResult =
   | 'clean'
   | 'cleaned'
   | 'active'
+  | 'stale'
   | 'conflict'
 
 export interface D1MetaLike {

@@ -7,6 +7,7 @@ import {
 } from '@airing-cal/domain'
 import type {
   PublicCollectionItemV1,
+  PublicationSourceWatermarkV1,
   PublicSnapshotPointerV1,
   PublicationWriteOwner,
 } from '@airing-cal/storage'
@@ -28,6 +29,39 @@ function publicationOwner(
     publication_id: publicationId,
     attempt_token: attemptToken,
   }
+}
+
+function publicationSource(
+  publicationId: string,
+  observedAt: number,
+  contentHash: string,
+): PublicationSourceWatermarkV1 {
+  return {
+    schema_version: 1,
+    source_observed_at: observedAt,
+    publication_id: publicationId,
+    content_hash: contentHash,
+  }
+}
+
+function publicationSourceRelation(
+  incoming: PublicationSourceWatermarkV1,
+  current: PublicationSourceWatermarkV1 | undefined,
+) {
+  if (current === undefined) return 'newer' as const
+  if (incoming.source_observed_at !== current.source_observed_at) {
+    return incoming.source_observed_at > current.source_observed_at
+      ? 'newer' as const
+      : 'stale' as const
+  }
+  if (incoming.publication_id !== current.publication_id) {
+    return incoming.publication_id > current.publication_id
+      ? 'newer' as const
+      : 'stale' as const
+  }
+  return incoming.content_hash === current.content_hash
+    ? 'exact' as const
+    : 'conflict' as const
 }
 
 test('publication ports accept the generated Cloudflare R2 and KV binding types', () => {
@@ -101,6 +135,7 @@ class MemoryState implements PublicationState {
     owner: PublicationWriteOwner
     expiresAt: number
   }
+  publicationSource?: PublicationSourceWatermarkV1
   leaseNow = NOW
   allocations = 0
 
@@ -124,9 +159,22 @@ class MemoryState implements PublicationState {
     return this.pending
   }
 
-  async commitPendingPublication(candidate: PublicSnapshotPointerV1) {
+  async commitPendingPublication(
+    candidate: PublicSnapshotPointerV1,
+    source: PublicationSourceWatermarkV1,
+  ) {
     this.events.push('d1:commit-state')
     this.allocations++
+    const sourceRelation = publicationSourceRelation(source, this.publicationSource)
+    if (sourceRelation === 'stale' || sourceRelation === 'conflict') return false
+    if (
+      this.publicationClaim !== undefined
+      && this.publicationClaim.expiresAt > this.leaseNow
+    ) return false
+    if (sourceRelation === 'newer') {
+      this.publicationSource = structuredClone(source)
+      this.publicationClaim = undefined
+    }
     if (this.pending !== undefined) {
       if (canonicalJson(this.pending) === canonicalJson(candidate)) return true
       if (
@@ -147,11 +195,33 @@ class MemoryState implements PublicationState {
     return true
   }
 
-  async cleanupStalePendingPublication(verified: PublicSnapshotPointerV1) {
+  async cleanupStalePendingPublication(
+    verified: PublicSnapshotPointerV1,
+    source: PublicationSourceWatermarkV1,
+  ) {
     if (
       this.verified === undefined
       || canonicalJson(this.verified) !== canonicalJson(verified)
     ) return 'conflict' as const
+    const sourceRelation = publicationSourceRelation(source, this.publicationSource)
+    if (sourceRelation === 'stale') return 'stale' as const
+    if (sourceRelation === 'conflict') return 'conflict' as const
+    if (
+      this.publicationClaim !== undefined
+      && this.publicationClaim.expiresAt > this.leaseNow
+    ) {
+      return this.pending !== undefined
+        && canonicalJson(this.publicationClaim.candidate) === canonicalJson(this.pending)
+        ? 'active' as const
+        : 'conflict' as const
+    }
+    if (sourceRelation === 'newer') {
+      const cleaned = this.pending !== undefined
+      this.publicationSource = structuredClone(source)
+      this.publicationClaim = undefined
+      this.pending = undefined
+      return cleaned ? 'cleaned' as const : 'clean' as const
+    }
     if (this.pending === undefined) {
       return this.publicationClaim === undefined ? 'clean' as const : 'conflict' as const
     }
@@ -168,7 +238,15 @@ class MemoryState implements PublicationState {
     return 'cleaned' as const
   }
 
-  async confirmPublicationAuthorized(candidate: PublicSnapshotPointerV1) {
+  async confirmPublicationAuthorized(
+    candidate: PublicSnapshotPointerV1,
+    source: PublicationSourceWatermarkV1,
+  ) {
+    const sourceRelation = publicationSourceRelation(source, this.publicationSource)
+    if (sourceRelation === 'stale') return 'stale' as const
+    if (sourceRelation !== 'exact') {
+      return 'conflict' as const
+    }
     if (
       this.verified?.generation === candidate.generation
       && this.verified.content_hash === candidate.content_hash
@@ -191,8 +269,10 @@ class MemoryState implements PublicationState {
   async claimPublicationWrite(
     candidate: PublicSnapshotPointerV1,
     owner: PublicationWriteOwner,
+    source: PublicationSourceWatermarkV1,
   ) {
-    const authorization = await this.confirmPublicationAuthorized(candidate)
+    const authorization = await this.confirmPublicationAuthorized(candidate, source)
+    if (authorization === 'stale') return 'conflict' as const
     if (authorization !== 'authorized') return authorization
     if (
       this.publicationClaim !== undefined
@@ -219,7 +299,11 @@ class MemoryState implements PublicationState {
   async confirmPublicationWrite(
     candidate: PublicSnapshotPointerV1,
     owner: PublicationWriteOwner,
+    source: PublicationSourceWatermarkV1,
   ) {
+    if (publicationSourceRelation(source, this.publicationSource) !== 'exact') {
+      return 'conflict' as const
+    }
     if (
       this.verified
       && canonicalJson(this.verified) === canonicalJson(candidate)
@@ -251,9 +335,14 @@ class MemoryState implements PublicationState {
   async markPublicationPublished(
     candidate: PublicSnapshotPointerV1,
     owner?: PublicationWriteOwner,
+    source?: PublicationSourceWatermarkV1,
   ) {
     this.events.push('d1:mark-published')
-    const authorization = await this.confirmPublicationAuthorized(candidate)
+    if (
+      source === undefined
+      || publicationSourceRelation(source, this.publicationSource) !== 'exact'
+    ) throw new Error('Publication source conflict')
+    const authorization = await this.confirmPublicationAuthorized(candidate, source)
     if (authorization === 'conflict') throw new Error('Publication verified-state conflict')
     if (
       owner !== undefined
@@ -376,12 +465,15 @@ class FaultState extends MemoryState {
   failMark = false
   markThenThrow = false
 
-  override async commitPendingPublication(candidate: PublicSnapshotPointerV1) {
+  override async commitPendingPublication(
+    candidate: PublicSnapshotPointerV1,
+    source: PublicationSourceWatermarkV1,
+  ) {
     if (this.failCommit) {
       this.events.push('d1:commit-state')
       throw new Error('injected D1 pending commit failure')
     }
-    const committed = await super.commitPendingPublication(candidate)
+    const committed = await super.commitPendingPublication(candidate, source)
     if (this.commitThenThrow) throw new Error('injected D1 commit response loss')
     return committed
   }
@@ -389,8 +481,9 @@ class FaultState extends MemoryState {
   override async claimPublicationWrite(
     candidate: PublicSnapshotPointerV1,
     owner: PublicationWriteOwner,
+    source: PublicationSourceWatermarkV1,
   ) {
-    const claimed = await super.claimPublicationWrite(candidate, owner)
+    const claimed = await super.claimPublicationWrite(candidate, owner, source)
     if (this.claimThenThrow) {
       this.claimThenThrow = false
       throw new Error('injected D1 claim response loss')
@@ -409,22 +502,24 @@ class FaultState extends MemoryState {
   override async confirmPublicationWrite(
     candidate: PublicSnapshotPointerV1,
     owner: PublicationWriteOwner,
+    source: PublicationSourceWatermarkV1,
   ) {
     const beforeConfirm = this.beforeConfirm
     this.beforeConfirm = undefined
     await beforeConfirm?.()
-    return await super.confirmPublicationWrite(candidate, owner)
+    return await super.confirmPublicationWrite(candidate, owner, source)
   }
 
   override async markPublicationPublished(
     candidate: PublicSnapshotPointerV1,
     owner?: PublicationWriteOwner,
+    source?: PublicationSourceWatermarkV1,
   ) {
     if (this.failMark) {
       this.events.push('d1:mark-published')
       throw new Error('injected D1 published-state failure')
     }
-    await super.markPublicationPublished(candidate, owner)
+    await super.markPublicationPublished(candidate, owner, source)
     if (this.markThenThrow) throw new Error('injected D1 mark response loss')
   }
 }
@@ -499,6 +594,7 @@ test('identical verified content is unchanged before generation allocation or R2
     },
     input: { ...input, content_hash: verified.content_hash },
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-unchanged',
   })
 
@@ -532,6 +628,7 @@ test('changed content commits pending state, writes and verifies R2, switches on
     pointerKv,
     input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-changed',
   })
 
@@ -577,6 +674,7 @@ test('D1 pending commit failure performs no R2/KV work and preserves the old poi
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-commit-failure',
   }), /D1 pending commit failure/)
 
@@ -597,6 +695,7 @@ test('R2 PUT and GET failures preserve the byte-identical old pointer', async (t
         pointerKv: fixture.pointerKv,
         input: fixture.input,
         now: NOW,
+        sourceObservedAt: NOW,
         publicationId: `workflow-r2-${stage}`,
       }), new RegExp(`R2 ${stage.toUpperCase()} failure`))
 
@@ -653,6 +752,7 @@ test('R2 readback rejects schema, generation, content hash, and object-key corru
         pointerKv: fixture.pointerKv,
         input: fixture.input,
         now: NOW,
+        sourceObservedAt: NOW,
         publicationId: `workflow-corrupt-${corruption.name}`,
       }), corruption.pattern)
 
@@ -672,6 +772,7 @@ test('invalid canonical publication input hash fails before generation allocatio
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-invalid-hash',
   }), /publication input content_hash/)
 
@@ -704,6 +805,7 @@ test('a lower pending generation than public:verified is rejected before any R2 
     pointerKv,
     input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-lower-pending',
   }), /publication authorization conflict/i)
 
@@ -736,6 +838,7 @@ test('a same-generation pending hash conflict is rejected before any R2 or KV wr
     pointerKv,
     input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-same-generation',
   }), /publication authorization conflict/i)
 
@@ -766,6 +869,7 @@ test('verified advancement after pending commit but before KV prevents a stale p
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-verified-advance',
   }), /publication authorization conflict/i)
 
@@ -782,6 +886,7 @@ test('a failed unclaimed pending publication is superseded by later authoritativ
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-b',
   }), /R2 PUT failure/)
   assert.equal(fixture.state.pending?.generation, 12)
@@ -798,6 +903,7 @@ test('a failed unclaimed pending publication is superseded by later authoritativ
     pointerKv: fixture.pointerKv,
     input: inputC,
     now: NOW + 1,
+    sourceObservedAt: NOW + 1,
     publicationId: 'workflow-c',
   })
 
@@ -808,16 +914,18 @@ test('a failed unclaimed pending publication is superseded by later authoritativ
 
 test('an active pending owner blocks distinct later content before R2 or KV', async () => {
   const fixture = await changedFixture()
-  await fixture.state.commitPendingPublication({
+  const pendingB: PublicSnapshotPointerV1 = {
     schema_version: 1,
     generation: 12,
     content_hash: fixture.input.content_hash,
     r2_key: `snapshots/v1/12-${fixture.input.content_hash}.json`,
     published_at: NOW,
-  })
+  }
+  const sourceB = publicationSource('workflow-b', NOW + 2, fixture.input.content_hash)
+  await fixture.state.commitPendingPublication(pendingB, sourceB)
   const owner = publicationOwner('workflow-b', 'attempt-b')
   assert.equal(
-    await fixture.state.claimPublicationWrite(fixture.state.pending!, owner),
+    await fixture.state.claimPublicationWrite(fixture.state.pending!, owner, sourceB),
     'claimed',
   )
   const inputC = await publicationInput({
@@ -831,6 +939,7 @@ test('an active pending owner blocks distinct later content before R2 or KV', as
     pointerKv: fixture.pointerKv,
     input: inputC,
     now: NOW + 1,
+    sourceObservedAt: NOW + 1,
     publicationId: 'workflow-c',
   })
 
@@ -842,16 +951,18 @@ test('an active pending owner blocks distinct later content before R2 or KV', as
 
 test('an expired pending owner is fenced while later content supersedes and publishes', async () => {
   const fixture = await changedFixture()
-  await fixture.state.commitPendingPublication({
+  const pendingB: PublicSnapshotPointerV1 = {
     schema_version: 1,
     generation: 12,
     content_hash: fixture.input.content_hash,
     r2_key: `snapshots/v1/12-${fixture.input.content_hash}.json`,
     published_at: NOW,
-  })
+  }
+  const sourceB = publicationSource('workflow-b', NOW, fixture.input.content_hash)
+  await fixture.state.commitPendingPublication(pendingB, sourceB)
   const owner = publicationOwner('workflow-b', 'attempt-b')
   assert.equal(
-    await fixture.state.claimPublicationWrite(fixture.state.pending!, owner),
+    await fixture.state.claimPublicationWrite(fixture.state.pending!, owner, sourceB),
     'claimed',
   )
   fixture.state.advanceLeaseClock(61)
@@ -866,6 +977,7 @@ test('an expired pending owner is fenced while later content supersedes and publ
     pointerKv: fixture.pointerKv,
     input: inputC,
     now: NOW + 1,
+    sourceObservedAt: NOW + 1,
     publicationId: 'workflow-c',
   })
 
@@ -880,6 +992,7 @@ test('an expired pending owner is fenced while later content supersedes and publ
       published_at: NOW,
     },
     owner,
+    sourceB,
   ), 'conflict')
   await assert.rejects(
     fixture.state.markPublicationPublished({
@@ -888,8 +1001,8 @@ test('an expired pending owner is fenced while later content supersedes and publ
       content_hash: fixture.input.content_hash,
       r2_key: `snapshots/v1/12-${fixture.input.content_hash}.json`,
       published_at: NOW,
-    }, owner),
-    /claim conflict|verified-state conflict/,
+    }, owner, sourceB),
+    /claim conflict|source conflict|verified-state conflict/,
   )
   await fixture.state.releasePublicationWrite(fixture.state.verified!, owner)
   assert.equal(fixture.state.verified?.content_hash, inputC.content_hash)
@@ -916,6 +1029,7 @@ test('verified no-op cleans an unclaimed stale pending publication without R2 or
     pointerKv: new MemoryKv(events),
     input: { ...emptyInput(), content_hash: verified.content_hash },
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-a',
   })
 
@@ -941,10 +1055,12 @@ test('verified input stays pending behind an active stale writer then restores i
     published_at: NOW,
   }
   const ownerB = publicationOwner('workflow-b', 'attempt-b')
-  const state = new MemoryState(events, { verified: verifiedA, pending: pendingB })
+  const state = new MemoryState(events, { verified: verifiedA })
   const dataBucket = new MemoryBucket(events)
   const pointerKv = new MemoryKv(events)
-  assert.equal(await state.claimPublicationWrite(pendingB, ownerB), 'claimed')
+  const sourceB = publicationSource('workflow-b', NOW, pendingB.content_hash)
+  assert.equal(await state.commitPendingPublication(pendingB, sourceB), true)
+  assert.equal(await state.claimPublicationWrite(pendingB, ownerB, sourceB), 'claimed')
 
   const blockedA = await publishPublicSnapshot({
     state,
@@ -952,6 +1068,7 @@ test('verified input stays pending behind an active stale writer then restores i
     pointerKv,
     input: { ...inputA, content_hash: verifiedA.content_hash },
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-a',
   })
 
@@ -960,13 +1077,14 @@ test('verified input stays pending behind an active stale writer then restores i
   assert.equal(dataBucket.objects.size, 0)
   assert.equal(pointerKv.putValues.length, 0)
 
-  await state.markPublicationPublished(pendingB, ownerB)
+  await state.markPublicationPublished(pendingB, ownerB, sourceB)
   const restoredA = await publishPublicSnapshot({
     state,
     dataBucket,
     pointerKv,
     input: { ...inputA, content_hash: verifiedA.content_hash },
     now: NOW + 1,
+    sourceObservedAt: NOW + 1,
     publicationId: 'workflow-a-retry',
   })
 
@@ -1004,6 +1122,7 @@ test('verified advancement during stale cleanup is re-read before deciding uncha
     pointerKv,
     input: { ...inputA, content_hash: verifiedA.content_hash },
     now: NOW + 1,
+    sourceObservedAt: NOW + 1,
     publicationId: 'workflow-a',
   })
 
@@ -1016,15 +1135,104 @@ test('verified advancement during stale cleanup is re-read before deciding uncha
   )
 })
 
+test('a newer verified no-op watermarks its source before a delayed older run can allocate pending', async () => {
+  const events: string[] = []
+  const inputA = emptyInput()
+  const verifiedA = await pointerFor(inputA, 5)
+  const inputB = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(109)],
+  })
+  const state = new MemoryState(events, { verified: verifiedA })
+  const dataBucket = new MemoryBucket(events)
+  const pointerKv = new MemoryKv(events)
+
+  const newerA = await publishPublicSnapshot({
+    state,
+    dataBucket,
+    pointerKv,
+    input: { ...inputA, content_hash: verifiedA.content_hash },
+    now: NOW + 2,
+    sourceObservedAt: NOW + 2,
+    publicationId: 'workflow-a-newer',
+  })
+  const delayedB = await publishPublicSnapshot({
+    state,
+    dataBucket,
+    pointerKv,
+    input: inputB,
+    now: NOW,
+    sourceObservedAt: NOW,
+    publicationId: 'workflow-b-older',
+  })
+
+  assert.equal(newerA.status, 'unchanged')
+  assert.equal(delayedB.status, 'pending')
+  assert.equal(delayedB.r2Puts, 0)
+  assert.equal(delayedB.pointerPuts, 0)
+  assert.equal(state.verified?.content_hash, verifiedA.content_hash)
+  assert.equal(dataBucket.objects.size, 0)
+  assert.equal(pointerKv.putValues.length, 0)
+})
+
+test('equal source timestamps use stable publication identity as a deterministic freshness tie-breaker', async () => {
+  const events: string[] = []
+  const verified = await pointerFor(emptyInput(), 5)
+  const inputZ = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(110)],
+  })
+  const inputA = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(111)],
+  })
+  const state = new MemoryState(events, { verified })
+  const dataBucket = new MemoryBucket(events)
+  const pointerKv = new MemoryKv(events)
+
+  const winner = await publishPublicSnapshot({
+    state,
+    dataBucket,
+    pointerKv,
+    input: inputZ,
+    now: NOW,
+    sourceObservedAt: NOW,
+    publicationId: 'workflow-z',
+  })
+  const r2Writes = dataBucket.objects.size
+  const pointerWrites = pointerKv.putValues.length
+  const loser = await publishPublicSnapshot({
+    state,
+    dataBucket,
+    pointerKv,
+    input: inputA,
+    now: NOW,
+    sourceObservedAt: NOW,
+    publicationId: 'workflow-a',
+  })
+
+  assert.equal(winner.status, 'published')
+  assert.equal(loser.status, 'pending')
+  assert.equal(loser.r2Puts, 0)
+  assert.equal(loser.pointerPuts, 0)
+  assert.equal(state.verified?.content_hash, inputZ.content_hash)
+  assert.equal(dataBucket.objects.size, r2Writes)
+  assert.equal(pointerKv.putValues.length, pointerWrites)
+})
+
 test('pending supersession response loss replays the exact replacement candidate', async () => {
   const fixture = await changedFixture()
-  await fixture.state.commitPendingPublication({
+  const pendingB: PublicSnapshotPointerV1 = {
     schema_version: 1,
     generation: 12,
     content_hash: fixture.input.content_hash,
     r2_key: `snapshots/v1/12-${fixture.input.content_hash}.json`,
     published_at: NOW,
-  })
+  }
+  await fixture.state.commitPendingPublication(
+    pendingB,
+    publicationSource('workflow-b', NOW, pendingB.content_hash),
+  )
   const inputC = await publicationInput({
     ...emptyInput(),
     collections: [collection(107)],
@@ -1036,6 +1244,7 @@ test('pending supersession response loss replays the exact replacement candidate
     pointerKv: fixture.pointerKv,
     input: inputC,
     now: NOW + 1,
+    sourceObservedAt: NOW + 1,
     publicationId: 'workflow-c',
   }), /commit response loss/)
   fixture.state.commitThenThrow = false
@@ -1046,6 +1255,7 @@ test('pending supersession response loss replays the exact replacement candidate
     pointerKv: fixture.pointerKv,
     input: inputC,
     now: NOW + 1,
+    sourceObservedAt: NOW + 1,
     publicationId: 'workflow-c',
   })
   assert.equal(replay.status, 'published')
@@ -1074,6 +1284,7 @@ test('overlapping attempts for the same publication identity cannot rewrite an o
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-a',
   })
   await blocked
@@ -1084,6 +1295,7 @@ test('overlapping attempts for the same publication identity cannot rewrite an o
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-a',
   })
   const newerWhileBlocked = await publishPublicSnapshot({
@@ -1092,6 +1304,7 @@ test('overlapping attempts for the same publication identity cannot rewrite an o
     pointerKv: fixture.pointerKv,
     input: newerInput,
     now: NOW + 1,
+    sourceObservedAt: NOW + 1,
     publicationId: 'workflow-c',
   })
   releaseFirst()
@@ -1102,6 +1315,7 @@ test('overlapping attempts for the same publication identity cannot rewrite an o
     pointerKv: fixture.pointerKv,
     input: newerInput,
     now: NOW + 1,
+    sourceObservedAt: NOW + 1,
     publicationId: 'workflow-c',
   })
 
@@ -1137,6 +1351,7 @@ test('an expired same-identity attempt is fenced after takeover and cannot rewri
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-expiry',
   })
   await blocked
@@ -1148,6 +1363,7 @@ test('an expired same-identity attempt is fenced after takeover and cannot rewri
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-expiry',
   })
   const newer = await publishPublicSnapshot({
@@ -1156,6 +1372,7 @@ test('an expired same-identity attempt is fenced after takeover and cannot rewri
     pointerKv: fixture.pointerKv,
     input: newerInput,
     now: NOW + 1,
+    sourceObservedAt: NOW + 1,
     publicationId: 'workflow-next',
   })
   releaseExpired()
@@ -1181,6 +1398,7 @@ test('claim response loss and crash before KV are replayable by the same durable
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-replay',
   }), /claim response loss/)
   assert.equal(fixture.pointerKv.putValues.length, 0)
@@ -1191,6 +1409,7 @@ test('claim response loss and crash before KV are replayable by the same durable
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-other',
   })
   assert.equal(differentRun.status, 'pending')
@@ -1202,6 +1421,7 @@ test('claim response loss and crash before KV are replayable by the same durable
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-replay',
   })
   assert.equal(preExpiryReplay.status, 'pending')
@@ -1214,6 +1434,7 @@ test('claim response loss and crash before KV are replayable by the same durable
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-replay',
   })
   assert.equal(postExpiryReplay.status, 'published')
@@ -1231,6 +1452,7 @@ test('release failure retains a replayable claim for the same durable publicatio
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-release-replay',
   })
   assert.equal(first.status, 'pending')
@@ -1244,6 +1466,7 @@ test('release failure retains a replayable claim for the same durable publicatio
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-release-replay',
   })
   assert.equal(preExpiryReplay.status, 'pending')
@@ -1256,6 +1479,7 @@ test('release failure retains a replayable claim for the same durable publicatio
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-release-replay',
   })
   assert.equal(postExpiryReplay.status, 'published')
@@ -1272,6 +1496,7 @@ test('definite KV failure returns pending and keeps the old pointer byte-identic
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-definite-kv',
   })
 
@@ -1292,6 +1517,7 @@ test('ambiguous KV outcome is published only when readback is the exact candidat
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-ambiguous-exact',
   })
 
@@ -1313,6 +1539,7 @@ test('ambiguous KV mismatch or missing readback stays pending without marking D1
         pointerKv: fixture.pointerKv,
         input: fixture.input,
         now: NOW,
+        sourceObservedAt: NOW,
         publicationId: `workflow-ambiguous-${mode}`,
       })
 
@@ -1335,6 +1562,7 @@ test('ambiguous KV readback failure stays pending for replay', async () => {
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-ambiguous-readback',
   })
 
@@ -1351,6 +1579,7 @@ test('ambiguous KV readback failure stays pending for replay', async () => {
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW + 1,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-ambiguous-readback',
   })
   assert.equal(replay.status, 'published')
@@ -1367,6 +1596,7 @@ test('replay reuses the same pending generation, key, and object without another
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-pending-replay',
   })
   const pending = structuredClone(fixture.state.pending!)
@@ -1377,6 +1607,7 @@ test('replay reuses the same pending generation, key, and object without another
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW + 600,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-pending-replay',
   })
 
@@ -1404,6 +1635,7 @@ test('D1 published-state response loss is resolved by exact verified readback', 
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-mark-response-loss',
   })
 
@@ -1422,6 +1654,7 @@ test('D1 published-state definite failure leaves the durable candidate pending a
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    sourceObservedAt: NOW,
     publicationId: 'workflow-mark-failure',
   })
 

@@ -6,6 +6,7 @@ import {
 import {
   canonicalJson,
   type PublicationPendingCleanupResult,
+  type PublicationSourceWatermarkV1,
   type PublicSnapshotPointerV1,
   type PublicationWriteOwner,
 } from '@airing-cal/storage'
@@ -16,20 +17,27 @@ const LOWERCASE_SHA256 = /^[0-9a-f]{64}$/
 export interface PublicationState {
   getVerifiedPublication(): Promise<PublicSnapshotPointerV1 | undefined>
   getPendingPublication(): Promise<PublicSnapshotPointerV1 | undefined>
-  commitPendingPublication(candidate: PublicSnapshotPointerV1): Promise<boolean>
+  commitPendingPublication(
+    candidate: PublicSnapshotPointerV1,
+    source: PublicationSourceWatermarkV1,
+  ): Promise<boolean>
   cleanupStalePendingPublication(
     verified: PublicSnapshotPointerV1,
+    source: PublicationSourceWatermarkV1,
   ): Promise<PublicationPendingCleanupResult>
   confirmPublicationAuthorized(
     candidate: PublicSnapshotPointerV1,
-  ): Promise<'authorized' | 'already_verified' | 'conflict'>
+    source: PublicationSourceWatermarkV1,
+  ): Promise<'authorized' | 'already_verified' | 'stale' | 'conflict'>
   claimPublicationWrite(
     candidate: PublicSnapshotPointerV1,
     owner: PublicationWriteOwner,
+    source: PublicationSourceWatermarkV1,
   ): Promise<'claimed' | 'busy' | 'already_verified' | 'conflict'>
   confirmPublicationWrite(
     candidate: PublicSnapshotPointerV1,
     owner: PublicationWriteOwner,
+    source: PublicationSourceWatermarkV1,
   ): Promise<'active' | 'expired' | 'already_verified' | 'conflict'>
   releasePublicationWrite(
     candidate: PublicSnapshotPointerV1,
@@ -38,6 +46,7 @@ export interface PublicationState {
   markPublicationPublished(
     candidate: PublicSnapshotPointerV1,
     owner: PublicationWriteOwner,
+    source: PublicationSourceWatermarkV1,
   ): Promise<void>
 }
 
@@ -69,6 +78,7 @@ export interface PublishPublicSnapshotArguments {
   pointerKv: PublicationPointerKv
   input: PublicSnapshotInput & { content_hash: string }
   now: number
+  sourceObservedAt: number
   publicationId: string
 }
 
@@ -113,6 +123,7 @@ async function prepareCandidate(
   verified: PublicSnapshotPointerV1 | undefined,
   contentHash: string,
   now: number,
+  source: PublicationSourceWatermarkV1,
 ): Promise<
   | PublicSnapshotPointerV1
   | { unchanged: PublicSnapshotPointerV1 }
@@ -131,7 +142,7 @@ async function prepareCandidate(
     r2_key: `snapshots/v1/${generation}-${contentHash}.json`,
     published_at: now,
   }
-  if (await state.commitPendingPublication(candidate)) return candidate
+  if (await state.commitPendingPublication(candidate, source)) return candidate
 
   const currentVerified = await readVerified(state)
   const currentPending = await readPending(state)
@@ -184,14 +195,21 @@ async function reconcileVerifiedNoOp(
   state: PublicationState,
   verified: PublicSnapshotPointerV1,
   contentHash: string,
+  source: PublicationSourceWatermarkV1,
 ): Promise<
   | { result: PublicationResult }
   | { verified: PublicSnapshotPointerV1 | undefined }
 > {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const cleanup = await state.cleanupStalePendingPublication(verified)
+    const cleanup = await state.cleanupStalePendingPublication(verified, source)
     if (cleanup === 'clean') return { result: unchangedResult(verified) }
     if (cleanup === 'cleaned') continue
+    if (cleanup === 'stale') {
+      const pending = await readPending(state)
+      return {
+        result: pendingResult(pending?.generation ?? verified.generation, contentHash),
+      }
+    }
 
     const currentVerified = await readVerified(state)
     if (
@@ -245,14 +263,35 @@ async function releasePublicationWrite(
 }
 
 export async function publishPublicSnapshot(
-  { state, dataBucket, pointerKv, input, now, publicationId }: PublishPublicSnapshotArguments,
+  {
+    state,
+    dataBucket,
+    pointerKv,
+    input,
+    now,
+    sourceObservedAt,
+    publicationId,
+  }: PublishPublicSnapshotArguments,
 ): Promise<PublicationResult> {
   if (!Number.isSafeInteger(now) || now < 0) throw new Error('Invalid publication time')
-  if (typeof publicationId !== 'string') throw new Error('Invalid publication identity')
+  if (!Number.isSafeInteger(sourceObservedAt) || sourceObservedAt < 0) {
+    throw new Error('Invalid publication source observation')
+  }
+  if (
+    typeof publicationId !== 'string'
+    || publicationId.length === 0
+    || publicationId.length > 128
+  ) throw new Error('Invalid publication identity')
   const validationSnapshot = await buildPublicSnapshot({ ...input, published_at: now }, 0)
   await parsePublicSnapshotV1(validationSnapshot)
   if (validationSnapshot.content_hash !== input.content_hash) {
     throw new Error('Invalid publication input content_hash')
+  }
+  const publicationSource: PublicationSourceWatermarkV1 = {
+    schema_version: 1,
+    source_observed_at: sourceObservedAt,
+    publication_id: publicationId,
+    content_hash: validationSnapshot.content_hash,
   }
 
   let verified = await readVerified(state)
@@ -266,18 +305,26 @@ export async function publishPublicSnapshot(
         state,
         verified,
         validationSnapshot.content_hash,
+        publicationSource,
       )
       if ('result' in resolution) return resolution.result
       verified = resolution.verified
       if (verified?.content_hash === validationSnapshot.content_hash) continue
     }
 
-    const next = await prepareCandidate(state, verified, validationSnapshot.content_hash, now)
+    const next = await prepareCandidate(
+      state,
+      verified,
+      validationSnapshot.content_hash,
+      now,
+      publicationSource,
+    )
     if (isUnchangedCandidate(next)) {
       const resolution = await reconcileVerifiedNoOp(
         state,
         next.unchanged,
         validationSnapshot.content_hash,
+        publicationSource,
       )
       if ('result' in resolution) return resolution.result
       verified = resolution.verified
@@ -297,7 +344,13 @@ export async function publishPublicSnapshot(
     return pendingResult(prepared.blocked.generation, prepared.blocked.contentHash)
   }
   const candidate = prepared
-  const initialAuthorization = await state.confirmPublicationAuthorized(candidate)
+  const initialAuthorization = await state.confirmPublicationAuthorized(
+    candidate,
+    publicationSource,
+  )
+  if (initialAuthorization === 'stale') {
+    return pendingResult(candidate.generation, candidate.content_hash)
+  }
   if (initialAuthorization === 'conflict') throw new Error('Publication authorization conflict')
   if (initialAuthorization === 'already_verified') {
     return {
@@ -348,7 +401,7 @@ export async function publishPublicSnapshot(
     publication_id: publicationId,
     attempt_token: crypto.randomUUID(),
   }
-  const claim = await state.claimPublicationWrite(candidate, owner)
+  const claim = await state.claimPublicationWrite(candidate, owner, publicationSource)
   if (claim === 'conflict') throw new Error('Publication authorization conflict')
   if (claim === 'already_verified') {
     return {
@@ -369,7 +422,11 @@ export async function publishPublicSnapshot(
     }
   }
 
-  const confirmation = await state.confirmPublicationWrite(candidate, owner)
+  const confirmation = await state.confirmPublicationWrite(
+    candidate,
+    owner,
+    publicationSource,
+  )
   if (confirmation === 'already_verified') {
     return {
       status: 'published',
@@ -404,7 +461,7 @@ export async function publishPublicSnapshot(
   }
 
   try {
-    await state.markPublicationPublished(candidate, owner)
+    await state.markPublicationPublished(candidate, owner, publicationSource)
   } catch {
     let observed: PublicSnapshotPointerV1 | undefined
     try {

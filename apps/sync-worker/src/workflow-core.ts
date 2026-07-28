@@ -452,6 +452,7 @@ export async function runSyncWorkflow(
             ...dependencies.publication,
             input: result.publicationInput,
             now: completeInput.observedAt,
+            sourceObservedAt: completeInput.observedAt,
             publicationId: event.instanceId,
           })
           if (publication.status === 'pending') {

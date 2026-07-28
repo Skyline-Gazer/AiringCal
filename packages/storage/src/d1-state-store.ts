@@ -12,6 +12,7 @@ import type {
   D1PreparedStatementLike,
   D1ResultLike,
   PublicationPendingCleanupResult,
+  PublicationSourceWatermarkV1,
   PublicSnapshotPointerV1,
   PublicationWriteOwner,
   SyncRunCompletion,
@@ -85,6 +86,7 @@ const PUBLICATION_POINTER_KEYS = [
   'published_at',
 ] as const
 const PUBLICATION_WRITE_CLAIM_KEY = 'public:write-claim'
+const PUBLICATION_SOURCE_WATERMARK_KEY = 'public:source-watermark'
 export const PUBLICATION_WRITE_LEASE_SECONDS = 60
 
 interface PublicationWriteClaim extends PublicationWriteOwner {
@@ -225,6 +227,44 @@ function validatePublicationWriteOwner(owner: PublicationWriteOwner): Publicatio
     publication_id: owner.publication_id,
     attempt_token: owner.attempt_token,
   }
+}
+
+function decodePublicationSourceWatermark(value: unknown): PublicationSourceWatermarkV1 {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Invalid publication source watermark')
+  }
+  const source = value as Record<string, unknown>
+  if (
+    Object.keys(source).length !== 4
+    || source.schema_version !== 1
+    || !Number.isSafeInteger(source.source_observed_at)
+    || (source.source_observed_at as number) < 0
+    || typeof source.publication_id !== 'string'
+    || source.publication_id.length === 0
+    || source.publication_id.length > 128
+    || typeof source.content_hash !== 'string'
+    || !LOWERCASE_SHA256.test(source.content_hash)
+  ) throw new Error('Invalid publication source watermark')
+  return {
+    schema_version: 1,
+    source_observed_at: source.source_observed_at as number,
+    publication_id: source.publication_id,
+    content_hash: source.content_hash,
+  }
+}
+
+function publicationSourceRelation(
+  incoming: PublicationSourceWatermarkV1,
+  current: PublicationSourceWatermarkV1 | undefined,
+): 'newer' | 'exact' | 'stale' | 'conflict' {
+  if (current === undefined) return 'newer'
+  if (incoming.source_observed_at !== current.source_observed_at) {
+    return incoming.source_observed_at > current.source_observed_at ? 'newer' : 'stale'
+  }
+  if (incoming.publication_id !== current.publication_id) {
+    return incoming.publication_id > current.publication_id ? 'newer' : 'stale'
+  }
+  return incoming.content_hash === current.content_hash ? 'exact' : 'conflict'
 }
 
 function validatePublicationLeaseTime(value: number): number {
@@ -442,10 +482,16 @@ export class D1StateStore {
     verified?: PublicSnapshotPointerV1
     pending?: PublicSnapshotPointerV1
     claim?: PublicationWriteClaim
+    source?: PublicationSourceWatermarkV1
   }> {
     const result = await this.database.prepare(
-      'SELECT key, value_json FROM app_state WHERE key IN (?, ?, ?) ORDER BY key',
-    ).bind('public:pending', 'public:verified', PUBLICATION_WRITE_CLAIM_KEY).all<{
+      'SELECT key, value_json FROM app_state WHERE key IN (?, ?, ?, ?) ORDER BY key',
+    ).bind(
+      'public:pending',
+      'public:verified',
+      PUBLICATION_WRITE_CLAIM_KEY,
+      PUBLICATION_SOURCE_WATERMARK_KEY,
+    ).all<{
       key: unknown
       value_json: unknown
     }>()
@@ -460,21 +506,56 @@ export class D1StateStore {
       verified?: PublicSnapshotPointerV1
       pending?: PublicSnapshotPointerV1
       claim?: PublicationWriteClaim
+      source?: PublicationSourceWatermarkV1
     } = {}
     for (const row of result.results) {
       if (
         row.key !== 'public:pending'
         && row.key !== 'public:verified'
         && row.key !== PUBLICATION_WRITE_CLAIM_KEY
+        && row.key !== PUBLICATION_SOURCE_WATERMARK_KEY
       ) {
         throw new Error('Invalid D1 publication state key')
       }
       const value = decodeAppStateEnvelope(row.value_json)
       if (row.key === 'public:pending') pair.pending = decodePublicationPointer(value)
       else if (row.key === 'public:verified') pair.verified = decodePublicationPointer(value)
-      else pair.claim = decodePublicationWriteClaim(value)
+      else if (row.key === PUBLICATION_WRITE_CLAIM_KEY) {
+        pair.claim = decodePublicationWriteClaim(value)
+      } else pair.source = decodePublicationSourceWatermark(value)
     }
     return pair
+  }
+
+  private publicationSourceCasStatement(
+    source: PublicationSourceWatermarkV1,
+    observed: PublicationSourceWatermarkV1 | undefined,
+  ): D1PreparedStatementLike {
+    const valueJson = canonicalJson({ schema_version: 1, value: source })
+    if (observed === undefined) {
+      return this.database.prepare(
+        `INSERT INTO app_state (key, value_json, updated_at)
+         SELECT ?, ?, ?
+         WHERE NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?)
+         ON CONFLICT(key) DO NOTHING`,
+      ).bind(
+        PUBLICATION_SOURCE_WATERMARK_KEY,
+        valueJson,
+        source.source_observed_at,
+        PUBLICATION_SOURCE_WATERMARK_KEY,
+      )
+    }
+    return this.database.prepare(
+      `UPDATE app_state
+       SET value_json = ?, updated_at = ?
+       WHERE key = ? AND value_json = ? AND updated_at = ?`,
+    ).bind(
+      valueJson,
+      source.source_observed_at,
+      PUBLICATION_SOURCE_WATERMARK_KEY,
+      canonicalJson({ schema_version: 1, value: observed }),
+      observed.source_observed_at,
+    )
   }
 
   private async collectionRow(userId: string, subjectId: number): Promise<CollectionRow | undefined> {
@@ -716,29 +797,67 @@ export class D1StateStore {
     return await this.getAppState('public:pending', decodePublicationPointer)
   }
 
-  async commitPendingPublication(candidate: PublicSnapshotPointerV1): Promise<boolean> {
+  async commitPendingPublication(
+    candidate: PublicSnapshotPointerV1,
+    publicationSource: PublicationSourceWatermarkV1,
+  ): Promise<boolean> {
     const validated = decodePublicationPointer(candidate)
+    const source = decodePublicationSourceWatermark(publicationSource)
+    if (source.content_hash !== validated.content_hash) {
+      throw new Error('Publication source content_hash mismatch')
+    }
     const valueJson = canonicalJson({ schema_version: 1, value: validated })
     const candidateJson = canonicalJson(validated)
+    const sourceValueJson = canonicalJson({ schema_version: 1, value: source })
     const leaseNow = validatePublicationLeaseTime(this.now())
 
     for (let attempt = 0; attempt < 3; attempt++) {
-      const { verified, pending, claim } = await this.publicationState()
+      const { verified, pending, claim, source: observedSource } = await this.publicationState()
+      const sourceRelation = publicationSourceRelation(source, observedSource)
+      if (sourceRelation === 'stale' || sourceRelation === 'conflict') return false
+      if (claim && claim.expires_at > leaseNow) return false
       if (
         !(
           (verified === undefined && validated.generation === 1)
           || verified?.generation === validated.generation - 1
         )
       ) return false
-      if (pending && canonicalJson(pending) === candidateJson) return true
-      if (claim && claim.expires_at > leaseNow) return false
+      const exactPending = pending && canonicalJson(pending) === candidateJson
+      if (sourceRelation === 'exact' && exactPending) return true
+      if (sourceRelation === 'exact' && pending !== undefined) return false
+      if (
+        sourceRelation === 'exact'
+        && claim
+        && claim.expires_at > leaseNow
+      ) return false
 
       const statements: D1PreparedStatementLike[] = []
+      if (sourceRelation === 'newer') {
+        statements.push(this.publicationSourceCasStatement(source, observedSource))
+      }
       if (claim) {
         const claimValueJson = canonicalJson({ schema_version: 1, value: claim })
         statements.push(this.database.prepare(
-          'DELETE FROM app_state WHERE key = ? AND value_json = ? AND updated_at = ?',
-        ).bind(PUBLICATION_WRITE_CLAIM_KEY, claimValueJson, claim.candidate.generation))
+          `DELETE FROM app_state
+           WHERE key = ? AND value_json = ? AND updated_at = ?
+             AND EXISTS (
+               SELECT 1 FROM app_state
+               WHERE key = ? AND value_json = ? AND updated_at = ?
+             )`,
+        ).bind(
+          PUBLICATION_WRITE_CLAIM_KEY,
+          claimValueJson,
+          claim.candidate.generation,
+          PUBLICATION_SOURCE_WATERMARK_KEY,
+          sourceValueJson,
+          source.source_observed_at,
+        ))
+      }
+
+      if (exactPending) {
+        const changes = await this.executeBatchChanges(statements)
+        if (sourceRelation === 'exact' || changes[0] !== 0) return true
+        continue
       }
 
       if (pending === undefined) {
@@ -747,6 +866,10 @@ export class D1StateStore {
            SELECT ?, ?, ?
            WHERE NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?)
              AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?)
+             AND EXISTS (
+               SELECT 1 FROM app_state
+               WHERE key = ? AND value_json = ? AND updated_at = ?
+             )
              AND (
                (? = 1 AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?))
                OR EXISTS (
@@ -761,6 +884,9 @@ export class D1StateStore {
           validated.generation,
           'public:pending',
           PUBLICATION_WRITE_CLAIM_KEY,
+          PUBLICATION_SOURCE_WATERMARK_KEY,
+          sourceValueJson,
+          source.source_observed_at,
           validated.generation,
           'public:verified',
           'public:verified',
@@ -773,6 +899,10 @@ export class D1StateStore {
            SET value_json = ?, updated_at = ?
            WHERE key = ? AND value_json = ? AND updated_at = ?
              AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?)
+             AND EXISTS (
+               SELECT 1 FROM app_state
+               WHERE key = ? AND value_json = ? AND updated_at = ?
+             )
              AND (
                (? = 1 AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?))
                OR EXISTS (
@@ -787,6 +917,9 @@ export class D1StateStore {
           pendingValueJson,
           pending.generation,
           PUBLICATION_WRITE_CLAIM_KEY,
+          PUBLICATION_SOURCE_WATERMARK_KEY,
+          sourceValueJson,
+          source.source_observed_at,
           validated.generation,
           'public:verified',
           'public:verified',
@@ -801,28 +934,60 @@ export class D1StateStore {
 
   async cleanupStalePendingPublication(
     verifiedCandidate: PublicSnapshotPointerV1,
+    publicationSource: PublicationSourceWatermarkV1,
   ): Promise<PublicationPendingCleanupResult> {
     const validated = decodePublicationPointer(verifiedCandidate)
+    const source = decodePublicationSourceWatermark(publicationSource)
+    if (source.content_hash !== validated.content_hash) {
+      throw new Error('Publication source content_hash mismatch')
+    }
     const verifiedJson = canonicalJson(validated)
     const verifiedValueJson = canonicalJson({ schema_version: 1, value: validated })
+    const sourceValueJson = canonicalJson({ schema_version: 1, value: source })
     const leaseNow = validatePublicationLeaseTime(this.now())
 
     for (let attempt = 0; attempt < 3; attempt++) {
-      const { verified, pending, claim } = await this.publicationState()
+      const { verified, pending, claim, source: observedSource } = await this.publicationState()
       if (!verified || canonicalJson(verified) !== verifiedJson) return 'conflict'
-      if (pending === undefined) return claim === undefined ? 'clean' : 'conflict'
+      const sourceRelation = publicationSourceRelation(source, observedSource)
+      if (sourceRelation === 'stale') return 'stale'
+      if (sourceRelation === 'conflict') return 'conflict'
       if (claim && claim.expires_at > leaseNow) {
-        return canonicalJson(claim.candidate) === canonicalJson(pending)
+        return pending !== undefined
+          && canonicalJson(claim.candidate) === canonicalJson(pending)
           ? 'active'
           : 'conflict'
       }
-
+      if (
+        sourceRelation === 'exact'
+        && pending === undefined
+      ) return claim === undefined ? 'clean' : 'conflict'
       const statements: D1PreparedStatementLike[] = []
+      if (sourceRelation === 'newer') {
+        statements.push(this.publicationSourceCasStatement(source, observedSource))
+      }
       if (claim) {
         const claimValueJson = canonicalJson({ schema_version: 1, value: claim })
         statements.push(this.database.prepare(
-          'DELETE FROM app_state WHERE key = ? AND value_json = ? AND updated_at = ?',
-        ).bind(PUBLICATION_WRITE_CLAIM_KEY, claimValueJson, claim.candidate.generation))
+          `DELETE FROM app_state
+           WHERE key = ? AND value_json = ? AND updated_at = ?
+             AND EXISTS (
+               SELECT 1 FROM app_state
+               WHERE key = ? AND value_json = ? AND updated_at = ?
+             )`,
+        ).bind(
+          PUBLICATION_WRITE_CLAIM_KEY,
+          claimValueJson,
+          claim.candidate.generation,
+          PUBLICATION_SOURCE_WATERMARK_KEY,
+          sourceValueJson,
+          source.source_observed_at,
+        ))
+      }
+      if (pending === undefined) {
+        const changes = await this.executeBatchChanges(statements)
+        if (sourceRelation === 'exact' || changes[0] !== 0) return 'clean'
+        continue
       }
       const pendingValueJson = canonicalJson({ schema_version: 1, value: pending })
       statements.push(this.database.prepare(
@@ -832,12 +997,19 @@ export class D1StateStore {
            AND EXISTS (
              SELECT 1 FROM app_state
              WHERE key = ? AND value_json = ? AND updated_at = ?
+           )
+           AND EXISTS (
+             SELECT 1 FROM app_state
+             WHERE key = ? AND value_json = ? AND updated_at = ?
            )`,
       ).bind(
         'public:pending',
         pendingValueJson,
         pending.generation,
         PUBLICATION_WRITE_CLAIM_KEY,
+        PUBLICATION_SOURCE_WATERMARK_KEY,
+        sourceValueJson,
+        source.source_observed_at,
         'public:verified',
         verifiedValueJson,
         validated.generation,
@@ -850,9 +1022,15 @@ export class D1StateStore {
 
   async confirmPublicationAuthorized(
     candidate: PublicSnapshotPointerV1,
-  ): Promise<'authorized' | 'already_verified' | 'conflict'> {
+    publicationSource: PublicationSourceWatermarkV1,
+  ): Promise<'authorized' | 'already_verified' | 'stale' | 'conflict'> {
     const validated = decodePublicationPointer(candidate)
-    const { verified, pending } = await this.publicationState()
+    const source = decodePublicationSourceWatermark(publicationSource)
+    if (source.content_hash !== validated.content_hash) return 'conflict'
+    const { verified, pending, source: observedSource } = await this.publicationState()
+    const sourceRelation = publicationSourceRelation(source, observedSource)
+    if (sourceRelation === 'stale') return 'stale'
+    if (sourceRelation !== 'exact') return 'conflict'
     const candidateJson = canonicalJson(validated)
     if (verified && canonicalJson(verified) === candidateJson) return 'already_verified'
     if (
@@ -869,9 +1047,15 @@ export class D1StateStore {
   async claimPublicationWrite(
     candidate: PublicSnapshotPointerV1,
     owner: PublicationWriteOwner,
+    publicationSource: PublicationSourceWatermarkV1,
   ): Promise<'claimed' | 'busy' | 'already_verified' | 'conflict'> {
     const validated = decodePublicationPointer(candidate)
     const validatedOwner = validatePublicationWriteOwner(owner)
+    const source = decodePublicationSourceWatermark(publicationSource)
+    if (
+      source.content_hash !== validated.content_hash
+      || source.publication_id !== validatedOwner.publication_id
+    ) return 'conflict'
     const leaseNow = validatePublicationLeaseTime(this.now())
     const expiresAt = validatePublicationLeaseTime(
       leaseNow + PUBLICATION_WRITE_LEASE_SECONDS,
@@ -884,9 +1068,16 @@ export class D1StateStore {
       expires_at: expiresAt,
     }
     const nextClaimValueJson = canonicalJson({ schema_version: 1, value: nextClaim })
+    const sourceValueJson = canonicalJson({ schema_version: 1, value: source })
 
     for (let attempt = 0; attempt < 3; attempt++) {
-      const { verified, pending, claim: observedClaim } = await this.publicationState()
+      const {
+        verified,
+        pending,
+        claim: observedClaim,
+        source: observedSource,
+      } = await this.publicationState()
+      if (publicationSourceRelation(source, observedSource) !== 'exact') return 'conflict'
       if (verified && canonicalJson(verified) === candidateJson) return 'already_verified'
       const authorized = (
         pending
@@ -907,6 +1098,10 @@ export class D1StateStore {
                SELECT 1 FROM app_state
                WHERE key = ? AND value_json = ? AND updated_at = ?
              )
+             AND EXISTS (
+               SELECT 1 FROM app_state
+               WHERE key = ? AND value_json = ? AND updated_at = ?
+             )
              AND (
                (? = 1 AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?))
                OR EXISTS (
@@ -922,6 +1117,9 @@ export class D1StateStore {
             'public:pending',
             pointerValueJson,
             validated.generation,
+            PUBLICATION_SOURCE_WATERMARK_KEY,
+            sourceValueJson,
+            source.source_observed_at,
             validated.generation,
             'public:verified',
             'public:verified',
@@ -953,6 +1151,10 @@ export class D1StateStore {
                SELECT 1 FROM app_state AS pending
                WHERE pending.key = ? AND pending.value_json = ? AND pending.updated_at = ?
              )
+             AND EXISTS (
+               SELECT 1 FROM app_state AS source
+               WHERE source.key = ? AND source.value_json = ? AND source.updated_at = ?
+             )
              AND (
                (? = 1 AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?))
                OR EXISTS (
@@ -969,6 +1171,9 @@ export class D1StateStore {
           'public:pending',
           pointerValueJson,
           validated.generation,
+          PUBLICATION_SOURCE_WATERMARK_KEY,
+          sourceValueJson,
+          source.source_observed_at,
           validated.generation,
           'public:verified',
           'public:verified',
@@ -983,11 +1188,18 @@ export class D1StateStore {
   async confirmPublicationWrite(
     candidate: PublicSnapshotPointerV1,
     owner: PublicationWriteOwner,
+    publicationSource: PublicationSourceWatermarkV1,
   ): Promise<'active' | 'expired' | 'already_verified' | 'conflict'> {
     const validated = decodePublicationPointer(candidate)
     const validatedOwner = validatePublicationWriteOwner(owner)
+    const source = decodePublicationSourceWatermark(publicationSource)
+    if (
+      source.content_hash !== validated.content_hash
+      || source.publication_id !== validatedOwner.publication_id
+    ) return 'conflict'
     const leaseNow = validatePublicationLeaseTime(this.now())
-    const { verified, claim } = await this.publicationState()
+    const { verified, claim, source: observedSource } = await this.publicationState()
+    if (publicationSourceRelation(source, observedSource) !== 'exact') return 'conflict'
     const candidateJson = canonicalJson(validated)
     if (verified && canonicalJson(verified) === candidateJson) return 'already_verified'
     if (
@@ -1023,12 +1235,21 @@ export class D1StateStore {
   async markPublicationPublished(
     candidate: PublicSnapshotPointerV1,
     owner: PublicationWriteOwner,
+    publicationSource: PublicationSourceWatermarkV1,
   ): Promise<void> {
     const validated = decodePublicationPointer(candidate)
     const validatedOwner = validatePublicationWriteOwner(owner)
+    const source = decodePublicationSourceWatermark(publicationSource)
+    if (
+      source.content_hash !== validated.content_hash
+      || source.publication_id !== validatedOwner.publication_id
+    ) throw new Error('Publication source conflict')
     const leaseNow = validatePublicationLeaseTime(this.now())
     const valueJson = canonicalJson({ schema_version: 1, value: validated })
     const state = await this.publicationState()
+    if (publicationSourceRelation(source, state.source) !== 'exact') {
+      throw new Error('Publication source conflict')
+    }
     if (state.verified && canonicalJson(state.verified) === canonicalJson(validated)) return
     if (
       !state.claim
@@ -1038,10 +1259,15 @@ export class D1StateStore {
       || state.claim.expires_at <= leaseNow
     ) throw new Error('Publication write claim conflict')
     const claimValueJson = canonicalJson({ schema_version: 1, value: state.claim })
+    const sourceValueJson = canonicalJson({ schema_version: 1, value: source })
     const verifiedUpsert = this.database.prepare(
       `INSERT INTO app_state (key, value_json, updated_at)
        SELECT ?, ?, ?
        WHERE EXISTS (
+         SELECT 1 FROM app_state
+         WHERE key = ? AND value_json = ? AND updated_at = ?
+       )
+       AND EXISTS (
          SELECT 1 FROM app_state
          WHERE key = ? AND value_json = ? AND updated_at = ?
        )
@@ -1069,6 +1295,9 @@ export class D1StateStore {
       PUBLICATION_WRITE_CLAIM_KEY,
       claimValueJson,
       validated.generation,
+      PUBLICATION_SOURCE_WATERMARK_KEY,
+      sourceValueJson,
+      source.source_observed_at,
       validated.generation,
       'public:verified',
       'public:verified',

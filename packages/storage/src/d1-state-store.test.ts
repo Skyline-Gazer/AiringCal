@@ -7,6 +7,7 @@ import type {
   D1DatabaseLike,
   D1PreparedStatementLike,
   D1ResultLike,
+  PublicationSourceWatermarkV1,
   PublicSnapshotPointerV1,
   PublicationWriteOwner,
   SyncRunRow,
@@ -36,6 +37,19 @@ function publicationOwner(
   return {
     publication_id: publicationId,
     attempt_token: attemptToken,
+  }
+}
+
+function publicationSource(
+  publicationId: string,
+  observedAt: number,
+  contentHash: string,
+): PublicationSourceWatermarkV1 {
+  return {
+    schema_version: 1,
+    source_observed_at: observedAt,
+    publication_id: publicationId,
+    content_hash: contentHash,
   }
 }
 
@@ -289,6 +303,21 @@ class SqliteD1 implements D1DatabaseLike {
   async exec(sql: string): Promise<{ count: number; duration: number }> {
     this.database.exec(sql)
     return { count: 0, duration: 0 }
+  }
+}
+
+class PublicationResponseLossD1 extends SqliteD1 {
+  loseNextBatchResponse = false
+
+  override async batch<T = Record<string, unknown>>(
+    statements: D1PreparedStatementLike[],
+  ): Promise<D1ResultLike<T>[]> {
+    const results = await super.batch<T>(statements)
+    if (this.loseNextBatchResponse) {
+      this.loseNextBatchResponse = false
+      throw new Error('simulated publication watermark response loss')
+    }
+    return results
   }
 }
 
@@ -929,14 +958,15 @@ test('publication app_state persists versioned pending candidates and atomically
     r2_key: `snapshots/v1/1-${'a'.repeat(64)}.json`,
     published_at: 100,
   }
+  const source = publicationSource('initial-publisher', 100, candidate.content_hash)
 
-  assert.equal(await store.commitPendingPublication(candidate), true)
+  assert.equal(await store.commitPendingPublication(candidate, source), true)
   assert.deepEqual(await store.getPendingPublication(), candidate)
   assert.equal(await store.getVerifiedPublication(), undefined)
 
   const owner = publicationOwner('initial-publisher', 'attempt-1')
-  assert.equal(await store.claimPublicationWrite(candidate, owner), 'claimed')
-  await store.markPublicationPublished(candidate, owner)
+  assert.equal(await store.claimPublicationWrite(candidate, owner, source), 'claimed')
+  await store.markPublicationPublished(candidate, owner, source)
 
   assert.deepEqual(await store.getVerifiedPublication(), candidate)
   assert.equal(await store.getPendingPublication(), undefined)
@@ -956,10 +986,12 @@ test('publication pending allocation is monotonic, exact-replay idempotent, and 
     content_hash: 'c'.repeat(64),
     r2_key: `snapshots/v1/1-${'c'.repeat(64)}.json`,
   }
+  const firstSource = publicationSource('workflow-a', 200, first.content_hash)
+  const conflictSource = publicationSource('workflow-b', 201, conflict.content_hash)
 
-  assert.equal(await store.commitPendingPublication(first), true)
-  assert.equal(await store.commitPendingPublication(first), true)
-  assert.equal(await store.commitPendingPublication(conflict), true)
+  assert.equal(await store.commitPendingPublication(first, firstSource), true)
+  assert.equal(await store.commitPendingPublication(first, firstSource), true)
+  assert.equal(await store.commitPendingPublication(conflict, conflictSource), true)
   assert.deepEqual(await store.getPendingPublication(), conflict)
 })
 
@@ -1000,13 +1032,30 @@ test('publication authorization rejects stale and same-generation conflicting ca
     published_at: 102,
   }
   await store.putAppStateIfNewer('public:verified', verified, verified.generation)
+  const verifiedSource = publicationSource('workflow-verified', 100, verified.content_hash)
+  assert.equal(await store.cleanupStalePendingPublication(verified, verifiedSource), 'clean')
+  const staleSource = publicationSource('workflow-stale', 99, stale.content_hash)
+  const conflictSource = publicationSource(
+    'workflow-conflict',
+    101,
+    sameGenerationConflict.content_hash,
+  )
 
-  assert.equal(await store.commitPendingPublication(stale), false)
-  assert.equal(await store.commitPendingPublication(sameGenerationConflict), false)
+  assert.equal(await store.commitPendingPublication(stale, staleSource), false)
+  assert.equal(
+    await store.commitPendingPublication(sameGenerationConflict, conflictSource),
+    false,
+  )
   assert.equal(await store.getPendingPublication(), undefined)
-  assert.equal(await store.confirmPublicationAuthorized(stale), 'conflict')
-  assert.equal(await store.confirmPublicationAuthorized(sameGenerationConflict), 'conflict')
-  assert.equal(await store.confirmPublicationAuthorized(verified), 'already_verified')
+  assert.equal(await store.confirmPublicationAuthorized(stale, staleSource), 'stale')
+  assert.equal(
+    await store.confirmPublicationAuthorized(sameGenerationConflict, conflictSource),
+    'conflict',
+  )
+  assert.equal(
+    await store.confirmPublicationAuthorized(verified, verifiedSource),
+    'already_verified',
+  )
 })
 
 test('publication authorization permits only the exact next generation and detects verified advancement', async () => {
@@ -1033,17 +1082,18 @@ test('publication authorization permits only the exact next generation and detec
     published_at: 202,
   }
   await store.putAppStateIfNewer('public:verified', verified, verified.generation)
+  const source = publicationSource('stale-publisher', 201, candidate.content_hash)
 
-  assert.equal(await store.commitPendingPublication(candidate), true)
-  assert.equal(await store.confirmPublicationAuthorized(candidate), 'authorized')
+  assert.equal(await store.commitPendingPublication(candidate, source), true)
+  assert.equal(await store.confirmPublicationAuthorized(candidate, source), 'authorized')
   const owner = publicationOwner('stale-publisher', 'attempt-1')
-  assert.equal(await store.claimPublicationWrite(candidate, owner), 'claimed')
+  assert.equal(await store.claimPublicationWrite(candidate, owner, source), 'claimed')
 
   await store.putAppStateIfNewer('public:verified', newer, newer.generation)
 
-  assert.equal(await store.confirmPublicationAuthorized(candidate), 'conflict')
+  assert.equal(await store.confirmPublicationAuthorized(candidate, source), 'conflict')
   await assert.rejects(
-    store.markPublicationPublished(candidate, owner),
+    store.markPublicationPublished(candidate, owner, source),
     /write claim conflict/,
   )
   assert.deepEqual(await store.getVerifiedPublication(), newer)
@@ -1060,34 +1110,35 @@ test('publication write claims exclusively fence pointer mutation and verified p
     r2_key: `snapshots/v1/1-${'9'.repeat(64)}.json`,
     published_at: 300,
   }
-  await store.commitPendingPublication(candidate)
+  const source = publicationSource('publisher-a', 300, candidate.content_hash)
+  await store.commitPendingPublication(candidate, source)
   const ownerA = publicationOwner('publisher-a', 'attempt-a')
   const overlapA = publicationOwner('publisher-a', 'attempt-b')
   const ownerB = publicationOwner('publisher-b', 'attempt-a')
 
-  assert.equal(await store.claimPublicationWrite(candidate, ownerA), 'claimed')
-  assert.equal(await store.claimPublicationWrite(candidate, ownerA), 'claimed')
-  assert.equal(await store.claimPublicationWrite(candidate, overlapA), 'busy')
-  assert.equal(await store.claimPublicationWrite(candidate, ownerB), 'busy')
-  assert.equal(await store.confirmPublicationWrite(candidate, ownerA), 'active')
+  assert.equal(await store.claimPublicationWrite(candidate, ownerA, source), 'claimed')
+  assert.equal(await store.claimPublicationWrite(candidate, ownerA, source), 'claimed')
+  assert.equal(await store.claimPublicationWrite(candidate, overlapA, source), 'busy')
+  assert.equal(await store.claimPublicationWrite(candidate, ownerB, source), 'conflict')
+  assert.equal(await store.confirmPublicationWrite(candidate, ownerA, source), 'active')
   await assert.rejects(
-    store.markPublicationPublished(candidate, overlapA),
+    store.markPublicationPublished(candidate, overlapA, source),
     /write claim conflict/,
   )
   assert.deepEqual(await store.getPendingPublication(), candidate)
   assert.equal(await store.getVerifiedPublication(), undefined)
 
   now += 60
-  assert.equal(await store.confirmPublicationWrite(candidate, ownerA), 'expired')
-  assert.equal(await store.claimPublicationWrite(candidate, overlapA), 'claimed')
-  assert.equal(await store.confirmPublicationWrite(candidate, ownerA), 'conflict')
+  assert.equal(await store.confirmPublicationWrite(candidate, ownerA, source), 'expired')
+  assert.equal(await store.claimPublicationWrite(candidate, overlapA, source), 'claimed')
+  assert.equal(await store.confirmPublicationWrite(candidate, ownerA, source), 'conflict')
   await assert.rejects(
-    store.markPublicationPublished(candidate, ownerA),
+    store.markPublicationPublished(candidate, ownerA, source),
     /write claim conflict/,
   )
   await store.releasePublicationWrite(candidate, ownerA)
-  assert.equal(await store.confirmPublicationWrite(candidate, overlapA), 'active')
-  await store.markPublicationPublished(candidate, overlapA)
+  assert.equal(await store.confirmPublicationWrite(candidate, overlapA, source), 'active')
+  await store.markPublicationPublished(candidate, overlapA, source)
 
   assert.equal(await store.getPendingPublication(), undefined)
   assert.deepEqual(await store.getVerifiedPublication(), candidate)
@@ -1106,27 +1157,28 @@ test('publication write lease permits post-expiry takeover after adapter reconst
   }
   const firstAttempt = publicationOwner('stable-workflow-claim', 'attempt-a')
   const replayAttempt = publicationOwner('stable-workflow-claim', 'attempt-b')
-  await initial.commitPendingPublication(candidate)
+  const source = publicationSource('stable-workflow-claim', 301, candidate.content_hash)
+  await initial.commitPendingPublication(candidate, source)
   assert.equal(
-    await initial.claimPublicationWrite(candidate, firstAttempt),
+    await initial.claimPublicationWrite(candidate, firstAttempt, source),
     'claimed',
   )
 
   const replay = new D1StateStore(database, () => now)
   assert.equal(
-    await replay.claimPublicationWrite(candidate, replayAttempt),
+    await replay.claimPublicationWrite(candidate, replayAttempt, source),
     'busy',
   )
   now += 60
   assert.equal(
-    await replay.claimPublicationWrite(candidate, replayAttempt),
+    await replay.claimPublicationWrite(candidate, replayAttempt, source),
     'claimed',
   )
   assert.equal(
-    await replay.confirmPublicationWrite(candidate, firstAttempt),
+    await replay.confirmPublicationWrite(candidate, firstAttempt, source),
     'conflict',
   )
-  await replay.markPublicationPublished(candidate, replayAttempt)
+  await replay.markPublicationPublished(candidate, replayAttempt, source)
   assert.deepEqual(await replay.getVerifiedPublication(), candidate)
 })
 
@@ -1139,16 +1191,17 @@ test('publication write lease rejects non-integer and non-ISO-representable cloc
     r2_key: `snapshots/v1/1-${'7'.repeat(64)}.json`,
     published_at: 302,
   }
-  await new D1StateStore(database, () => 1).commitPendingPublication(candidate)
+  const source = publicationSource('clock-validation', 302, candidate.content_hash)
+  await new D1StateStore(database, () => 1).commitPendingPublication(candidate, source)
   const owner = publicationOwner('clock-validation', 'attempt-a')
 
   await assert.rejects(
-    new D1StateStore(database, () => 1.5).claimPublicationWrite(candidate, owner),
+    new D1StateStore(database, () => 1.5).claimPublicationWrite(candidate, owner, source),
     /publication lease time/,
   )
   await assert.rejects(
     new D1StateStore(database, () => Number.MAX_SAFE_INTEGER)
-      .claimPublicationWrite(candidate, owner),
+      .claimPublicationWrite(candidate, owner, source),
     /publication lease time/,
   )
 
@@ -1159,12 +1212,12 @@ test('publication write lease rejects non-integer and non-ISO-representable cloc
     expires_at: Number.MAX_SAFE_INTEGER,
   })
   await assert.rejects(
-    validStore.confirmPublicationWrite(candidate, owner),
+    validStore.confirmPublicationWrite(candidate, owner, source),
     /publication lease time/,
   )
 })
 
-test('publication pending supersession is fenced by an active lease and allowed after expiry', async () => {
+test('a newer publication source waits for an active owner then supersedes it after expiry', async () => {
   const database = new SqliteD1()
   let now = 3_000
   const store = new D1StateStore(database, () => now)
@@ -1190,26 +1243,31 @@ test('publication pending supersession is fenced by an active lease and allowed 
     published_at: 402,
   }
   const ownerB = publicationOwner('workflow-b', 'attempt-b')
+  const sourceB = publicationSource('workflow-b', 401, pendingB.content_hash)
+  const sourceC = publicationSource('workflow-c', 402, pendingC.content_hash)
   await store.putAppStateIfNewer('public:verified', verified, verified.generation)
-  assert.equal(await store.commitPendingPublication(pendingB), true)
-  assert.equal(await store.claimPublicationWrite(pendingB, ownerB), 'claimed')
+  assert.equal(await store.commitPendingPublication(pendingB, sourceB), true)
+  assert.equal(await store.claimPublicationWrite(pendingB, ownerB, sourceB), 'claimed')
 
-  assert.equal(await store.commitPendingPublication(pendingC), false)
+  assert.equal(await store.commitPendingPublication(pendingC, sourceC), false)
   assert.deepEqual(await store.getPendingPublication(), pendingB)
 
   now += 60
-  assert.equal(await store.commitPendingPublication(pendingC), true)
+  assert.equal(await store.commitPendingPublication(pendingC, sourceC), true)
   assert.deepEqual(await store.getPendingPublication(), pendingC)
-  assert.equal(await store.confirmPublicationWrite(pendingB, ownerB), 'conflict')
+  assert.equal(
+    await store.confirmPublicationWrite(pendingB, ownerB, sourceB),
+    'conflict',
+  )
   await assert.rejects(
-    store.markPublicationPublished(pendingB, ownerB),
-    /write claim conflict/,
+    store.markPublicationPublished(pendingB, ownerB, sourceB),
+    /source conflict|write claim conflict/,
   )
   await store.releasePublicationWrite(pendingB, ownerB)
   assert.deepEqual(await store.getPendingPublication(), pendingC)
 })
 
-test('verified no-op cleanup removes only stale pending state without an active lease', async () => {
+test('a newer verified no-op waits for an active pending owner then fences it after expiry', async () => {
   const database = new SqliteD1()
   let now = 4_000
   const store = new D1StateStore(database, () => now)
@@ -1228,21 +1286,55 @@ test('verified no-op cleanup removes only stale pending state without an active 
     published_at: 501,
   }
   const owner = publicationOwner('workflow-b', 'attempt-b')
+  const initialSource = publicationSource('workflow-a-initial', 500, verified.content_hash)
+  const pendingSource = publicationSource('workflow-b', 501, pending.content_hash)
+  const restoredSource = publicationSource('workflow-a-restored', 502, verified.content_hash)
   await store.putAppStateIfNewer('public:verified', verified, verified.generation)
-  assert.equal(await store.cleanupStalePendingPublication(verified), 'clean')
-  await store.commitPendingPublication(pending)
-  assert.equal(await store.cleanupStalePendingPublication(verified), 'cleaned')
-  assert.equal(await store.getPendingPublication(), undefined)
+  assert.equal(
+    await store.cleanupStalePendingPublication(verified, initialSource),
+    'clean',
+  )
+  await store.commitPendingPublication(pending, pendingSource)
+  await store.claimPublicationWrite(pending, owner, pendingSource)
+  assert.deepEqual(await store.getPendingPublication(), pending)
 
-  await store.commitPendingPublication(pending)
-  await store.claimPublicationWrite(pending, owner)
-  assert.equal(await store.cleanupStalePendingPublication(verified), 'active')
+  assert.equal(await store.cleanupStalePendingPublication(verified, restoredSource), 'active')
   assert.deepEqual(await store.getPendingPublication(), pending)
 
   now += 60
-  assert.equal(await store.cleanupStalePendingPublication(verified), 'cleaned')
+  assert.equal(await store.cleanupStalePendingPublication(verified, restoredSource), 'cleaned')
   assert.equal(await store.getPendingPublication(), undefined)
-  assert.equal(await store.confirmPublicationWrite(pending, owner), 'conflict')
+  assert.equal(
+    await store.confirmPublicationWrite(pending, owner, pendingSource),
+    'conflict',
+  )
+})
+
+test('publication freshness watermark response loss replays the exact source without regression', async () => {
+  const database = new PublicationResponseLossD1()
+  const store = new D1StateStore(database)
+  const verified: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 9,
+    content_hash: '6'.repeat(64),
+    r2_key: `snapshots/v1/9-${'6'.repeat(64)}.json`,
+    published_at: 600,
+  }
+  const source = {
+    schema_version: 1 as const,
+    source_observed_at: 700,
+    publication_id: 'workflow-watermark',
+    content_hash: verified.content_hash,
+  }
+  await store.putAppStateIfNewer('public:verified', verified, verified.generation)
+  database.loseNextBatchResponse = true
+
+  await assert.rejects(
+    store.cleanupStalePendingPublication(verified, source),
+    /watermark response loss/,
+  )
+  assert.equal(await store.cleanupStalePendingPublication(verified, source), 'clean')
+  assert.deepEqual(await store.getAppStateUnknown('public:source-watermark'), source)
 })
 
 test('sync run lifecycle uses positional binds and persists only classified error codes', async () => {
