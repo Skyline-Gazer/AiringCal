@@ -6,6 +6,7 @@ import {
 import {
   canonicalJson,
   type PublicSnapshotPointerV1,
+  type PublicationWriteOwner,
 } from '@airing-cal/storage'
 
 const POINTER_KEY = 'public:current'
@@ -20,10 +21,20 @@ export interface PublicationState {
   ): Promise<'authorized' | 'already_verified' | 'conflict'>
   claimPublicationWrite(
     candidate: PublicSnapshotPointerV1,
-    token: string,
+    owner: PublicationWriteOwner,
   ): Promise<'claimed' | 'busy' | 'already_verified' | 'conflict'>
-  releasePublicationWrite(candidate: PublicSnapshotPointerV1, token: string): Promise<void>
-  markPublicationPublished(candidate: PublicSnapshotPointerV1, token: string): Promise<void>
+  confirmPublicationWrite(
+    candidate: PublicSnapshotPointerV1,
+    owner: PublicationWriteOwner,
+  ): Promise<'active' | 'expired' | 'already_verified' | 'conflict'>
+  releasePublicationWrite(
+    candidate: PublicSnapshotPointerV1,
+    owner: PublicationWriteOwner,
+  ): Promise<void>
+  markPublicationPublished(
+    candidate: PublicSnapshotPointerV1,
+    owner: PublicationWriteOwner,
+  ): Promise<void>
 }
 
 export interface PublicationDataBucket {
@@ -146,30 +157,13 @@ async function putPointerAndConfirm(
 async function releasePublicationWrite(
   state: PublicationState,
   candidate: PublicSnapshotPointerV1,
-  token: string,
+  owner: PublicationWriteOwner,
 ): Promise<void> {
   try {
-    await state.releasePublicationWrite(candidate, token)
+    await state.releasePublicationWrite(candidate, owner)
   } catch {
     // Retaining the claim is safer than allowing an unfenced stale pointer write.
   }
-}
-
-async function publicationClaimToken(
-  candidate: PublicSnapshotPointerV1,
-  publicationId: string,
-): Promise<string> {
-  if (publicationId.length === 0 || publicationId.length > 128) {
-    throw new Error('Invalid publication identity')
-  }
-  const bytes = new TextEncoder().encode(canonicalJson({
-    candidate,
-    publication_id: publicationId,
-  }))
-  const digest = await crypto.subtle.digest('SHA-256', bytes)
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
 }
 
 export async function publishPublicSnapshot(
@@ -252,8 +246,11 @@ export async function publishPublicSnapshot(
   if (stored.key !== candidate.r2_key) throw new Error('Published R2 snapshot object key mismatch')
   if (storedBytes !== objectBytes) throw new Error('Published R2 snapshot bytes mismatch')
 
-  const claimToken = await publicationClaimToken(candidate, publicationId)
-  const claim = await state.claimPublicationWrite(candidate, claimToken)
+  const owner: PublicationWriteOwner = {
+    publication_id: publicationId,
+    attempt_token: crypto.randomUUID(),
+  }
+  const claim = await state.claimPublicationWrite(candidate, owner)
   if (claim === 'conflict') throw new Error('Publication authorization conflict')
   if (claim === 'already_verified') {
     return {
@@ -274,10 +271,31 @@ export async function publishPublicSnapshot(
     }
   }
 
+  const confirmation = await state.confirmPublicationWrite(candidate, owner)
+  if (confirmation === 'already_verified') {
+    return {
+      status: 'published',
+      generation: candidate.generation,
+      contentHash: candidate.content_hash,
+      r2Puts,
+      pointerPuts: 0,
+    }
+  }
+  if (confirmation !== 'active') {
+    await releasePublicationWrite(state, candidate, owner)
+    return {
+      status: 'pending',
+      generation: candidate.generation,
+      contentHash: candidate.content_hash,
+      r2Puts,
+      pointerPuts: 0,
+    }
+  }
+
   const pointerBytes = canonicalJson(candidate)
   const pointerPuts = await putPointerAndConfirm(pointerKv, pointerBytes)
   if (pointerPuts === 0) {
-    await releasePublicationWrite(state, candidate, claimToken)
+    await releasePublicationWrite(state, candidate, owner)
     return {
       status: 'pending',
       generation: candidate.generation,
@@ -288,17 +306,17 @@ export async function publishPublicSnapshot(
   }
 
   try {
-    await state.markPublicationPublished(candidate, claimToken)
+    await state.markPublicationPublished(candidate, owner)
   } catch {
     let observed: PublicSnapshotPointerV1 | undefined
     try {
       observed = await readVerified(state)
     } catch {
-      await releasePublicationWrite(state, candidate, claimToken)
+      await releasePublicationWrite(state, candidate, owner)
       throw new Error('Publication verified-state readback failed')
     }
     if (canonicalJson(observed) !== pointerBytes) {
-      await releasePublicationWrite(state, candidate, claimToken)
+      await releasePublicationWrite(state, candidate, owner)
       return {
         status: 'pending',
         generation: candidate.generation,

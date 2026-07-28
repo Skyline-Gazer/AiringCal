@@ -12,6 +12,7 @@ import type {
   D1PreparedStatementLike,
   D1ResultLike,
   PublicSnapshotPointerV1,
+  PublicationWriteOwner,
   SyncRunCompletion,
   SyncRunFailure,
   SyncRunRow,
@@ -83,10 +84,11 @@ const PUBLICATION_POINTER_KEYS = [
   'published_at',
 ] as const
 const PUBLICATION_WRITE_CLAIM_KEY = 'public:write-claim'
+export const PUBLICATION_WRITE_LEASE_SECONDS = 60
 
-interface PublicationWriteClaim {
+interface PublicationWriteClaim extends PublicationWriteOwner {
   candidate: PublicSnapshotPointerV1
-  token: string
+  expires_at: number
 }
 
 export class StaleCollectionDiffError extends Error {
@@ -183,24 +185,57 @@ function decodePublicationWriteClaim(value: unknown): PublicationWriteClaim {
   }
   const claim = value as Record<string, unknown>
   if (
-    Object.keys(claim).length !== 2
+    Object.keys(claim).length !== 4
     || !Object.hasOwn(claim, 'candidate')
-    || !Object.hasOwn(claim, 'token')
-    || typeof claim.token !== 'string'
-    || claim.token.length === 0
-    || claim.token.length > 128
+    || !Object.hasOwn(claim, 'publication_id')
+    || !Object.hasOwn(claim, 'attempt_token')
+    || !Object.hasOwn(claim, 'expires_at')
+    || typeof claim.publication_id !== 'string'
+    || claim.publication_id.length === 0
+    || claim.publication_id.length > 128
+    || typeof claim.attempt_token !== 'string'
+    || claim.attempt_token.length === 0
+    || claim.attempt_token.length > 128
+    || !Number.isSafeInteger(claim.expires_at)
+    || (claim.expires_at as number) < 0
   ) throw new Error('Invalid publication write claim')
   return {
     candidate: decodePublicationPointer(claim.candidate),
-    token: claim.token,
+    publication_id: claim.publication_id,
+    attempt_token: claim.attempt_token,
+    expires_at: validatePublicationLeaseTime(claim.expires_at as number),
   }
 }
 
-function validatePublicationWriteToken(token: string): string {
-  if (token.length === 0 || token.length > 128) {
-    throw new Error('Invalid publication write token')
+function validatePublicationWriteOwner(owner: PublicationWriteOwner): PublicationWriteOwner {
+  if (
+    typeof owner !== 'object'
+    || owner === null
+    || typeof owner.publication_id !== 'string'
+    || owner.publication_id.length === 0
+    || owner.publication_id.length > 128
+    || typeof owner.attempt_token !== 'string'
+    || owner.attempt_token.length === 0
+    || owner.attempt_token.length > 128
+  ) {
+    throw new Error('Invalid publication write owner')
   }
-  return token
+  return {
+    publication_id: owner.publication_id,
+    attempt_token: owner.attempt_token,
+  }
+}
+
+function validatePublicationLeaseTime(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('Invalid publication lease time')
+  }
+  try {
+    new Date(value * 1_000).toISOString()
+  } catch {
+    throw new Error('Invalid publication lease time')
+  }
+  return value
 }
 
 function nullableString(value: unknown, column: string): string | null {
@@ -742,78 +777,151 @@ export class D1StateStore {
 
   async claimPublicationWrite(
     candidate: PublicSnapshotPointerV1,
-    token: string,
+    owner: PublicationWriteOwner,
   ): Promise<'claimed' | 'busy' | 'already_verified' | 'conflict'> {
     const validated = decodePublicationPointer(candidate)
-    const validatedToken = validatePublicationWriteToken(token)
-    const pointerValueJson = canonicalJson({ schema_version: 1, value: validated })
-    const claim = { candidate: validated, token: validatedToken }
-    const claimValueJson = canonicalJson({ schema_version: 1, value: claim })
-    const statement = this.database.prepare(
-      `INSERT INTO app_state (key, value_json, updated_at)
-       SELECT ?, ?, ?
-       WHERE EXISTS (
-         SELECT 1 FROM app_state
-         WHERE key = ? AND value_json = ? AND updated_at = ?
-       )
-       AND (
-         (? = 1 AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?))
-         OR EXISTS (
-           SELECT 1 FROM app_state
-           WHERE key = ? AND updated_at = ?
-         )
-       )
-       ON CONFLICT(key) DO UPDATE
-       SET value_json = excluded.value_json, updated_at = excluded.updated_at
-       WHERE app_state.value_json = excluded.value_json
-         AND app_state.updated_at = excluded.updated_at`,
-    ).bind(
-      PUBLICATION_WRITE_CLAIM_KEY,
-      claimValueJson,
-      validated.generation,
-      'public:pending',
-      pointerValueJson,
-      validated.generation,
-      validated.generation,
-      'public:verified',
-      'public:verified',
-      validated.generation - 1,
+    const validatedOwner = validatePublicationWriteOwner(owner)
+    const leaseNow = validatePublicationLeaseTime(this.now())
+    const expiresAt = validatePublicationLeaseTime(
+      leaseNow + PUBLICATION_WRITE_LEASE_SECONDS,
     )
-    const changes = await this.executeBatch([statement])
-    if (changes !== 0) return 'claimed'
+    const pointerValueJson = canonicalJson({ schema_version: 1, value: validated })
+    const candidateJson = canonicalJson(validated)
+    const nextClaim: PublicationWriteClaim = {
+      candidate: validated,
+      ...validatedOwner,
+      expires_at: expiresAt,
+    }
+    const nextClaimValueJson = canonicalJson({ schema_version: 1, value: nextClaim })
 
-    const { verified, pending, claim: observedClaim } = await this.publicationState()
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { verified, pending, claim: observedClaim } = await this.publicationState()
+      if (verified && canonicalJson(verified) === candidateJson) return 'already_verified'
+      const authorized = (
+        pending
+        && canonicalJson(pending) === candidateJson
+        && (
+          (verified === undefined && validated.generation === 1)
+          || verified?.generation === validated.generation - 1
+        )
+      )
+      if (!authorized) return 'conflict'
+
+      if (observedClaim === undefined) {
+        const inserted = await this.executeBatch([
+          this.database.prepare(
+            `INSERT INTO app_state (key, value_json, updated_at)
+             SELECT ?, ?, ?
+             WHERE EXISTS (
+               SELECT 1 FROM app_state
+               WHERE key = ? AND value_json = ? AND updated_at = ?
+             )
+             AND (
+               (? = 1 AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?))
+               OR EXISTS (
+                 SELECT 1 FROM app_state
+                 WHERE key = ? AND updated_at = ?
+               )
+             )
+             ON CONFLICT(key) DO NOTHING`,
+          ).bind(
+            PUBLICATION_WRITE_CLAIM_KEY,
+            nextClaimValueJson,
+            validated.generation,
+            'public:pending',
+            pointerValueJson,
+            validated.generation,
+            validated.generation,
+            'public:verified',
+            'public:verified',
+            validated.generation - 1,
+          ),
+        ])
+        if (inserted !== 0) return 'claimed'
+        continue
+      }
+
+      if (canonicalJson(observedClaim.candidate) !== candidateJson) return 'busy'
+      if (
+        observedClaim.publication_id === validatedOwner.publication_id
+        && observedClaim.attempt_token === validatedOwner.attempt_token
+        && observedClaim.expires_at > leaseNow
+      ) return 'claimed'
+      if (observedClaim.expires_at > leaseNow) return 'busy'
+
+      const observedClaimValueJson = canonicalJson({
+        schema_version: 1,
+        value: observedClaim,
+      })
+      const replaced = await this.executeBatch([
+        this.database.prepare(
+          `UPDATE app_state
+           SET value_json = ?, updated_at = ?
+           WHERE key = ? AND value_json = ? AND updated_at = ?
+             AND EXISTS (
+               SELECT 1 FROM app_state AS pending
+               WHERE pending.key = ? AND pending.value_json = ? AND pending.updated_at = ?
+             )
+             AND (
+               (? = 1 AND NOT EXISTS (SELECT 1 FROM app_state WHERE key = ?))
+               OR EXISTS (
+                 SELECT 1 FROM app_state AS verified
+                 WHERE verified.key = ? AND verified.updated_at = ?
+               )
+             )`,
+        ).bind(
+          nextClaimValueJson,
+          validated.generation,
+          PUBLICATION_WRITE_CLAIM_KEY,
+          observedClaimValueJson,
+          validated.generation,
+          'public:pending',
+          pointerValueJson,
+          validated.generation,
+          validated.generation,
+          'public:verified',
+          'public:verified',
+          validated.generation - 1,
+        ),
+      ])
+      if (replaced !== 0) return 'claimed'
+    }
+    return 'busy'
+  }
+
+  async confirmPublicationWrite(
+    candidate: PublicSnapshotPointerV1,
+    owner: PublicationWriteOwner,
+  ): Promise<'active' | 'expired' | 'already_verified' | 'conflict'> {
+    const validated = decodePublicationPointer(candidate)
+    const validatedOwner = validatePublicationWriteOwner(owner)
+    const leaseNow = validatePublicationLeaseTime(this.now())
+    const { verified, claim } = await this.publicationState()
     const candidateJson = canonicalJson(validated)
     if (verified && canonicalJson(verified) === candidateJson) return 'already_verified'
-    const authorized = (
-      pending
-      && canonicalJson(pending) === candidateJson
-      && (
-        (verified === undefined && validated.generation === 1)
-        || verified?.generation === validated.generation - 1
-      )
-    )
-    if (!authorized) return 'conflict'
     if (
-      observedClaim
-      && observedClaim.token === validatedToken
-      && canonicalJson(observedClaim.candidate) === candidateJson
-    ) return 'claimed'
-    return 'busy'
+      claim
+      && canonicalJson(claim.candidate) === candidateJson
+      && claim.publication_id === validatedOwner.publication_id
+      && claim.attempt_token === validatedOwner.attempt_token
+    ) return claim.expires_at > leaseNow ? 'active' : 'expired'
+    return 'conflict'
   }
 
   async releasePublicationWrite(
     candidate: PublicSnapshotPointerV1,
-    token: string,
+    owner: PublicationWriteOwner,
   ): Promise<void> {
     const validated = decodePublicationPointer(candidate)
-    const claimValueJson = canonicalJson({
-      schema_version: 1,
-      value: {
-        candidate: validated,
-        token: validatePublicationWriteToken(token),
-      },
-    })
+    const validatedOwner = validatePublicationWriteOwner(owner)
+    const { claim } = await this.publicationState()
+    if (
+      !claim
+      || canonicalJson(claim.candidate) !== canonicalJson(validated)
+      || claim.publication_id !== validatedOwner.publication_id
+      || claim.attempt_token !== validatedOwner.attempt_token
+    ) return
+    const claimValueJson = canonicalJson({ schema_version: 1, value: claim })
     await this.executeBatch([
       this.database.prepare(
         'DELETE FROM app_state WHERE key = ? AND value_json = ? AND updated_at = ?',
@@ -823,15 +931,22 @@ export class D1StateStore {
 
   async markPublicationPublished(
     candidate: PublicSnapshotPointerV1,
-    token: string,
+    owner: PublicationWriteOwner,
   ): Promise<void> {
     const validated = decodePublicationPointer(candidate)
-    const validatedToken = validatePublicationWriteToken(token)
+    const validatedOwner = validatePublicationWriteOwner(owner)
+    const leaseNow = validatePublicationLeaseTime(this.now())
     const valueJson = canonicalJson({ schema_version: 1, value: validated })
-    const claimValueJson = canonicalJson({
-      schema_version: 1,
-      value: { candidate: validated, token: validatedToken },
-    })
+    const state = await this.publicationState()
+    if (state.verified && canonicalJson(state.verified) === canonicalJson(validated)) return
+    if (
+      !state.claim
+      || canonicalJson(state.claim.candidate) !== canonicalJson(validated)
+      || state.claim.publication_id !== validatedOwner.publication_id
+      || state.claim.attempt_token !== validatedOwner.attempt_token
+      || state.claim.expires_at <= leaseNow
+    ) throw new Error('Publication write claim conflict')
+    const claimValueJson = canonicalJson({ schema_version: 1, value: state.claim })
     const verifiedUpsert = this.database.prepare(
       `INSERT INTO app_state (key, value_json, updated_at)
        SELECT ?, ?, ?

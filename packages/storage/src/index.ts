@@ -40,6 +40,7 @@ export type {
   PublicCollectionItemV1,
   PublicImageRefV1,
   PublicSnapshotPointerV1,
+  PublicationWriteOwner,
   PublicSnapshotSummaryV1,
   PublicSnapshotV1,
   PublicSubjectImagesV1,

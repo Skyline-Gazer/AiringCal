@@ -215,6 +215,11 @@ export interface PublicSnapshotPointerV1 {
   published_at: number
 }
 
+export interface PublicationWriteOwner {
+  publication_id: string
+  attempt_token: string
+}
+
 export interface D1MetaLike {
   duration: number
   size_after: number

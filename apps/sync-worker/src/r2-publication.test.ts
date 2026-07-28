@@ -8,6 +8,7 @@ import {
 import type {
   PublicCollectionItemV1,
   PublicSnapshotPointerV1,
+  PublicationWriteOwner,
 } from '@airing-cal/storage'
 import { canonicalJson } from '@airing-cal/storage'
 import {
@@ -85,7 +86,12 @@ class MemoryState implements PublicationState {
   readonly events: string[]
   verified?: PublicSnapshotPointerV1
   pending?: PublicSnapshotPointerV1
-  publicationClaim?: { candidate: PublicSnapshotPointerV1; token: string }
+  publicationClaim?: {
+    candidate: PublicSnapshotPointerV1
+    owner: PublicationWriteOwner
+    expiresAt: number
+  }
+  leaseNow = NOW
   allocations = 0
 
   constructor(
@@ -144,40 +150,89 @@ class MemoryState implements PublicationState {
     return 'conflict' as const
   }
 
-  async claimPublicationWrite(candidate: PublicSnapshotPointerV1, token: string) {
+  async claimPublicationWrite(
+    candidate: PublicSnapshotPointerV1,
+    owner: PublicationWriteOwner,
+  ) {
     const authorization = await this.confirmPublicationAuthorized(candidate)
     if (authorization !== 'authorized') return authorization
-    if (this.publicationClaim !== undefined) {
+    if (
+      this.publicationClaim !== undefined
+      && this.publicationClaim.expiresAt > this.leaseNow
+    ) {
       return (
         canonicalJson(this.publicationClaim.candidate) === canonicalJson(candidate)
-        && this.publicationClaim.token === token
+        && this.publicationClaim.owner.publication_id === owner.publication_id
+        && this.publicationClaim.owner.attempt_token === owner.attempt_token
       ) ? 'claimed' as const : 'busy' as const
     }
-    this.publicationClaim = { candidate: structuredClone(candidate), token }
+    if (
+      this.publicationClaim !== undefined
+      && canonicalJson(this.publicationClaim.candidate) !== canonicalJson(candidate)
+    ) return 'busy' as const
+    this.publicationClaim = {
+      candidate: structuredClone(candidate),
+      owner: structuredClone(owner),
+      expiresAt: this.leaseNow + 60,
+    }
     return 'claimed' as const
   }
 
-  async releasePublicationWrite(candidate: PublicSnapshotPointerV1, token: string) {
+  async confirmPublicationWrite(
+    candidate: PublicSnapshotPointerV1,
+    owner: PublicationWriteOwner,
+  ) {
     if (
-      this.publicationClaim?.token === token
+      this.verified
+      && canonicalJson(this.verified) === canonicalJson(candidate)
+    ) return 'already_verified' as const
+    if (
+      this.publicationClaim
+      && canonicalJson(this.publicationClaim.candidate) === canonicalJson(candidate)
+      && this.publicationClaim.owner.publication_id === owner.publication_id
+      && this.publicationClaim.owner.attempt_token === owner.attempt_token
+    ) {
+      return this.publicationClaim.expiresAt > this.leaseNow
+        ? 'active' as const
+        : 'expired' as const
+    }
+    return 'conflict' as const
+  }
+
+  async releasePublicationWrite(
+    candidate: PublicSnapshotPointerV1,
+    owner: PublicationWriteOwner,
+  ) {
+    if (
+      this.publicationClaim?.owner.publication_id === owner.publication_id
+      && this.publicationClaim.owner.attempt_token === owner.attempt_token
       && canonicalJson(this.publicationClaim.candidate) === canonicalJson(candidate)
     ) this.publicationClaim = undefined
   }
 
-  async markPublicationPublished(candidate: PublicSnapshotPointerV1, token?: string) {
+  async markPublicationPublished(
+    candidate: PublicSnapshotPointerV1,
+    owner?: PublicationWriteOwner,
+  ) {
     this.events.push('d1:mark-published')
     const authorization = await this.confirmPublicationAuthorized(candidate)
     if (authorization === 'conflict') throw new Error('Publication verified-state conflict')
     if (
-      token !== undefined
+      owner !== undefined
       && (
-        this.publicationClaim?.token !== token
+        this.publicationClaim?.owner.publication_id !== owner.publication_id
+        || this.publicationClaim.owner.attempt_token !== owner.attempt_token
         || canonicalJson(this.publicationClaim.candidate) !== canonicalJson(candidate)
+        || this.publicationClaim.expiresAt <= this.leaseNow
       )
     ) throw new Error('Publication write claim conflict')
     this.verified = structuredClone(candidate)
     this.pending = undefined
     this.publicationClaim = undefined
+  }
+
+  advanceLeaseClock(seconds: number) {
+    this.leaseNow += seconds
   }
 }
 
@@ -279,6 +334,7 @@ class FaultState extends MemoryState {
   commitThenThrow = false
   claimThenThrow = false
   failRelease = false
+  beforeConfirm?: () => Promise<void>
   failMark = false
   markThenThrow = false
 
@@ -292,8 +348,11 @@ class FaultState extends MemoryState {
     return committed
   }
 
-  override async claimPublicationWrite(candidate: PublicSnapshotPointerV1, token: string) {
-    const claimed = await super.claimPublicationWrite(candidate, token)
+  override async claimPublicationWrite(
+    candidate: PublicSnapshotPointerV1,
+    owner: PublicationWriteOwner,
+  ) {
+    const claimed = await super.claimPublicationWrite(candidate, owner)
     if (this.claimThenThrow) {
       this.claimThenThrow = false
       throw new Error('injected D1 claim response loss')
@@ -301,17 +360,33 @@ class FaultState extends MemoryState {
     return claimed
   }
 
-  override async releasePublicationWrite(candidate: PublicSnapshotPointerV1, token: string) {
+  override async releasePublicationWrite(
+    candidate: PublicSnapshotPointerV1,
+    owner: PublicationWriteOwner,
+  ) {
     if (this.failRelease) throw new Error('injected D1 claim release failure')
-    await super.releasePublicationWrite(candidate, token)
+    await super.releasePublicationWrite(candidate, owner)
   }
 
-  override async markPublicationPublished(candidate: PublicSnapshotPointerV1, token?: string) {
+  override async confirmPublicationWrite(
+    candidate: PublicSnapshotPointerV1,
+    owner: PublicationWriteOwner,
+  ) {
+    const beforeConfirm = this.beforeConfirm
+    this.beforeConfirm = undefined
+    await beforeConfirm?.()
+    return await super.confirmPublicationWrite(candidate, owner)
+  }
+
+  override async markPublicationPublished(
+    candidate: PublicSnapshotPointerV1,
+    owner?: PublicationWriteOwner,
+  ) {
     if (this.failMark) {
       this.events.push('d1:mark-published')
       throw new Error('injected D1 published-state failure')
     }
-    await super.markPublicationPublished(candidate, token)
+    await super.markPublicationPublished(candidate, owner)
     if (this.markThenThrow) throw new Error('injected D1 mark response loss')
   }
 }
@@ -351,6 +426,9 @@ test('identical verified content is unchanged before generation allocation or R2
     },
     async claimPublicationWrite() {
       throw new Error('unchanged publication claimed pointer write')
+    },
+    async confirmPublicationWrite() {
+      throw new Error('unchanged publication confirmed pointer write')
     },
     async releasePublicationWrite() {
       throw new Error('unchanged publication released pointer write')
@@ -654,7 +732,7 @@ test('verified advancement after pending commit but before KV prevents a stale p
   assert.equal(fixture.pointerKv.values.get('public:current'), fixture.oldPointerBytes)
 })
 
-test('an in-flight pointer claim prevents protocol-respecting concurrent publishers from writing stale KV', async () => {
+test('overlapping attempts for the same publication identity cannot rewrite an older generation', async () => {
   const fixture = await changedFixture()
   const newerInput = await publicationInput({
     ...emptyInput(),
@@ -685,7 +763,7 @@ test('an in-flight pointer claim prevents protocol-respecting concurrent publish
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
-    publicationId: 'workflow-b',
+    publicationId: 'workflow-a',
   })
   let blockedNewer = false
   try {
@@ -724,6 +802,61 @@ test('an in-flight pointer claim prevents protocol-respecting concurrent publish
   )
 })
 
+test('an expired same-identity attempt is fenced after takeover and cannot rewrite after the next generation', async () => {
+  const fixture = await changedFixture()
+  const newerInput = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(101)],
+  })
+  let notifyBlocked!: () => void
+  let releaseExpired!: () => void
+  const blocked = new Promise<void>((resolve) => { notifyBlocked = resolve })
+  const release = new Promise<void>((resolve) => { releaseExpired = resolve })
+  fixture.state.beforeConfirm = async () => {
+    notifyBlocked()
+    await release
+  }
+
+  const expiredAttempt = publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW,
+    publicationId: 'workflow-expiry',
+  })
+  await blocked
+  fixture.state.advanceLeaseClock(61)
+
+  const takeover = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW,
+    publicationId: 'workflow-expiry',
+  })
+  const newer = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: newerInput,
+    now: NOW + 1,
+    publicationId: 'workflow-next',
+  })
+  releaseExpired()
+  const expired = await expiredAttempt
+
+  assert.equal(takeover.status, 'published')
+  assert.equal(newer.status, 'published')
+  assert.equal(expired.status, 'pending')
+  assert.equal(expired.pointerPuts, 0)
+  assert.deepEqual(
+    fixture.pointerKv.putValues.map((value) => JSON.parse(value).generation),
+    [12, 13],
+  )
+})
+
 test('claim response loss and crash before KV are replayable by the same durable publication identity', async () => {
   const fixture = await changedFixture()
   fixture.state.claimThenThrow = true
@@ -749,7 +882,7 @@ test('claim response loss and crash before KV are replayable by the same durable
   assert.equal(differentRun.status, 'pending')
   assert.equal(differentRun.pointerPuts, 0)
 
-  const replay = await publishPublicSnapshot({
+  const preExpiryReplay = await publishPublicSnapshot({
     state: fixture.state,
     dataBucket: fixture.dataBucket,
     pointerKv: fixture.pointerKv,
@@ -757,8 +890,20 @@ test('claim response loss and crash before KV are replayable by the same durable
     now: NOW,
     publicationId: 'workflow-replay',
   })
-  assert.equal(replay.status, 'published')
-  assert.equal(replay.pointerPuts, 1)
+  assert.equal(preExpiryReplay.status, 'pending')
+  assert.equal(preExpiryReplay.pointerPuts, 0)
+
+  fixture.state.advanceLeaseClock(61)
+  const postExpiryReplay = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW,
+    publicationId: 'workflow-replay',
+  })
+  assert.equal(postExpiryReplay.status, 'published')
+  assert.equal(postExpiryReplay.pointerPuts, 1)
 })
 
 test('release failure retains a replayable claim for the same durable publication identity', async () => {
@@ -779,7 +924,7 @@ test('release failure retains a replayable claim for the same durable publicatio
 
   fixture.pointerKv.mode = 'normal'
   fixture.state.failRelease = false
-  const replay = await publishPublicSnapshot({
+  const preExpiryReplay = await publishPublicSnapshot({
     state: fixture.state,
     dataBucket: fixture.dataBucket,
     pointerKv: fixture.pointerKv,
@@ -787,8 +932,20 @@ test('release failure retains a replayable claim for the same durable publicatio
     now: NOW,
     publicationId: 'workflow-release-replay',
   })
-  assert.equal(replay.status, 'published')
-  assert.equal(replay.pointerPuts, 1)
+  assert.equal(preExpiryReplay.status, 'pending')
+  assert.equal(preExpiryReplay.pointerPuts, 0)
+
+  fixture.state.advanceLeaseClock(61)
+  const postExpiryReplay = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW,
+    publicationId: 'workflow-release-replay',
+  })
+  assert.equal(postExpiryReplay.status, 'published')
+  assert.equal(postExpiryReplay.pointerPuts, 1)
 })
 
 test('definite KV failure returns pending and keeps the old pointer byte-identical', async () => {
