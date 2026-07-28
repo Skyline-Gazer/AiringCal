@@ -401,7 +401,7 @@ test('a subject tombstone preserves both existing source-key pairs without retry
     media_hash: null,
     nsfw: 1,
     checked_at: now,
-    next_refresh_at: nextSubjectRefreshAt(job.subject_id, now),
+    next_refresh_at: now + 86400,
     retry_count: 0,
     retry_after: null,
     error_code: null,
@@ -418,6 +418,81 @@ test('a subject tombstone preserves both existing source-key pairs without retry
     assert.equal(database.row?.r2_image_common_key, previous.r2_image_common_key)
     assert.equal(database.row?.source_image_large_url, previous.source_image_large_url)
     assert.equal(database.row?.r2_image_large_key, previous.r2_image_large_key)
+    assert.equal(r2.writes.length, 0)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('an active D1 subject tombstone suppresses refresh before its 24-hour boundary with zero writes', async () => {
+  const checkedAt = 1_782_770_000
+  const tombstone = await existingRow(subject(), {
+    detail_json: null,
+    detail_hash: null,
+    nsfw: 1,
+    checked_at: checkedAt,
+    next_refresh_at: checkedAt + 86400,
+  })
+  tombstone.media_hash = await mediaHash(tombstone)
+  const database = new RecordingD1(tombstone)
+  const r2 = new RecordingR2()
+  const refreshSubjectMediaD1 = await loadRefreshSubjectMediaD1()
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  globalThis.fetch = async (input) => {
+    throw new Error(`active tombstone must suppress upstream fetch: ${input}`)
+  }
+  Date.now = () => (checkedAt + 86399) * 1000
+
+  try {
+    assert.deepEqual(
+      await refreshSubjectMediaD1({ AIRING_CAL_D1: database, AIRING_CAL_R2: r2 }, job),
+      { d1Writes: 0, imageWrites: 0, status: 'unchanged' },
+    )
+    assert.equal(database.batchCalls.length, 0)
+    assert.equal(r2.writes.length, 0)
+    assert.deepEqual(database.row, tombstone)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('a D1 subject tombstone reprobes at its exact 24-hour boundary', async () => {
+  const checkedAt = 1_782_770_000
+  const tombstone = await existingRow(subject(), {
+    detail_json: null,
+    detail_hash: null,
+    nsfw: 1,
+    checked_at: checkedAt,
+    next_refresh_at: checkedAt + 86400,
+  })
+  tombstone.media_hash = await mediaHash(tombstone)
+  const database = new RecordingD1(tombstone)
+  const r2 = new RecordingR2()
+  const refreshSubjectMediaD1 = await loadRefreshSubjectMediaD1()
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  let subjectCalls = 0
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith('/v0/subjects/23080')) {
+      subjectCalls++
+      return Response.json(subject())
+    }
+    throw new Error(`recovered tombstone must not redownload unchanged images: ${input}`)
+  }
+  Date.now = () => (checkedAt + 86400) * 1000
+
+  try {
+    assert.deepEqual(
+      await refreshSubjectMediaD1({ AIRING_CAL_D1: database, AIRING_CAL_R2: r2 }, job),
+      { d1Writes: 1, imageWrites: 0, status: 'updated' },
+    )
+    assert.equal(subjectCalls, 1)
+    assert.equal(database.batchCalls.length, 1)
+    assert.equal(database.row?.detail_json, canonicalJson(subject()))
+    assert.equal(database.row?.nsfw, 0)
     assert.equal(r2.writes.length, 0)
   } finally {
     Date.now = originalNow
@@ -453,6 +528,44 @@ test('a transient upstream error changes only classified retry fields and never 
       error_code: 'BGM_RATE_LIMITED',
     })
     assert.doesNotMatch(JSON.stringify(database.row), /TOP_SECRET_UPSTREAM_BODY/)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('repeated transient failures saturate retry_count at the final backoff tier while rescheduling', async () => {
+  const previous = await existingRow()
+  const database = new RecordingD1(previous)
+  const r2 = new RecordingR2()
+  const refreshSubjectMediaD1 = await loadRefreshSubjectMediaD1()
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  let now = 1_782_810_000
+  globalThis.fetch = async () => new Response('private repeated failure body', { status: 503 })
+  Date.now = () => now * 1000
+
+  try {
+    const expected = [
+      { retryCount: 1, retryDelay: 30 },
+      { retryCount: 2, retryDelay: 120 },
+      { retryCount: 3, retryDelay: 300 },
+      { retryCount: 3, retryDelay: 300 },
+      { retryCount: 3, retryDelay: 300 },
+    ]
+    for (const tier of expected) {
+      assert.deepEqual(
+        await refreshSubjectMediaD1({ AIRING_CAL_D1: database, AIRING_CAL_R2: r2 }, job),
+        { d1Writes: 1, imageWrites: 0, status: 'retry_scheduled' },
+      )
+      assert.equal(database.row?.retry_count, tier.retryCount)
+      assert.equal(database.row?.retry_after, now + tier.retryDelay)
+      assert.equal(database.row?.error_code, 'BGM_UPSTREAM_5XX')
+      assert.doesNotMatch(JSON.stringify(database.row), /private repeated failure body/)
+      now += 1
+    }
+    assert.equal(database.batchCalls.length, expected.length)
+    assert.equal(r2.writes.length, 0)
   } finally {
     Date.now = originalNow
     globalThis.fetch = originalFetch

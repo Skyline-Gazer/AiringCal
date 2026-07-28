@@ -25,6 +25,7 @@ export interface D1MediaRefreshResult {
 }
 
 const RETRY_DELAYS_SECONDS = [30, 120, 300] as const
+const SUBJECT_NOT_FOUND_TTL_SECONDS = 86400
 
 // Source URL and R2 key are one authoritative pair until a requested refresh succeeds.
 class ImageUnavailableError extends Error {
@@ -87,6 +88,15 @@ function emptySubjectMediaRow(subjectId: number): SubjectMediaRow {
     retry_after: null,
     error_code: null,
   }
+}
+
+function isActiveSubjectNotFoundTombstone(row: SubjectMediaRow, now: number): boolean {
+  return row.detail_json === null
+    && row.detail_hash === null
+    && row.nsfw === 1
+    && row.checked_at !== null
+    && row.next_refresh_at === row.checked_at + SUBJECT_NOT_FOUND_TTL_SECONDS
+    && now < row.next_refresh_at
 }
 
 async function calculateMediaHash(row: SubjectMediaRow): Promise<string> {
@@ -153,14 +163,19 @@ export async function refreshSubjectMediaD1(
   const store = new D1StateStore(env.AIRING_CAL_D1, () => now)
   const current = await store.getSubjectMediaRow(job.subject_id)
   const base = current ?? emptySubjectMediaRow(job.subject_id)
+  if (current && isActiveSubjectNotFoundTombstone(current, now)) {
+    return { d1Writes: 0, imageWrites: 0, status: 'unchanged' }
+  }
   const client = new BgmClient()
   const imageStore = new R2ImageStore(env.AIRING_CAL_R2)
   let imageWrites = 0
   let semantic: SubjectMediaRow
+  let subjectNotFound = false
 
   try {
     const subject = await client.getSubject(job.subject_id)
     if (!subject) {
+      subjectNotFound = true
       semantic = {
         ...base,
         detail_json: null,
@@ -204,7 +219,9 @@ export async function refreshSubjectMediaD1(
     semantic.media_hash = await calculateMediaHash(semantic)
   } catch (error) {
     const classification = classifyRefreshError(error)
-    const retryCount = classification.retryable ? base.retry_count + 1 : 0
+    const retryCount = classification.retryable
+      ? Math.min(base.retry_count + 1, RETRY_DELAYS_SECONDS.length)
+      : 0
     const retryDelay = RETRY_DELAYS_SECONDS[Math.min(base.retry_count, RETRY_DELAYS_SECONDS.length - 1)]
     const failed: SubjectMediaRow = {
       ...base,
@@ -236,7 +253,9 @@ export async function refreshSubjectMediaD1(
   const next: SubjectMediaRow = {
     ...semantic,
     checked_at: now,
-    next_refresh_at: nextSubjectRefreshAt(job.subject_id, now),
+    next_refresh_at: subjectNotFound
+      ? now + SUBJECT_NOT_FOUND_TTL_SECONDS
+      : nextSubjectRefreshAt(job.subject_id, now),
     retry_count: 0,
     retry_after: null,
     error_code: null,
