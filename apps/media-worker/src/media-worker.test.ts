@@ -207,6 +207,71 @@ test('media-worker routes D1-only V3 jobs without new legacy per-subject KV puts
   }
 })
 
+test('media-worker retries D1-authoritative read and upsert failures without legacy KV mutation', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith('/v0/subjects/23080')) {
+      return Response.json({
+        id: 23080,
+        type: 2,
+        name: 'A',
+        name_cn: 'A CN',
+        summary: '',
+        date: '2026-01-01',
+        eps: 12,
+        total_episodes: 12,
+        nsfw: false,
+        images: {},
+      })
+    }
+    throw new Error(`unexpected fetch ${input}`)
+  }
+
+  try {
+    for (const failurePoint of ['read', 'upsert'] as const) {
+      const kv = new MockKV()
+      const message = trackedBatch({
+        version: 3,
+        generation: 9,
+        job_id: `d1-${failurePoint}:23080`,
+        subject_id: 23080,
+        title: 'A CN',
+        components: ['detail', 'meta'],
+      })
+      const d1 = {
+        prepare() {
+          return {
+            bind() { return this },
+            async first() {
+              if (failurePoint === 'read') throw new Error('D1 read unavailable')
+              return null
+            },
+            async all() { throw new Error('unexpected all') },
+            async run() { throw new Error('unexpected run') },
+            async raw() { throw new Error('unexpected raw') },
+          }
+        },
+        async batch() {
+          throw new Error('D1 upsert unavailable')
+        },
+        async exec() { return { count: 0, duration: 0 } },
+      }
+
+      await worker.queue(message.batch as any, {
+        AIRING_CAL_D1: d1,
+        AIRING_CAL_KV: kv,
+        AIRING_CAL_R2: new MockR2(),
+      } as any)
+
+      assert.equal(message.state.acked, 0, failurePoint)
+      assert.deepEqual(message.state.retries, [{ delaySeconds: 30 }], failurePoint)
+      assert.deepEqual(kv.puts, [], failurePoint)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('media-worker changed image source still writes cached status', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()

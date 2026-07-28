@@ -363,6 +363,14 @@ async function queue(batch: QueueBatch, env: MediaEnv): Promise<void> {
       }
       message.ack?.()
     } catch (error) {
+      const d1Authoritative = isVersionedJob(message.body)
+        && message.body.version === 3
+        && env.AIRING_CAL_D1 !== undefined
+      if (d1Authoritative) {
+        const delays = [30, 120, 300]
+        message.retry?.({ delaySeconds: delays[Math.min(Math.max((message.attempts ?? 1) - 1, 0), delays.length - 1)] })
+        continue
+      }
       if (isVersionedJob(message.body) && isTransient(error)) {
         if (!env.SUBJECT_REFRESH_COORDINATOR) {
           const storage = new KVStorage(env.AIRING_CAL_KV)

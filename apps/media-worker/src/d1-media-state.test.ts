@@ -298,6 +298,47 @@ test('a changed common image writes only its binary and one D1 subject row', asy
   }
 })
 
+test('a requested changed image 404 preserves its prior source-key pair and schedules retry only', async () => {
+  const previous = await existingRow()
+  const database = new RecordingD1(previous)
+  const r2 = new RecordingR2()
+  const refreshSubjectMediaD1 = await loadRefreshSubjectMediaD1()
+  const now = 1_782_750_000
+  const next = subject('https://img.example/common-missing.jpg')
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.endsWith('/v0/subjects/23080')) return Response.json(next)
+    if (url === next.images.common) return new Response('private image error body', { status: 404 })
+    throw new Error(`unexpected fetch ${url}`)
+  }
+  Date.now = () => now * 1000
+
+  try {
+    assert.deepEqual(
+      await refreshSubjectMediaD1(
+        { AIRING_CAL_D1: database, AIRING_CAL_R2: r2 },
+        { ...job, components: ['detail', 'meta', 'image_common'] },
+      ),
+      { d1Writes: 1, imageWrites: 0, status: 'retry_scheduled' },
+    )
+    assert.deepEqual(database.row, {
+      ...previous,
+      retry_count: 1,
+      retry_after: now + 30,
+      error_code: 'IMAGE_UNAVAILABLE',
+    })
+    assert.equal(database.row?.source_image_common_url, previous.source_image_common_url)
+    assert.equal(database.row?.r2_image_common_key, previous.r2_image_common_key)
+    assert.equal(r2.writes.length, 0)
+    assert.doesNotMatch(JSON.stringify(database.row), /private image error body/)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('a transient upstream error changes only classified retry fields and never persists its body', async () => {
   const previous = await existingRow()
   const database = new RecordingD1(previous)

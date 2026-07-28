@@ -26,6 +26,13 @@ export interface D1MediaRefreshResult {
 
 const RETRY_DELAYS_SECONDS = [30, 120, 300] as const
 
+class ImageUnavailableError extends Error {
+  constructor() {
+    super('Requested image is unavailable')
+    this.name = 'ImageUnavailableError'
+  }
+}
+
 const SUBJECT_MEDIA_FIELDS = [
   'subject_id',
   'detail_json',
@@ -92,6 +99,7 @@ async function calculateMediaHash(row: SubjectMediaRow): Promise<string> {
 }
 
 function classifyRefreshError(error: unknown): { code: string; retryable: boolean } {
+  if (error instanceof ImageUnavailableError) return { code: 'IMAGE_UNAVAILABLE', retryable: true }
   if (error instanceof BgmTimeoutError) return { code: 'BGM_TIMEOUT', retryable: true }
   if (error instanceof BgmNetworkError) return { code: 'BGM_NETWORK', retryable: true }
   if (error instanceof BgmHttpError) {
@@ -118,7 +126,7 @@ async function refreshImage(
   if (!requested) return { key: previousKey, writes: 0 }
 
   const downloaded = await client.downloadImage(sourceUrl)
-  if (!downloaded) return { key: previousKey, writes: 0 }
+  if (!downloaded) throw new ImageUnavailableError()
   const digest = await crypto.subtle.digest('SHA-256', downloaded.data)
   const hash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
   const key = imageOriginalKey(hash)
