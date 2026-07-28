@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 
 const repositoryRoot = resolve(import.meta.dirname, '../../..')
-const migrationPath = resolve(repositoryRoot, 'migrations/0001_d1_authoritative_state.sql')
+const migrationsPath = resolve(repositoryRoot, 'migrations')
+const bootstrapMigrationPath = resolve(migrationsPath, '0001_d1_authoritative_state.sql')
+const replayMigrationPath = resolve(migrationsPath, '0002_sync_run_replay_result.sql')
 const configPath = resolve(repositoryRoot, 'packages/storage/wrangler.d1-test.toml')
 const wranglerPath = resolve(repositoryRoot, 'node_modules/.bin/wrangler')
 
@@ -110,6 +113,7 @@ const expectedColumns: Record<string, ExpectedColumn[]> = {
     column('started_at', 'INTEGER', 1),
     column('heartbeat_at', 'INTEGER', 1),
     column('completed_at', 'INTEGER', 0),
+    column('result_json', 'TEXT', 0),
   ],
 }
 
@@ -126,7 +130,7 @@ function runWrangler(args: string[], logPath: string) {
 }
 
 test('migration defines only the authoritative tables and reservation helper without secondary indexes or foreign keys', () => {
-  const sql = readFileSync(migrationPath, 'utf8')
+  const sql = readFileSync(bootstrapMigrationPath, 'utf8')
 
   for (const table of authoritativeTables) {
     assert.match(sql, new RegExp(`CREATE TABLE\\s+(?:IF NOT EXISTS\\s+)?${table}\\b`, 'i'))
@@ -144,6 +148,48 @@ test('migration defines only the authoritative tables and reservation helper wit
   assert.equal((sql.match(/resource\s+TEXT\s+NOT NULL\s+CHECK\s*\(\s*resource\s+IN\s*\(\s*'media'\s*\)\s*\)/gi) ?? []).length, 2)
   assert.match(sql, /submission_status\s+TEXT[\s\S]*CHECK\s*\(\s*submission_status\s+IN\s*\(\s*'reserved'\s*,\s*'submitted'\s*,\s*'uncertain'\s*\)\s*\)/i)
   assert.doesNotMatch(sql, /\b(?:error_body|error_comment|upstream_body)\b/i)
+})
+
+test('ordered additive migration preserves the deployed bootstrap and adds replay results', () => {
+  assert.deepEqual(
+    readdirSync(migrationsPath).filter((name) => name.endsWith('.sql')).sort(),
+    ['0001_d1_authoritative_state.sql', '0002_sync_run_replay_result.sql'],
+  )
+  const bootstrap = readFileSync(bootstrapMigrationPath, 'utf8')
+  const syncRunsBootstrap = bootstrap.match(/CREATE TABLE sync_runs\s*\([\s\S]*?\n\);/i)?.[0]
+  assert.ok(syncRunsBootstrap)
+  assert.doesNotMatch(syncRunsBootstrap, /\bresult_json\b/i)
+  assert.match(
+    readFileSync(replayMigrationPath, 'utf8'),
+    /^\s*ALTER TABLE sync_runs ADD COLUMN result_json TEXT;\s*$/i,
+  )
+})
+
+test('additive replay migration upgrades an existing bootstrap database without losing runs', () => {
+  const database = new DatabaseSync(':memory:')
+  database.exec(readFileSync(bootstrapMigrationPath, 'utf8'))
+  database.exec(
+    "INSERT INTO sync_runs (instance_id, status, stage, started_at, heartbeat_at) VALUES ('existing', 'running', 'collections', 1, 1)",
+  )
+  assert.equal(
+    database.prepare("SELECT count(*) AS count FROM pragma_table_info('sync_runs') WHERE name = 'result_json'").get()?.count,
+    0,
+  )
+
+  database.exec(readFileSync(replayMigrationPath, 'utf8'))
+
+  assert.equal(
+    database.prepare("SELECT count(*) AS count FROM pragma_table_info('sync_runs') WHERE name = 'result_json'").get()?.count,
+    1,
+  )
+  assert.deepEqual(
+    {
+      ...database.prepare(
+        "SELECT instance_id, status, result_json FROM sync_runs WHERE instance_id = 'existing'",
+      ).get(),
+    },
+    { instance_id: 'existing', status: 'running', result_json: null },
+  )
 })
 
 test('migration applies idempotently to isolated local D1 and creates the exact application schema', (t) => {

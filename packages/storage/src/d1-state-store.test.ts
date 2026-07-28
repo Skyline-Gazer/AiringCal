@@ -24,7 +24,7 @@ const collectionColumns = [
 const syncRunColumns = [
   'instance_id', 'status', 'stage', 'generation', 'collection_count', 'changed_count',
   'missing_count', 'deleted_count', 'media_selected_count', 'media_granted_count',
-  'input_hash', 'public_hash', 'error_code', 'started_at', 'heartbeat_at', 'completed_at',
+  'input_hash', 'public_hash', 'result_json', 'error_code', 'started_at', 'heartbeat_at', 'completed_at',
 ] as const
 
 function result<T = Record<string, unknown>>(changes = 0, rows: T[] = []): D1ResultLike<T> {
@@ -304,6 +304,7 @@ function syncRun(overrides: Partial<SyncRunRow> = {}): SyncRunRow {
     media_granted_count: 0,
     input_hash: null,
     public_hash: null,
+    result_json: null,
     error_code: null,
     started_at: 100,
     heartbeat_at: 100,
@@ -786,12 +787,14 @@ test('sync run lifecycle uses positional binds and persists only classified erro
     heartbeat_at: 110,
     collection_count: 551,
     changed_count: 1,
+    result_json: '{"schema_version":1,"result":{"runId":"run-1"}}',
   })
   await store.completeSyncRun('run-1', {
     heartbeat_at: 120,
     completed_at: 120,
     input_hash: 'a'.repeat(64),
     public_hash: 'b'.repeat(64),
+    result_json: '{"schema_version":1,"result":{"runId":"run-1"}}',
   })
   await store.startSyncRun(syncRun({ instance_id: 'run-2', stage: 'initialize' }))
   await store.failSyncRun('run-2', {
@@ -806,12 +809,30 @@ test('sync run lifecycle uses positional binds and persists only classified erro
   assert.match(statements[0]?.sql ?? '', /^INSERT INTO sync_runs \(/)
   assert.match(statements[0]?.sql ?? '', /ON CONFLICT\(instance_id\) DO NOTHING$/)
   assert.match(statements[2]?.sql ?? '', /^UPDATE sync_runs SET stage = \?/)
+  assert.match(statements[2]?.sql ?? '', /\bresult_json = \?/)
   assert.match(statements[3]?.sql ?? '', /^UPDATE sync_runs SET status = 'ok'/)
+  assert.match(statements[3]?.sql ?? '', /\bresult_json = COALESCE\(\?, result_json\)/)
   assert.match(statements[3]?.sql ?? '', /status NOT IN \('ok', 'error'\)$/)
   assert.match(statements[5]?.sql ?? '', /^UPDATE sync_runs SET status = 'error'/)
   assert.match(statements[5]?.sql ?? '', /status NOT IN \('ok', 'error'\)$/)
   assert.ok(statements[5]?.binds.includes('UPSTREAM_RATE_LIMITED'))
   assert.equal(JSON.stringify(statements).includes('raw body'), false)
+})
+
+test('getSyncRun selects and validates the persisted replay result', async () => {
+  const fake = new RecordingD1()
+  const row = syncRun({
+    instance_id: 'prepared',
+    stage: 'media',
+    result_json: '{"schema_version":1,"result":{"runId":"prepared"}}',
+  })
+  fake.syncRows.set('prepared', { ...row })
+
+  assert.deepEqual(await new D1StateStore(fake).getSyncRun('prepared'), row)
+  assert.match(fake.prepared.at(-1)?.sql ?? '', /\bresult_json\b/)
+
+  fake.syncRows.set('prepared', { ...row, result_json: '{broken' })
+  await assert.rejects(new D1StateStore(fake).getSyncRun('prepared'), /Invalid sync_runs\.result_json/)
 })
 
 test('startSyncRun accepts exact replay but rejects instance id reuse with different payload', async () => {

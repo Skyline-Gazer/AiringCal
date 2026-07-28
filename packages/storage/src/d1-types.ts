@@ -44,6 +44,7 @@ export interface SyncRunUpdate {
   media_granted_count?: number
   input_hash?: string | null
   public_hash?: string | null
+  result_json?: string | null
 }
 
 export interface SyncRunCompletion {
@@ -52,6 +53,7 @@ export interface SyncRunCompletion {
   generation?: number | null
   input_hash?: string | null
   public_hash?: string | null
+  result_json?: string | null
 }
 
 export interface SyncRunFailure {
@@ -95,6 +97,7 @@ export interface SyncRunRow {
   media_granted_count: number
   input_hash: string | null
   public_hash: string | null
+  result_json: string | null
   error_code: string | null
   started_at: number
   heartbeat_at: number

@@ -7,7 +7,9 @@ import {
   type PublicSnapshotInput,
 } from '@airing-cal/domain'
 import {
+  canonicalJson,
   D1StateStore,
+  sha256Canonical,
   StaleCollectionDiffError,
   type BudgetReservationRequest,
   type BudgetReservationResult,
@@ -22,7 +24,6 @@ import {
   type SyncTerminalTransitionResult,
   type SubjectMediaRow,
 } from '@airing-cal/storage'
-import { reserveAndSubmitMedia } from './snapshot-coordinator.ts'
 import type { CompleteFullFetch } from './full-fetch-boundary.ts'
 import {
   selectRefreshCandidates,
@@ -43,6 +44,7 @@ export interface D1IncrementalSyncStore {
   listSubjectMediaRows(): Promise<SubjectMediaRow[]>
   getAppState<T>(key: string, decode: (value: unknown) => T): Promise<T | undefined>
   putAppState<T>(key: string, value: T): Promise<void>
+  getSyncRun(instanceId: string): Promise<SyncRunRow | undefined>
   applyCollectionDiff(plan: CollectionDiffPlan): Promise<{ rowsWritten: number }>
   startSyncRun(row: SyncRunRow): Promise<void>
   updateSyncRun(instanceId: string, update: SyncRunUpdate): Promise<void>
@@ -77,6 +79,76 @@ interface RunArguments {
   now: number
   store?: D1IncrementalSyncStore
   submitMedia?: (request: BudgetReservationRequest<MediaRefreshJobV3>) => Promise<BudgetReservationResult>
+}
+
+interface PreparedResultEnvelope {
+  schema_version: 1
+  input_hash: string
+  result: D1SyncResult
+}
+
+function requireNonNegativeInteger(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`Invalid prepared D1 sync result: ${field}`)
+  }
+  return value
+}
+
+function decodePreparedResult(
+  resultJson: string | null,
+  expectedInputHash: string,
+  expectedInstanceId: string,
+): D1SyncResult | undefined {
+  if (resultJson === null) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(resultJson)
+  } catch {
+    throw new Error('Invalid prepared D1 sync result JSON')
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('Invalid prepared D1 sync result')
+  }
+  const envelope = parsed as Partial<PreparedResultEnvelope>
+  if (envelope.schema_version !== 1 || envelope.input_hash !== expectedInputHash) {
+    throw new Error('D1 sync instance input mismatch')
+  }
+  const raw = envelope.result
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    throw new Error('Invalid prepared D1 sync result')
+  }
+  const publication = raw.publicationInput
+  const media = raw.media
+  if (
+    raw.runId !== expectedInstanceId
+    || typeof publication !== 'object'
+    || publication === null
+    || Array.isArray(publication)
+    || !Array.isArray(publication.collections)
+    || !Array.isArray(publication.calendar)
+    || typeof publication.content_hash !== 'string'
+    || !Number.isSafeInteger(publication.published_at)
+    || typeof media !== 'object'
+    || media === null
+    || Array.isArray(media)
+  ) {
+    throw new Error('Invalid prepared D1 sync result')
+  }
+  return {
+    rowsWritten: requireNonNegativeInteger(raw.rowsWritten, 'rowsWritten'),
+    firstMissing: requireNonNegativeInteger(raw.firstMissing, 'firstMissing'),
+    deleted: requireNonNegativeInteger(raw.deleted, 'deleted'),
+    restored: requireNonNegativeInteger(raw.restored, 'restored'),
+    publicationInput: publication as D1PublicationInput,
+    media: {
+      candidates: requireNonNegativeInteger(media.candidates, 'media.candidates'),
+      granted: requireNonNegativeInteger(media.granted, 'media.granted'),
+      confirmed: requireNonNegativeInteger(media.confirmed, 'media.confirmed'),
+      uncertain: requireNonNegativeInteger(media.uncertain, 'media.uncertain'),
+      deferred: requireNonNegativeInteger(media.deferred, 'media.deferred'),
+    },
+    runId: raw.runId,
+  }
 }
 
 function changedRows(plan: CollectionDiffPlan): CollectionRow[] {
@@ -282,6 +354,7 @@ export async function runD1IncrementalSync({
   const database = env.AIRING_CAL_D1
   const store = suppliedStore ?? (database ? new D1StateStore(database, () => now) : undefined)
   if (!store) throw new Error('AIRING_CAL_D1 is unavailable')
+  const completeInputHash = await sha256Canonical(completeInput)
 
   const run: SyncRunRow = {
     instance_id: instanceId,
@@ -294,16 +367,45 @@ export async function runD1IncrementalSync({
     deleted_count: 0,
     media_selected_count: 0,
     media_granted_count: 0,
-    input_hash: null,
+    input_hash: completeInputHash,
     public_hash: null,
+    result_json: null,
     error_code: null,
     started_at: now,
     heartbeat_at: now,
     completed_at: null,
   }
-  await store.startSyncRun(run)
+  const existingRun = await store.getSyncRun(instanceId)
+  if (existingRun === undefined) {
+    await store.startSyncRun(run)
+  } else if (existingRun.status !== 'running' && existingRun.status !== 'ok') {
+    throw new Error(`Sync run cannot be resumed from status: ${existingRun.status}`)
+  } else if (existingRun.input_hash !== completeInputHash) {
+    throw new Error(`D1 sync instance input mismatch: ${instanceId}`)
+  }
+
+  let preparedResult = existingRun === undefined
+    ? undefined
+    : decodePreparedResult(existingRun.result_json, completeInputHash, instanceId)
+  let preparedResultJson = existingRun?.result_json ?? undefined
+  if (existingRun?.status === 'ok') {
+    if (!preparedResult) throw new Error(`Completed D1 sync result is unavailable: ${instanceId}`)
+    return preparedResult
+  }
 
   try {
+    if (preparedResult && preparedResultJson) {
+      const transition = await store.completeSyncRun(instanceId, {
+        heartbeat_at: now,
+        completed_at: now,
+        input_hash: completeInputHash,
+        public_hash: preparedResult.publicationInput.content_hash,
+        result_json: preparedResultJson,
+      })
+      if (transition.terminal !== 'ok') throw new Error(`Sync run completion preserved ${transition.terminal}`)
+      return preparedResult
+    }
+
     const incoming = await Promise.all(completeInput.collections.map(({ user_id, collection }) =>
       normalizeCollection(user_id, collection)))
     let plan: CollectionDiffPlan | undefined
@@ -351,12 +453,7 @@ export async function runD1IncrementalSync({
       softLimit: MEDIA_SOFT_LIMIT,
       hardLimit: MEDIA_HARD_LIMIT,
     }
-    const submitMedia = suppliedSubmitMedia ?? (database
-      ? (budgetRequest: BudgetReservationRequest<MediaRefreshJobV3>) =>
-          reserveAndSubmitMedia(database, undefined, budgetRequest, now)
-      : undefined)
-    if (!submitMedia) throw new Error('D1 media submission is unavailable')
-    const reservation = jobs.length === 0
+    const reservation = jobs.length === 0 || suppliedSubmitMedia === undefined
       ? {
           granted: 0,
           consumed: 0,
@@ -364,7 +461,7 @@ export async function runD1IncrementalSync({
           hard_limit: MEDIA_HARD_LIMIT,
           submission: 'submitted' as const,
         }
-      : await submitMedia(request)
+      : await suppliedSubmitMedia(request)
     const confirmed = reservation.submission === 'submitted' ? reservation.granted : 0
     const uncertain = reservation.submission === 'uncertain' ? reservation.granted : 0
     const nextColdCursor = {
@@ -381,26 +478,7 @@ export async function runD1IncrementalSync({
     }
     const changed = changedRows(plan).length
 
-    await store.updateSyncRun(instanceId, {
-      stage: 'media',
-      heartbeat_at: now,
-      collection_count: completeInput.collections.length,
-      changed_count: changed,
-      missing_count: plan.firstMissing.length,
-      deleted_count: plan.confirmedDeleted.length,
-      media_selected_count: jobs.length,
-      media_granted_count: reservation.granted,
-      input_hash: publicInput.content_hash,
-      public_hash: publicInput.content_hash,
-    })
-    await store.completeSyncRun(instanceId, {
-      heartbeat_at: now,
-      completed_at: now,
-      input_hash: publicInput.content_hash,
-      public_hash: publicInput.content_hash,
-    })
-
-    return {
+    preparedResult = {
       rowsWritten,
       firstMissing: plan.firstMissing.length,
       deleted: plan.confirmedDeleted.length,
@@ -415,13 +493,55 @@ export async function runD1IncrementalSync({
       },
       runId: instanceId,
     }
+    preparedResultJson = canonicalJson({
+      schema_version: 1,
+      input_hash: completeInputHash,
+      result: preparedResult,
+    } satisfies PreparedResultEnvelope)
+
+    try {
+      await store.updateSyncRun(instanceId, {
+        stage: 'media',
+        heartbeat_at: now,
+        collection_count: completeInput.collections.length,
+        changed_count: changed,
+        missing_count: plan.firstMissing.length,
+        deleted_count: plan.confirmedDeleted.length,
+        media_selected_count: jobs.length,
+        media_granted_count: reservation.granted,
+        input_hash: completeInputHash,
+        public_hash: publicInput.content_hash,
+        result_json: preparedResultJson,
+      })
+    } catch (error) {
+      const persisted = await store.getSyncRun(instanceId)
+      if (persisted?.result_json !== preparedResultJson) throw error
+    }
+    const transition = await store.completeSyncRun(instanceId, {
+      heartbeat_at: now,
+      completed_at: now,
+      input_hash: completeInputHash,
+      public_hash: publicInput.content_hash,
+      result_json: preparedResultJson,
+    })
+    if (transition.terminal !== 'ok') throw new Error(`Sync run completion preserved ${transition.terminal}`)
+
+    return preparedResult
   } catch (error) {
     try {
-      await store.failSyncRun(instanceId, {
+      const transition = await store.failSyncRun(instanceId, {
         heartbeat_at: now,
         completed_at: now,
         error_code: classifyError(error),
       })
+      if (transition.terminal === 'ok') {
+        const persisted = await store.getSyncRun(instanceId)
+        const recovered = persisted
+          ? decodePreparedResult(persisted.result_json, completeInputHash, instanceId)
+          : undefined
+        if (recovered) return recovered
+        if (preparedResult) return preparedResult
+      }
     } catch {
       // Preserve the originating error; run failure persistence is best effort.
     }

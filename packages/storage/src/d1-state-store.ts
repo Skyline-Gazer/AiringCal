@@ -69,7 +69,7 @@ const CLASSIFIED_ERROR_CODE = /^[A-Z][A-Z0-9_]{1,63}$/
 const SYNC_RUN_COLUMNS = [
   'instance_id', 'status', 'stage', 'generation', 'collection_count', 'changed_count',
   'missing_count', 'deleted_count', 'media_selected_count', 'media_granted_count',
-  'input_hash', 'public_hash', 'error_code', 'started_at', 'heartbeat_at', 'completed_at',
+  'input_hash', 'public_hash', 'result_json', 'error_code', 'started_at', 'heartbeat_at', 'completed_at',
 ] as const
 
 export class StaleCollectionDiffError extends Error {
@@ -213,6 +213,57 @@ function assertClassifiedErrorCode(errorCode: string | null): void {
   }
 }
 
+function decodeSyncRunRow(raw: Record<string, unknown>): SyncRunRow {
+  const requireSyncString = (value: unknown, column: string): string => {
+    if (typeof value !== 'string') throw new Error(`Invalid sync_runs.${column}`)
+    return value
+  }
+  const nullableSyncString = (value: unknown, column: string): string | null => {
+    if (value === null) return null
+    return requireSyncString(value, column)
+  }
+  const requireSyncCount = (value: unknown, column: string): number => {
+    if (!isNonNegativeInteger(value)) throw new Error(`Invalid sync_runs.${column}`)
+    return value
+  }
+  const nullableSyncInteger = (value: unknown, column: string): number | null => {
+    if (value === null) return null
+    if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+      throw new Error(`Invalid sync_runs.${column}`)
+    }
+    return value
+  }
+  const resultJson = nullableSyncString(raw.result_json, 'result_json')
+  if (resultJson !== null) {
+    try {
+      JSON.parse(resultJson)
+    } catch {
+      throw new Error('Invalid sync_runs.result_json')
+    }
+  }
+  const errorCode = nullableSyncString(raw.error_code, 'error_code')
+  assertClassifiedErrorCode(errorCode)
+  return {
+    instance_id: requireSyncString(raw.instance_id, 'instance_id'),
+    status: requireSyncString(raw.status, 'status'),
+    stage: requireSyncString(raw.stage, 'stage'),
+    generation: nullableSyncInteger(raw.generation, 'generation'),
+    collection_count: requireSyncCount(raw.collection_count, 'collection_count'),
+    changed_count: requireSyncCount(raw.changed_count, 'changed_count'),
+    missing_count: requireSyncCount(raw.missing_count, 'missing_count'),
+    deleted_count: requireSyncCount(raw.deleted_count, 'deleted_count'),
+    media_selected_count: requireSyncCount(raw.media_selected_count, 'media_selected_count'),
+    media_granted_count: requireSyncCount(raw.media_granted_count, 'media_granted_count'),
+    input_hash: nullableSyncString(raw.input_hash, 'input_hash'),
+    public_hash: nullableSyncString(raw.public_hash, 'public_hash'),
+    result_json: resultJson,
+    error_code: errorCode,
+    started_at: requireSyncCount(raw.started_at, 'started_at'),
+    heartbeat_at: requireSyncCount(raw.heartbeat_at, 'heartbeat_at'),
+    completed_at: nullableSyncInteger(raw.completed_at, 'completed_at'),
+  }
+}
+
 function isNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
@@ -285,7 +336,7 @@ export class D1StateStore {
     throw new StaleCollectionDiffError(write.userId, write.subjectId)
   }
 
-  private async syncRunStatus(instanceId: string): Promise<string | undefined> {
+  async getSyncRunStatus(instanceId: string): Promise<string | undefined> {
     const row = await this.database
       .prepare('SELECT status FROM sync_runs WHERE instance_id = ?')
       .bind(instanceId)
@@ -295,12 +346,12 @@ export class D1StateStore {
     return row.status
   }
 
-  private async syncRunRow(instanceId: string): Promise<Record<string, unknown> | undefined> {
+  async getSyncRun(instanceId: string): Promise<SyncRunRow | undefined> {
     const row = await this.database
       .prepare(`SELECT ${SYNC_RUN_COLUMNS.join(', ')} FROM sync_runs WHERE instance_id = ?`)
       .bind(instanceId)
       .first<Record<string, unknown>>()
-    return row === null ? undefined : row
+    return row === null ? undefined : decodeSyncRunRow(row)
   }
 
   async listCollectionRows(): Promise<CollectionRow[]> {
@@ -448,7 +499,7 @@ export class D1StateStore {
     ).bind(...SYNC_RUN_COLUMNS.map((column) => row[column]))
     const changes = await this.executeBatch([statement])
     if (changes === 0) {
-      const current = await this.syncRunRow(row.instance_id)
+      const current = await this.getSyncRun(row.instance_id)
       if (current === undefined) throw new Error(`Sync run not found after start: ${row.instance_id}`)
       if (!SYNC_RUN_COLUMNS.every((column) => current[column] === row[column])) {
         throw new Error(`Sync run instance payload mismatch: ${row.instance_id}`)
@@ -459,7 +510,7 @@ export class D1StateStore {
   async updateSyncRun(instanceId: string, update: SyncRunUpdate): Promise<void> {
     const optionalColumns = [
       'generation', 'collection_count', 'changed_count', 'missing_count', 'deleted_count',
-      'media_selected_count', 'media_granted_count', 'input_hash', 'public_hash',
+      'media_selected_count', 'media_granted_count', 'input_hash', 'public_hash', 'result_json',
     ] as const
     const present = optionalColumns.filter((column) => update[column] !== undefined)
     const columns = ['stage', 'heartbeat_at', ...present] as const
@@ -468,7 +519,7 @@ export class D1StateStore {
     ).bind(...columns.map((column) => update[column]), instanceId)
     const changes = await this.executeBatch([statement])
     if (changes === 0) {
-      const status = await this.syncRunStatus(instanceId)
+      const status = await this.getSyncRunStatus(instanceId)
       if (status === undefined) throw new Error(`Sync run not found: ${instanceId}`)
       if (status === 'ok' || status === 'error') throw new Error(`Sync run already terminal: ${status}`)
       throw new Error(`Sync run update not applied: ${instanceId}`)
@@ -477,18 +528,19 @@ export class D1StateStore {
 
   async completeSyncRun(instanceId: string, completion: SyncRunCompletion): Promise<SyncTerminalTransitionResult> {
     const statement = this.database.prepare(
-      "UPDATE sync_runs SET status = 'ok', stage = 'complete', heartbeat_at = ?, completed_at = ?, generation = COALESCE(?, generation), input_hash = COALESCE(?, input_hash), public_hash = COALESCE(?, public_hash), error_code = NULL WHERE instance_id = ? AND status NOT IN ('ok', 'error')",
+      "UPDATE sync_runs SET status = 'ok', stage = 'complete', heartbeat_at = ?, completed_at = ?, generation = COALESCE(?, generation), input_hash = COALESCE(?, input_hash), public_hash = COALESCE(?, public_hash), result_json = COALESCE(?, result_json), error_code = NULL WHERE instance_id = ? AND status NOT IN ('ok', 'error')",
     ).bind(
       completion.heartbeat_at,
       completion.completed_at,
       completion.generation ?? null,
       completion.input_hash ?? null,
       completion.public_hash ?? null,
+      completion.result_json ?? null,
       instanceId,
     )
     const changes = await this.executeBatch([statement])
     if (changes === 0) {
-      const status = await this.syncRunStatus(instanceId)
+      const status = await this.getSyncRunStatus(instanceId)
       if (status === undefined) throw new Error(`Sync run not found: ${instanceId}`)
       if (status === 'ok') return { outcome: 'already_same_terminal', terminal: 'ok' }
       if (status === 'error') return { outcome: 'preserved_opposite_terminal', terminal: 'error' }
@@ -504,7 +556,7 @@ export class D1StateStore {
     ).bind(failure.heartbeat_at, failure.completed_at, failure.error_code, instanceId)
     const changes = await this.executeBatch([statement])
     if (changes === 0) {
-      const status = await this.syncRunStatus(instanceId)
+      const status = await this.getSyncRunStatus(instanceId)
       if (status === undefined) throw new Error(`Sync run not found: ${instanceId}`)
       if (status === 'error') return { outcome: 'already_same_terminal', terminal: 'error' }
       if (status === 'ok') return { outcome: 'preserved_opposite_terminal', terminal: 'ok' }

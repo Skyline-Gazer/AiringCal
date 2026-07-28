@@ -84,7 +84,7 @@ resource resolve 必须在任一 Worker upload 前确认 D1、data R2、image R2
 
 ### 3.3 `sync_runs`
 
-以 instance ID 标识一次运行，保存 status/stage、generation、计数、输入/公开 hash、开始/heartbeat/完成时间和脱敏错误。运行记录用于健康和审计，不进入公开内容 hash。
+以 instance ID 标识一次运行，保存 status/stage、generation、计数、输入/公开 hash、开始/heartbeat/完成时间和脱敏错误。`0002_sync_run_replay_result.sql` 以 additive migration 增加 `result_json`：在进入 terminal 状态前保存绑定规范输入 hash 的 versioned prepared result；running replay 只补 terminal transition，terminal replay 直接返回同一结果，不重复收藏 diff、媒体预算或完成动作。运行记录用于健康、审计和 crash-safe replay，不进入公开内容 hash。
 
 ### 3.4 `sync_budget`
 
@@ -212,7 +212,7 @@ D1、R2 PUT、R2 GET/验证或 KV pointer 任一步失败时，旧 pointer 不�
 - 完整获取 collections/calendar。
 - 调用纯规范化与 diff planner。
 - 以有界 D1 batch/transaction 提交变化。
-- 原子预留媒体预算并投递确定性任务。
+- 仅在 D1-only media Queue producer 可用时原子预留媒体预算并投递确定性任务；默认 shadow/no Queue 只报告候选与 deferred，不占用正式 D1 预算。
 - 构建、验证并 shadow 发布 R2 snapshot/pointer 候选。
 - 记录 `sync_runs`，但媒体失败不改变收藏发布结论。
 
