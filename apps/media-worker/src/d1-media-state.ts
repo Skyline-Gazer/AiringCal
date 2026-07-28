@@ -26,6 +26,7 @@ export interface D1MediaRefreshResult {
 
 const RETRY_DELAYS_SECONDS = [30, 120, 300] as const
 
+// Source URL and R2 key are one authoritative pair until a requested refresh succeeds.
 class ImageUnavailableError extends Error {
   constructor() {
     super('Requested image is unavailable')
@@ -121,9 +122,9 @@ async function refreshImage(
   client: BgmClient,
   imageStore: R2ImageStore,
 ): Promise<{ key: string | null; writes: number }> {
-  if (!sourceUrl) return { key: previousKey, writes: 0 }
   const requested = job.components.includes(size === 'common' ? 'image_common' : 'image_large')
   if (!requested) return { key: previousKey, writes: 0 }
+  if (!sourceUrl) throw new ImageUnavailableError()
 
   const downloaded = await client.downloadImage(sourceUrl)
   if (!downloaded) throw new ImageUnavailableError()
@@ -165,8 +166,7 @@ export async function refreshSubjectMediaD1(
         detail_json: null,
         detail_hash: null,
         nsfw: 1,
-        source_image_common_url: null,
-        source_image_large_url: null,
+        // The tombstone hides media through NSFW projection; Task 8 has no image deletion policy.
       }
     } else {
       const detailJson = canonicalJson(subject)

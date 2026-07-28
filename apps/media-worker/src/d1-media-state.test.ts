@@ -339,6 +339,92 @@ test('a requested changed image 404 preserves its prior source-key pair and sche
   }
 })
 
+test('a requested image source that vanishes preserves its prior source-key pair and schedules retry', async () => {
+  const previous = await existingRow()
+  const database = new RecordingD1(previous)
+  const r2 = new RecordingR2()
+  const refreshSubjectMediaD1 = await loadRefreshSubjectMediaD1()
+  const now = 1_782_760_000
+  const next = {
+    ...subject(),
+    images: { large: 'https://img.example/large.jpg' },
+  }
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith('/v0/subjects/23080')) return Response.json(next)
+    throw new Error(`vanished source must not download or mutate its pair: ${input}`)
+  }
+  Date.now = () => now * 1000
+
+  try {
+    assert.deepEqual(
+      await refreshSubjectMediaD1(
+        { AIRING_CAL_D1: database, AIRING_CAL_R2: r2 },
+        { ...job, components: ['detail', 'meta', 'image_common'] },
+      ),
+      { d1Writes: 1, imageWrites: 0, status: 'retry_scheduled' },
+    )
+    assert.deepEqual(database.row, {
+      ...previous,
+      retry_count: 1,
+      retry_after: now + 30,
+      error_code: 'IMAGE_UNAVAILABLE',
+    })
+    assert.equal(database.row?.source_image_common_url, previous.source_image_common_url)
+    assert.equal(database.row?.r2_image_common_key, previous.r2_image_common_key)
+    assert.equal(r2.writes.length, 0)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('a subject tombstone preserves both existing source-key pairs without retrying or deleting bytes', async () => {
+  const previous = await existingRow()
+  const database = new RecordingD1(previous)
+  const r2 = new RecordingR2()
+  const refreshSubjectMediaD1 = await loadRefreshSubjectMediaD1()
+  const now = 1_782_770_000
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith('/v0/subjects/23080')) return new Response('not found', { status: 404 })
+    throw new Error(`subject tombstone must not fetch or delete images: ${input}`)
+  }
+  Date.now = () => now * 1000
+
+  const expected: SubjectMediaRow = {
+    ...previous,
+    detail_json: null,
+    detail_hash: null,
+    media_hash: null,
+    nsfw: 1,
+    checked_at: now,
+    next_refresh_at: nextSubjectRefreshAt(job.subject_id, now),
+    retry_count: 0,
+    retry_after: null,
+    error_code: null,
+  }
+  expected.media_hash = await mediaHash(expected)
+
+  try {
+    assert.deepEqual(
+      await refreshSubjectMediaD1({ AIRING_CAL_D1: database, AIRING_CAL_R2: r2 }, job),
+      { d1Writes: 1, imageWrites: 0, status: 'updated' },
+    )
+    assert.deepEqual(database.row, expected)
+    assert.equal(database.row?.source_image_common_url, previous.source_image_common_url)
+    assert.equal(database.row?.r2_image_common_key, previous.r2_image_common_key)
+    assert.equal(database.row?.source_image_large_url, previous.source_image_large_url)
+    assert.equal(database.row?.r2_image_large_key, previous.r2_image_large_key)
+    assert.equal(r2.writes.length, 0)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('a transient upstream error changes only classified retry fields and never persists its body', async () => {
   const previous = await existingRow()
   const database = new RecordingD1(previous)
