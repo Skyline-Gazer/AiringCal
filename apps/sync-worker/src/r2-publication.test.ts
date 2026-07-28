@@ -85,6 +85,7 @@ class MemoryState implements PublicationState {
   readonly events: string[]
   verified?: PublicSnapshotPointerV1
   pending?: PublicSnapshotPointerV1
+  publicationClaim?: { candidate: PublicSnapshotPointerV1; token: string }
   allocations = 0
 
   constructor(
@@ -110,14 +111,73 @@ class MemoryState implements PublicationState {
   async commitPendingPublication(candidate: PublicSnapshotPointerV1) {
     this.events.push('d1:commit-state')
     this.allocations++
+    if (this.pending !== undefined) {
+      return canonicalJson(this.pending) === canonicalJson(candidate)
+    }
+    if (
+      !(
+        (this.verified === undefined && candidate.generation === 1)
+        || this.verified?.generation === candidate.generation - 1
+      )
+    ) return false
     this.pending = structuredClone(candidate)
     return true
   }
 
-  async markPublicationPublished(candidate: PublicSnapshotPointerV1) {
+  async confirmPublicationAuthorized(candidate: PublicSnapshotPointerV1) {
+    if (
+      this.verified?.generation === candidate.generation
+      && this.verified.content_hash === candidate.content_hash
+      && this.verified.r2_key === candidate.r2_key
+      && this.verified.published_at === candidate.published_at
+    ) return 'already_verified' as const
+    if (
+      this.pending?.generation === candidate.generation
+      && this.pending.content_hash === candidate.content_hash
+      && this.pending.r2_key === candidate.r2_key
+      && this.pending.published_at === candidate.published_at
+      && (
+        (this.verified === undefined && candidate.generation === 1)
+        || this.verified?.generation === candidate.generation - 1
+      )
+    ) return 'authorized' as const
+    return 'conflict' as const
+  }
+
+  async claimPublicationWrite(candidate: PublicSnapshotPointerV1, token: string) {
+    const authorization = await this.confirmPublicationAuthorized(candidate)
+    if (authorization !== 'authorized') return authorization
+    if (this.publicationClaim !== undefined) {
+      return (
+        canonicalJson(this.publicationClaim.candidate) === canonicalJson(candidate)
+        && this.publicationClaim.token === token
+      ) ? 'claimed' as const : 'busy' as const
+    }
+    this.publicationClaim = { candidate: structuredClone(candidate), token }
+    return 'claimed' as const
+  }
+
+  async releasePublicationWrite(candidate: PublicSnapshotPointerV1, token: string) {
+    if (
+      this.publicationClaim?.token === token
+      && canonicalJson(this.publicationClaim.candidate) === canonicalJson(candidate)
+    ) this.publicationClaim = undefined
+  }
+
+  async markPublicationPublished(candidate: PublicSnapshotPointerV1, token?: string) {
     this.events.push('d1:mark-published')
+    const authorization = await this.confirmPublicationAuthorized(candidate)
+    if (authorization === 'conflict') throw new Error('Publication verified-state conflict')
+    if (
+      token !== undefined
+      && (
+        this.publicationClaim?.token !== token
+        || canonicalJson(this.publicationClaim.candidate) !== canonicalJson(candidate)
+      )
+    ) throw new Error('Publication write claim conflict')
     this.verified = structuredClone(candidate)
     this.pending = undefined
+    this.publicationClaim = undefined
   }
 }
 
@@ -143,6 +203,7 @@ class MemoryBucket implements PublicationDataBucket {
 
 class MemoryKv implements PublicationPointerKv {
   readonly values = new Map<string, string>()
+  readonly putValues: string[] = []
 
   constructor(protected readonly events: string[]) {}
 
@@ -152,6 +213,7 @@ class MemoryKv implements PublicationPointerKv {
 
   async put(key: string, value: string) {
     this.events.push(`kv:put:${key}`)
+    this.putValues.push(value)
     this.values.set(key, value)
   }
 }
@@ -161,6 +223,7 @@ class FaultBucket extends MemoryBucket {
   failGet = false
   mutateBody?: (value: Record<string, unknown>) => void
   returnedKey?: string
+  afterGet?: () => void
 
   override async put(key: string, value: string, options?: { onlyIf?: Headers }) {
     if (!this.failPut) return await super.put(key, value, options)
@@ -178,6 +241,7 @@ class FaultBucket extends MemoryBucket {
     const value = JSON.parse(await stored.text()) as Record<string, unknown>
     this.mutateBody?.(value)
     const bytes = canonicalJson(value)
+    this.afterGet?.()
     return {
       key: this.returnedKey ?? stored.key,
       async text() {
@@ -190,6 +254,7 @@ class FaultBucket extends MemoryBucket {
 class FaultKv extends MemoryKv {
   mode: 'normal' | 'throw-before' | 'store-then-throw' | 'mismatch-then-throw' | 'missing-then-throw' = 'normal'
   failReadback = false
+  beforePut?: () => void | Promise<void>
 
   override async get(key: string) {
     if (this.failReadback) throw new Error('injected KV readback failure')
@@ -197,6 +262,9 @@ class FaultKv extends MemoryKv {
   }
 
   override async put(key: string, value: string) {
+    const beforePut = this.beforePut
+    this.beforePut = undefined
+    await beforePut?.()
     if (this.mode === 'normal') return await super.put(key, value)
     this.events.push(`kv:put:${key}`)
     if (this.mode === 'store-then-throw') this.values.set(key, value)
@@ -222,12 +290,12 @@ class FaultState extends MemoryState {
     return committed
   }
 
-  override async markPublicationPublished(candidate: PublicSnapshotPointerV1) {
+  override async markPublicationPublished(candidate: PublicSnapshotPointerV1, token?: string) {
     if (this.failMark) {
       this.events.push('d1:mark-published')
       throw new Error('injected D1 published-state failure')
     }
-    await super.markPublicationPublished(candidate)
+    await super.markPublicationPublished(candidate, token)
     if (this.markThenThrow) throw new Error('injected D1 mark response loss')
   }
 }
@@ -261,6 +329,15 @@ test('identical verified content is unchanged before generation allocation or R2
     async commitPendingPublication() {
       allocations++
       throw new Error('unchanged publication allocated a generation')
+    },
+    async confirmPublicationAuthorized() {
+      throw new Error('unchanged publication requested authorization')
+    },
+    async claimPublicationWrite() {
+      throw new Error('unchanged publication claimed pointer write')
+    },
+    async releasePublicationWrite() {
+      throw new Error('unchanged publication released pointer write')
     },
     async markPublicationPublished() {
       throw new Error('unchanged publication changed D1 publication state')
@@ -460,6 +537,162 @@ test('invalid canonical publication input hash fails before generation allocatio
   assert.equal(fixture.state.allocations, 0)
   assert.deepEqual(fixture.events, [])
   assert.equal(fixture.pointerKv.values.get('public:current'), fixture.oldPointerBytes)
+})
+
+test('a lower pending generation than public:verified is rejected before any R2 or KV write', async () => {
+  const events: string[] = []
+  const verified = await pointerFor(emptyInput(), 5)
+  const input = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(30)],
+  })
+  const pending: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 4,
+    content_hash: input.content_hash,
+    r2_key: `snapshots/v1/4-${input.content_hash}.json`,
+    published_at: NOW,
+  }
+  const state = new MemoryState(events, { verified, pending })
+  const dataBucket = new MemoryBucket(events)
+  const pointerKv = new MemoryKv(events)
+
+  await assert.rejects(() => publishPublicSnapshot({
+    state,
+    dataBucket,
+    pointerKv,
+    input,
+    now: NOW,
+  }), /publication authorization conflict/i)
+
+  assert.deepEqual(events, [])
+  assert.equal(dataBucket.objects.size, 0)
+  assert.equal(pointerKv.values.has('public:current'), false)
+})
+
+test('a same-generation pending hash conflict is rejected before any R2 or KV write', async () => {
+  const events: string[] = []
+  const verified = await pointerFor(emptyInput(), 5)
+  const input = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(31)],
+  })
+  const pending: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 5,
+    content_hash: input.content_hash,
+    r2_key: `snapshots/v1/5-${input.content_hash}.json`,
+    published_at: NOW,
+  }
+  const state = new MemoryState(events, { verified, pending })
+  const dataBucket = new MemoryBucket(events)
+  const pointerKv = new MemoryKv(events)
+
+  await assert.rejects(() => publishPublicSnapshot({
+    state,
+    dataBucket,
+    pointerKv,
+    input,
+    now: NOW,
+  }), /publication authorization conflict/i)
+
+  assert.deepEqual(events, [])
+  assert.equal(dataBucket.objects.size, 0)
+  assert.equal(pointerKv.values.has('public:current'), false)
+})
+
+test('verified advancement after pending commit but before KV prevents a stale pointer PUT', async () => {
+  const fixture = await changedFixture()
+  const newerInput = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(99)],
+  })
+  fixture.dataBucket.afterGet = () => {
+    fixture.state.verified = {
+      schema_version: 1,
+      generation: 13,
+      content_hash: newerInput.content_hash,
+      r2_key: `snapshots/v1/13-${newerInput.content_hash}.json`,
+      published_at: NOW + 1,
+    }
+  }
+
+  await assert.rejects(() => publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW,
+  }), /publication authorization conflict/i)
+
+  assert.equal(fixture.events.includes('kv:put:public:current'), false)
+  assert.equal(fixture.pointerKv.values.get('public:current'), fixture.oldPointerBytes)
+})
+
+test('an in-flight pointer claim prevents protocol-respecting concurrent publishers from writing stale KV', async () => {
+  const fixture = await changedFixture()
+  const newerInput = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(100)],
+  })
+  let notifyBlocked!: () => void
+  let releaseFirst!: () => void
+  const blocked = new Promise<void>((resolve) => { notifyBlocked = resolve })
+  const release = new Promise<void>((resolve) => { releaseFirst = resolve })
+  fixture.pointerKv.beforePut = async () => {
+    notifyBlocked()
+    await release
+  }
+
+  const firstPublication = publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW,
+  })
+  await blocked
+
+  const replay = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW,
+  })
+  let blockedNewer = false
+  try {
+    await publishPublicSnapshot({
+      state: fixture.state,
+      dataBucket: fixture.dataBucket,
+      pointerKv: fixture.pointerKv,
+      input: newerInput,
+      now: NOW + 1,
+    })
+  } catch (error) {
+    assert.match(String(error), /publication authorization conflict/i)
+    blockedNewer = true
+  } finally {
+    releaseFirst()
+  }
+  const first = await firstPublication
+  if (blockedNewer) {
+    await publishPublicSnapshot({
+      state: fixture.state,
+      dataBucket: fixture.dataBucket,
+      pointerKv: fixture.pointerKv,
+      input: newerInput,
+      now: NOW + 1,
+    })
+  }
+
+  assert.equal(replay.status, 'pending')
+  assert.equal(replay.pointerPuts, 0)
+  assert.equal(first.status, 'published')
+  assert.deepEqual(
+    fixture.pointerKv.putValues.map((value) => JSON.parse(value).generation),
+    [12, 13],
+  )
 })
 
 test('definite KV failure returns pending and keeps the old pointer byte-identical', async () => {

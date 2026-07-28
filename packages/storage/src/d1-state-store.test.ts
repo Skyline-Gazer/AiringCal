@@ -913,9 +913,9 @@ test('publication app_state persists versioned pending candidates and atomically
   const store = new D1StateStore(new SqliteD1())
   const candidate: PublicSnapshotPointerV1 = {
     schema_version: 1,
-    generation: 3,
+    generation: 1,
     content_hash: 'a'.repeat(64),
-    r2_key: `snapshots/v1/3-${'a'.repeat(64)}.json`,
+    r2_key: `snapshots/v1/1-${'a'.repeat(64)}.json`,
     published_at: 100,
   }
 
@@ -923,7 +923,8 @@ test('publication app_state persists versioned pending candidates and atomically
   assert.deepEqual(await store.getPendingPublication(), candidate)
   assert.equal(await store.getVerifiedPublication(), undefined)
 
-  await store.markPublicationPublished(candidate)
+  assert.equal(await store.claimPublicationWrite(candidate, 'initial-publisher'), 'claimed')
+  await store.markPublicationPublished(candidate, 'initial-publisher')
 
   assert.deepEqual(await store.getVerifiedPublication(), candidate)
   assert.equal(await store.getPendingPublication(), undefined)
@@ -933,15 +934,15 @@ test('publication pending allocation is monotonic, exact-replay idempotent, and 
   const store = new D1StateStore(new SqliteD1())
   const first: PublicSnapshotPointerV1 = {
     schema_version: 1,
-    generation: 4,
+    generation: 1,
     content_hash: 'b'.repeat(64),
-    r2_key: `snapshots/v1/4-${'b'.repeat(64)}.json`,
+    r2_key: `snapshots/v1/1-${'b'.repeat(64)}.json`,
     published_at: 200,
   }
   const conflict: PublicSnapshotPointerV1 = {
     ...first,
     content_hash: 'c'.repeat(64),
-    r2_key: `snapshots/v1/4-${'c'.repeat(64)}.json`,
+    r2_key: `snapshots/v1/1-${'c'.repeat(64)}.json`,
   }
 
   assert.equal(await store.commitPendingPublication(first), true)
@@ -961,6 +962,110 @@ test('publication app_state rejects malformed pointers before publication can co
   })
 
   await assert.rejects(store.getPendingPublication(), /publication object key/)
+})
+
+test('publication authorization rejects stale and same-generation conflicting candidates across app_state keys', async () => {
+  const store = new D1StateStore(new SqliteD1())
+  const verified: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 5,
+    content_hash: 'a'.repeat(64),
+    r2_key: `snapshots/v1/5-${'a'.repeat(64)}.json`,
+    published_at: 100,
+  }
+  const stale: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 4,
+    content_hash: 'b'.repeat(64),
+    r2_key: `snapshots/v1/4-${'b'.repeat(64)}.json`,
+    published_at: 101,
+  }
+  const sameGenerationConflict: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 5,
+    content_hash: 'c'.repeat(64),
+    r2_key: `snapshots/v1/5-${'c'.repeat(64)}.json`,
+    published_at: 102,
+  }
+  await store.putAppStateIfNewer('public:verified', verified, verified.generation)
+
+  assert.equal(await store.commitPendingPublication(stale), false)
+  assert.equal(await store.commitPendingPublication(sameGenerationConflict), false)
+  assert.equal(await store.getPendingPublication(), undefined)
+  assert.equal(await store.confirmPublicationAuthorized(stale), 'conflict')
+  assert.equal(await store.confirmPublicationAuthorized(sameGenerationConflict), 'conflict')
+  assert.equal(await store.confirmPublicationAuthorized(verified), 'already_verified')
+})
+
+test('publication authorization permits only the exact next generation and detects verified advancement', async () => {
+  const store = new D1StateStore(new SqliteD1())
+  const verified: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 8,
+    content_hash: 'd'.repeat(64),
+    r2_key: `snapshots/v1/8-${'d'.repeat(64)}.json`,
+    published_at: 200,
+  }
+  const candidate: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 9,
+    content_hash: 'e'.repeat(64),
+    r2_key: `snapshots/v1/9-${'e'.repeat(64)}.json`,
+    published_at: 201,
+  }
+  const newer: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 10,
+    content_hash: 'f'.repeat(64),
+    r2_key: `snapshots/v1/10-${'f'.repeat(64)}.json`,
+    published_at: 202,
+  }
+  await store.putAppStateIfNewer('public:verified', verified, verified.generation)
+
+  assert.equal(await store.commitPendingPublication(candidate), true)
+  assert.equal(await store.confirmPublicationAuthorized(candidate), 'authorized')
+  assert.equal(await store.claimPublicationWrite(candidate, 'stale-publisher'), 'claimed')
+
+  await store.putAppStateIfNewer('public:verified', newer, newer.generation)
+
+  assert.equal(await store.confirmPublicationAuthorized(candidate), 'conflict')
+  await assert.rejects(
+    store.markPublicationPublished(candidate, 'stale-publisher'),
+    /write claim conflict/,
+  )
+  assert.deepEqual(await store.getVerifiedPublication(), newer)
+  assert.deepEqual(await store.getPendingPublication(), candidate)
+})
+
+test('publication write claims exclusively fence pointer mutation and verified promotion', async () => {
+  const store = new D1StateStore(new SqliteD1())
+  const candidate: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 1,
+    content_hash: '9'.repeat(64),
+    r2_key: `snapshots/v1/1-${'9'.repeat(64)}.json`,
+    published_at: 300,
+  }
+  await store.commitPendingPublication(candidate)
+
+  assert.equal(await store.claimPublicationWrite(candidate, 'publisher-a'), 'claimed')
+  assert.equal(await store.claimPublicationWrite(candidate, 'publisher-a'), 'claimed')
+  assert.equal(await store.claimPublicationWrite(candidate, 'publisher-b'), 'busy')
+  await assert.rejects(
+    store.markPublicationPublished(candidate, 'publisher-b'),
+    /write claim conflict/,
+  )
+  assert.deepEqual(await store.getPendingPublication(), candidate)
+  assert.equal(await store.getVerifiedPublication(), undefined)
+
+  await store.releasePublicationWrite(candidate, 'publisher-b')
+  assert.equal(await store.claimPublicationWrite(candidate, 'publisher-b'), 'busy')
+  await store.releasePublicationWrite(candidate, 'publisher-a')
+  assert.equal(await store.claimPublicationWrite(candidate, 'publisher-b'), 'claimed')
+  await store.markPublicationPublished(candidate, 'publisher-b')
+
+  assert.equal(await store.getPendingPublication(), undefined)
+  assert.deepEqual(await store.getVerifiedPublication(), candidate)
 })
 
 test('sync run lifecycle uses positional binds and persists only classified error codes', async () => {

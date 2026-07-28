@@ -15,7 +15,15 @@ export interface PublicationState {
   getVerifiedPublication(): Promise<PublicSnapshotPointerV1 | undefined>
   getPendingPublication(): Promise<PublicSnapshotPointerV1 | undefined>
   commitPendingPublication(candidate: PublicSnapshotPointerV1): Promise<boolean>
-  markPublicationPublished(candidate: PublicSnapshotPointerV1): Promise<void>
+  confirmPublicationAuthorized(
+    candidate: PublicSnapshotPointerV1,
+  ): Promise<'authorized' | 'already_verified' | 'conflict'>
+  claimPublicationWrite(
+    candidate: PublicSnapshotPointerV1,
+    token: string,
+  ): Promise<'claimed' | 'busy' | 'already_verified' | 'conflict'>
+  releasePublicationWrite(candidate: PublicSnapshotPointerV1, token: string): Promise<void>
+  markPublicationPublished(candidate: PublicSnapshotPointerV1, token: string): Promise<void>
 }
 
 export interface PublicationDataBucket {
@@ -90,35 +98,60 @@ async function prepareCandidate(
   contentHash: string,
   now: number,
 ): Promise<PublicSnapshotPointerV1 | { unchanged: PublicSnapshotPointerV1 }> {
-  let currentVerified = verified
-  let pending = await readPending(state)
-  for (;;) {
-    if (currentVerified?.content_hash === contentHash) return { unchanged: currentVerified }
-    if (pending?.content_hash === contentHash) return pending
+  const pending = await readPending(state)
+  if (verified?.content_hash === contentHash) return { unchanged: verified }
+  if (pending?.content_hash === contentHash) return pending
 
-    const generation = Math.max(
-      currentVerified?.generation ?? 0,
-      pending?.generation ?? 0,
-    ) + 1
-    if (!Number.isSafeInteger(generation)) throw new Error('Public snapshot generation exhausted')
-    const candidate: PublicSnapshotPointerV1 = {
-      schema_version: 1,
-      generation,
-      content_hash: contentHash,
-      r2_key: `snapshots/v1/${generation}-${contentHash}.json`,
-      published_at: now,
-    }
-    if (await state.commitPendingPublication(candidate)) return candidate
-
-    currentVerified = await readVerified(state)
-    pending = await readPending(state)
+  const generation = (verified?.generation ?? 0) + 1
+  if (!Number.isSafeInteger(generation)) throw new Error('Public snapshot generation exhausted')
+  const candidate: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation,
+    content_hash: contentHash,
+    r2_key: `snapshots/v1/${generation}-${contentHash}.json`,
+    published_at: now,
   }
+  if (await state.commitPendingPublication(candidate)) return candidate
+
+  const currentVerified = await readVerified(state)
+  const currentPending = await readPending(state)
+  if (currentVerified?.content_hash === contentHash) return { unchanged: currentVerified }
+  if (currentPending?.content_hash === contentHash) return currentPending
+  throw new Error('Publication authorization conflict')
 }
 
 function isUnchangedCandidate(
   value: PublicSnapshotPointerV1 | { unchanged: PublicSnapshotPointerV1 },
 ): value is { unchanged: PublicSnapshotPointerV1 } {
   return Object.hasOwn(value, 'unchanged')
+}
+
+async function putPointerAndConfirm(
+  pointerKv: PublicationPointerKv,
+  pointerBytes: string,
+): Promise<0 | 1> {
+  try {
+    await pointerKv.put(POINTER_KEY, pointerBytes)
+    return 1
+  } catch {
+    try {
+      return await pointerKv.get(POINTER_KEY) === pointerBytes ? 1 : 0
+    } catch {
+      return 0
+    }
+  }
+}
+
+async function releasePublicationWrite(
+  state: PublicationState,
+  candidate: PublicSnapshotPointerV1,
+  token: string,
+): Promise<void> {
+  try {
+    await state.releasePublicationWrite(candidate, token)
+  } catch {
+    // Retaining the claim is safer than allowing an unfenced stale pointer write.
+  }
 }
 
 export async function publishPublicSnapshot(
@@ -153,6 +186,17 @@ export async function publishPublicSnapshot(
     }
   }
   const candidate = prepared
+  const initialAuthorization = await state.confirmPublicationAuthorized(candidate)
+  if (initialAuthorization === 'conflict') throw new Error('Publication authorization conflict')
+  if (initialAuthorization === 'already_verified') {
+    return {
+      status: 'published',
+      generation: candidate.generation,
+      contentHash: candidate.content_hash,
+      r2Puts: 0,
+      pointerPuts: 0,
+    }
+  }
   const snapshot = await buildPublicSnapshot({
     ...input,
     published_at: candidate.published_at,
@@ -189,35 +233,53 @@ export async function publishPublicSnapshot(
   if (stored.key !== candidate.r2_key) throw new Error('Published R2 snapshot object key mismatch')
   if (storedBytes !== objectBytes) throw new Error('Published R2 snapshot bytes mismatch')
 
+  const claimToken = crypto.randomUUID()
+  const claim = await state.claimPublicationWrite(candidate, claimToken)
+  if (claim === 'conflict') throw new Error('Publication authorization conflict')
+  if (claim === 'already_verified') {
+    return {
+      status: 'published',
+      generation: candidate.generation,
+      contentHash: candidate.content_hash,
+      r2Puts,
+      pointerPuts: 0,
+    }
+  }
+  if (claim === 'busy') {
+    return {
+      status: 'pending',
+      generation: candidate.generation,
+      contentHash: candidate.content_hash,
+      r2Puts,
+      pointerPuts: 0,
+    }
+  }
+
   const pointerBytes = canonicalJson(candidate)
-  let pointerPuts = 0
-  try {
-    await pointerKv.put(POINTER_KEY, pointerBytes)
-    pointerPuts = 1
-  } catch {
-    let observed: string | null
-    try {
-      observed = await pointerKv.get(POINTER_KEY)
-    } catch {
-      observed = null
+  const pointerPuts = await putPointerAndConfirm(pointerKv, pointerBytes)
+  if (pointerPuts === 0) {
+    await releasePublicationWrite(state, candidate, claimToken)
+    return {
+      status: 'pending',
+      generation: candidate.generation,
+      contentHash: candidate.content_hash,
+      r2Puts,
+      pointerPuts,
     }
-    if (observed !== pointerBytes) {
-      return {
-        status: 'pending',
-        generation: candidate.generation,
-        contentHash: candidate.content_hash,
-        r2Puts,
-        pointerPuts: 0,
-      }
-    }
-    pointerPuts = 1
   }
 
   try {
-    await state.markPublicationPublished(candidate)
+    await state.markPublicationPublished(candidate, claimToken)
   } catch {
-    const observed = await readVerified(state)
+    let observed: PublicSnapshotPointerV1 | undefined
+    try {
+      observed = await readVerified(state)
+    } catch {
+      await releasePublicationWrite(state, candidate, claimToken)
+      throw new Error('Publication verified-state readback failed')
+    }
     if (canonicalJson(observed) !== pointerBytes) {
+      await releasePublicationWrite(state, candidate, claimToken)
       return {
         status: 'pending',
         generation: candidate.generation,
