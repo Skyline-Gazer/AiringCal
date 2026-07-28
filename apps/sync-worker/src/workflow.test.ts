@@ -936,6 +936,13 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
   const kv = new MockKV()
   const step = new FakeStep(kv)
   const calls: Array<{ instanceId: string; observedAt: number; complete: boolean; legacyPublished: boolean }> = []
+  const publicationCalls: Array<{
+    contentHash: string
+    legacyPublished: boolean
+    mediaUncertain: number
+  }> = []
+  let mediaUncertain = 0
+  let publicationAttempts = 0
   const env = {
     ...workflowEnv(kv, []),
     AIRING_CAL_D1: {} as never,
@@ -960,7 +967,7 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
           complete: completeInput.complete,
           legacyPublished: kv.values.has('snapshot:shadow:shadow-d1:summary'),
         })
-        return {
+        const result = {
           rowsWritten: 1,
           firstMissing: 0,
           deleted: 0,
@@ -971,19 +978,47 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
             published_at: completeInput.observedAt,
             content_hash: 'a'.repeat(64),
           },
-          media: { candidates: 0, granted: 0, confirmed: 0, uncertain: 0, deferred: 0 },
+          media: { candidates: 1, granted: 1, confirmed: 0, uncertain: 1, deferred: 0 },
           runId: instanceId,
+        }
+        mediaUncertain = result.media.uncertain
+        return result
+      },
+      publication: {
+        state: {},
+        dataBucket: {},
+        pointerKv: {},
+      } as never,
+      publishPublicSnapshot: async ({ input }) => {
+        publicationAttempts++
+        publicationCalls.push({
+          contentHash: input.content_hash,
+          legacyPublished: kv.values.has('snapshot:shadow:shadow-d1:summary'),
+          mediaUncertain,
+        })
+        return {
+          status: publicationAttempts === 1 ? 'pending' : 'published',
+          generation: 1,
+          contentHash: input.content_hash,
+          r2Puts: 1,
+          pointerPuts: 1,
         }
       },
     })
 
-    assert.deepEqual(calls, [{
+    assert.deepEqual(calls, [1, 2].map(() => ({
       instanceId: 'shadow-d1',
       observedAt: (kv.values.get('sync:run:shadow-d1') as { started_at: number }).started_at,
       complete: true,
       legacyPublished: true,
-    }])
+    })))
     assert.equal(step.names.includes('persist-d1-shadow'), true)
+    assert.deepEqual(publicationCalls, [1, 2].map(() => ({
+      contentHash: 'a'.repeat(64),
+      legacyPublished: true,
+      mediaUncertain: 1,
+    })))
+    assert.equal(step.attempts.get('persist-d1-shadow'), 2)
     assert.equal(kv.subjectPuts().length, 0)
   } finally {
     globalThis.fetch = originalFetch

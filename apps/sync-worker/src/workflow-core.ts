@@ -30,6 +30,10 @@ import {
 } from './refresh-planner.ts'
 import { assembleFullFetch } from './full-fetch-boundary.ts'
 import { runD1IncrementalSync, type D1SyncResult } from './d1-sync.ts'
+import {
+  publishPublicSnapshot,
+  type PublishPublicSnapshotArguments,
+} from './r2-publication.ts'
 
 const COLLECTION_TYPES: CollectionType[] = ['want', 'watched', 'watching', 'on_hold', 'dropped']
 const PAGE_LIMIT = 50
@@ -58,6 +62,8 @@ export interface SyncWorkflowEnv {
 
 export interface SyncWorkflowDependencies {
   runD1IncrementalSync?: typeof runD1IncrementalSync
+  publication?: Omit<PublishPublicSnapshotArguments, 'input' | 'now'>
+  publishPublicSnapshot?: typeof publishPublicSnapshot
 }
 
 export interface WorkflowStepLike {
@@ -440,6 +446,17 @@ export async function runSyncWorkflow(
           completeInput,
           now: completeInput.observedAt,
         })
+        if (dependencies.publication) {
+          const publisher = dependencies.publishPublicSnapshot ?? publishPublicSnapshot
+          const publication = await publisher({
+            ...dependencies.publication,
+            input: result.publicationInput,
+            now: completeInput.observedAt,
+          })
+          if (publication.status === 'pending') {
+            throw new Error('Public snapshot publication remains pending')
+          }
+        }
         return {
           key: syncRunKey(event.instanceId),
           count: result.rowsWritten,

@@ -7,6 +7,7 @@ import type {
   D1DatabaseLike,
   D1PreparedStatementLike,
   D1ResultLike,
+  PublicSnapshotPointerV1,
   SyncRunRow,
 } from './d1-types.ts'
 import { D1StateStore, StaleCollectionDiffError } from './d1-state-store.ts'
@@ -906,6 +907,60 @@ test('app_state monotonic writes reject older cursor versions and cleanup exact 
   ])
   assert.equal(await store.getAppStateUnknown('sync:artifact:run:hash:0'), undefined)
   assert.equal(await store.getAppStateUnknown('sync:artifact:run:hash:1'), undefined)
+})
+
+test('publication app_state persists versioned pending candidates and atomically promotes the exact candidate', async () => {
+  const store = new D1StateStore(new SqliteD1())
+  const candidate: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 3,
+    content_hash: 'a'.repeat(64),
+    r2_key: `snapshots/v1/3-${'a'.repeat(64)}.json`,
+    published_at: 100,
+  }
+
+  assert.equal(await store.commitPendingPublication(candidate), true)
+  assert.deepEqual(await store.getPendingPublication(), candidate)
+  assert.equal(await store.getVerifiedPublication(), undefined)
+
+  await store.markPublicationPublished(candidate)
+
+  assert.deepEqual(await store.getVerifiedPublication(), candidate)
+  assert.equal(await store.getPendingPublication(), undefined)
+})
+
+test('publication pending allocation is monotonic, exact-replay idempotent, and rejects same-generation conflicts', async () => {
+  const store = new D1StateStore(new SqliteD1())
+  const first: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 4,
+    content_hash: 'b'.repeat(64),
+    r2_key: `snapshots/v1/4-${'b'.repeat(64)}.json`,
+    published_at: 200,
+  }
+  const conflict: PublicSnapshotPointerV1 = {
+    ...first,
+    content_hash: 'c'.repeat(64),
+    r2_key: `snapshots/v1/4-${'c'.repeat(64)}.json`,
+  }
+
+  assert.equal(await store.commitPendingPublication(first), true)
+  assert.equal(await store.commitPendingPublication(first), true)
+  assert.equal(await store.commitPendingPublication(conflict), false)
+  assert.deepEqual(await store.getPendingPublication(), first)
+})
+
+test('publication app_state rejects malformed pointers before publication can continue', async () => {
+  const store = new D1StateStore(new SqliteD1())
+  await store.putAppState('public:pending', {
+    schema_version: 1,
+    generation: 1,
+    content_hash: 'a'.repeat(64),
+    r2_key: 'snapshots/v1/wrong.json',
+    published_at: 1,
+  })
+
+  await assert.rejects(store.getPendingPublication(), /publication object key/)
 })
 
 test('sync run lifecycle uses positional binds and persists only classified error codes', async () => {

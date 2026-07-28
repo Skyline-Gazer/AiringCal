@@ -85,7 +85,7 @@ export interface D1SyncResult {
   runId: string
 }
 
-interface RunArguments {
+export interface D1IncrementalSyncArguments {
   env: D1IncrementalSyncEnv
   instanceId: string
   completeInput: CompleteFullFetch
@@ -579,7 +579,7 @@ export async function runD1IncrementalSync({
   now,
   store: suppliedStore,
   submitMedia: suppliedSubmitMedia,
-}: RunArguments): Promise<D1SyncResult> {
+}: D1IncrementalSyncArguments): Promise<D1SyncResult> {
   if (completeInput.complete !== true) throw new Error('D1 sync requires a complete full fetch')
   if (!Number.isSafeInteger(now) || now < 0) throw new Error('Invalid D1 sync time')
   const database = env.AIRING_CAL_D1

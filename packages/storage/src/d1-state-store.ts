@@ -11,6 +11,7 @@ import type {
   D1DatabaseLike,
   D1PreparedStatementLike,
   D1ResultLike,
+  PublicSnapshotPointerV1,
   SyncRunCompletion,
   SyncRunFailure,
   SyncRunRow,
@@ -73,6 +74,14 @@ const SYNC_RUN_COLUMNS = [
   'missing_count', 'deleted_count', 'media_selected_count', 'media_granted_count',
   'input_hash', 'public_hash', 'result_json', 'error_code', 'started_at', 'heartbeat_at', 'completed_at',
 ] as const
+const LOWERCASE_SHA256 = /^[0-9a-f]{64}$/
+const PUBLICATION_POINTER_KEYS = [
+  'schema_version',
+  'generation',
+  'content_hash',
+  'r2_key',
+  'published_at',
+] as const
 
 export class StaleCollectionDiffError extends Error {
   readonly code = 'STALE_COLLECTION_DIFF'
@@ -112,6 +121,37 @@ function compareWrites(left: PendingWrite, right: PendingWrite): number {
 function requireString(value: unknown, column: string): string {
   if (typeof value !== 'string') throw new Error(`Invalid collection_items.${column}`)
   return value
+}
+
+function decodePublicationPointer(value: unknown): PublicSnapshotPointerV1 {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Invalid publication state')
+  }
+  const pointer = value as Record<string, unknown>
+  const keys = Object.keys(pointer)
+  if (
+    pointer.schema_version !== 1
+    || !PUBLICATION_POINTER_KEYS.every((key) => Object.hasOwn(pointer, key))
+    || keys.some((key) => !PUBLICATION_POINTER_KEYS.includes(
+      key as typeof PUBLICATION_POINTER_KEYS[number],
+    ))
+    || !Number.isSafeInteger(pointer.generation)
+    || (pointer.generation as number) < 0
+    || typeof pointer.content_hash !== 'string'
+    || !LOWERCASE_SHA256.test(pointer.content_hash)
+    || typeof pointer.r2_key !== 'string'
+    || !Number.isSafeInteger(pointer.published_at)
+    || (pointer.published_at as number) < 0
+  ) {
+    throw new Error('Invalid publication state')
+  }
+  if (
+    pointer.r2_key
+    !== `snapshots/v1/${pointer.generation}-${pointer.content_hash}.json`
+  ) {
+    throw new Error('Invalid publication object key')
+  }
+  return pointer as unknown as PublicSnapshotPointerV1
 }
 
 function nullableString(value: unknown, column: string): string | null {
@@ -556,6 +596,46 @@ export class D1StateStore {
       'SELECT value_json, updated_at FROM app_state WHERE key = ?',
     ).bind(key).first<{ value_json: unknown; updated_at: unknown }>()
     return current !== null && current.value_json === valueJson && current.updated_at === version
+  }
+
+  async getVerifiedPublication(): Promise<PublicSnapshotPointerV1 | undefined> {
+    return await this.getAppState('public:verified', decodePublicationPointer)
+  }
+
+  async getPendingPublication(): Promise<PublicSnapshotPointerV1 | undefined> {
+    return await this.getAppState('public:pending', decodePublicationPointer)
+  }
+
+  async commitPendingPublication(candidate: PublicSnapshotPointerV1): Promise<boolean> {
+    const validated = decodePublicationPointer(candidate)
+    return await this.putAppStateIfNewer(
+      'public:pending',
+      validated,
+      validated.generation,
+    )
+  }
+
+  async markPublicationPublished(candidate: PublicSnapshotPointerV1): Promise<void> {
+    const validated = decodePublicationPointer(candidate)
+    const valueJson = canonicalJson({ schema_version: 1, value: validated })
+    const verifiedUpsert = this.database.prepare(
+      'INSERT INTO app_state (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at WHERE app_state.updated_at < excluded.updated_at OR (app_state.updated_at = excluded.updated_at AND app_state.value_json = excluded.value_json)',
+    ).bind('public:verified', valueJson, validated.generation)
+    const pendingDelete = this.database.prepare(
+      'DELETE FROM app_state WHERE key = ? AND value_json = ? AND updated_at = ? AND EXISTS (SELECT 1 FROM app_state AS verified WHERE verified.key = ? AND verified.value_json = ? AND verified.updated_at = ?)',
+    ).bind(
+      'public:pending',
+      valueJson,
+      validated.generation,
+      'public:verified',
+      valueJson,
+      validated.generation,
+    )
+    await this.executeBatchChanges([verifiedUpsert, pendingDelete])
+    const verified = await this.getVerifiedPublication()
+    if (canonicalJson(verified) !== canonicalJson(validated)) {
+      throw new Error('Publication verified-state conflict')
+    }
   }
 
   async deleteAppStateKeys(keys: string[]): Promise<void> {
