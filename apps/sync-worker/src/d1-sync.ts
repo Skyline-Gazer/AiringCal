@@ -27,6 +27,11 @@ import {
 } from '@airing-cal/storage'
 import type { CompleteFullFetch } from './full-fetch-boundary.ts'
 import {
+  loadReplayArtifact,
+  persistReplayArtifact,
+  type LoadedReplayArtifact,
+} from './replay-artifact.ts'
+import {
   selectRefreshCandidates,
   type ColdRefreshCursor,
   type RefreshCandidate,
@@ -46,6 +51,8 @@ export interface D1IncrementalSyncStore {
   listSubjectMediaRows(): Promise<SubjectMediaRow[]>
   getAppState<T>(key: string, decode: (value: unknown) => T): Promise<T | undefined>
   putAppState<T>(key: string, value: T): Promise<void>
+  putAppStateIfNewer<T>(key: string, value: T, version: number): Promise<boolean>
+  deleteAppStateKeys(keys: string[]): Promise<void>
   getSyncRun(instanceId: string): Promise<SyncRunRow | undefined>
   applyCollectionDiff(
     plan: CollectionDiffPlan,
@@ -91,6 +98,7 @@ interface PreparedResultEnvelope {
   input_hash: string
   result: D1SyncResult
   cold_cursor?: ColdRefreshCursor
+  cold_cursor_version?: number
 }
 
 interface CollectionCheckpoint {
@@ -309,10 +317,15 @@ async function decodePreparedResult(
   }
 }
 
+interface PreparedColdCursorTransition {
+  cursor: ColdRefreshCursor
+  version: number
+}
+
 function decodePreparedColdCursor(
   resultJson: string | null,
   expectedInputHash: string,
-): ColdRefreshCursor | undefined {
+): PreparedColdCursorTransition | undefined {
   if (resultJson === null) return undefined
   let parsed: unknown
   try {
@@ -327,7 +340,18 @@ function decodePreparedColdCursor(
   if (envelope.schema_version !== 1 || envelope.input_hash !== expectedInputHash) {
     throw new Error('D1 sync instance input mismatch')
   }
-  return envelope.cold_cursor === undefined ? undefined : decodeColdCursor(envelope.cold_cursor)
+  if (envelope.cold_cursor === undefined) {
+    if (envelope.cold_cursor_version !== undefined) {
+      throw new Error('Invalid prepared D1 sync result: cold_cursor_version')
+    }
+    return undefined
+  }
+  return {
+    cursor: decodeColdCursor(envelope.cold_cursor),
+    version: envelope.cold_cursor_version === undefined
+      ? 0
+      : requireNonNegativeInteger(envelope.cold_cursor_version, 'cold_cursor_version'),
+  }
 }
 
 function changedRows(plan: CollectionDiffPlan): CollectionRow[] {
@@ -578,28 +602,53 @@ export async function runD1IncrementalSync({
     throw new Error(`D1 sync instance input mismatch: ${instanceId}`)
   }
 
-  let collectionCheckpoint = existingRun === undefined
-    ? undefined
-    : await decodeCollectionCheckpoint(existingRun.result_json, completeInputHash)
-  let preparedResult = existingRun === undefined || collectionCheckpoint
-    ? undefined
-    : await decodePreparedResult(existingRun.result_json, completeInputHash, instanceId)
-  const preparedColdCursor = preparedResult
-    ? decodePreparedColdCursor(existingRun?.result_json ?? null, completeInputHash)
-    : undefined
+  let collectionCheckpoint: CollectionCheckpoint | undefined
+  let preparedResult: D1SyncResult | undefined
+  let preparedColdCursor: PreparedColdCursorTransition | undefined
   let preparedResultJson = existingRun?.result_json ?? undefined
-  if (existingRun?.status === 'ok') {
-    if (!preparedResult) throw new Error(`Completed D1 sync result is unavailable: ${instanceId}`)
-    return preparedResult
-  }
+  let activeArtifact: LoadedReplayArtifact | undefined
+  const supersededArtifactKeys: string[] = []
 
   try {
+    if (existingRun !== undefined) {
+      activeArtifact = await loadReplayArtifact(
+        store,
+        existingRun.result_json,
+        completeInputHash,
+        instanceId,
+      )
+      const artifactJson = activeArtifact?.artifactJson ?? null
+      if (activeArtifact?.kind === 'collection') {
+        collectionCheckpoint = await decodeCollectionCheckpoint(artifactJson, completeInputHash)
+        if (!collectionCheckpoint) throw new Error('Invalid D1 sync collection replay artifact')
+      } else if (activeArtifact?.kind === 'prepared') {
+        preparedResult = await decodePreparedResult(artifactJson, completeInputHash, instanceId)
+        if (!preparedResult) throw new Error('Invalid prepared D1 sync replay artifact')
+      } else {
+        collectionCheckpoint = await decodeCollectionCheckpoint(artifactJson, completeInputHash)
+        preparedResult = collectionCheckpoint
+          ? undefined
+          : await decodePreparedResult(artifactJson, completeInputHash, instanceId)
+      }
+      preparedColdCursor = preparedResult
+        ? decodePreparedColdCursor(artifactJson, completeInputHash)
+        : undefined
+    }
+    if (existingRun?.status === 'ok') {
+      if (!preparedResult) throw new Error(`Completed D1 sync result is unavailable: ${instanceId}`)
+      return preparedResult
+    }
+
     if (preparedResult && preparedResultJson) {
       if (preparedColdCursor) {
         const currentCursor = await store.getAppState('media:cold-cursor', decodeColdCursor)
           ?? { subject_ids: [] }
-        if (!sameCursor(currentCursor, preparedColdCursor)) {
-          await store.putAppState('media:cold-cursor', preparedColdCursor)
+        if (!sameCursor(currentCursor, preparedColdCursor.cursor)) {
+          await store.putAppStateIfNewer(
+            'media:cold-cursor',
+            preparedColdCursor.cursor,
+            preparedColdCursor.version,
+          )
         }
       }
       const transition = await store.completeSyncRun(instanceId, {
@@ -624,6 +673,7 @@ export async function runD1IncrementalSync({
     let staleReplans = 0
     let responseLossReconciliations = 0
     let collectionApplied = false
+    let collectionArtifact = collectionCheckpoint ? activeArtifact : undefined
     while (!collectionApplied) {
       if (!plan || !publicInput) {
         const current = await store.listCollectionRows()
@@ -649,14 +699,25 @@ export async function runD1IncrementalSync({
           restored,
           publicationInput: publicInput,
         }
+        collectionArtifact = undefined
       }
       if (!collectionCheckpoint) throw new Error('Collection checkpoint preparation failed')
-      const checkpointJson = canonicalJson({
-        schema_version: 1,
-        input_hash: completeInputHash,
-        checkpoint_hash: await sha256Canonical(collectionCheckpoint),
-        collection: collectionCheckpoint,
-      } satisfies CollectionCheckpointEnvelope)
+      if (!collectionArtifact) {
+        const checkpointArtifactJson = canonicalJson({
+          schema_version: 1,
+          input_hash: completeInputHash,
+          checkpoint_hash: await sha256Canonical(collectionCheckpoint),
+          collection: collectionCheckpoint,
+        } satisfies CollectionCheckpointEnvelope)
+        collectionArtifact = await persistReplayArtifact(
+          store,
+          instanceId,
+          completeInputHash,
+          'collection',
+          checkpointArtifactJson,
+        )
+      }
+      const checkpointJson = collectionArtifact.manifestJson
       try {
         await store.applyCollectionDiff(plan, {
           instanceId,
@@ -678,17 +739,23 @@ export async function runD1IncrementalSync({
           if (staleReplans === MAX_STALE_REPLANS) throw error
           staleReplans++
           responseLossReconciliations = 0
+          supersededArtifactKeys.push(...collectionArtifact.chunkKeys)
           plan = undefined
           publicInput = undefined
           collectionCheckpoint = undefined
+          collectionArtifact = undefined
           continue
         }
         const persisted = await store.getSyncRun(instanceId)
-        if (
-          persisted?.status === 'running'
+        const persistedArtifact = persisted?.status === 'running'
           && persisted.input_hash === completeInputHash
           && persisted.result_json === checkpointJson
-          && await decodeCollectionCheckpoint(persisted.result_json, completeInputHash)
+          ? await loadReplayArtifact(store, persisted.result_json, completeInputHash, instanceId)
+          : undefined
+        if (
+          persistedArtifact
+          && persistedArtifact.kind === 'collection'
+          && await decodeCollectionCheckpoint(persistedArtifact.artifactJson, completeInputHash)
           && responseLossReconciliations < MAX_RESPONSE_LOSS_RECONCILIATIONS
         ) {
           responseLossReconciliations++
@@ -699,6 +766,10 @@ export async function runD1IncrementalSync({
     }
     if (!collectionApplied || !plan || !publicInput) {
       throw new Error('Collection diff reconciliation failed')
+    }
+    if (supersededArtifactKeys.length > 0) {
+      await store.deleteAppStateKeys(supersededArtifactKeys)
+      supersededArtifactKeys.length = 0
     }
     const mediaRows = await store.listSubjectMediaRows()
     const utcDay = new Date(now * 1000).toISOString().slice(0, 10)
@@ -756,12 +827,21 @@ export async function runD1IncrementalSync({
       },
       runId: instanceId,
     }
-    preparedResultJson = canonicalJson({
+    const preparedArtifactJson = canonicalJson({
       schema_version: 1,
       input_hash: completeInputHash,
       result: preparedResult,
       cold_cursor: nextColdCursor,
+      cold_cursor_version: now,
     } satisfies PreparedResultEnvelope)
+    const preparedArtifact = await persistReplayArtifact(
+      store,
+      instanceId,
+      completeInputHash,
+      'prepared',
+      preparedArtifactJson,
+    )
+    preparedResultJson = preparedArtifact.manifestJson
     try {
       await store.updateSyncRun(instanceId, {
         stage: 'media',
@@ -778,10 +858,16 @@ export async function runD1IncrementalSync({
       })
     } catch (error) {
       const persisted = await store.getSyncRun(instanceId)
-      if (persisted?.result_json !== preparedResultJson) throw error
+      if (persisted?.result_json !== preparedResultJson) {
+        await store.deleteAppStateKeys(preparedArtifact.chunkKeys)
+        throw error
+      }
+    }
+    if (collectionArtifact && collectionArtifact.chunkKeys.length > 0) {
+      await store.deleteAppStateKeys(collectionArtifact.chunkKeys)
     }
     if (!sameCursor(previousCursor, nextColdCursor)) {
-      await store.putAppState('media:cold-cursor', nextColdCursor)
+      await store.putAppStateIfNewer('media:cold-cursor', nextColdCursor, now)
     }
     const transition = await store.completeSyncRun(instanceId, {
       heartbeat_at: now,
@@ -802,8 +888,15 @@ export async function runD1IncrementalSync({
       })
       if (transition.terminal === 'ok') {
         const persisted = await store.getSyncRun(instanceId)
-        const recovered = persisted
-          ? await decodePreparedResult(persisted.result_json, completeInputHash, instanceId)
+        const recoveredArtifact = persisted
+          ? await loadReplayArtifact(store, persisted.result_json, completeInputHash, instanceId)
+          : undefined
+        const recovered = recoveredArtifact
+          ? await decodePreparedResult(
+              recoveredArtifact.artifactJson,
+              completeInputHash,
+              instanceId,
+            )
           : undefined
         if (recovered) return recovered
         if (preparedResult) return preparedResult

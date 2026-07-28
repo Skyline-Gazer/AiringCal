@@ -4,6 +4,7 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import test from 'node:test'
 import { buildPublicSnapshot } from '@airing-cal/domain'
 import {
+  canonicalJson,
   D1StateStore,
   sha256Canonical,
   StaleCollectionDiffError,
@@ -190,6 +191,7 @@ class RecordingStore implements D1IncrementalSyncStore {
   currentRun: SyncRunRow | undefined
   mediaRows: SubjectMediaRow[] = []
   appState = new Map<string, unknown>()
+  appStateVersions = new Map<string, number>()
   staleOnce = false
   applyError: Error | null = null
   crashOnNextMediaList = false
@@ -225,14 +227,30 @@ class RecordingStore implements D1IncrementalSyncStore {
     return value === undefined ? undefined : decode(value)
   }
   async putAppState<T>(key: string, value: T) {
-    if (this.crashBeforeCursorPersistOnce) {
+    this.appState.set(key, structuredClone(value))
+  }
+  async putAppStateIfNewer<T>(key: string, value: T, version: number) {
+    if (key === 'media:cold-cursor' && this.crashBeforeCursorPersistOnce) {
       this.crashBeforeCursorPersistOnce = false
       throw new Error('simulated process crash before cold cursor commit')
     }
+    const currentVersion = this.appStateVersions.get(key) ?? -1
+    if (currentVersion > version) return false
+    if (currentVersion === version && JSON.stringify(this.appState.get(key)) !== JSON.stringify(value)) {
+      return false
+    }
     this.appState.set(key, structuredClone(value))
-    if (this.crashAfterCursorPersistOnce) {
+    this.appStateVersions.set(key, version)
+    if (key === 'media:cold-cursor' && this.crashAfterCursorPersistOnce) {
       this.crashAfterCursorPersistOnce = false
       throw new Error('simulated process crash after cold cursor commit')
+    }
+    return true
+  }
+  async deleteAppStateKeys(keys: string[]) {
+    for (const key of keys) {
+      this.appState.delete(key)
+      this.appStateVersions.delete(key)
     }
   }
 
@@ -333,6 +351,46 @@ async function run(store: RecordingStore, input = completeInput(), submitMedia?:
     now,
     store,
     submitMedia: submitMedia ?? (async () => store.reservation),
+  })
+}
+
+async function replaceReplayArtifact(
+  store: RecordingStore,
+  instanceId: string,
+  mutate: (envelope: any) => void,
+): Promise<void> {
+  assert.ok(store.currentRun?.result_json)
+  const manifest = JSON.parse(store.currentRun.result_json)
+  assert.equal(manifest.schema_version, 2)
+  const chunks = Array.from({ length: manifest.artifact.chunk_count }, (_, index) => {
+    const key = `sync:artifact:${instanceId}:${manifest.artifact.aggregate_hash}:${index}`
+    const chunk = store.appState.get(key)
+    assert.equal(typeof chunk, 'string')
+    return chunk as string
+  })
+  const envelope = JSON.parse(chunks.join(''))
+  mutate(envelope)
+  const artifactJson = canonicalJson(envelope)
+  const artifactChunks: string[] = []
+  for (let offset = 0; offset < artifactJson.length; offset += 128_000) {
+    artifactChunks.push(artifactJson.slice(offset, offset + 128_000))
+  }
+  if (artifactChunks.length === 0) artifactChunks.push('')
+  const aggregateHash = await sha256Canonical(artifactJson)
+  const chunkHashes = await Promise.all(artifactChunks.map((chunk) => sha256Canonical(chunk)))
+  artifactChunks.forEach((chunk, index) => {
+    store.appState.set(`sync:artifact:${instanceId}:${aggregateHash}:${index}`, chunk)
+  })
+  store.currentRun.result_json = canonicalJson({
+    schema_version: 2,
+    input_hash: manifest.input_hash,
+    artifact: {
+      kind: manifest.artifact.kind,
+      aggregate_hash: aggregateHash,
+      byte_length: Buffer.byteLength(artifactJson, 'utf8'),
+      chunk_count: artifactChunks.length,
+      chunk_hashes: chunkHashes,
+    },
   })
 }
 
@@ -578,6 +636,11 @@ test('one stale diff is freshly listed and replanned; only the winning plan is p
   assert.equal(store.applied[1]?.inserts.length, 0)
   assert.equal(result.rowsWritten, 0)
   assert.equal(result.publicationInput.collections.length, 1)
+  assert.ok(store.currentRun?.result_json)
+  const manifest = JSON.parse(store.currentRun.result_json)
+  const artifactKeys = [...store.appState.keys()].filter((key) =>
+    key.startsWith('sync:artifact:run-1:'))
+  assert.equal(artifactKeys.length, manifest.artifact.chunk_count)
 })
 
 test('stale reconciliation is bounded and non-stale storage errors propagate with classified run codes', async () => {
@@ -730,10 +793,7 @@ test('terminal replay rejects malformed collection/calendar entries and a stale 
     const store = new RecordingStore()
     const instanceId = `invalid-replay-${replayCase.name}`
     await run(store, completeInput(), undefined, observedAt, instanceId)
-    assert.ok(store.currentRun?.result_json)
-    const envelope = JSON.parse(store.currentRun.result_json)
-    replayCase.mutate(envelope)
-    store.currentRun.result_json = JSON.stringify(envelope)
+    await replaceReplayArtifact(store, instanceId, replayCase.mutate)
 
     await assert.rejects(
       run(store, completeInput(), undefined, observedAt, instanceId),
@@ -867,6 +927,120 @@ test('prepared replay completes a cold cursor transition interrupted before its 
     deferred: 51,
   })
   assert.equal(store.currentRun?.status, 'ok')
+})
+
+test('older prepared replay cannot regress a newer global cold cursor', async () => {
+  const utcShard = new Date(observedAt * 1000).getUTCDay()
+  const coldIds = Array.from({ length: 52 }, (_, index) => utcShard + 7 * (index + 1))
+  const watched = coldIds.map((subjectId) => {
+    const entry = collection(subjectId)
+    return { ...entry, collection: { ...entry.collection, type: 2 } }
+  })
+  const store = new RecordingStore()
+  await run(store, completeInput(watched), undefined, observedAt, 'cursor-monotonic-seed')
+  store.mediaRows = coldIds.map((subjectId) => mediaRow(subjectId))
+  store.crashBeforeCursorPersistOnce = true
+  store.loseFailurePersistenceOnce = true
+
+  await assert.rejects(
+    run(store, completeInput(watched), async () => ({
+      granted: 1,
+      consumed: 1,
+      soft_limit: 50,
+      hard_limit: 100,
+      submission: 'submitted',
+    }), observedAt, 'cursor-instance-a'),
+    /simulated process crash before cold cursor commit/,
+  )
+  const instanceARun = structuredClone(store.currentRun)
+  const newerCursor = { subject_ids: [999] }
+  await store.putAppStateIfNewer('media:cold-cursor', newerCursor, observedAt + 1)
+  store.currentRun = instanceARun
+
+  const replay = await run(
+    store,
+    completeInput(watched),
+    undefined,
+    observedAt,
+    'cursor-instance-a',
+  )
+
+  assert.deepEqual(store.appState.get('media:cold-cursor'), newerCursor)
+  assert.equal(replay.runId, 'cursor-instance-a')
+  assert.equal(store.currentRun?.status, 'ok')
+})
+
+test('replay artifacts larger than one D1 value use a bounded manifest and verified chunks', async () => {
+  const summary = 'x'.repeat(45_000)
+  const entries = Array.from({ length: 48 }, (_, index) => {
+    const entry = collection(index + 1)
+    return {
+      ...entry,
+      collection: {
+        ...entry.collection,
+        subject: { ...entry.collection.subject, summary },
+      },
+    }
+  })
+  const store = new RecordingStore()
+
+  const result = await run(store, completeInput(entries), undefined, observedAt, 'large-artifact')
+
+  assert.equal(result.publicationInput.collections.length, 48)
+  assert.ok(store.currentRun?.result_json)
+  assert.ok(Buffer.byteLength(store.currentRun.result_json, 'utf8') < 100_000)
+  const manifest = JSON.parse(store.currentRun.result_json)
+  assert.equal(manifest.schema_version, 2)
+  assert.equal(manifest.artifact.kind, 'prepared')
+  assert.ok(manifest.artifact.byte_length > 2_000_000)
+  assert.ok(manifest.artifact.chunk_count > 1)
+  const chunkKeys = [...store.appState.keys()].filter((key) => key.startsWith('sync:artifact:large-artifact:'))
+  assert.equal(chunkKeys.length, manifest.artifact.chunk_count)
+  for (const key of chunkKeys) {
+    const chunk = store.appState.get(key)
+    assert.equal(typeof chunk, 'string')
+    assert.ok(Buffer.byteLength(canonicalJson({ schema_version: 1, value: chunk }), 'utf8') < 2_000_000)
+  }
+})
+
+test('malformed running replay artifacts are classified and terminalized', async () => {
+  for (const corruption of ['manifest', 'missing_chunk', 'chunk_hash'] as const) {
+    const store = new RecordingStore()
+    const instanceId = `malformed-artifact-${corruption}`
+    await run(store, completeInput(), undefined, observedAt, instanceId)
+    assert.ok(store.currentRun?.result_json)
+    const artifactJson = store.currentRun.result_json
+    const aggregateHash = await sha256Canonical(artifactJson)
+    const chunkHash = await sha256Canonical(artifactJson)
+    const inputHash = await sha256Canonical(completeInput())
+    const chunkKey = `sync:artifact:${instanceId}:${aggregateHash}:0`
+    store.currentRun.status = 'running'
+    store.currentRun.stage = 'media'
+    store.currentRun.completed_at = null
+    store.currentRun.result_json = corruption === 'manifest'
+      ? '{'
+      : canonicalJson({
+          schema_version: 2,
+          input_hash: inputHash,
+          artifact: {
+            kind: 'prepared',
+            aggregate_hash: aggregateHash,
+            byte_length: Buffer.byteLength(artifactJson, 'utf8'),
+            chunk_count: 1,
+            chunk_hashes: [chunkHash],
+          },
+        })
+    if (corruption === 'chunk_hash') store.appState.set(chunkKey, `${artifactJson}corrupt`)
+    store.failed = []
+
+    await assert.rejects(
+      run(store, completeInput(), undefined, observedAt, instanceId),
+      /artifact|checkpoint|prepared|JSON/i,
+    )
+    assert.equal(store.failed.length, 1)
+    assert.equal(store.failed[0]?.error_code, 'SYNC_FAILED')
+    assert.equal(store.currentRun.status, 'error')
+  }
 })
 
 test('error-terminal replay rejects without repeating start, collection work, completion or failure', async () => {

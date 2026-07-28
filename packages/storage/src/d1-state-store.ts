@@ -234,13 +234,6 @@ function decodeSyncRunRow(raw: Record<string, unknown>): SyncRunRow {
     return value
   }
   const resultJson = nullableSyncString(raw.result_json, 'result_json')
-  if (resultJson !== null) {
-    try {
-      JSON.parse(resultJson)
-    } catch {
-      throw new Error('Invalid sync_runs.result_json')
-    }
-  }
   const errorCode = nullableSyncString(raw.error_code, 'error_code')
   assertClassifiedErrorCode(errorCode)
   return {
@@ -528,6 +521,28 @@ export class D1StateStore {
       'INSERT INTO app_state (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at',
     ).bind(key, valueJson, this.now())
     await this.executeBatch([statement])
+  }
+
+  async putAppStateIfNewer<T>(key: string, value: T, version: number): Promise<boolean> {
+    if (!Number.isSafeInteger(version) || version < 0) throw new Error('Invalid app_state version')
+    const valueJson = canonicalJson({ schema_version: 1, value })
+    const statement = this.database.prepare(
+      'INSERT INTO app_state (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at WHERE app_state.updated_at < excluded.updated_at OR (app_state.updated_at = excluded.updated_at AND app_state.value_json = excluded.value_json)',
+    ).bind(key, valueJson, version)
+    const changes = await this.executeBatch([statement])
+    if (changes !== 0) return true
+    const current = await this.database.prepare(
+      'SELECT value_json, updated_at FROM app_state WHERE key = ?',
+    ).bind(key).first<{ value_json: unknown; updated_at: unknown }>()
+    return current !== null && current.value_json === valueJson && current.updated_at === version
+  }
+
+  async deleteAppStateKeys(keys: string[]): Promise<void> {
+    for (let offset = 0; offset < keys.length; offset += MAX_BATCH_STATEMENTS) {
+      const chunk = keys.slice(offset, offset + MAX_BATCH_STATEMENTS)
+      await this.executeBatch(chunk.map((key) =>
+        this.database.prepare('DELETE FROM app_state WHERE key = ?').bind(key)))
+    }
   }
 
   async startSyncRun(row: SyncRunRow): Promise<void> {

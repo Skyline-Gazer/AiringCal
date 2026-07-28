@@ -251,6 +251,11 @@ class SqliteD1 implements D1DatabaseLike {
         started_at INTEGER NOT NULL,
         heartbeat_at INTEGER NOT NULL,
         completed_at INTEGER
+      );
+      CREATE TABLE app_state (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
       )
     `)
   }
@@ -859,6 +864,27 @@ test('app_state decoder rejects invalid per-key values at runtime', async () => 
   )
 })
 
+test('app_state monotonic writes reject older cursor versions and cleanup exact artifact keys', async () => {
+  const store = new D1StateStore(new SqliteD1())
+  const key = 'media:cold-cursor'
+
+  assert.equal(await store.putAppStateIfNewer(key, { subject_ids: [1] }, 10), true)
+  assert.equal(await store.putAppStateIfNewer(key, { subject_ids: [2] }, 9), false)
+  assert.deepEqual(await store.getAppState(key, (value) => value), { subject_ids: [1] })
+  assert.equal(await store.putAppStateIfNewer(key, { subject_ids: [1] }, 10), true)
+  assert.equal(await store.putAppStateIfNewer(key, { subject_ids: [2] }, 10), false)
+  assert.equal(await store.putAppStateIfNewer(key, { subject_ids: [3] }, 11), true)
+
+  await store.putAppState('sync:artifact:run:hash:0', 'chunk-0')
+  await store.putAppState('sync:artifact:run:hash:1', 'chunk-1')
+  await store.deleteAppStateKeys([
+    'sync:artifact:run:hash:0',
+    'sync:artifact:run:hash:1',
+  ])
+  assert.equal(await store.getAppStateUnknown('sync:artifact:run:hash:0'), undefined)
+  assert.equal(await store.getAppStateUnknown('sync:artifact:run:hash:1'), undefined)
+})
+
 test('sync run lifecycle uses positional binds and persists only classified error codes', async () => {
   const fake = new RecordingD1()
   const store = new D1StateStore(fake)
@@ -905,7 +931,7 @@ test('sync run lifecycle uses positional binds and persists only classified erro
   assert.equal(JSON.stringify(statements).includes('raw body'), false)
 })
 
-test('getSyncRun selects and validates the persisted replay result', async () => {
+test('getSyncRun selects the persisted replay result without interpreting its artifact', async () => {
   const fake = new RecordingD1()
   const row = syncRun({
     instance_id: 'prepared',
@@ -918,7 +944,18 @@ test('getSyncRun selects and validates the persisted replay result', async () =>
   assert.match(fake.prepared.at(-1)?.sql ?? '', /\bresult_json\b/)
 
   fake.syncRows.set('prepared', { ...row, result_json: '{broken' })
-  await assert.rejects(new D1StateStore(fake).getSyncRun('prepared'), /Invalid sync_runs\.result_json/)
+  assert.equal((await new D1StateStore(fake).getSyncRun('prepared'))?.result_json, '{broken')
+})
+
+test('getSyncRun leaves replay artifact JSON parsing to the lifecycle boundary', async () => {
+  const fake = new RecordingD1()
+  const store = new D1StateStore(fake)
+  await store.startSyncRun(syncRun({ instance_id: 'raw-artifact' }))
+  fake.syncRows.get('raw-artifact')!.result_json = '{malformed'
+
+  const row = await store.getSyncRun('raw-artifact')
+
+  assert.equal(row?.result_json, '{malformed')
 })
 
 test('startSyncRun accepts exact replay but rejects instance id reuse with different payload', async () => {

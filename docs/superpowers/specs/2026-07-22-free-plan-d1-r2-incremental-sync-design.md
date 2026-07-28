@@ -84,9 +84,13 @@ resource resolve 必须在任一 Worker upload 前确认 D1、data R2、image R2
 
 ### 3.3 `sync_runs`
 
-以 instance ID 标识一次运行，保存 status/stage、generation、计数、输入/公开 hash、开始/heartbeat/完成时间和脱敏错误。`0002_sync_run_replay_result.sql` 以 additive migration 增加 `result_json`。收藏 CAS 与绑定规范输入 hash 的 versioned `collections_pending` 检查点必须在同一个 D1 batch 中提交；检查点保存原始 diff、计数与规范公开输入，因此进程在收藏提交后崩溃时，running replay 重放同一 CAS 并沿用原始结果语义，不根据已变更状态重新计算。若 batch 已提交但响应丢失，只有回读到 status 仍为 running、输入 hash 相同且 `result_json` 与本次规范检查点逐字节相同，才授权重新执行并 reconcile 完整计划；exact checkpoint 本身不代表多 batch 计划已全部完成。只有完整 `applyCollectionDiff` 返回成功才能进入媒体阶段；缺失或不匹配仍失败。已提交的 prefix 在重放中按 exact no-op 处理，剩余 chunk 继续提交，不重复有害变更。stale CAS 即使同批留下 losing 检查点，恢复时也必须再次通过完整 CAS/no-op reconciliation，不能直接进入媒体或公开阶段。
+以 instance ID 标识一次运行，保存 status/stage、generation、计数、输入/公开 hash、开始/heartbeat/完成时间和脱敏错误。`0002_sync_run_replay_result.sql` 以 additive migration 增加 `result_json`。Cloudflare D1 的[单个 string/BLOB 与单行上限均为 2,000,000 bytes，SQL statement 上限为 100,000 bytes](https://developers.cloudflare.com/d1/platform/limits/)；因此 `result_json` 只保存小于 100,000 bytes 的 versioned manifest，不内联完整 replay payload。完整 payload 按确定性 `sync:artifact:{instanceId}:{aggregateHash}:{index}` key 分块存入 `app_state`；manifest 绑定 input hash、artifact kind、UTF-8 总字节数、chunk 数、每块 hash 与 aggregate hash。恢复时必须先逐块验证大小、hash、总字节数与 aggregate hash，再解码 collection/prepared schema；所有 manifest/JSON/schema/hash 验证均由 sync lifecycle error boundary 执行，running artifact 损坏必须进入 `failSyncRun`，storage row decoder 不提前解释 payload。
 
-媒体阶段完成后以 versioned prepared result 覆盖检查点；该结果同时保存目标 cold cursor，并且必须先于 cursor 推进持久化。cursor 提交前崩溃时，running replay 幂等补写目标 cursor；cursor 提交后崩溃时，running replay 复用同一 prepared result，不重新规划媒体或重复预算动作。随后 running replay 只补 terminal transition，terminal replay 直接返回同一结果，不重复收藏实际变更、媒体预算或完成动作。运行记录用于健康、审计和 crash-safe replay，不进入公开内容 hash。
+收藏 CAS 与绑定规范输入 hash 的 versioned `collections_pending` manifest 必须在同一个 D1 batch 中提交；其 artifact 保存原始 diff、计数与规范公开输入，因此进程在收藏提交后崩溃时，running replay 重放同一 CAS 并沿用原始结果语义，不根据已变更状态重新计算。若 batch 已提交但响应丢失，只有回读到 status 仍为 running、输入 hash 相同且 `result_json` 与本次规范 manifest 逐字节相同，并成功验证其 artifact，才授权重新执行并 reconcile 完整计划；exact checkpoint 本身不代表多 batch 计划已全部完成。只有完整 `applyCollectionDiff` 返回成功才能进入媒体阶段；缺失或不匹配仍失败。已提交的 prefix 在重放中按 exact no-op 处理，剩余 chunk 继续提交，不重复有害变更。stale CAS 即使同批留下 losing checkpoint，恢复时也必须再次通过完整 CAS/no-op reconciliation，不能直接进入媒体或公开阶段。
+
+媒体阶段完成后以 versioned prepared-result manifest 覆盖检查点；该 artifact 同时保存目标 cold cursor 与单调版本，并且必须先于 cursor 推进持久化。cursor 通过 `app_state.updated_at` compare-and-set，仅允许更高版本或同版本同值写入，因此旧崩溃实例重放不能覆盖较新实例的全局 cursor。cursor 提交前崩溃时，running replay 幂等补写目标 cursor；cursor 提交后崩溃时，running replay 复用同一 prepared result，不重新规划媒体或重复预算动作。随后 running replay 只补 terminal transition，terminal replay 直接返回同一结果，不重复收藏实际变更、媒体预算或完成动作。
+
+stale artifact chunks 在替代 manifest 成功提交后删除；collection chunks 在 prepared-result manifest 成功提交后删除。最终 prepared chunks 与对应 `sync_runs` 行保持相同留存期，run-retention 清理必须先按 manifest 删除其精确 chunk keys 再删除 run 行。运行记录用于健康、审计和 crash-safe replay，不进入公开内容 hash。
 
 ### 3.4 `sync_budget`
 
@@ -109,6 +113,7 @@ resource resolve 必须在任一 Worker upload 前确认 D1、data R2、image R2
 - 最后成功 calendar/hash。
 - shadow publication 状态。
 - 后续 migration/cutover 使用的游标和门禁状态。
+- 有界的 sync replay artifact chunks；其生命周期由对应 `sync_runs` manifest 管理。
 
 本 change 不在 `app_state` 中声明已完成 legacy migration 或 read cutover。
 
