@@ -39,6 +39,7 @@ export type {
   PublicCalendarSubjectV1,
   PublicCollectionItemV1,
   PublicImageRefV1,
+  PublicationPendingCleanupResult,
   PublicSnapshotPointerV1,
   PublicationWriteOwner,
   PublicSnapshotSummaryV1,

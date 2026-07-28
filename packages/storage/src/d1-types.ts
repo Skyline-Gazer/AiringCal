@@ -220,6 +220,12 @@ export interface PublicationWriteOwner {
   attempt_token: string
 }
 
+export type PublicationPendingCleanupResult =
+  | 'clean'
+  | 'cleaned'
+  | 'active'
+  | 'conflict'
+
 export interface D1MetaLike {
   duration: number
   size_after: number

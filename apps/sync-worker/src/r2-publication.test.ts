@@ -151,15 +151,21 @@ class MemoryState implements PublicationState {
     if (
       this.verified === undefined
       || canonicalJson(this.verified) !== canonicalJson(verified)
-      || this.pending === undefined
-    ) return false
+    ) return 'conflict' as const
+    if (this.pending === undefined) {
+      return this.publicationClaim === undefined ? 'clean' as const : 'conflict' as const
+    }
     if (
       this.publicationClaim !== undefined
       && this.publicationClaim.expiresAt > this.leaseNow
-    ) return false
+    ) {
+      return canonicalJson(this.publicationClaim.candidate) === canonicalJson(this.pending)
+        ? 'active' as const
+        : 'conflict' as const
+    }
     this.publicationClaim = undefined
     this.pending = undefined
-    return true
+    return 'cleaned' as const
   }
 
   async confirmPublicationAuthorized(candidate: PublicSnapshotPointerV1) {
@@ -454,7 +460,7 @@ test('identical verified content is unchanged before generation allocation or R2
       throw new Error('unchanged publication allocated a generation')
     },
     async cleanupStalePendingPublication() {
-      return false
+      return 'clean' as const
     },
     async confirmPublicationAuthorized() {
       throw new Error('unchanged publication requested authorization')
@@ -889,45 +895,125 @@ test('an expired pending owner is fenced while later content supersedes and publ
   assert.equal(fixture.state.verified?.content_hash, inputC.content_hash)
 })
 
-test('verified no-op cleans unclaimed stale pending but leaves an actively claimed pending untouched', async () => {
-  for (const active of [false, true]) {
-    const events: string[] = []
-    const verified = await pointerFor(emptyInput(), 5)
-    const staleInput = await publicationInput({
-      ...emptyInput(),
-      collections: [collection(active ? 106 : 105)],
-    })
-    const pending: PublicSnapshotPointerV1 = {
-      schema_version: 1,
-      generation: 6,
-      content_hash: staleInput.content_hash,
-      r2_key: `snapshots/v1/6-${staleInput.content_hash}.json`,
-      published_at: NOW,
-    }
-    const state = new MemoryState(events, { verified, pending })
-    if (active) {
-      assert.equal(
-        await state.claimPublicationWrite(
-          pending,
-          publicationOwner('workflow-b', 'attempt-b'),
-        ),
-        'claimed',
-      )
-    }
-    const result = await publishPublicSnapshot({
-      state,
-      dataBucket: new MemoryBucket(events),
-      pointerKv: new MemoryKv(events),
-      input: { ...emptyInput(), content_hash: verified.content_hash },
-      now: NOW,
-      publicationId: 'workflow-a',
-    })
-
-    assert.equal(result.status, 'unchanged')
-    assert.equal(state.pending === undefined, !active)
-    assert.equal(events.some((event) => event.startsWith('r2:')), false)
-    assert.equal(events.some((event) => event.startsWith('kv:')), false)
+test('verified no-op cleans an unclaimed stale pending publication without R2 or KV writes', async () => {
+  const events: string[] = []
+  const verified = await pointerFor(emptyInput(), 5)
+  const staleInput = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(105)],
+  })
+  const pending: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 6,
+    content_hash: staleInput.content_hash,
+    r2_key: `snapshots/v1/6-${staleInput.content_hash}.json`,
+    published_at: NOW,
   }
+  const state = new MemoryState(events, { verified, pending })
+  const result = await publishPublicSnapshot({
+    state,
+    dataBucket: new MemoryBucket(events),
+    pointerKv: new MemoryKv(events),
+    input: { ...emptyInput(), content_hash: verified.content_hash },
+    now: NOW,
+    publicationId: 'workflow-a',
+  })
+
+  assert.equal(result.status, 'unchanged')
+  assert.equal(state.pending, undefined)
+  assert.equal(events.some((event) => event.startsWith('r2:')), false)
+  assert.equal(events.some((event) => event.startsWith('kv:')), false)
+})
+
+test('verified input stays pending behind an active stale writer then restores itself after that writer publishes', async () => {
+  const events: string[] = []
+  const inputA = emptyInput()
+  const verifiedA = await pointerFor(inputA, 5)
+  const inputB = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(106)],
+  })
+  const pendingB: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 6,
+    content_hash: inputB.content_hash,
+    r2_key: `snapshots/v1/6-${inputB.content_hash}.json`,
+    published_at: NOW,
+  }
+  const ownerB = publicationOwner('workflow-b', 'attempt-b')
+  const state = new MemoryState(events, { verified: verifiedA, pending: pendingB })
+  const dataBucket = new MemoryBucket(events)
+  const pointerKv = new MemoryKv(events)
+  assert.equal(await state.claimPublicationWrite(pendingB, ownerB), 'claimed')
+
+  const blockedA = await publishPublicSnapshot({
+    state,
+    dataBucket,
+    pointerKv,
+    input: { ...inputA, content_hash: verifiedA.content_hash },
+    now: NOW,
+    publicationId: 'workflow-a',
+  })
+
+  assert.equal(blockedA.status, 'pending')
+  assert.equal(blockedA.generation, 6)
+  assert.equal(dataBucket.objects.size, 0)
+  assert.equal(pointerKv.putValues.length, 0)
+
+  await state.markPublicationPublished(pendingB, ownerB)
+  const restoredA = await publishPublicSnapshot({
+    state,
+    dataBucket,
+    pointerKv,
+    input: { ...inputA, content_hash: verifiedA.content_hash },
+    now: NOW + 1,
+    publicationId: 'workflow-a-retry',
+  })
+
+  assert.equal(restoredA.status, 'published')
+  assert.equal(restoredA.generation, 7)
+  assert.equal(state.verified?.content_hash, verifiedA.content_hash)
+  assert.deepEqual(
+    pointerKv.putValues.map((value) => JSON.parse(value).generation),
+    [7],
+  )
+})
+
+test('verified advancement during stale cleanup is re-read before deciding unchanged', async () => {
+  const events: string[] = []
+  const inputA = emptyInput()
+  const verifiedA = await pointerFor(inputA, 5)
+  const inputB = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(108)],
+  })
+  const verifiedB = await pointerFor(inputB, 6)
+  class AdvancingCleanupState extends MemoryState {
+    override async cleanupStalePendingPublication() {
+      this.verified = structuredClone(verifiedB)
+      this.pending = undefined
+      return 'conflict' as const
+    }
+  }
+  const state = new AdvancingCleanupState(events, { verified: verifiedA })
+  const pointerKv = new MemoryKv(events)
+
+  const result = await publishPublicSnapshot({
+    state,
+    dataBucket: new MemoryBucket(events),
+    pointerKv,
+    input: { ...inputA, content_hash: verifiedA.content_hash },
+    now: NOW + 1,
+    publicationId: 'workflow-a',
+  })
+
+  assert.equal(result.status, 'published')
+  assert.equal(result.generation, 7)
+  assert.equal(state.verified?.content_hash, verifiedA.content_hash)
+  assert.deepEqual(
+    pointerKv.putValues.map((value) => JSON.parse(value).generation),
+    [7],
+  )
 })
 
 test('pending supersession response loss replays the exact replacement candidate', async () => {

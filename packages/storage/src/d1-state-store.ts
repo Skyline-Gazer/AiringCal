@@ -11,6 +11,7 @@ import type {
   D1DatabaseLike,
   D1PreparedStatementLike,
   D1ResultLike,
+  PublicationPendingCleanupResult,
   PublicSnapshotPointerV1,
   PublicationWriteOwner,
   SyncRunCompletion,
@@ -800,7 +801,7 @@ export class D1StateStore {
 
   async cleanupStalePendingPublication(
     verifiedCandidate: PublicSnapshotPointerV1,
-  ): Promise<boolean> {
+  ): Promise<PublicationPendingCleanupResult> {
     const validated = decodePublicationPointer(verifiedCandidate)
     const verifiedJson = canonicalJson(validated)
     const verifiedValueJson = canonicalJson({ schema_version: 1, value: validated })
@@ -808,10 +809,13 @@ export class D1StateStore {
 
     for (let attempt = 0; attempt < 3; attempt++) {
       const { verified, pending, claim } = await this.publicationState()
-      if (!verified || canonicalJson(verified) !== verifiedJson || pending === undefined) {
-        return false
+      if (!verified || canonicalJson(verified) !== verifiedJson) return 'conflict'
+      if (pending === undefined) return claim === undefined ? 'clean' : 'conflict'
+      if (claim && claim.expires_at > leaseNow) {
+        return canonicalJson(claim.candidate) === canonicalJson(pending)
+          ? 'active'
+          : 'conflict'
       }
-      if (claim && claim.expires_at > leaseNow) return false
 
       const statements: D1PreparedStatementLike[] = []
       if (claim) {
@@ -839,9 +843,9 @@ export class D1StateStore {
         validated.generation,
       ))
       const changes = await this.executeBatchChanges(statements)
-      if (changes.at(-1) !== 0) return true
+      if (changes.at(-1) !== 0) return 'cleaned'
     }
-    return false
+    return 'conflict'
   }
 
   async confirmPublicationAuthorized(

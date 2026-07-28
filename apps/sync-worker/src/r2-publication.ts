@@ -5,6 +5,7 @@ import {
 } from '@airing-cal/domain'
 import {
   canonicalJson,
+  type PublicationPendingCleanupResult,
   type PublicSnapshotPointerV1,
   type PublicationWriteOwner,
 } from '@airing-cal/storage'
@@ -16,7 +17,9 @@ export interface PublicationState {
   getVerifiedPublication(): Promise<PublicSnapshotPointerV1 | undefined>
   getPendingPublication(): Promise<PublicSnapshotPointerV1 | undefined>
   commitPendingPublication(candidate: PublicSnapshotPointerV1): Promise<boolean>
-  cleanupStalePendingPublication(verified: PublicSnapshotPointerV1): Promise<boolean>
+  cleanupStalePendingPublication(
+    verified: PublicSnapshotPointerV1,
+  ): Promise<PublicationPendingCleanupResult>
   confirmPublicationAuthorized(
     candidate: PublicSnapshotPointerV1,
   ): Promise<'authorized' | 'already_verified' | 'conflict'>
@@ -157,6 +160,62 @@ function isBlockedCandidate(
   return Object.hasOwn(value, 'blocked')
 }
 
+function unchangedResult(verified: PublicSnapshotPointerV1): PublicationResult {
+  return {
+    status: 'unchanged',
+    generation: verified.generation,
+    contentHash: verified.content_hash,
+    r2Puts: 0,
+    pointerPuts: 0,
+  }
+}
+
+function pendingResult(generation: number, contentHash: string): PublicationResult {
+  return {
+    status: 'pending',
+    generation,
+    contentHash,
+    r2Puts: 0,
+    pointerPuts: 0,
+  }
+}
+
+async function reconcileVerifiedNoOp(
+  state: PublicationState,
+  verified: PublicSnapshotPointerV1,
+  contentHash: string,
+): Promise<
+  | { result: PublicationResult }
+  | { verified: PublicSnapshotPointerV1 | undefined }
+> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const cleanup = await state.cleanupStalePendingPublication(verified)
+    if (cleanup === 'clean') return { result: unchangedResult(verified) }
+    if (cleanup === 'cleaned') continue
+
+    const currentVerified = await readVerified(state)
+    if (
+      currentVerified === undefined
+      || canonicalJson(currentVerified) !== canonicalJson(verified)
+    ) return { verified: currentVerified }
+    if (cleanup === 'active') {
+      const pending = await readPending(state)
+      if (pending !== undefined) {
+        return { result: pendingResult(pending.generation, contentHash) }
+      }
+    }
+    return { verified: currentVerified }
+  }
+
+  const pending = await readPending(state)
+  return {
+    result: pendingResult(
+      pending?.generation ?? verified.generation + 1,
+      contentHash,
+    ),
+  }
+}
+
 async function putPointerAndConfirm(
   pointerKv: PublicationPointerKv,
   pointerBytes: string,
@@ -196,37 +255,46 @@ export async function publishPublicSnapshot(
     throw new Error('Invalid publication input content_hash')
   }
 
-  const verified = await readVerified(state)
-  if (verified?.content_hash === validationSnapshot.content_hash) {
-    await state.cleanupStalePendingPublication(verified)
-    return {
-      status: 'unchanged',
-      generation: verified.generation,
-      contentHash: verified.content_hash,
-      r2Puts: 0,
-      pointerPuts: 0,
+  let verified = await readVerified(state)
+  let prepared:
+    | PublicSnapshotPointerV1
+    | { blocked: { generation: number; contentHash: string } }
+    | undefined
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (verified?.content_hash === validationSnapshot.content_hash) {
+      const resolution = await reconcileVerifiedNoOp(
+        state,
+        verified,
+        validationSnapshot.content_hash,
+      )
+      if ('result' in resolution) return resolution.result
+      verified = resolution.verified
+      if (verified?.content_hash === validationSnapshot.content_hash) continue
     }
-  }
 
-  const prepared = await prepareCandidate(state, verified, validationSnapshot.content_hash, now)
-  if (isUnchangedCandidate(prepared)) {
-    await state.cleanupStalePendingPublication(prepared.unchanged)
-    return {
-      status: 'unchanged',
-      generation: prepared.unchanged.generation,
-      contentHash: prepared.unchanged.content_hash,
-      r2Puts: 0,
-      pointerPuts: 0,
+    const next = await prepareCandidate(state, verified, validationSnapshot.content_hash, now)
+    if (isUnchangedCandidate(next)) {
+      const resolution = await reconcileVerifiedNoOp(
+        state,
+        next.unchanged,
+        validationSnapshot.content_hash,
+      )
+      if ('result' in resolution) return resolution.result
+      verified = resolution.verified
+      continue
     }
+    prepared = next
+    break
+  }
+  if (prepared === undefined) {
+    const pending = await readPending(state)
+    return pendingResult(
+      pending?.generation ?? (verified?.generation ?? 0) + 1,
+      validationSnapshot.content_hash,
+    )
   }
   if (isBlockedCandidate(prepared)) {
-    return {
-      status: 'pending',
-      generation: prepared.blocked.generation,
-      contentHash: prepared.blocked.contentHash,
-      r2Puts: 0,
-      pointerPuts: 0,
-    }
+    return pendingResult(prepared.blocked.generation, prepared.blocked.contentHash)
   }
   const candidate = prepared
   const initialAuthorization = await state.confirmPublicationAuthorized(candidate)

@@ -1229,17 +1229,18 @@ test('verified no-op cleanup removes only stale pending state without an active 
   }
   const owner = publicationOwner('workflow-b', 'attempt-b')
   await store.putAppStateIfNewer('public:verified', verified, verified.generation)
+  assert.equal(await store.cleanupStalePendingPublication(verified), 'clean')
   await store.commitPendingPublication(pending)
-  assert.equal(await store.cleanupStalePendingPublication(verified), true)
+  assert.equal(await store.cleanupStalePendingPublication(verified), 'cleaned')
   assert.equal(await store.getPendingPublication(), undefined)
 
   await store.commitPendingPublication(pending)
   await store.claimPublicationWrite(pending, owner)
-  assert.equal(await store.cleanupStalePendingPublication(verified), false)
+  assert.equal(await store.cleanupStalePendingPublication(verified), 'active')
   assert.deepEqual(await store.getPendingPublication(), pending)
 
   now += 60
-  assert.equal(await store.cleanupStalePendingPublication(verified), true)
+  assert.equal(await store.cleanupStalePendingPublication(verified), 'cleaned')
   assert.equal(await store.getPendingPublication(), undefined)
   assert.equal(await store.confirmPublicationWrite(pending, owner), 'conflict')
 })
