@@ -75,6 +75,9 @@ class RecordingStore implements D1IncrementalSyncStore {
   appState = new Map<string, unknown>()
   staleOnce = false
   applyError: Error | null = null
+  crashOnNextMediaList = false
+  loseFailurePersistenceOnce = false
+  collectionMutations = 0
   loseUpdateResponseOnce = false
   loseCompleteResponseOnce = false
   reservation: BudgetReservationResult = {
@@ -89,14 +92,23 @@ class RecordingStore implements D1IncrementalSyncStore {
     this.listCalls++
     return structuredClone(this.rows)
   }
-  async listSubjectMediaRows() { return structuredClone(this.mediaRows) }
+  async listSubjectMediaRows() {
+    if (this.crashOnNextMediaList) {
+      this.crashOnNextMediaList = false
+      throw new Error('simulated process crash after collection commit')
+    }
+    return structuredClone(this.mediaRows)
+  }
   async getAppState<T>(key: string, decode: (value: unknown) => T) {
     const value = this.appState.get(key)
     return value === undefined ? undefined : decode(value)
   }
   async putAppState<T>(key: string, value: T) { this.appState.set(key, structuredClone(value)) }
 
-  async applyCollectionDiff(plan: CollectionDiffPlanLike) {
+  async applyCollectionDiff(
+    plan: CollectionDiffPlanLike,
+    checkpoint?: { instanceId: string; update: SyncRunUpdate },
+  ) {
     this.applied.push(structuredClone(plan))
     if (this.applyError) throw this.applyError
     if (this.staleOnce) {
@@ -104,19 +116,29 @@ class RecordingStore implements D1IncrementalSyncStore {
       this.rows = structuredClone(plan.inserts)
       throw new StaleCollectionDiffError(plan.inserts[0]?.user_id ?? 'alice', plan.inserts[0]?.subject_id ?? 1)
     }
-    this.rows = [
+    const before = JSON.stringify(this.rows)
+    const nextRows = [
       ...this.rows.filter((row) =>
         ![...plan.updates, ...plan.restored, ...plan.firstMissing, ...plan.confirmedDeleted]
           .some((next) => next.user_id === row.user_id && next.subject_id === row.subject_id)),
-      ...plan.inserts,
+      ...plan.inserts.filter((insert) =>
+        !this.rows.some((row) => row.user_id === insert.user_id && row.subject_id === insert.subject_id)),
       ...plan.updates,
       ...plan.restored,
       ...plan.firstMissing,
       ...plan.confirmedDeleted,
     ]
+    const rowsWritten = before === JSON.stringify(nextRows)
+      ? 0
+      : plan.inserts.length + plan.updates.length + plan.restored.length
+        + plan.firstMissing.length + plan.confirmedDeleted.length
+    this.rows = nextRows
+    this.collectionMutations += rowsWritten
+    if (checkpoint && this.currentRun?.instance_id === checkpoint.instanceId) {
+      this.currentRun = { ...this.currentRun, ...structuredClone(checkpoint.update) }
+    }
     return {
-      rowsWritten: plan.inserts.length + plan.updates.length + plan.restored.length
-        + plan.firstMissing.length + plan.confirmedDeleted.length,
+      rowsWritten,
     }
   }
 
@@ -148,6 +170,10 @@ class RecordingStore implements D1IncrementalSyncStore {
     return { outcome: 'applied' as const, terminal: 'ok' as const }
   }
   async failSyncRun(_instanceId: string, failure: SyncRunFailure) {
+    if (this.loseFailurePersistenceOnce) {
+      this.loseFailurePersistenceOnce = false
+      throw new Error('simulated process loss before failure persistence')
+    }
     this.failed.push(structuredClone(failure))
     if (this.currentRun?.status === 'ok') {
       return { outcome: 'preserved_opposite_terminal' as const, terminal: 'ok' as const }
@@ -431,6 +457,36 @@ test('stale reconciliation is bounded and non-stale storage errors propagate wit
   assert.doesNotMatch(JSON.stringify(invalid.failed), /upstream body/)
 })
 
+test('replay after collection commit crash returns the original result without a second mutation', async () => {
+  const store = new RecordingStore()
+  store.crashOnNextMediaList = true
+  store.loseFailurePersistenceOnce = true
+  const instanceId = 'collection-checkpoint-crash'
+
+  await assert.rejects(
+    run(store, completeInput(), undefined, observedAt, instanceId),
+    /simulated process crash/,
+  )
+  assert.equal(store.currentRun?.status, 'running')
+  assert.equal(store.collectionMutations, 1)
+
+  const replay = await run(store, completeInput(), undefined, observedAt, instanceId)
+
+  assert.equal(store.collectionMutations, 1)
+  assert.equal(replay.rowsWritten, 1)
+  assert.equal(replay.firstMissing, 0)
+  assert.equal(replay.deleted, 0)
+  assert.equal(replay.restored, 0)
+  assert.equal(replay.publicationInput.collections[0]?.subject_id, 1)
+  assert.deepEqual(replay.media, {
+    candidates: 1,
+    granted: 0,
+    confirmed: 0,
+    uncertain: 0,
+    deferred: 1,
+  })
+})
+
 test('terminal run replay re-enters with the stable instance without a second start or completion', async () => {
   const store = new RecordingStore()
   const first = await run(store, completeInput(), undefined, observedAt, 'terminal-replay')
@@ -440,6 +496,47 @@ test('terminal run replay re-enters with the stable instance without a second st
   assert.equal(store.completed.length, 1)
   assert.equal(store.applied.length, 1)
   assert.deepEqual(replay, first)
+})
+
+test('terminal replay rejects malformed collection/calendar entries and a stale publication hash', async () => {
+  const cases: Array<{
+    name: string
+    mutate(envelope: any): void
+    pattern: RegExp
+  }> = [
+    {
+      name: 'collection',
+      mutate: (envelope) => { envelope.result.publicationInput.collections = [{}] },
+      pattern: /Invalid prepared D1 sync publication/,
+    },
+    {
+      name: 'calendar',
+      mutate: (envelope) => { envelope.result.publicationInput.calendar = [{}] },
+      pattern: /Invalid prepared D1 sync publication/,
+    },
+    {
+      name: 'content hash',
+      mutate: (envelope) => { envelope.result.publicationInput.content_hash = '0'.repeat(64) },
+      pattern: /content_hash/,
+    },
+  ]
+
+  for (const replayCase of cases) {
+    const store = new RecordingStore()
+    const instanceId = `invalid-replay-${replayCase.name}`
+    await run(store, completeInput(), undefined, observedAt, instanceId)
+    assert.ok(store.currentRun?.result_json)
+    const envelope = JSON.parse(store.currentRun.result_json)
+    replayCase.mutate(envelope)
+    store.currentRun.result_json = JSON.stringify(envelope)
+
+    await assert.rejects(
+      run(store, completeInput(), undefined, observedAt, instanceId),
+      replayCase.pattern,
+    )
+    assert.equal(store.applied.length, 1)
+    assert.equal(store.completed.length, 1)
+  }
 })
 
 test('running prepared-result replay completes without repeating collection work or start', async () => {
@@ -556,4 +653,77 @@ test('running instance replay rejects a different complete input before collecti
   assert.equal(store.applied.length, 0)
   assert.equal(store.completed.length, 0)
   assert.equal(store.failed.length, 0)
+})
+
+function mediaRow(
+  subjectId: number,
+  overrides: Partial<SubjectMediaRow> = {},
+): SubjectMediaRow {
+  return {
+    subject_id: subjectId,
+    detail_json: '{}',
+    detail_hash: 'a'.repeat(64),
+    media_hash: null,
+    nsfw: 0,
+    source_image_common_url: null,
+    source_image_large_url: null,
+    r2_image_common_key: null,
+    r2_image_large_key: null,
+    checked_at: observedAt - 1,
+    next_refresh_at: null,
+    retry_count: 0,
+    retry_after: null,
+    error_code: null,
+    ...overrides,
+  }
+}
+
+test('due retry bypasses cold shard filtering while future retry suppresses cold and hot scheduling', async () => {
+  const utcShard = new Date(observedAt * 1000).getUTCDay()
+  const coldOnShard = utcShard === 0 ? 7 : utcShard
+  const coldOffShard = coldOnShard + 1
+
+  const dueCold = new RecordingStore()
+  await run(dueCold, completeInput([
+    { ...collection(coldOffShard), collection: { ...collection(coldOffShard).collection, type: 2 } },
+  ]), undefined, observedAt, 'due-cold-seed')
+  dueCold.mediaRows = [mediaRow(coldOffShard, {
+    retry_count: 1,
+    retry_after: observedAt,
+    error_code: 'UPSTREAM_ERROR',
+  })]
+  const dueRequests: BudgetReservationRequest[] = []
+  const dueResult = await run(dueCold, completeInput([
+    { ...collection(coldOffShard), collection: { ...collection(coldOffShard).collection, type: 2 } },
+  ]), async (request) => {
+    dueRequests.push(request)
+    return { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100, submission: 'submitted' }
+  }, observedAt, 'due-cold-retry')
+  assert.equal(dueResult.media.candidates, 1)
+  assert.deepEqual(dueRequests[0]?.jobs.map((job: any) => job.subject_id), [coldOffShard])
+
+  const futureCold = new RecordingStore()
+  await run(futureCold, completeInput([
+    { ...collection(coldOnShard), collection: { ...collection(coldOnShard).collection, type: 2 } },
+  ]), undefined, observedAt, 'future-cold-seed')
+  futureCold.mediaRows = [mediaRow(coldOnShard, {
+    retry_count: 1,
+    retry_after: observedAt + 60,
+    error_code: 'UPSTREAM_ERROR',
+  })]
+  const futureColdResult = await run(futureCold, completeInput([
+    { ...collection(coldOnShard), collection: { ...collection(coldOnShard).collection, type: 2 } },
+  ]), undefined, observedAt, 'future-cold-retry')
+  assert.equal(futureColdResult.media.candidates, 0)
+
+  const futureHot = new RecordingStore()
+  await run(futureHot, completeInput(), undefined, observedAt, 'future-hot-seed')
+  futureHot.mediaRows = [mediaRow(1, {
+    next_refresh_at: observedAt - 1,
+    retry_count: 1,
+    retry_after: observedAt + 60,
+    error_code: 'UPSTREAM_ERROR',
+  })]
+  const futureHotResult = await run(futureHot, completeInput(), undefined, observedAt, 'future-hot-retry')
+  assert.equal(futureHotResult.media.candidates, 0)
 })

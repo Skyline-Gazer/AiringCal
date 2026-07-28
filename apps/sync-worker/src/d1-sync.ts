@@ -1,5 +1,6 @@
 import {
   normalizeCollection,
+  parsePublicSnapshotV1,
   planCollectionDiff,
   buildPublicSnapshot,
   transformCalendar,
@@ -45,7 +46,10 @@ export interface D1IncrementalSyncStore {
   getAppState<T>(key: string, decode: (value: unknown) => T): Promise<T | undefined>
   putAppState<T>(key: string, value: T): Promise<void>
   getSyncRun(instanceId: string): Promise<SyncRunRow | undefined>
-  applyCollectionDiff(plan: CollectionDiffPlan): Promise<{ rowsWritten: number }>
+  applyCollectionDiff(
+    plan: CollectionDiffPlan,
+    checkpoint?: { instanceId: string; update: SyncRunUpdate },
+  ): Promise<{ rowsWritten: number }>
   startSyncRun(row: SyncRunRow): Promise<void>
   updateSyncRun(instanceId: string, update: SyncRunUpdate): Promise<void>
   completeSyncRun(instanceId: string, completion: SyncRunCompletion): Promise<SyncTerminalTransitionResult>
@@ -87,6 +91,22 @@ interface PreparedResultEnvelope {
   result: D1SyncResult
 }
 
+interface CollectionCheckpoint {
+  plan: CollectionDiffPlan
+  rowsWritten: number
+  firstMissing: number
+  deleted: number
+  restored: number
+  publicationInput: D1PublicationInput
+}
+
+interface CollectionCheckpointEnvelope {
+  schema_version: 1
+  input_hash: string
+  checkpoint_hash: string
+  collection: CollectionCheckpoint
+}
+
 function requireNonNegativeInteger(value: unknown, field: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
     throw new Error(`Invalid prepared D1 sync result: ${field}`)
@@ -94,11 +114,155 @@ function requireNonNegativeInteger(value: unknown, field: string): number {
   return value
 }
 
-function decodePreparedResult(
+function requireCollectionRow(value: unknown, field: string): CollectionRow {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Invalid D1 sync collection checkpoint: ${field}`)
+  }
+  const row = value as Partial<CollectionRow>
+  const nullableInteger = (candidate: unknown) =>
+    candidate === null || (typeof candidate === 'number' && Number.isSafeInteger(candidate))
+  if (
+    typeof row.user_id !== 'string'
+    || typeof row.subject_id !== 'number'
+    || !Number.isSafeInteger(row.subject_id)
+    || typeof row.collection_type !== 'number'
+    || !Number.isSafeInteger(row.collection_type)
+    || !nullableInteger(row.rate)
+    || typeof row.tags_json !== 'string'
+    || typeof row.comment !== 'string'
+    || typeof row.ep_status !== 'number'
+    || !Number.isSafeInteger(row.ep_status)
+    || typeof row.vol_status !== 'number'
+    || !Number.isSafeInteger(row.vol_status)
+    || (row.upstream_updated_at !== null && typeof row.upstream_updated_at !== 'string')
+    || typeof row.subject_json !== 'string'
+    || typeof row.content_hash !== 'string'
+    || typeof row.state_version !== 'number'
+    || !Number.isSafeInteger(row.state_version)
+    || row.state_version < 1
+    || (row.temperature !== 'hot' && row.temperature !== 'cold')
+    || typeof row.first_seen_at !== 'number'
+    || !Number.isSafeInteger(row.first_seen_at)
+    || typeof row.changed_at !== 'number'
+    || !Number.isSafeInteger(row.changed_at)
+    || !nullableInteger(row.missing_since)
+    || !nullableInteger(row.deleted_at)
+  ) {
+    throw new Error(`Invalid D1 sync collection checkpoint: ${field}`)
+  }
+  return row as CollectionRow
+}
+
+function requireCollectionPlan(value: unknown): CollectionDiffPlan {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Invalid D1 sync collection checkpoint plan')
+  }
+  const raw = value as Partial<CollectionDiffPlan>
+  const rowFields = ['inserts', 'updates', 'firstMissing', 'confirmedDeleted', 'restored'] as const
+  for (const field of rowFields) {
+    if (!Array.isArray(raw[field])) {
+      throw new Error(`Invalid D1 sync collection checkpoint plan: ${field}`)
+    }
+  }
+  const inserts = raw.inserts as unknown[]
+  const updates = raw.updates as unknown[]
+  const firstMissing = raw.firstMissing as unknown[]
+  const confirmedDeleted = raw.confirmedDeleted as unknown[]
+  const restored = raw.restored as unknown[]
+  return {
+    inserts: inserts.map((row, index) => requireCollectionRow(row, `inserts[${index}]`)),
+    updates: updates.map((row, index) => requireCollectionRow(row, `updates[${index}]`)),
+    unchanged: requireNonNegativeInteger(raw.unchanged, 'collection.plan.unchanged'),
+    firstMissing: firstMissing.map((row, index) => requireCollectionRow(row, `firstMissing[${index}]`)),
+    confirmedDeleted: confirmedDeleted.map((row, index) =>
+      requireCollectionRow(row, `confirmedDeleted[${index}]`)),
+    restored: restored.map((row, index) => requireCollectionRow(row, `restored[${index}]`)),
+  }
+}
+
+async function decodePublicationInput(value: unknown): Promise<D1PublicationInput> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Invalid prepared D1 sync publication')
+  }
+  const publication = value as Partial<D1PublicationInput>
+  if (
+    !Array.isArray(publication.collections)
+    || !Array.isArray(publication.calendar)
+    || typeof publication.content_hash !== 'string'
+    || !Number.isSafeInteger(publication.published_at)
+  ) {
+    throw new Error('Invalid prepared D1 sync publication')
+  }
+  const publishedAt = publication.published_at as number
+  let rebuilt
+  try {
+    rebuilt = await buildPublicSnapshot({
+      collections: publication.collections,
+      calendar: publication.calendar,
+      published_at: publishedAt,
+    }, 0)
+    await parsePublicSnapshotV1(rebuilt)
+  } catch {
+    throw new Error('Invalid prepared D1 sync publication')
+  }
+  if (rebuilt.content_hash !== publication.content_hash) {
+    throw new Error('Invalid prepared D1 sync publication content_hash')
+  }
+  return {
+    collections: publication.collections,
+    calendar: publication.calendar,
+    published_at: publishedAt,
+    content_hash: rebuilt.content_hash,
+  }
+}
+
+async function decodeCollectionCheckpoint(
+  resultJson: string | null,
+  expectedInputHash: string,
+): Promise<CollectionCheckpoint | undefined> {
+  if (resultJson === null) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(resultJson)
+  } catch {
+    throw new Error('Invalid D1 sync checkpoint JSON')
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('Invalid D1 sync checkpoint')
+  }
+  if (!Object.hasOwn(parsed, 'collection')) return undefined
+  const envelope = parsed as Partial<CollectionCheckpointEnvelope>
+  if (envelope.schema_version !== 1 || envelope.input_hash !== expectedInputHash) {
+    throw new Error('D1 sync instance input mismatch')
+  }
+  if (
+    typeof envelope.checkpoint_hash !== 'string'
+    || !/^[0-9a-f]{64}$/.test(envelope.checkpoint_hash)
+    || typeof envelope.collection !== 'object'
+    || envelope.collection === null
+    || Array.isArray(envelope.collection)
+  ) {
+    throw new Error('Invalid D1 sync collection checkpoint')
+  }
+  if (await sha256Canonical(envelope.collection) !== envelope.checkpoint_hash) {
+    throw new Error('Invalid D1 sync collection checkpoint hash')
+  }
+  const raw = envelope.collection
+  return {
+    plan: requireCollectionPlan(raw.plan),
+    rowsWritten: requireNonNegativeInteger(raw.rowsWritten, 'collection.rowsWritten'),
+    firstMissing: requireNonNegativeInteger(raw.firstMissing, 'collection.firstMissing'),
+    deleted: requireNonNegativeInteger(raw.deleted, 'collection.deleted'),
+    restored: requireNonNegativeInteger(raw.restored, 'collection.restored'),
+    publicationInput: await decodePublicationInput(raw.publicationInput),
+  }
+}
+
+async function decodePreparedResult(
   resultJson: string | null,
   expectedInputHash: string,
   expectedInstanceId: string,
-): D1SyncResult | undefined {
+): Promise<D1SyncResult | undefined> {
   if (resultJson === null) return undefined
   let parsed: unknown
   try {
@@ -117,17 +281,9 @@ function decodePreparedResult(
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
     throw new Error('Invalid prepared D1 sync result')
   }
-  const publication = raw.publicationInput
   const media = raw.media
   if (
     raw.runId !== expectedInstanceId
-    || typeof publication !== 'object'
-    || publication === null
-    || Array.isArray(publication)
-    || !Array.isArray(publication.collections)
-    || !Array.isArray(publication.calendar)
-    || typeof publication.content_hash !== 'string'
-    || !Number.isSafeInteger(publication.published_at)
     || typeof media !== 'object'
     || media === null
     || Array.isArray(media)
@@ -139,7 +295,7 @@ function decodePreparedResult(
     firstMissing: requireNonNegativeInteger(raw.firstMissing, 'firstMissing'),
     deleted: requireNonNegativeInteger(raw.deleted, 'deleted'),
     restored: requireNonNegativeInteger(raw.restored, 'restored'),
-    publicationInput: publication as D1PublicationInput,
+    publicationInput: await decodePublicationInput(raw.publicationInput),
     media: {
       candidates: requireNonNegativeInteger(media.candidates, 'media.candidates'),
       granted: requireNonNegativeInteger(media.granted, 'media.granted'),
@@ -153,6 +309,14 @@ function decodePreparedResult(
 
 function changedRows(plan: CollectionDiffPlan): CollectionRow[] {
   return [...plan.inserts, ...plan.updates, ...plan.restored]
+}
+
+function plannedRowsWritten(plan: CollectionDiffPlan): number {
+  return plan.inserts.length
+    + plan.updates.length
+    + plan.restored.length
+    + plan.firstMissing.length
+    + plan.confirmedDeleted.length
 }
 
 function classifyError(error: unknown): string {
@@ -309,10 +473,17 @@ function planMediaCandidates(
         ],
         priority: 'new_or_changed',
       })
+    } else if (media.retry_count > 0) {
+      if (media.retry_after !== null && media.retry_after <= now) {
+        candidates.push({
+          subject_id: subjectId,
+          ...input,
+          components: ['detail', 'meta', 'image_common', 'image_large'],
+          priority: 'retry',
+        })
+      }
     } else if (!input.hot) {
       candidates.push({ subject_id: subjectId, ...input, components: ['detail', 'meta', 'image_common', 'image_large'], priority: 'cold' })
-    } else if (media.retry_count > 0 && media.retry_after !== null && media.retry_after <= now) {
-      candidates.push({ subject_id: subjectId, ...input, components: ['detail', 'meta', 'image_common', 'image_large'], priority: 'retry' })
     } else if (media.next_refresh_at !== null && media.next_refresh_at <= now) {
       candidates.push({
         subject_id: subjectId,
@@ -384,9 +555,12 @@ export async function runD1IncrementalSync({
     throw new Error(`D1 sync instance input mismatch: ${instanceId}`)
   }
 
-  let preparedResult = existingRun === undefined
+  let collectionCheckpoint = existingRun === undefined
     ? undefined
-    : decodePreparedResult(existingRun.result_json, completeInputHash, instanceId)
+    : await decodeCollectionCheckpoint(existingRun.result_json, completeInputHash)
+  let preparedResult = existingRun === undefined || collectionCheckpoint
+    ? undefined
+    : await decodePreparedResult(existingRun.result_json, completeInputHash, instanceId)
   let preparedResultJson = existingRun?.result_json ?? undefined
   if (existingRun?.status === 'ok') {
     if (!preparedResult) throw new Error(`Completed D1 sync result is unavailable: ${instanceId}`)
@@ -408,32 +582,69 @@ export async function runD1IncrementalSync({
 
     const incoming = await Promise.all(completeInput.collections.map(({ user_id, collection }) =>
       normalizeCollection(user_id, collection)))
-    let plan: CollectionDiffPlan | undefined
-    let winningCurrent: CollectionRow[] | undefined
-    let rowsWritten = 0
+    let plan = collectionCheckpoint?.plan
+    let publicInput = collectionCheckpoint?.publicationInput
+    let rowsWritten = collectionCheckpoint?.rowsWritten ?? 0
+    let firstMissing = collectionCheckpoint?.firstMissing ?? 0
+    let deleted = collectionCheckpoint?.deleted ?? 0
+    let restored = collectionCheckpoint?.restored ?? 0
     for (let attempt = 0; attempt <= MAX_STALE_REPLANS; attempt++) {
-      const current = await store.listCollectionRows()
-      plan = await planCollectionDiff({
-        current,
-        incoming,
-        complete: completeInput.complete,
-        observedAt: completeInput.observedAt,
-      })
+      if (!plan || !publicInput) {
+        const current = await store.listCollectionRows()
+        plan = await planCollectionDiff({
+          current,
+          incoming,
+          complete: completeInput.complete,
+          observedAt: completeInput.observedAt,
+        })
+        publicInput = await publicationInput(
+          mergePublicCollections(activeRowsAfterPlan(current, plan).map(publicItemFromRow)),
+          completeInput,
+        )
+        rowsWritten = plannedRowsWritten(plan)
+        firstMissing = plan.firstMissing.length
+        deleted = plan.confirmedDeleted.length
+        restored = plan.restored.length
+        collectionCheckpoint = {
+          plan,
+          rowsWritten,
+          firstMissing,
+          deleted,
+          restored,
+          publicationInput: publicInput,
+        }
+      }
+      if (!collectionCheckpoint) throw new Error('Collection checkpoint preparation failed')
+      const checkpointJson = canonicalJson({
+        schema_version: 1,
+        input_hash: completeInputHash,
+        checkpoint_hash: await sha256Canonical(collectionCheckpoint),
+        collection: collectionCheckpoint,
+      } satisfies CollectionCheckpointEnvelope)
       try {
-        rowsWritten = (await store.applyCollectionDiff(plan)).rowsWritten
-        winningCurrent = current
+        await store.applyCollectionDiff(plan, {
+          instanceId,
+          update: {
+            stage: 'collections_pending',
+            heartbeat_at: now,
+            collection_count: completeInput.collections.length,
+            changed_count: changedRows(plan).length,
+            missing_count: firstMissing,
+            deleted_count: deleted,
+            input_hash: completeInputHash,
+            public_hash: publicInput.content_hash,
+            result_json: checkpointJson,
+          },
+        })
         break
       } catch (error) {
         if (!(error instanceof StaleCollectionDiffError) || attempt === MAX_STALE_REPLANS) throw error
         plan = undefined
+        publicInput = undefined
+        collectionCheckpoint = undefined
       }
     }
-    if (!plan || !winningCurrent) throw new Error('Collection diff reconciliation failed')
-
-    const publicInput = await publicationInput(
-      mergePublicCollections(activeRowsAfterPlan(winningCurrent, plan).map(publicItemFromRow)),
-      completeInput,
-    )
+    if (!plan || !publicInput) throw new Error('Collection diff reconciliation failed')
     const mediaRows = await store.listSubjectMediaRows()
     const utcDay = new Date(now * 1000).toISOString().slice(0, 10)
     const previousCursor = await store.getAppState('media:cold-cursor', decodeColdCursor) ?? { subject_ids: [] }
@@ -480,9 +691,9 @@ export async function runD1IncrementalSync({
 
     preparedResult = {
       rowsWritten,
-      firstMissing: plan.firstMissing.length,
-      deleted: plan.confirmedDeleted.length,
-      restored: plan.restored.length,
+      firstMissing,
+      deleted,
+      restored,
       publicationInput: publicInput,
       media: {
         candidates: selection.candidates,
@@ -537,7 +748,7 @@ export async function runD1IncrementalSync({
       if (transition.terminal === 'ok') {
         const persisted = await store.getSyncRun(instanceId)
         const recovered = persisted
-          ? decodePreparedResult(persisted.result_json, completeInputHash, instanceId)
+          ? await decodePreparedResult(persisted.result_json, completeInputHash, instanceId)
           : undefined
         if (recovered) return recovered
         if (preparedResult) return preparedResult

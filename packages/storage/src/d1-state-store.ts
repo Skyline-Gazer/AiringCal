@@ -336,6 +336,26 @@ export class D1StateStore {
     throw new StaleCollectionDiffError(write.userId, write.subjectId)
   }
 
+  private syncRunUpdateStatement(instanceId: string, update: SyncRunUpdate): D1PreparedStatementLike {
+    const optionalColumns = [
+      'generation', 'collection_count', 'changed_count', 'missing_count', 'deleted_count',
+      'media_selected_count', 'media_granted_count', 'input_hash', 'public_hash', 'result_json',
+    ] as const
+    const present = optionalColumns.filter((column) => update[column] !== undefined)
+    const columns = ['stage', 'heartbeat_at', ...present] as const
+    return this.database.prepare(
+      `UPDATE sync_runs SET ${columns.map((column) => `${column} = ?`).join(', ')} WHERE instance_id = ? AND status NOT IN ('ok', 'error')`,
+    ).bind(...columns.map((column) => update[column]), instanceId)
+  }
+
+  private async assertSyncRunUpdateApplied(instanceId: string, changes: number): Promise<void> {
+    if (changes !== 0) return
+    const status = await this.getSyncRunStatus(instanceId)
+    if (status === undefined) throw new Error(`Sync run not found: ${instanceId}`)
+    if (status === 'ok' || status === 'error') throw new Error(`Sync run already terminal: ${status}`)
+    throw new Error(`Sync run update not applied: ${instanceId}`)
+  }
+
   async getSyncRunStatus(instanceId: string): Promise<string | undefined> {
     const row = await this.database
       .prepare('SELECT status FROM sync_runs WHERE instance_id = ?')
@@ -364,7 +384,10 @@ export class D1StateStore {
     return result.results.map(decodeSubjectMediaRow)
   }
 
-  async applyCollectionDiff(plan: CollectionDiffPlanLike): Promise<{ rowsWritten: number }> {
+  async applyCollectionDiff(
+    plan: CollectionDiffPlanLike,
+    checkpoint?: { instanceId: string; update: SyncRunUpdate },
+  ): Promise<{ rowsWritten: number }> {
     const writes: PendingWrite[] = []
     const addBusinessUpdate = (row: CollectionRow, order: number) => {
       writes.push({
@@ -445,12 +468,27 @@ export class D1StateStore {
 
     writes.sort(compareWrites)
     let rowsWritten = 0
-    for (let offset = 0; offset < writes.length; offset += MAX_BATCH_STATEMENTS) {
-      const chunk = writes.slice(offset, offset + MAX_BATCH_STATEMENTS)
-      const changes = await this.executeBatchChanges(chunk.map(({ statement }) => statement))
-      rowsWritten += changes.reduce((total, count) => total + count, 0)
+    const mutationBatchSize = checkpoint ? MAX_BATCH_STATEMENTS - 1 : MAX_BATCH_STATEMENTS
+    if (writes.length === 0 && checkpoint) {
+      const [checkpointChanges] = await this.executeBatchChanges([
+        this.syncRunUpdateStatement(checkpoint.instanceId, checkpoint.update),
+      ])
+      await this.assertSyncRunUpdateApplied(checkpoint.instanceId, checkpointChanges!)
+    }
+    for (let offset = 0; offset < writes.length; offset += mutationBatchSize) {
+      const chunk = writes.slice(offset, offset + mutationBatchSize)
+      const statements = chunk.map(({ statement }) => statement)
+      if (checkpoint) {
+        statements.push(this.syncRunUpdateStatement(checkpoint.instanceId, checkpoint.update))
+      }
+      const changes = await this.executeBatchChanges(statements)
+      const mutationChanges = changes.slice(0, chunk.length)
+      rowsWritten += mutationChanges.reduce((total, count) => total + count, 0)
+      if (checkpoint) {
+        await this.assertSyncRunUpdateApplied(checkpoint.instanceId, changes.at(-1)!)
+      }
       for (let index = 0; index < chunk.length; index++) {
-        if (changes[index] === 0) await this.reconcileCollectionNoChange(chunk[index]!)
+        if (mutationChanges[index] === 0) await this.reconcileCollectionNoChange(chunk[index]!)
       }
     }
     return { rowsWritten }
@@ -508,22 +546,8 @@ export class D1StateStore {
   }
 
   async updateSyncRun(instanceId: string, update: SyncRunUpdate): Promise<void> {
-    const optionalColumns = [
-      'generation', 'collection_count', 'changed_count', 'missing_count', 'deleted_count',
-      'media_selected_count', 'media_granted_count', 'input_hash', 'public_hash', 'result_json',
-    ] as const
-    const present = optionalColumns.filter((column) => update[column] !== undefined)
-    const columns = ['stage', 'heartbeat_at', ...present] as const
-    const statement = this.database.prepare(
-      `UPDATE sync_runs SET ${columns.map((column) => `${column} = ?`).join(', ')} WHERE instance_id = ? AND status NOT IN ('ok', 'error')`,
-    ).bind(...columns.map((column) => update[column]), instanceId)
-    const changes = await this.executeBatch([statement])
-    if (changes === 0) {
-      const status = await this.getSyncRunStatus(instanceId)
-      if (status === undefined) throw new Error(`Sync run not found: ${instanceId}`)
-      if (status === 'ok' || status === 'error') throw new Error(`Sync run already terminal: ${status}`)
-      throw new Error(`Sync run update not applied: ${instanceId}`)
-    }
+    const changes = await this.executeBatch([this.syncRunUpdateStatement(instanceId, update)])
+    await this.assertSyncRunUpdateApplied(instanceId, changes)
   }
 
   async completeSyncRun(instanceId: string, completion: SyncRunCompletion): Promise<SyncTerminalTransitionResult> {

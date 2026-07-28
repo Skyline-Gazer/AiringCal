@@ -404,6 +404,31 @@ test('applyCollectionDiff uses one prepared positional statement for one changed
   assert.doesNotMatch(fake.batchCalls[0]?.[0]?.sql ?? '', /last_seen/i)
 })
 
+test('applyCollectionDiff checkpoints replay state in the same D1 batch as collection mutation', async () => {
+  const fake = new RecordingD1()
+  const store = new D1StateStore(fake)
+  await store.startSyncRun(syncRun({ instance_id: 'checkpointed-diff' }))
+  fake.batchCalls.length = 0
+  const plan = emptyPlan()
+  plan.unchanged = 0
+  plan.updates = [collection({ rate: 9, content_hash: 'b'.repeat(64), state_version: 2, changed_at: 200 })]
+
+  await store.applyCollectionDiff(plan, {
+    instanceId: 'checkpointed-diff',
+    update: {
+      stage: 'collections',
+      heartbeat_at: 200,
+      changed_count: 1,
+      result_json: '{"schema_version":1,"collection":{}}',
+    },
+  })
+
+  assert.equal(fake.batchCalls.length, 1)
+  assert.equal(fake.batchCalls[0]?.length, 2)
+  assert.match(fake.batchCalls[0]?.[0]?.sql ?? '', /^UPDATE collection_items/)
+  assert.match(fake.batchCalls[0]?.[1]?.sql ?? '', /^UPDATE sync_runs SET stage = \?/)
+})
+
 test('collection insert replay finishes after a batch commits but its response is lost', async () => {
   const fake = new RecordingD1()
   const plan = emptyPlan()

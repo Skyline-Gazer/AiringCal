@@ -84,7 +84,7 @@ resource resolve 必须在任一 Worker upload 前确认 D1、data R2、image R2
 
 ### 3.3 `sync_runs`
 
-以 instance ID 标识一次运行，保存 status/stage、generation、计数、输入/公开 hash、开始/heartbeat/完成时间和脱敏错误。`0002_sync_run_replay_result.sql` 以 additive migration 增加 `result_json`：在进入 terminal 状态前保存绑定规范输入 hash 的 versioned prepared result；running replay 只补 terminal transition，terminal replay 直接返回同一结果，不重复收藏 diff、媒体预算或完成动作。运行记录用于健康、审计和 crash-safe replay，不进入公开内容 hash。
+以 instance ID 标识一次运行，保存 status/stage、generation、计数、输入/公开 hash、开始/heartbeat/完成时间和脱敏错误。`0002_sync_run_replay_result.sql` 以 additive migration 增加 `result_json`。收藏 CAS 与绑定规范输入 hash 的 versioned `collections_pending` 检查点必须在同一个 D1 batch 中提交；检查点保存原始 diff、计数与规范公开输入，因此进程在收藏提交后崩溃时，running replay 重放同一 CAS 并沿用原始结果语义，不根据已变更状态重新计算。媒体阶段完成后以 versioned prepared result 覆盖检查点；running replay 只补 terminal transition，terminal replay 直接返回同一结果，不重复收藏实际变更、媒体预算或完成动作。运行记录用于健康、审计和 crash-safe replay，不进入公开内容 hash。
 
 ### 3.4 `sync_budget`
 
@@ -145,9 +145,9 @@ resource resolve 必须在任一 Worker upload 前确认 D1、data R2、image R2
 - 新增或源变化：最高优先级，可使用 hard headroom。
 - hot 到期：除 `watched` 外的活跃收藏。
 - cold shard：`watched` 且 `positiveMod(subject_id, 7) == utcDayShard`。
-- retry：按退避时间到期后进入，低于当前业务变化。
+- retry：只在退避时间到期后进入，优先级低于 cold；到期 retry 不受 cold shard 限制。
 
-同一 subject 只生成一个合并组件任务。未到期、URL/hash 未变化的媒体不调度。cold 在预算充足的七个连续 UTC 日中完整覆盖；预算不足时持久化低优先级游标供后续日继续。
+同一 subject 只生成一个合并组件任务。存在 retry 状态时，未来退避时间会抑制普通 hot/cold 调度；到期后才按 retry 优先级进入。未到期、URL/hash 未变化的媒体不调度。cold 在预算充足的七个连续 UTC 日中完整覆盖；预算不足时持久化低优先级游标供后续日继续。
 
 ## 5. 公开 Snapshot 契约
 
