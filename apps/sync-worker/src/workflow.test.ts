@@ -940,6 +940,7 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
     contentHash: string
     legacyPublished: boolean
     mediaUncertain: number
+    publicationId: string
   }> = []
   let mediaUncertain = 0
   let publicationAttempts = 0
@@ -989,12 +990,13 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
         dataBucket: {},
         pointerKv: {},
       } as never,
-      publishPublicSnapshot: async ({ input }) => {
+      publishPublicSnapshot: async ({ input, publicationId }) => {
         publicationAttempts++
         publicationCalls.push({
           contentHash: input.content_hash,
           legacyPublished: kv.values.has('snapshot:shadow:shadow-d1:summary'),
           mediaUncertain,
+          publicationId,
         })
         return {
           status: publicationAttempts === 1 ? 'pending' : 'published',
@@ -1017,6 +1019,7 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
       contentHash: 'a'.repeat(64),
       legacyPublished: true,
       mediaUncertain: 1,
+      publicationId: 'shadow-d1',
     })))
     assert.equal(step.attempts.get('persist-d1-shadow'), 2)
     assert.equal(kv.subjectPuts().length, 0)

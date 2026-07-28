@@ -54,6 +54,7 @@ export interface PublishPublicSnapshotArguments {
   pointerKv: PublicationPointerKv
   input: PublicSnapshotInput & { content_hash: string }
   now: number
+  publicationId: string
 }
 
 function parsePointer(value: unknown, label: string): PublicSnapshotPointerV1 {
@@ -154,10 +155,28 @@ async function releasePublicationWrite(
   }
 }
 
+async function publicationClaimToken(
+  candidate: PublicSnapshotPointerV1,
+  publicationId: string,
+): Promise<string> {
+  if (publicationId.length === 0 || publicationId.length > 128) {
+    throw new Error('Invalid publication identity')
+  }
+  const bytes = new TextEncoder().encode(canonicalJson({
+    candidate,
+    publication_id: publicationId,
+  }))
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+}
+
 export async function publishPublicSnapshot(
-  { state, dataBucket, pointerKv, input, now }: PublishPublicSnapshotArguments,
+  { state, dataBucket, pointerKv, input, now, publicationId }: PublishPublicSnapshotArguments,
 ): Promise<PublicationResult> {
   if (!Number.isSafeInteger(now) || now < 0) throw new Error('Invalid publication time')
+  if (typeof publicationId !== 'string') throw new Error('Invalid publication identity')
   const validationSnapshot = await buildPublicSnapshot({ ...input, published_at: now }, 0)
   await parsePublicSnapshotV1(validationSnapshot)
   if (validationSnapshot.content_hash !== input.content_hash) {
@@ -233,7 +252,7 @@ export async function publishPublicSnapshot(
   if (stored.key !== candidate.r2_key) throw new Error('Published R2 snapshot object key mismatch')
   if (storedBytes !== objectBytes) throw new Error('Published R2 snapshot bytes mismatch')
 
-  const claimToken = crypto.randomUUID()
+  const claimToken = await publicationClaimToken(candidate, publicationId)
   const claim = await state.claimPublicationWrite(candidate, claimToken)
   if (claim === 'conflict') throw new Error('Publication authorization conflict')
   if (claim === 'already_verified') {

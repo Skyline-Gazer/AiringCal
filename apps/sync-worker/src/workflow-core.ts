@@ -62,7 +62,7 @@ export interface SyncWorkflowEnv {
 
 export interface SyncWorkflowDependencies {
   runD1IncrementalSync?: typeof runD1IncrementalSync
-  publication?: Omit<PublishPublicSnapshotArguments, 'input' | 'now'>
+  publication?: Omit<PublishPublicSnapshotArguments, 'input' | 'now' | 'publicationId'>
   publishPublicSnapshot?: typeof publishPublicSnapshot
 }
 
@@ -452,6 +452,7 @@ export async function runSyncWorkflow(
             ...dependencies.publication,
             input: result.publicationInput,
             now: completeInput.observedAt,
+            publicationId: event.instanceId,
           })
           if (publication.status === 'pending') {
             throw new Error('Public snapshot publication remains pending')

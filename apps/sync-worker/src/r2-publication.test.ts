@@ -277,6 +277,8 @@ class FaultKv extends MemoryKv {
 class FaultState extends MemoryState {
   failCommit = false
   commitThenThrow = false
+  claimThenThrow = false
+  failRelease = false
   failMark = false
   markThenThrow = false
 
@@ -288,6 +290,20 @@ class FaultState extends MemoryState {
     const committed = await super.commitPendingPublication(candidate)
     if (this.commitThenThrow) throw new Error('injected D1 commit response loss')
     return committed
+  }
+
+  override async claimPublicationWrite(candidate: PublicSnapshotPointerV1, token: string) {
+    const claimed = await super.claimPublicationWrite(candidate, token)
+    if (this.claimThenThrow) {
+      this.claimThenThrow = false
+      throw new Error('injected D1 claim response loss')
+    }
+    return claimed
+  }
+
+  override async releasePublicationWrite(candidate: PublicSnapshotPointerV1, token: string) {
+    if (this.failRelease) throw new Error('injected D1 claim release failure')
+    await super.releasePublicationWrite(candidate, token)
   }
 
   override async markPublicationPublished(candidate: PublicSnapshotPointerV1, token?: string) {
@@ -364,6 +380,7 @@ test('identical verified content is unchanged before generation allocation or R2
     },
     input: { ...input, content_hash: verified.content_hash },
     now: NOW,
+    publicationId: 'workflow-unchanged',
   })
 
   assert.deepEqual(result, {
@@ -396,6 +413,7 @@ test('changed content commits pending state, writes and verifies R2, switches on
     pointerKv,
     input,
     now: NOW,
+    publicationId: 'workflow-changed',
   })
 
   assert.deepEqual(events, [
@@ -440,6 +458,7 @@ test('D1 pending commit failure performs no R2/KV work and preserves the old poi
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    publicationId: 'workflow-commit-failure',
   }), /D1 pending commit failure/)
 
   assert.deepEqual(fixture.events, ['d1:commit-state'])
@@ -459,6 +478,7 @@ test('R2 PUT and GET failures preserve the byte-identical old pointer', async (t
         pointerKv: fixture.pointerKv,
         input: fixture.input,
         now: NOW,
+        publicationId: `workflow-r2-${stage}`,
       }), new RegExp(`R2 ${stage.toUpperCase()} failure`))
 
       assert.equal(fixture.pointerKv.values.get('public:current'), fixture.oldPointerBytes)
@@ -514,6 +534,7 @@ test('R2 readback rejects schema, generation, content hash, and object-key corru
         pointerKv: fixture.pointerKv,
         input: fixture.input,
         now: NOW,
+        publicationId: `workflow-corrupt-${corruption.name}`,
       }), corruption.pattern)
 
       assert.equal(fixture.pointerKv.values.get('public:current'), fixture.oldPointerBytes)
@@ -532,6 +553,7 @@ test('invalid canonical publication input hash fails before generation allocatio
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    publicationId: 'workflow-invalid-hash',
   }), /publication input content_hash/)
 
   assert.equal(fixture.state.allocations, 0)
@@ -563,6 +585,7 @@ test('a lower pending generation than public:verified is rejected before any R2 
     pointerKv,
     input,
     now: NOW,
+    publicationId: 'workflow-lower-pending',
   }), /publication authorization conflict/i)
 
   assert.deepEqual(events, [])
@@ -594,6 +617,7 @@ test('a same-generation pending hash conflict is rejected before any R2 or KV wr
     pointerKv,
     input,
     now: NOW,
+    publicationId: 'workflow-same-generation',
   }), /publication authorization conflict/i)
 
   assert.deepEqual(events, [])
@@ -623,6 +647,7 @@ test('verified advancement after pending commit but before KV prevents a stale p
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    publicationId: 'workflow-verified-advance',
   }), /publication authorization conflict/i)
 
   assert.equal(fixture.events.includes('kv:put:public:current'), false)
@@ -650,6 +675,7 @@ test('an in-flight pointer claim prevents protocol-respecting concurrent publish
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    publicationId: 'workflow-a',
   })
   await blocked
 
@@ -659,6 +685,7 @@ test('an in-flight pointer claim prevents protocol-respecting concurrent publish
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    publicationId: 'workflow-b',
   })
   let blockedNewer = false
   try {
@@ -668,6 +695,7 @@ test('an in-flight pointer claim prevents protocol-respecting concurrent publish
       pointerKv: fixture.pointerKv,
       input: newerInput,
       now: NOW + 1,
+      publicationId: 'workflow-c',
     })
   } catch (error) {
     assert.match(String(error), /publication authorization conflict/i)
@@ -683,6 +711,7 @@ test('an in-flight pointer claim prevents protocol-respecting concurrent publish
       pointerKv: fixture.pointerKv,
       input: newerInput,
       now: NOW + 1,
+      publicationId: 'workflow-c',
     })
   }
 
@@ -695,6 +724,73 @@ test('an in-flight pointer claim prevents protocol-respecting concurrent publish
   )
 })
 
+test('claim response loss and crash before KV are replayable by the same durable publication identity', async () => {
+  const fixture = await changedFixture()
+  fixture.state.claimThenThrow = true
+
+  await assert.rejects(() => publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW,
+    publicationId: 'workflow-replay',
+  }), /claim response loss/)
+  assert.equal(fixture.pointerKv.putValues.length, 0)
+
+  const differentRun = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW,
+    publicationId: 'workflow-other',
+  })
+  assert.equal(differentRun.status, 'pending')
+  assert.equal(differentRun.pointerPuts, 0)
+
+  const replay = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW,
+    publicationId: 'workflow-replay',
+  })
+  assert.equal(replay.status, 'published')
+  assert.equal(replay.pointerPuts, 1)
+})
+
+test('release failure retains a replayable claim for the same durable publication identity', async () => {
+  const fixture = await changedFixture()
+  fixture.pointerKv.mode = 'throw-before'
+  fixture.state.failRelease = true
+
+  const first = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW,
+    publicationId: 'workflow-release-replay',
+  })
+  assert.equal(first.status, 'pending')
+  assert.equal(first.pointerPuts, 0)
+
+  fixture.pointerKv.mode = 'normal'
+  fixture.state.failRelease = false
+  const replay = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW,
+    publicationId: 'workflow-release-replay',
+  })
+  assert.equal(replay.status, 'published')
+  assert.equal(replay.pointerPuts, 1)
+})
+
 test('definite KV failure returns pending and keeps the old pointer byte-identical', async () => {
   const fixture = await changedFixture()
   fixture.pointerKv.mode = 'throw-before'
@@ -705,6 +801,7 @@ test('definite KV failure returns pending and keeps the old pointer byte-identic
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    publicationId: 'workflow-definite-kv',
   })
 
   assert.equal(result.status, 'pending')
@@ -724,6 +821,7 @@ test('ambiguous KV outcome is published only when readback is the exact candidat
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    publicationId: 'workflow-ambiguous-exact',
   })
 
   assert.equal(result.status, 'published')
@@ -744,6 +842,7 @@ test('ambiguous KV mismatch or missing readback stays pending without marking D1
         pointerKv: fixture.pointerKv,
         input: fixture.input,
         now: NOW,
+        publicationId: `workflow-ambiguous-${mode}`,
       })
 
       assert.equal(result.status, 'pending')
@@ -765,12 +864,26 @@ test('ambiguous KV readback failure stays pending for replay', async () => {
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    publicationId: 'workflow-ambiguous-readback',
   })
 
   assert.equal(result.status, 'pending')
   assert.equal(result.pointerPuts, 0)
   assert.equal(fixture.state.pending?.generation, 12)
   assert.equal(fixture.events.includes('d1:mark-published'), false)
+
+  fixture.pointerKv.mode = 'normal'
+  fixture.pointerKv.failReadback = false
+  const replay = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW + 1,
+    publicationId: 'workflow-ambiguous-readback',
+  })
+  assert.equal(replay.status, 'published')
+  assert.equal(replay.pointerPuts, 1)
 })
 
 test('replay reuses the same pending generation, key, and object without another allocation', async () => {
@@ -783,6 +896,7 @@ test('replay reuses the same pending generation, key, and object without another
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    publicationId: 'workflow-pending-replay',
   })
   const pending = structuredClone(fixture.state.pending!)
   fixture.pointerKv.mode = 'normal'
@@ -792,6 +906,7 @@ test('replay reuses the same pending generation, key, and object without another
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW + 600,
+    publicationId: 'workflow-pending-replay',
   })
 
   assert.equal(first.status, 'pending')
@@ -818,6 +933,7 @@ test('D1 published-state response loss is resolved by exact verified readback', 
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    publicationId: 'workflow-mark-response-loss',
   })
 
   assert.equal(result.status, 'published')
@@ -835,6 +951,7 @@ test('D1 published-state definite failure leaves the durable candidate pending a
     pointerKv: fixture.pointerKv,
     input: fixture.input,
     now: NOW,
+    publicationId: 'workflow-mark-failure',
   })
 
   assert.equal(result.status, 'pending')

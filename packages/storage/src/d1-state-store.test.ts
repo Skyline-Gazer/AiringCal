@@ -1068,6 +1068,35 @@ test('publication write claims exclusively fence pointer mutation and verified p
   assert.deepEqual(await store.getVerifiedPublication(), candidate)
 })
 
+test('publication write claim exact replay survives adapter reconstruction after response loss', async () => {
+  const database = new SqliteD1()
+  const initial = new D1StateStore(database)
+  const candidate: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation: 1,
+    content_hash: '8'.repeat(64),
+    r2_key: `snapshots/v1/1-${'8'.repeat(64)}.json`,
+    published_at: 301,
+  }
+  await initial.commitPendingPublication(candidate)
+  assert.equal(
+    await initial.claimPublicationWrite(candidate, 'stable-workflow-claim'),
+    'claimed',
+  )
+
+  const replay = new D1StateStore(database)
+  assert.equal(
+    await replay.claimPublicationWrite(candidate, 'stable-workflow-claim'),
+    'claimed',
+  )
+  assert.equal(
+    await replay.claimPublicationWrite(candidate, 'different-workflow-claim'),
+    'busy',
+  )
+  await replay.markPublicationPublished(candidate, 'stable-workflow-claim')
+  assert.deepEqual(await replay.getVerifiedPublication(), candidate)
+})
+
 test('sync run lifecycle uses positional binds and persists only classified error codes', async () => {
   const fake = new RecordingD1()
   const store = new D1StateStore(fake)
