@@ -556,7 +556,7 @@ git push
 - `D1SyncResult` includes `{ rowsWritten; firstMissing; deleted; restored; publicationInput; media: { candidates; granted; confirmed; uncertain; deferred }; runId }`.
 - Media outcome never changes the collection diff/publication eligibility result.
 
-- [ ] **Step 1: Write RED end-to-end orchestration tests**
+- [x] **Step 1: Write RED end-to-end orchestration tests**
 
 Use Bgm client fixtures plus recording D1/Queue fakes. Assert:
 
@@ -570,11 +570,11 @@ assert.equal(legacyKv.writesMatching(/^subject:|^image:status:/), 0)
 
 Also prove a 401/403 is classified non-retryable, 429/5xx/network retains bounded retry semantics, and run errors contain codes rather than upstream bodies. Prove a stale collection diff conflict causes a fresh D1 list and a new pure diff plan; neither the losing plan nor its publication input may reach publication.
 
-- [ ] **Step 2: Implement D1 orchestration behind shadow mode**
+- [x] **Step 2: Implement D1 orchestration behind shadow mode**
 
 Keep existing legacy snapshot publication intact. After a complete fetch, load D1, apply the pure plan, persist run counters, reserve media, and return a canonical publication input. Catch only `StaleCollectionDiffError` (`code === 'STALE_COLLECTION_DIFF'`): discard the losing plan and publication input, re-list current D1 rows, and re-run pure diff planning before continuing; only the successfully reconciled plan may publish. All other D1, result-validation and JSON-decoding errors continue to fail the run. On partial failure, fail the run without invoking diff commit. Use stable `instanceId` for replay.
 
-- [ ] **Step 3: Run GREEN**
+- [x] **Step 3: Run GREEN**
 
 ```bash
 node --import tsx --test apps/sync-worker/src/d1-sync.test.ts apps/sync-worker/src/workflow.test.ts
@@ -582,7 +582,7 @@ pnpm -F @airing-cal/sync-worker test
 pnpm -F @airing-cal/sync-worker typecheck
 ```
 
-- [ ] **Step 4: Review, mark 3.3 complete, commit and push**
+- [x] **Step 4: Review, mark 3.3 complete, commit and push**
 
 ```bash
 git add apps/sync-worker packages/storage openspec/changes/adopt-d1-r2-incremental-sync
