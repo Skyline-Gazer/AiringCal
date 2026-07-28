@@ -241,7 +241,8 @@ export async function refreshSubjectMediaD1(
   }
 
   if (
-    current
+    !subjectNotFound
+    && current
     && sameFields(current, semantic, SEMANTIC_MEDIA_FIELDS)
     && current.retry_count === 0
     && current.retry_after === null

@@ -500,6 +500,57 @@ test('a D1 subject tombstone reprobes at its exact 24-hour boundary', async () =
   }
 })
 
+test('a repeated 404 at the D1 tombstone boundary renews its 24-hour suppression window', async () => {
+  const checkedAt = 1_782_770_000
+  const boundary = checkedAt + 86400
+  const tombstone = await existingRow(subject(), {
+    detail_json: null,
+    detail_hash: null,
+    nsfw: 1,
+    checked_at: checkedAt,
+    next_refresh_at: boundary,
+  })
+  tombstone.media_hash = await mediaHash(tombstone)
+  const database = new RecordingD1(tombstone)
+  const r2 = new RecordingR2()
+  const refreshSubjectMediaD1 = await loadRefreshSubjectMediaD1()
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  let now = boundary
+  let subjectCalls = 0
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith('/v0/subjects/23080')) {
+      subjectCalls++
+      return new Response('not found', { status: 404 })
+    }
+    throw new Error(`renewed tombstone must not process images: ${input}`)
+  }
+  Date.now = () => now * 1000
+
+  try {
+    assert.deepEqual(
+      await refreshSubjectMediaD1({ AIRING_CAL_D1: database, AIRING_CAL_R2: r2 }, job),
+      { d1Writes: 1, imageWrites: 0, status: 'updated' },
+    )
+    assert.equal(subjectCalls, 1)
+    assert.equal(database.row?.checked_at, boundary)
+    assert.equal(database.row?.next_refresh_at, boundary + 86400)
+    assert.equal(database.batchCalls.length, 1)
+
+    now = boundary + 86399
+    assert.deepEqual(
+      await refreshSubjectMediaD1({ AIRING_CAL_D1: database, AIRING_CAL_R2: r2 }, job),
+      { d1Writes: 0, imageWrites: 0, status: 'unchanged' },
+    )
+    assert.equal(subjectCalls, 1)
+    assert.equal(database.batchCalls.length, 1)
+    assert.equal(r2.writes.length, 0)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('a transient upstream error changes only classified retry fields and never persists its body', async () => {
   const previous = await existingRow()
   const database = new RecordingD1(previous)
