@@ -156,7 +156,7 @@ test('media-worker retries a D1-only V4 queue message without D1 and performs no
   globalThis.fetch = (async () => { throw new Error('missing D1 must fail before upstream access') }) as typeof globalThis.fetch
   const message = trackedBatch({
     version: 4,
-    generation: 2,
+    generation: { observed_at: 2, run_id: 'missing-d1' },
     job_id: 'missing-d1:23080',
     subject_id: 23080,
     title: 'A CN',
@@ -181,7 +181,7 @@ test('processJob rejects a D1-only V4 job without D1 before legacy per-subject w
   await assert.rejects(
     processJob({
       version: 4,
-      generation: 3,
+      generation: { observed_at: 3, run_id: 'missing-d1-direct' },
       job_id: 'missing-d1-direct:23080',
       subject_id: 23080,
       title: 'A CN',
@@ -198,7 +198,7 @@ test('media-worker routes D1-only V4 jobs without new legacy per-subject KV puts
   const r2 = new MockR2()
   const message = trackedBatch({
     version: 4,
-    generation: 8,
+    generation: { observed_at: 8, run_id: 'd1-only' },
     job_id: 'd1-only:23080',
     subject_id: 23080,
     title: 'A CN',
@@ -293,7 +293,7 @@ test('media-worker retries D1-authoritative read and upsert failures without leg
       const kv = new MockKV()
       const message = trackedBatch({
         version: 4,
-        generation: 9,
+        generation: { observed_at: 9, run_id: `d1-${failurePoint}` },
         job_id: `d1-${failurePoint}:23080`,
         subject_id: 23080,
         title: 'A CN',

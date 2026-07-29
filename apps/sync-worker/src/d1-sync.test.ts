@@ -555,6 +555,31 @@ test('calendar-only subjects remain eligible for D1 media scheduling', async () 
   })
   assert.deepEqual(requests[0]?.jobs.map((job: any) => job.subject_id), [14])
   assert.equal(requests[0]?.jobs.every((job: any) => job.version === 4), true)
+  assert.deepEqual(requests[0]?.jobs.map((job: any) => job.generation), [{
+    observed_at: observedAt,
+    run_id: 'run-1',
+  }])
+})
+
+test('D1 media generation is replay-stable and ignores the retry clock', async () => {
+  const capture = async (inputObservedAt: number, now: number, instanceId: string) => {
+    const requests: any[] = []
+    await run(new RecordingStore(), {
+      ...completeInput([collection(1, 'alice'), collection(14, 'alice')]),
+      observedAt: inputObservedAt,
+    }, async (request) => {
+      requests.push(request)
+      return { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100, submission: 'submitted' }
+    }, now, instanceId)
+    return requests[0]?.jobs[0]?.generation
+  }
+
+  const first = await capture(observedAt, observedAt + 1_000, 'stable-run')
+  const replay = await capture(observedAt, observedAt + 9_000, 'stable-run')
+  const later = await capture(observedAt + 1, observedAt + 20_000, 'later-run')
+  assert.deepEqual(first, { observed_at: observedAt, run_id: 'stable-run' })
+  assert.deepEqual(replay, first)
+  assert.deepEqual(later, { observed_at: observedAt + 1, run_id: 'later-run' })
 })
 
 test('cold watched media is eligible exactly once across seven UTC shards without an expiry gate', async () => {

@@ -324,6 +324,14 @@ sync-worker
 
 Queue is preferred over direct service-binding calls for heavy work because it naturally batches, retries, and gives each consumer invocation its own subrequest budget.
 
+The per-subject Durable Object keeps the deployed V2/V3 compatibility fence on
+its existing unprefixed numeric keys. D1-only V4 uses separate `v4:` fence keys
+and a generation tuple `{ observed_at, run_id }`, derived from the persisted
+complete-sync observation and stable Workflow instance ID. Tuple ordering is by
+`observed_at` and then `run_id`, so a retry is byte-stable, a later V4 run makes
+an older V4 delivery obsolete, and neither V3 nor V4 advances the other
+protocol's fence.
+
 ## Image Cache Design
 
 The project stores both common and large images. Frontend cards use `images.common`. `images.large` is still downloaded and stored for reuse by this project or other projects.

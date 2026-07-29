@@ -32,7 +32,7 @@ status: final
 
 `SyncWorkflow` 是快照数据面的耐久编排器。它分页获取 collections 与 calendar，将规范化 payload 写入 instance staging KV，发布 shadow 或 live snapshot，规划 subject refresh jobs，并记录 `SyncRun`。它不调用 subject detail API，也不等待 Media Queue。
 
-`airing-cal-media` 是 subject detail、metadata、图片与 R2 的唯一刷新执行器。live Queue message 使用带 Workflow generation 的 `MediaRefreshJobV3`，以 `${instanceId}:${subjectId}` 为 `job_id`，并继续写 legacy detail/meta/image/refresh KV，使现有 Read Worker 与下一轮 planner 能观察结果。D1-only shadow producer 使用独立的 `MediaRefreshJobV4`，只写 D1 `subject_media` 与 image R2，缺失 D1 时可重试且不回退 KV。每个 subject 的 `SubjectRefreshCoordinator` SQLite Durable Object 使用覆盖 bgm.tv、KV/D1 与 R2 await 的互斥区串行化全部副作用和失败状态，并在副作用前持久化最高已接受 generation，因此新任务失败后迟到旧任务仍会被拒绝。旧 V2/legacy job 按 generation 0 兼容。无 `version` 的历史 job 仍可走 legacy 路径；任何带 `version` 的 job 必须严格通过 V2/V3/V4 canonical validation，未知或畸形版本会在 direct、Queue 与 Durable Object 边界、且在任何 coordinator/storage/upstream 副作用前 fail closed。旧缓存继续服务，下一刷新时间按 subject ID 分散到 6 至 8 天。
+`airing-cal-media` 是 subject detail、metadata、图片与 R2 的唯一刷新执行器。live Queue message 使用带 Workflow generation 的 `MediaRefreshJobV3`，以 `${instanceId}:${subjectId}` 为 `job_id`，并继续写 legacy detail/meta/image/refresh KV，使现有 Read Worker 与下一轮 planner 能观察结果。D1-only shadow producer 使用独立的 `MediaRefreshJobV4`，只写 D1 `subject_media` 与 image R2，缺失 D1 时可重试且不回退 KV。每个 subject 的 `SubjectRefreshCoordinator` SQLite Durable Object 使用覆盖 bgm.tv、KV/D1 与 R2 await 的互斥区串行化全部副作用和失败状态，并在副作用前持久化最高已接受 generation，因此新任务失败后迟到旧任务仍会被拒绝。旧 V2/legacy 与 live V3 继续使用原有未加前缀的 number generation 围栏，在线升级会继承既有 DO 状态，generation 0 不能覆盖更高 V3。V4 使用独立 `v4:` 围栏；其 generation 是 `{ observed_at, run_id }`，只取自持久化完整输入的观察时间与稳定 Workflow instance ID，按观察时间、run ID 顺序比较，因此同一运行的 step retry 产生完全相同的 generation，V3 与 V4 也不会互相标记 obsolete。无 `version` 的历史 job 仍可走 legacy 路径；任何带 `version` 的 job 必须严格通过 V2/V3/V4 canonical validation，未知或畸形版本会在 direct、Queue 与 Durable Object 边界、且在任何 coordinator/storage/upstream 副作用前 fail closed。旧缓存继续服务，下一刷新时间按 subject ID 分散到 6 至 8 天。
 
 CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、部署 Worker/Workflow、检查 Workflow 注册状态并部署 frontend，不触发业务同步、不轮询 KV，也不等待 media backlog。
 
@@ -63,7 +63,7 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 - `public:current`：新 shadow pointer，只包含 schema version、generation、content hash、data R2 key 与发布时间；当前 read-worker 不读取。
 - D1 `sync_runs`：保存 shadow stage/status、计数、input/public hash、replay manifest 与分类 `error_code`，不保存 token、完整认证上游 body 或用户评价正文。
 
-迁移期间仅在 `snapshot:active` 不存在，或 pointer 恰好是合法的 `instance_id`、`mode: live`、`published_at`、`subject_count` 旧四字段结构时整套读取旧 key；截断旧 pointer 返回 503。出现任一 V3 字段后，manifest 不是准确七个 required key、任一 key 缺失或摘要不匹配也返回 503 `SNAPSHOT_INCOMPLETE`。consumer 兼容旧 job，但 generation 0 不得覆盖已接受的 V3 generation。已激活 instance 的 step 名和输出 shape 不原地修改；不兼容行为使用新 step 名或 Workflow 版本。
+迁移期间仅在 `snapshot:active` 不存在，或 pointer 恰好是合法的 `instance_id`、`mode: live`、`published_at`、`subject_count` 旧四字段结构时整套读取旧 key；截断旧 pointer 返回 503。出现任一 V3 字段后，manifest 不是准确七个 required key、任一 key 缺失或摘要不匹配也返回 503 `SNAPSHOT_INCOMPLETE`。consumer 兼容旧 job；V2/legacy generation 0 不得覆盖已接受的 live V3 generation，D1-only V4 则使用独立 tuple 围栏，不读写原有 V2/V3 generation key。已激活 instance 的 step 名和输出 shape 不原地修改；不兼容行为使用新 step 名或 Workflow 版本。
 
 ## API 与请求边界
 

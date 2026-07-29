@@ -373,11 +373,14 @@ function classifyError(error: unknown): string {
   return 'SYNC_FAILED'
 }
 
-function mediaJobs(instanceId: string, candidates: RefreshCandidate[]): MediaRefreshJobV4[] {
+function mediaJobs(instanceId: string, observedAt: number, candidates: RefreshCandidate[]): MediaRefreshJobV4[] {
   return candidates.map((candidate) => {
     return {
       version: 4,
-      generation: 0,
+      generation: {
+        observed_at: observedAt,
+        run_id: instanceId,
+      },
       job_id: `${instanceId}:${candidate.subject_id}`,
       subject_id: candidate.subject_id,
       title: candidate.title,
@@ -816,7 +819,7 @@ export async function runD1IncrementalSync({
       { soft: MEDIA_SOFT_LIMIT, hard: MEDIA_HARD_LIMIT },
       previousCursor,
     )
-    const jobs = mediaJobs(instanceId, selection.selected)
+    const jobs = mediaJobs(instanceId, completeInput.observedAt, selection.selected)
     const request: BudgetReservationRequest<MediaRefreshJobV4> = {
       date: new Date(now * 1000).toISOString().slice(0, 10),
       resource: 'media',

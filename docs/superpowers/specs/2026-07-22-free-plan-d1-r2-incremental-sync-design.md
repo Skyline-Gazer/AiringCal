@@ -221,13 +221,13 @@ D1、R2 PUT、R2 GET/验证或 KV pointer 任一步失败时，旧 pointer 不�
 - 完整获取 collections/calendar。
 - 调用纯规范化与 diff planner。
 - 以有界 D1 batch/transaction 提交变化。
-- 仅在 D1-only media Queue producer 可用时原子预留媒体预算并投递确定性 V4 任务；默认 shadow/no Queue 只报告候选与 deferred，不占用正式 D1 预算。既有 live Workflow V3 继续写 legacy KV。
+- 仅在 D1-only media Queue producer 可用时原子预留媒体预算并投递确定性 V4 任务；V4 generation 固定为持久化完整输入的 `{ observed_at, run_id }`，其中 `run_id` 是稳定 Workflow instance ID，不使用执行或 retry 的当前时钟。默认 shadow/no Queue 只报告候选与 deferred，不占用正式 D1 预算。既有 live Workflow V3 继续写 legacy KV。
 - 构建、验证并 shadow 发布 R2 snapshot/pointer 候选。
 - 记录 `sync_runs`，但媒体失败不改变收藏发布结论。
 
 ### 7.2 Media Worker
 
-- 仅接受明确的 D1-only V4 任务并从 D1 读取/锁定 subject media 状态；live V3 保留 legacy KV 兼容行为。
+- 仅接受明确的 D1-only V4 任务并从 D1 读取/锁定 subject media 状态；live V3 保留 legacy KV 兼容行为。Subject Durable Object 保留未加前缀的 V2/V3 number generation 围栏，并为 V4 使用独立 `v4:` tuple 围栏；tuple 先按 `observed_at`、再按 `run_id` 排序，两个协议互不推进 obsolete 门槛。
 - 获取 detail 和必要图片。
 - 相同业务 hash/source/R2 ref 不写 D1、不写图片 R2。
 - 新图片继续写现有 `airing-cal-images`。

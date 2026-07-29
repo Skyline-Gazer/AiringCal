@@ -140,8 +140,14 @@ export interface MediaRefreshJobV3 extends Omit<MediaRefreshJobV2, 'version'> {
   generation: number
 }
 
-export interface MediaRefreshJobV4 extends Omit<MediaRefreshJobV3, 'version'> {
+export interface MediaRefreshJobV4Generation {
+  observed_at: number
+  run_id: string
+}
+
+export interface MediaRefreshJobV4 extends Omit<MediaRefreshJobV3, 'version' | 'generation'> {
   version: 4
+  generation: MediaRefreshJobV4Generation
 }
 
 const MEDIA_REFRESH_COMPONENTS = new Set<MediaRefreshComponent>([
@@ -177,6 +183,18 @@ function hasValidMediaGeneration(value: unknown): boolean {
   return typeof generation === 'number' && Number.isSafeInteger(generation) && generation >= 0
 }
 
+function hasValidV4MediaGeneration(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false
+  const generation = (value as { generation?: unknown }).generation
+  if (typeof generation !== 'object' || generation === null || Array.isArray(generation)) return false
+  const fields = generation as Record<string, unknown>
+  return typeof fields.observed_at === 'number'
+    && Number.isSafeInteger(fields.observed_at)
+    && fields.observed_at >= 0
+    && typeof fields.run_id === 'string'
+    && fields.run_id.length > 0
+}
+
 export function isMediaRefreshJobV2(value: unknown): value is MediaRefreshJobV2 {
   return isMediaRefreshJobBase(value)
     && (value as { version?: unknown }).version === 2
@@ -191,7 +209,7 @@ export function isMediaRefreshJobV3(value: unknown): value is MediaRefreshJobV3 
 export function isMediaRefreshJobV4(value: unknown): value is MediaRefreshJobV4 {
   return isMediaRefreshJobBase(value)
     && (value as { version?: unknown }).version === 4
-    && hasValidMediaGeneration(value)
+    && hasValidV4MediaGeneration(value)
 }
 
 export function hasUnsupportedMediaJobVersion(value: unknown): boolean {

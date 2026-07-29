@@ -177,13 +177,34 @@ test('reservation fingerprint distinguishes D1-only V4 from legacy-compatible V3
   const database = new TransactionalSqliteD1()
   const original = {
     ...request('media-version', 1),
-    jobs: [{ version: 4, generation: 7, job_id: 'run:1', subject_id: 1, title: 'A', components: ['detail'] }],
+    jobs: [{
+      version: 4,
+      generation: { observed_at: 7, run_id: 'run' },
+      job_id: 'run:1',
+      subject_id: 1,
+      title: 'A',
+      components: ['detail'],
+    }],
   }
   await reserveDailyBudget(database, original)
   await assert.rejects(
     reserveDailyBudget(database, {
       ...original,
-      jobs: [{ ...original.jobs[0]!, version: 3 }],
+      jobs: [{
+        ...original.jobs[0]!,
+        version: 3,
+        generation: 7,
+      }],
+    }),
+    /reservation payload mismatch/,
+  )
+  await assert.rejects(
+    reserveDailyBudget(database, {
+      ...original,
+      jobs: [{
+        ...original.jobs[0]!,
+        generation: { observed_at: 8, run_id: 'run' },
+      }],
     }),
     /reservation payload mismatch/,
   )

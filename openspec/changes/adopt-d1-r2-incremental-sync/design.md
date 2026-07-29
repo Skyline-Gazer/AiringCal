@@ -25,7 +25,7 @@
 5. 发布顺序为 D1 commit、R2 put、R2 回读校验、KV pointer put。旧 pointer 始终保持可服务。
 6. `sync_budget` 在 D1 事务中预留资源；媒体失败或预算耗尽不得阻塞收藏状态与 snapshot 发布。
 7. resource bootstrap 与运行时代码分两次兼容部署；D1 migration 必须先于 read/media/sync Worker 发布。
-8. D1-only media 使用独立 V4 job discriminator；既有 live Workflow V3 保持 legacy KV 写入，使当前 Read Worker 与下一轮 planner 能观察刷新结果。
+8. D1-only media 使用独立 V4 job discriminator；既有 live Workflow V3 保持 legacy KV 写入，使当前 Read Worker 与下一轮 planner 能观察刷新结果。V2/V3 保留已部署的未加前缀 number generation 围栏；V4 使用独立 `v4:` 围栏和 `{ observed_at, run_id }` generation，只取持久化完整输入的观察时间与稳定 Workflow instance ID，按两字段依次排序，因此 retry 稳定且两套协议互不推进 obsolete 门槛。
 
 ## Risks / Trade-offs
 

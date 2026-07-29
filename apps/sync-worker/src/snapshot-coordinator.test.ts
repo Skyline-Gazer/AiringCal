@@ -67,7 +67,11 @@ function mediaJobs(count: number, startSubjectId = 1): MediaRefreshJobV3[] {
 }
 
 function d1MediaJobs(count: number, startSubjectId = 1): MediaRefreshJobV4[] {
-  return mediaJobs(count, startSubjectId).map((job) => ({ ...job, version: 4 }))
+  return mediaJobs(count, startSubjectId).map((job) => ({
+    ...job,
+    version: 4,
+    generation: { observed_at: 1, run_id: 'd1-test' },
+  }))
 }
 
 function reserveRequest(
@@ -243,7 +247,11 @@ test('live media reservation rejects a D1-only V4 job before budget or Queue mut
     reservation_id: 'workflow-v4:media',
     requested: 1,
     privileged_requested: 0,
-    jobs: [{ ...mediaJobs(1)[0]!, version: 4 }] as any,
+    jobs: [{
+      ...mediaJobs(1)[0]!,
+      version: 4,
+      generation: { observed_at: 1, run_id: 'live-v4-rejection' },
+    }] as any,
   })
 
   assert.equal(response.status, 400)

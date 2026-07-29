@@ -180,7 +180,7 @@ async function existingRow(
 
 const job: MediaRefreshJobV4 = {
   version: 4,
-  generation: 7,
+  generation: { observed_at: 7, run_id: 'd1-run' },
   job_id: 'd1-run:23080',
   subject_id: 23080,
   title: 'A CN',
