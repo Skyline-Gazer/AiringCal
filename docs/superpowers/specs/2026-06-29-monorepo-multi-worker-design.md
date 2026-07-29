@@ -1,7 +1,43 @@
 # Monorepo Multi-Worker Architecture Design
 
-> Status: pending review
+> Status: implemented; amended for D1/R2 shadow on 2026-07-29
 > Date: 2026-06-29
+
+The original target rationale remains below, but this amendment is the current
+code-backed contract where the two differ.
+
+## D1/R2 shadow amendment
+
+- Resources are D1 `airing-cal-state`, data R2 `airing-cal-data`, image R2
+  `airing-cal-images`, KV `airing-cal-kv`, and Queue `airing-cal-media`.
+- `read-worker` binds `AIRING_CAL_D1`, `AIRING_CAL_DATA_R2`,
+  `AIRING_CAL_KV`, and image `AIRING_CAL_R2`, but current handlers use only
+  legacy KV plus image R2. `sync-worker` additionally uses `MEDIA_QUEUE`,
+  `SYNC_WORKFLOW`, and `SNAPSHOT_COORDINATOR`; `media-worker` binds D1, KV,
+  image R2, and `SUBJECT_REFRESH_COORDINATOR`.
+- Manual shadow performs the new authoritative D1 diff and publishes immutable
+  data-R2 objects under
+  `snapshots/v1/{generation}-{content_hash}.json`, then verifies and writes
+  `public:current`. This pointer is not a public-read pointer yet.
+- D1 has five primary application tables: `collection_items`, `subject_media`,
+  `sync_runs`, `sync_budget`, and `app_state`. `sync_budget_reservations` is
+  the reservation idempotency helper. Soft/hard media limits remain 50/100;
+  the current shadow path submits no Queue jobs.
+- Public API responses still follow legacy KV `snapshot:active` and
+  generation-scoped KV keys. Import, `public:current` read cutover, and legacy
+  KV cleanup are owned only by `migrate-public-reads-from-kv`.
+- Worker Cron is exactly `0 20 * * *` (daily 20:00 UTC / following 04:00
+  Asia/Shanghai). Deploy order is resource resolve and Cron preflight, remote
+  D1 migration, read/media, sync/Workflow control-plane verification, then
+  frontend.
+- `/api/health` remains a legacy-KV view; D1/data-R2 shadow health and usage are
+  observed through Workflow and Cloudflare D1/R2/Queue/KV metrics. Persisted
+  D1 failures use classified `error_code`, and public/log output must not
+  include tokens, complete authenticated upstream bodies, or collection
+  comments.
+- Runtime rollback deploys the previous compatible immutable SHA. Additive D1
+  migrations and all D1/R2/KV/Queue/Workflow/Durable Object data remain in
+  place; no destructive reverse migration is run.
 
 ## Goals
 
@@ -107,7 +143,7 @@ Responsibilities:
 - Enqueue media jobs for missing or stale image cache and missing or stale subject meta.
 - Write sync generation metadata.
 
-There is no public `POST /__cron/sync` route in the new architecture. Production sync is triggered by Cloudflare scheduled events, not by `curl`ing a Worker URI. If a manual production run is needed, it should use Cloudflare's scheduled-event tooling or an explicitly internal/admin mechanism added later, not a public cron URL and `CRON_SECRET`.
+There is no public `POST /__cron/sync` route in the new architecture. Production sync is triggered by Cloudflare scheduled events, not by `curl`ing a Worker URI. Manual trigger/describe/restart/terminate operations use the authenticated Cloudflare Workflow control plane, not a public cron URL or `CRON_SECRET`.
 
 This Worker should keep heavy media and subject-detail enrichment out of the main cron invocation.
 
@@ -232,9 +268,13 @@ Responsibilities:
 Browser
   -> frontend-worker
   -> read-worker service binding
-  -> KV/R2
+  -> legacy KV snapshot/status + image R2
   -> frontend-worker response
 ```
+
+The checked-in D1/data-R2 bindings are intentionally absent from handler code.
+`public:current` and `airing-cal-data` are shadow outputs, not fallback sources
+for this public flow.
 
 The public surface remains small:
 
@@ -254,15 +294,15 @@ Public JSON endpoints may remain under the frontend Worker as BFF routes, but th
 sync-worker cron/manual trigger
   -> create/run SyncWorkflow
   -> fetch collections and calendar into instance staging
-  -> publish generation-scoped snapshot inputs
-  -> bounded reads of current detail/meta/image/refresh state
-  -> select due candidates by priority and shared UTC-day budget
-  -> reserve logical grants in SnapshotCoordinator
-  -> submit one Queue batch with confirmed/uncertain outcome
-  -> commit the snapshot independently of media convergence
+  -> live: publish/commit generation-scoped legacy KV snapshot
+  -> manual shadow: D1 diff/state + immutable data-R2 verify + public:current
+  -> live only: bounded reads of current detail/meta/image/refresh state
+  -> live only: select due candidates by priority and shared UTC-day budget
+  -> live only: reserve logical grants in SnapshotCoordinator
+  -> live only: submit one Queue batch with confirmed/uncertain outcome
 ```
 
-Scheduled and manual live runs share soft limit 50 / hard limit 100; cold work uses one of seven UTC-day shards. Shadow runs publish isolated audit snapshots without reservation or Queue submission. The first live sync may produce a snapshot before every image and NSFW meta entry is complete. Later media jobs and later sync generations improve the snapshot.
+Scheduled and manual live runs share soft limit 50 / hard limit 100; cold work uses one of seven UTC-day shards. Shadow runs preserve their isolated legacy audit snapshot, then fail closed unless D1 and data R2 can persist and verify the new shadow publication; they still make no reservation or Queue submission. The first live sync may produce a snapshot before every image and NSFW meta entry is complete. Later media jobs and later sync generations improve the legacy public snapshot.
 
 Each `SyncRun` reports total subjects, eligible candidates and their priority distribution, planner-selected candidates, logical grants, budget-deferred candidates (`candidates - grants`), confirmed/uncertain producer outcomes, and subjects skipped before reservation (`total - candidates`). `refresh_jobs` is only a compatibility alias for logical grants. These run counters do not claim the asynchronous consumer's physical Queue delivery or actual KV PUT count and do not add per-subject metric keys.
 
@@ -273,7 +313,8 @@ sync-worker
   -> MEDIA_QUEUE.send(...)
   -> media-worker queue consumer
   -> bgm.tv image fetch / subject detail fetch
-  -> R2 + KV status writes
+  -> V3: D1 subject_media + image R2
+  -> V2/legacy compatibility: image R2 + KV status writes
 ```
 
 Queue is preferred over direct service-binding calls for heavy work because it naturally batches, retries, and gives each consumer invocation its own subrequest budget.
@@ -583,6 +624,7 @@ Bindings:
 
 ```text
 READ_WORKER service binding -> read-worker
+SYNC_WORKER service binding -> sync-worker
 ```
 
 Optional direct R2 binding is avoided unless `/image/:hash` performance requires it. The default design keeps image reads behind `read-worker`.
@@ -592,8 +634,10 @@ Optional direct R2 binding is avoided unless `/image/:hash` performance requires
 Bindings:
 
 ```text
+AIRING_CAL_D1 D1 (bound; public handlers do not consume it yet)
 AIRING_CAL_KV KV
 AIRING_CAL_R2 R2
+AIRING_CAL_DATA_R2 R2 (bound; public handlers do not consume it yet)
 ```
 
 ### `sync-worker`
@@ -601,7 +645,9 @@ AIRING_CAL_R2 R2
 Bindings:
 
 ```text
+AIRING_CAL_D1 D1
 AIRING_CAL_KV KV
+AIRING_CAL_DATA_R2 R2
 MEDIA_QUEUE queue producer
 SYNC_WORKFLOW Workflow binding
 SNAPSHOT_COORDINATOR Durable Object
@@ -629,9 +675,11 @@ Cloudflare Cron uses UTC, so the Worker keeps one daily trigger at 20:00 UTC, co
 Bindings:
 
 ```text
+AIRING_CAL_D1 D1
 AIRING_CAL_KV KV
 AIRING_CAL_R2 R2
 MEDIA_QUEUE queue consumer
+SUBJECT_REFRESH_COORDINATOR Durable Object
 ```
 
 `media-worker` does not require bgm.tv credentials. It downloads image URLs supplied by `sync-worker` and calls optional subject-detail endpoints with `OptionalHTTPBearer` omitted.
@@ -666,27 +714,26 @@ Worker secrets
 Cron schedule in sync-worker config
 ```
 
-After initial provisioning, GitHub Actions resolves D1, both R2 buckets, KV and Queue before upload. During the compatibility phase bootstrap still prepares or reuses all five resource types, and the resolver verifies all five; only D1/data R2 preparation is newly added in this phase. Worker runtime bindings and accesses remain unchanged until a later release phase.
+After initial provisioning, GitHub Actions resolves D1, both R2 buckets, KV and Queue before upload. Bootstrap prepares or reuses all five resource types and the resolver verifies all five. D1/data R2 runtime bindings are now checked in: manual shadow and media V3 access the new resources, while read handlers deliberately remain on legacy KV/image R2 until `migrate-public-reads-from-kv`.
 
-### Target Workflow
+### Implemented Workflow
 
-The default deploy workflow should be short:
+The default deploy workflow is:
 
 ```text
-checkout
-setup pnpm/node
-pnpm install --frozen-lockfile
-pnpm typecheck
-pnpm test
-pnpm build
-wrangler check/types for each Worker config
-wrangler deploy for frontend-worker
-wrangler deploy for read-worker
-wrangler deploy for sync-worker
-wrangler deploy for media-worker
+resolve and authorize one immutable dev-ancestor SHA
+validate typecheck/test/build
+resolve all existing resources and preflight Cron quota
+materialize the D1 id and apply remote D1 migrations
+deploy read-worker and media-worker
+deploy sync-worker/Workflow and describe its control plane
+deploy frontend-worker last
+on partial failure, report deployed versions and exact same-SHA convergence
 ```
 
-Optional dry-run deploy checks may run before deploy, but they should use each app's own config directly.
+Every post-resolution job checks out the same SHA. Each upload job materializes
+only a temporary Wrangler config and runs a dry-run before deploy; committed
+`wrangler.toml` files retain their audited placeholders.
 
 ### Removed Workflow Steps
 
@@ -796,7 +843,7 @@ README must not instruct users to edit the removed standalone theme directory, b
 
 README must not instruct users to `curl` a cron URI for normal sync. Manual sync by public HTTP endpoint is removed from the target architecture.
 
-## Implementation Order
+## Historical Implementation Order
 
 1. Create monorepo app/package layout.
 2. Move pure domain logic into `packages/domain`.
@@ -817,9 +864,9 @@ README must not instruct users to `curl` a cron URI for normal sync. Manual sync
 17. Rewrite README and deployment docs.
 18. Run full tests, typecheck, Wrangler config validation, and dry-run deploy checks.
 
-## Open Decisions
+## Current Decisions
 
-None. The cache statistics page is public. Queue is the selected media processing mechanism. Legacy compatibility is out of scope. Cron is native Worker scheduled events, not a public HTTP endpoint.
+The cache statistics page is public. Queue remains the selected media processing mechanism. Legacy KV compatibility remains in the live/public path while D1/data R2 are shadow-only. Cron is a native Worker scheduled event, not a public HTTP endpoint. The later `migrate-public-reads-from-kv` change owns import, cutover, and cleanup.
 
 ## Self-Review
 

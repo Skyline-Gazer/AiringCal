@@ -2,7 +2,7 @@
 
 > 在静态页面中渲染你的 Bangumi 追番进度。
 
-AiringCal 是一个 Cloudflare Workers monorepo。它把公开访问、只读数据、定时同步、媒体补全拆成 4 个独立 Worker，让公开页面、KV/R2 读取、bgm.tv 抓取、图片下载分别使用自己的 Worker 调用预算。
+AiringCal 是一个 Cloudflare Workers monorepo。它把公开访问、只读数据、定时同步、媒体补全拆成 4 个独立 Worker，让公开页面、legacy KV 读取、D1/data R2 shadow 同步、bgm.tv 抓取和图片下载分别使用自己的 Worker 调用预算。
 
 ## 架构
 
@@ -11,9 +11,9 @@ AiringCal 是一个 Cloudflare Workers monorepo。它把公开访问、只读数
 | Worker | 目录 | 职责 |
 |--------|------|------|
 | `airing-cal-frontend` | `apps/frontend-worker` | 唯一公开入口，提供页面、widget 静态资源、BFF JSON route 和 `/image/:hash` 代理 |
-| `airing-cal-read` | `apps/read-worker` | 内部只读 API，只从 KV/R2 读取 snapshot、配置、健康状态、缓存统计和图片 |
-| `airing-cal-sync` | `apps/sync-worker` | Cloudflare Workflow 持久化编排 collection/calendar、版本化 snapshot 和 Media Queue 候选任务 |
-| `airing-cal-media` | `apps/media-worker` | Queue consumer，下载 common/large 图片，写 R2，更新 image/subject meta KV |
+| `airing-cal-read` | `apps/read-worker` | 内部只读 API；当前公开响应仍从 legacy KV snapshot/状态与 image R2 读取，D1/data R2 binding 尚未用于 handler |
+| `airing-cal-sync` | `apps/sync-worker` | Cloudflare Workflow 编排 collection/calendar；live 维持 legacy KV 发布，manual shadow 同步 D1 并发布不可变 data R2 snapshot |
+| `airing-cal-media` | `apps/media-worker` | Queue consumer；V3 任务以 D1 保存媒体权威状态并写 image R2，V2/legacy 任务保留 KV 兼容路径 |
 
 共享 package：
 
@@ -21,7 +21,7 @@ AiringCal 是一个 Cloudflare Workers monorepo。它把公开访问、只读数
 |---------|------|
 | `@airing-cal/bgm-api` | bgm.tv client、OpenAPI 对齐的类型、API helpers |
 | `@airing-cal/domain` | snapshot merge、image ref、subject meta、queue/data contracts |
-| `@airing-cal/storage` | KV/R2 adapter 和 key builder |
+| `@airing-cal/storage` | KV/D1/R2 adapter、迁移、typed state contract 和 key builder |
 | `@airing-cal/widget` | HTML shell、footer runtime status、widget JS/CSS assets |
 | `@airing-cal/worker-common` | public error、安全 header、敏感信息清理、部署/文档守护测试 |
 
@@ -106,17 +106,33 @@ pnpm exec wrangler workflows instances terminate airing-cal-sync <instance-id> -
 
 Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都使用确定性 step 名；大 payload 写 staging KV，step 只返回 key、数量和 SHA-256 摘要。live initialize 通过 `SNAPSHOT_COORDINATOR` 分配单调 generation 并立即写 `sync:current`；refresh planning 每 10 个 subject 有界读取现有 detail、metadata、image 与 refresh 状态，只为缺失、源变化、重试到期或确定性刷新时间已到的组件生成幂等 V3 候选。候选按 new/changed、hot due、cold shard、retry 排序；普通任务受 soft limit 50 限制，只有 new/changed 可扩展到 hard limit 100。cold 候选按 `subject_id mod 7` 分散到 7 个 UTC 日。
 
-scheduled live 与 manual live 共享同一个 UTC 自然日预算，没有强制绕过 hard limit 的参数。`SNAPSHOT_COORDINATOR` 先以稳定 reservation 预留逻辑预算，再最多调用一次 Queue producer；Queue 确认结果不确定时按 fail-closed 保留预算并标记 uncertain，不重发同一 reservation，但仍提交 collection/calendar snapshot。未变化 subject 不产生逐 subject KV 写入，也不投递媒体任务。Workflow 只读逐 subject 媒体状态，实际 detail/meta/image/refresh 写入仍由 Media Worker 执行。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为 read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
+scheduled live 与 manual live 共享同一个 UTC 自然日预算，没有强制绕过 hard limit 的参数。`SNAPSHOT_COORDINATOR` 先以稳定 reservation 预留逻辑预算，再最多调用一次 Queue producer；Queue 确认结果不确定时按 fail-closed 保留预算并标记 uncertain，不重发同一 reservation，但仍提交 collection/calendar snapshot。未变化 subject 不产生逐 subject KV 写入，也不投递媒体任务。Workflow 只读逐 subject 媒体状态，实际 detail/meta/image/refresh 写入仍由 Media Worker 执行。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为资源 resolve/Cron preflight → D1 migration → read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
 
 收藏页不会在每次浏览页面时实时请求 bgm.tv。Workflow 以 `limit=50` 获取 collections 并按 bgm.tv `type` 发布 `want`、`watched`、`watching`、`on_hold`、`dropped` 版本化快照；读取端跟随 `snapshot:active` 读取同一个 instance 的五类 collections、calendar 和 summary，并在返回数据前验证 manifest 恰好列出这 7 个 required key 及其 SHA-256 digest。带有任一 V3 字段（`generation`、`required_keys`、`digests`）的 active manifest、key 或 digest 不完整时返回 HTTP 503 `SNAPSHOT_INCOMPLETE`，绝不逐 key 混入 legacy 数据；active 完全不存在，或旧 active pointer 同时不含上述三个 V3 字段时，才整套读取 legacy snapshot。Workflow 不请求 subject detail；detail、metadata 和图片由 Media Queue 以 stale-while-revalidate 方式异步收敛。
 
 collections 使用 bgm.tv OpenAPI 允许的 `limit=50` 分页，并受 120 秒整体预算约束。bgm.tv JSON GET 请求单次 timeout 为 10 秒；429、5xx、timeout 和网络错误最多重试 2 次，401/403 不重试，POST/PATCH 写请求也不会被 client 隐式重试。
 
-`/api/health` 仍保留 `data.cron.last` 作为迁移兼容字段，`data.cron.next_at` 按每日 20:00 UTC 计算；最近 instance 优先来自 initialize 阶段写入的 `sync:current`，因此 running 或硬中断实例不必等待 finalize 才可见。最近 instance 来自 schedule 时，cron 字段由对应 Workflow run 的同一个 effective status 派生，不再返回旧 Queue 遗留状态或出现 `stale/running` 分裂。`data.collections.updated_at` 优先使用当前 active snapshot 的发布时间。新的权威应用状态仍是 `data.workflow`，Cloudflare 控制面状态是最终依据。
+`/api/health` 仍保留 `data.cron.last` 作为迁移兼容字段，`data.cron.next_at` 按每日 20:00 UTC 计算；最近 instance 优先来自 initialize 阶段写入的 `sync:current`，因此 running 或硬中断实例不必等待 finalize 才可见。最近 instance 来自 schedule 时，cron 字段由对应 Workflow run 的同一个 effective status 派生，不再返回旧 Queue 遗留状态或出现 `stale/running` 分裂。`data.collections.updated_at` 优先使用当前 active snapshot 的发布时间。公开 health 响应内的现行应用状态字段仍是 `data.workflow`，Cloudflare Workflow 控制面状态是最终依据。
 
 `/api/health` 的 `data.workflow` 暴露最近 instance 的 `instance_id`、mode、source、stage、heartbeat、完成时间、计数和脱敏错误。聚合计数包含 eligible candidates `refresh_candidates` 及 `refresh_candidates_by_priority`、planner 选中 `refresh_selected`、逻辑获批 `refresh_granted`、预算留待后续 `refresh_deferred`（等于 `refresh_candidates - refresh_granted`）、producer 已确认/不确定的 `refresh_confirmed` / `refresh_uncertain`，以及预留前跳过的 `refresh_skipped`（等于 `subject_count - refresh_candidates`）。`refresh_jobs` 是 `refresh_granted` 的兼容 alias，只表示逻辑预算获批，不表示 Queue 一定物理接收；异步 consumer 的真实 KV PUT 只能从 consumer 与 Cloudflare 指标观察，Workflow 不推算实际写入数。成功或失败 run 都保留已到达的最新聚合值；这些字段只写入已有 run 记录，不创建逐 subject 指标 key。`queued`、`running` 或 `retrying` run 超过 20 分钟没有 heartbeat 时，应用侧返回 `status: "stale"` 与 `stale: true`；实际恢复、重启或终止仍以 Cloudflare Workflow instance 控制面状态为准。
 
+当前 `/api/health` 仍只汇总 legacy KV 的 `snapshot:active`、`sync:meta`、`sync:current` 与 `sync:run:*`，不会读取或证明 D1/data R2 shadow 的健康状态。D1 的 `sync_runs` 只保存有界计数、hash、stage/status 与分类后的 `error_code`；D1 rows、data R2 对象、Queue 和 KV pointer 的实际用量及错误必须分别在 Cloudflare Workflow/D1/R2/Queue/KV 控制面核对，不能从公开 health 推算。
+
 Worker Cron 来自 checked-in `wrangler.toml`；routine deploy 只同步代码与配置，不主动触发 live instance。
+
+### D1 / data R2 shadow 边界
+
+当前 D1/data R2 实现只在明确的 manual `shadow` Workflow 中运行：
+
+1. 完整获取所有用户的 collections 与 calendar，只有完整边界通过才计算 D1 diff。
+2. D1 以 `collection_items`、`subject_media`、`sync_runs`、`sync_budget`、`app_state` 五张主表保存新权威状态；`sync_budget_reservations` 是稳定 reservation 的幂等 helper table。
+3. 新公开契约先写入 `airing-cal-data` 的不可变对象 `snapshots/v1/{generation}-{content_hash}.json`，回读并验证 schema、generation、hash、key 与完整 bytes。
+4. 只有验证成功后才更新 KV `public:current`。pointer 只包含 `schema_version`、`generation`、`content_hash`、`r2_key` 和 `published_at`；相同已验证内容不写 R2、不增加 generation、也不写 pointer。
+5. D1/R2/pointer 任一步失败都保留 pending/分类错误供同一 instance replay；不会通过回滚 D1 行或覆盖另一个 R2 generation 来“恢复”。
+
+这个 shadow pointer 不是当前公开读取入口。`airing-cal-read` 虽已绑定 `AIRING_CAL_D1` 与 `AIRING_CAL_DATA_R2`，handler 仍只跟随 legacy KV `snapshot:active`/versioned keys（图片继续来自 `AIRING_CAL_R2`）。legacy import、`public:current` 读切换和旧 KV 清理由后续 OpenSpec change `migrate-public-reads-from-kv` 独占负责；在该 change 完成门禁前，不得把 D1/data R2 描述成公开 API 的现行来源。
+
+media soft limit 50、hard limit 100 的 D1 reservation contract 已实现；只有 `new_or_changed` 候选可使用 privileged headroom。当前 shadow 调用不传 Queue submitter，因此 D1 路径 grant/submit 为 0；scheduled/manual live 仍使用 `SNAPSHOT_COORDINATOR` 的兼容预算和 legacy snapshot 发布。
 
 ## Cloudflare 资源
 
@@ -137,9 +153,9 @@ Worker Cron 来自 checked-in `wrangler.toml`；routine deploy 只同步代码�
 | Worker | Binding |
 |--------|---------|
 | `airing-cal-frontend` | `READ_WORKER`, `SYNC_WORKER` |
-| `airing-cal-read` | `AIRING_CAL_KV`, `AIRING_CAL_R2` |
-| `airing-cal-sync` | `AIRING_CAL_KV`, `MEDIA_QUEUE`, `SYNC_WORKFLOW`, `SNAPSHOT_COORDINATOR` |
-| `airing-cal-media` | `AIRING_CAL_KV`, `AIRING_CAL_R2`, `SUBJECT_REFRESH_COORDINATOR` |
+| `airing-cal-read` | `AIRING_CAL_D1`, `AIRING_CAL_KV`, `AIRING_CAL_R2`, `AIRING_CAL_DATA_R2` |
+| `airing-cal-sync` | `AIRING_CAL_D1`, `AIRING_CAL_KV`, `AIRING_CAL_DATA_R2`, `MEDIA_QUEUE`, `SYNC_WORKFLOW`, `SNAPSHOT_COORDINATOR` |
+| `airing-cal-media` | `AIRING_CAL_D1`, `AIRING_CAL_KV`, `AIRING_CAL_R2`, `SUBJECT_REFRESH_COORDINATOR` |
 
 Cloudflare 资源创建已经与常规部署分离。首次部署或资源缺失时，在 GitHub Actions 中手动运行 `Bootstrap Cloudflare Resources`（手动 bootstrap workflow）：
 
@@ -150,19 +166,22 @@ Cloudflare 资源创建已经与常规部署分离。首次部署或资源缺失
 - 创建或复用 Queue `airing-cal-media`。
 - 后续 Wrangler deploy 会按 checked-in 配置确认 `airing-cal-frontend` 的 service bindings 指向 `airing-cal-read` 和 `airing-cal-sync`。
 
-KV 比较特殊：`wrangler.toml` 里的 `kv_namespaces.id` 不是 namespace title，而是 Cloudflare 生成的 namespace ID。仓库里的 3 个 Worker config 保留占位符：
+KV 与 D1 的 checked-in config 都保留可审计占位符；deploy resolver 输出真实 ID，materializer 校验格式后只写到 runner 临时 config。KV 的 `kv_namespaces.id` 不是 namespace title，而是 Cloudflare 生成的 32 位十六进制 namespace ID；D1 的 `database_id` 是规范 UUID：
 
 ```toml
 id = "<AIRING_CAL_KV_NAMESPACE_ID>"
+database_id = "<AIRING_CAL_D1_DATABASE_ID>"
 ```
 
-常规 deploy 只读解析实际 KV namespace ID，同时验证 D1、两个 R2 bucket、KV 与 Queue；资源不存在时会明确失败并提示先运行 bootstrap，不会在发布途中创建资源。当前兼容阶段的 bootstrap 仍会准备或复用全部五类资源（D1、data R2、image R2、KV 与 Queue），随后使用同一生产凭证运行只读 resolver，确认全部资源可解析后才报告 D1/KV ID；本阶段新增的资源准备仅为 D1 和 data R2，checked-in Worker config 尚未添加 D1 或 data R2 runtime binding，也不会访问这些资源。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
+对应的 materialization 环境名是 `AIRING_CAL_KV_NAMESPACE_ID` 与 `AIRING_CAL_D1_DATABASE_ID`；它们是 resolver job output 的进程内传递名，不是需要手工新增的 Worker secret。
+
+常规 deploy 只读解析实际 KV namespace ID 与 D1 database ID，同时验证 D1、两个 R2 bucket、KV 与 Queue；资源不存在时会明确失败并提示先运行 bootstrap，不会在发布途中创建资源。bootstrap 会准备或复用全部五类资源，随后使用同一生产凭证运行只读 resolver，确认全部资源可解析后才报告 D1/KV ID。read/sync/media 的 checked-in config 已包含 D1 binding，read/sync 还包含 data R2 binding；sync 的 manual shadow 和 media V3 会实际访问新资源，read handler 暂不访问。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
 
 `SNAPSHOT_COORDINATOR` 与 `SUBJECT_REFRESH_COORDINATOR` 是 SQLite-backed Durable Object binding，migration tag 分别为 `snapshot-coordinator-v1` 与 `subject-refresh-coordinator-v1`。migration 只新增 class，不在自动部署或回退中删除。live Workflow 通过前者分配/提交 generation；Media Queue 按 subject ID 路由到后者，并在覆盖 bgm.tv、KV 与 R2 await 的串行互斥区内完成 generation gate、detail/meta/image/R2 副作用、失败状态与完成标记。最高已接受 generation 在任何副作用前持久化，即使新任务失败，迟到旧任务也只能返回 obsolete。V2/legacy 消息按 generation 0 兼容，不能覆盖已经接受的更高 V3 generation。
 
 CI 不上传运行时 secret，也不会手写 `curl` 修改 schedule。定时配置只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers].crons`；Cron handler 只创建 Workflow instance。
 
-部署流水线只负责 typecheck/test/build、解析已有资源、按 read/media → sync + Workflow → control-plane describe → frontend 的顺序部署。部署完成后不会触发业务同步、不会轮询 KV，也不等待媒体缓存收敛；首次部署无数据时等待下一次 Worker Cron，或显式触发 live instance。
+部署流水线只负责 typecheck/test/build、解析已有资源、在任何 Worker upload 前应用 remote D1 migrations，再按 read/media → sync + Workflow → control-plane describe → frontend 的顺序部署。migration、resolve 或任一 deploy job 失败时，下游 upload 由 `needs` 链阻断，`recovery_report` 汇总部署版本与精确同-SHA收敛命令。部署完成后不会触发业务同步、不会轮询 KV，也不等待媒体缓存收敛；首次部署无数据时等待下一次 Worker Cron，或显式触发 live instance。
 
 ## 最小配置
 
@@ -304,7 +323,26 @@ Wrangler 本地权限映射把 `workers_scripts:write` 描述为可修改 Worker
 - R2 key 固定为 `images/{hash}/original`
 - bgm.tv 返回协议相对图片 URL（例如 `//lain.bgm.tv/...`）时，media-worker 下载前会规范化为 `https://...`
 
-KV key：
+D1 migration 当前创建五张主表：
+
+| 表 | Shadow / V3 职责 |
+|----|------------------|
+| `collection_items` | `(user_id, subject_id)` 收藏权威行、业务 hash、missing/deleted 两次确认状态 |
+| `subject_media` | detail/media hash、NSFW、图片源与 R2 引用、refresh/retry 分类状态 |
+| `sync_runs` | stage/status、计数、input/public hash、replay manifest 与分类 `error_code` |
+| `sync_budget` | `(date, resource)` 的 reserved/consumed 用量 |
+| `app_state` | publication pending/verified、cold cursor 与有界 replay artifact |
+
+`sync_budget_reservations` 是 `sync_budget` 的幂等 helper table，不是第六类业务模型。migration 只做 additive schema 变更且不创建二级 index；部署和回退都不执行 destructive reverse migration。
+
+新 shadow 发布 key：
+
+| 存储 | Key | 当前用途 |
+|------|-----|---------|
+| data R2 | `snapshots/v1/{generation}-{content_hash}.json` | 不可变 `PublicSnapshotV1`；写后必须回读验证 |
+| KV | `public:current` | 只含 version/generation/hash/R2 key/time 的 shadow pointer；当前 read-worker 不读取 |
+
+当前公开读取与兼容 KV key：
 
 | Key | 写入方 | 说明 |
 |-----|--------|------|
@@ -377,26 +415,27 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 1. 在不接触 production secrets 的 `resolve_ref` job 中把 push SHA 或手动 ref 解析为完整 commit SHA，并验证它已是 `origin/dev` 的 ancestor
 2. 所有后续 job checkout 同一个解析 SHA，运行 `pnpm install --frozen-lockfile`、typecheck、test、build check
 3. 解析既有 Cloudflare 资源，并在任何 Worker 上传前运行 Worker Cron 配额 preflight
-4. 并行部署 `airing-cal-read` 与 `airing-cal-media`
-5. 部署 `airing-cal-sync`、`SyncWorkflow` 与 Durable Object migrations，运行 `wrangler workflows describe` 检查控制面
-6. 以解析 SHA 注入 commit/repository build vars，最后部署 `airing-cal-frontend`
+4. 用 resolver 输出 materialize sync config，执行 `wrangler d1 migrations apply AIRING_CAL_D1 --remote`；失败时不开始任何 Worker upload
+5. 并行部署 `airing-cal-read` 与 `airing-cal-media`
+6. 部署 `airing-cal-sync`、`SyncWorkflow` 与 Durable Object migrations，运行 `wrangler workflows describe` 检查控制面
+7. 以解析 SHA 注入 commit/repository build vars，最后部署 `airing-cal-frontend`
 
 手动部署输入可以是 SHA、branch 或 tag，但解析出的 commit 必须已经进入 `dev` 历史；未进入 `dev` 的 ref 会在 secrets 和 Cloudflare job 启动前失败。`dev` 在部署期间继续前进不会改变本次 revision，页面 footer SHA 与实际 checkout/deploy SHA保持一致。Cron trigger 已达到 Free Plan 上限且 `airing-cal-sync` 没有可复用 trigger 时，preflight 会在首个 upload 前终止，避免部分部署。
 
 部署步骤直接运行 `pnpm exec wrangler deploy`，不再通过 `cloudflare/wrangler-action` 包装。CI 会设置 `WRANGLER_LOG=debug` 和 `WRANGLER_LOG_PATH`；如果部署失败，会打印脱敏后的 Wrangler debug log。随后 `recovery_report` 查询四个 Worker 当前 deployment JSON、汇总各部署 job 结果，并输出使用本次已解析完整 SHA 的精确收敛命令 `gh workflow run deploy.yml --ref dev -f ref=<resolved-sha>`；需要回退时按下方 runbook 操作。
 
-这个顺序保证内部 read/media/sync Worker 与 Workflow 控制面先更新，再更新公开入口 frontend Worker。部署不创建 live instance；业务同步由 schedule 或显式手动 trigger 独立执行。首次部署时 frontend 的 service binding 需要 read/sync Worker 已存在，所以 frontend 不放进并行 matrix。
+这个顺序保证 additive D1 migration 先完成，内部 read/media/sync Worker 与 Workflow 控制面再更新，最后才更新公开入口 frontend Worker。部署不创建 live instance；业务同步由 schedule 或显式手动 trigger 独立执行。首次部署时 frontend 的 service binding 需要 read/sync Worker 已存在，所以 frontend 不放进并行 matrix。
 
 ### 正式回退 runbook
 
 1. 在 Cloudflare Dashboard 暂停 `airing-cal-sync` 的 Worker Cron trigger，防止回退期间创建新的 live instance。
 2. 用 `pnpm exec wrangler workflows instances describe airing-cal-sync <instance-id> --config apps/sync-worker/wrangler.toml` 核对异常实例；确认后执行 `pnpm exec wrangler workflows instances terminate airing-cal-sync <instance-id> --config apps/sync-worker/wrangler.toml`。这两个命令只操作 Workflow instance，不删除 KV、R2、Queue 或 Durable Object。
-3. 从 `dev` 历史选择已知稳定的完整 40 位 commit SHA。不要使用尚未进入 `dev` 的分支、tag 或可移动 ref；部署 workflow 会再次执行 ancestor 校验。
+3. 选择本次发布前一个已知稳定、仍兼容现有 D1 schema、Workflow 和 Durable Object binding 的完整 40 位 commit SHA（通常是上一生产 SHA）。它必须已经进入 `dev` 历史；不要使用尚未进入 `dev` 的分支、tag 或可移动 ref，部署 workflow 会再次执行 ancestor 校验。
 4. 在 GitHub Actions 手动运行 `Deploy to Cloudflare`，把 `ref` 填为该完整 SHA。所有 job 会 checkout 同一 SHA，Cron quota preflight 通过后按既定顺序部署。
 5. 核对 deploy log 中 `SnapshotCoordinator`、`SubjectRefreshCoordinator` binding 与 `snapshot-coordinator-v1`、`subject-refresh-coordinator-v1` migration 可加载；再检查 `workflows describe`、公开 `/api/health`、`sync:current` 与 `snapshot:active.generation`。generation 不得倒退，active manifest 必须能完整读取。
 6. 确认公开页面 footer SHA等于所选稳定 SHA、health 与 active snapshot 正常后，再在 Cloudflare Dashboard 恢复 Worker Cron trigger。
 
-回退不得删除或回滚 SQLite Durable Object migration。稳定 SHA中的 Worker module 必须继续导出两个 class 并保留 binding，使已经创建的 namespace 可加载；若某个旧 SHA早于 coordinator 引入提交，不得直接部署它，应先制作一个保留新 class/binding 的兼容回退提交并进入 `dev`。
+回退只回退 runtime，不回退数据。不得 reverse 或删除已经应用的 D1 migration，不得删除/覆盖 `airing-cal-state`、两个 R2 bucket、KV、Queue、Workflow 或 SQLite Durable Object migration；shadow 产生的 D1 rows、R2 objects 与 pointer 保留供前向恢复和审计。稳定 SHA中的 Worker module 必须继续导出两个 class并保留 binding，使已经创建的 namespace 可加载；若前一个 SHA早于当前 D1/schema/binding 兼容边界，不得直接部署它，应先制作保留新 schema/class/binding 的兼容回退提交并进入 `dev`。
 
 ## Cache 与 NSFW
 

@@ -8,9 +8,19 @@ canonical_spec: openspec
 
 ## Context
 
-The live sync currently runs every four hours and plans a full media job for every collection and calendar subject. The media consumer then persists running and terminal refresh state, metadata, and image status even when all cached inputs remain reusable. At the current collection size, one unchanged run can therefore consume the Workers KV Free Plan daily write allowance.
+Before this stopgap, live sync ran every four hours and planned a full media job for every collection and calendar subject. The media consumer then persisted running and terminal refresh state, metadata, and image status even when all cached inputs remained reusable, so one unchanged run could consume the Workers KV Free Plan daily write allowance.
 
-This change is an isolated production stopgap. It preserves KV as the current storage system and keeps all public API contracts intact while the later D1/R2 changes are built.
+This change remains the compatibility live path: one daily run, bounded legacy KV writes, and unchanged public API contracts. The later D1/R2 core is now implemented only for manual shadow; public reads still use this legacy KV snapshot path.
+
+### Current D1/R2 boundary
+
+- Manual shadow now writes the five-table D1 model and immutable
+  `airing-cal-data/snapshots/v1/{generation}-{content_hash}.json`, verifies it,
+  and updates `public:current`. It does not reserve or enqueue media.
+- `public:current` is not consumed by read-worker. Legacy import, public read
+  cutover, and cleanup are owned only by `migrate-public-reads-from-kv`.
+- V3 media jobs require D1 `subject_media` and do not fall back to legacy KV;
+  V2/legacy jobs retain the compatibility behavior described in this document.
 
 ## Architecture
 
@@ -39,7 +49,7 @@ Ordering inside each class is deterministic so Workflow replay and a next-day re
 
 The stopgap budget extends the existing `SnapshotCoordinator` Durable Object with one compact authoritative UTC-day record and stable per-Workflow reservation markers. The coordinator derives the budget date from its own clock, atomically records the logical grant before queue submission, and binds that grant to deterministic job IDs. It must never grant more than 100 logical jobs across scheduled and manual live runs in one actual UTC day.
 
-This Durable Object budget is deliberately temporary. The following D1 change replaces it with an atomic D1 reservation table. The stopgap therefore exposes a narrow `/reserve-media` interface rather than spreading budget state through orchestration code.
+The D1 core now includes atomic `sync_budget` plus `sync_budget_reservations`, but scheduled/manual live still use this `SnapshotCoordinator` compatibility budget. The D1 path is shadow-only and receives no Queue submitter, so it grants/submits zero media jobs. Activating D1 budgeting for live behavior is not claimed by this document.
 
 ### Consumer compare-before-write
 
@@ -50,6 +60,12 @@ It writes when content, source URL/hash, error/retry state, tombstone state, or 
 ### Observability
 
 Each run reports aggregate counters with explicit, closed semantics: total subjects; eligible due candidates and candidates by priority; planner-selected candidates; logical grants; budget-deferred candidates (`candidates - logical_grants`); confirmed and uncertain producer outcomes; and subjects skipped before reservation (`total_subjects - candidates`). `refresh_jobs` remains a compatibility alias for logical grants, never a claim about physical Queue delivery. The Workflow does not label any estimate as actual KV writes because asynchronous consumer PUTs are only observable in the consumer and Cloudflare metrics. Error runs preserve the latest counters reached before failure. Counters belong to the bounded run result/log stream and do not create per-subject metric keys.
+
+Public `/api/health` reads these legacy KV run records and `snapshot:active`; it
+does not validate D1/data R2 shadow. D1 shadow `sync_runs` persists bounded
+counts/hash/status and classified `error_code` only. Actual D1/R2/Queue/KV
+usage remains a Cloudflare control-plane metric, and logs/health must not expose
+tokens, complete authenticated upstream bodies, or collection comments.
 
 ## Failure Semantics
 
@@ -83,7 +99,7 @@ Each red test is followed by the minimum implementation required to make it gree
 
 CLI flags and Wrangler keys are verified from installed help, types, or official documentation before edits. Code and documentation are committed and pushed in atomic units. The final stopgap deployment changes the production Cron only after the bounded planner and consumer zero-write behavior are green.
 
-Production acceptance requires one successful scheduled live Workflow and a 24-hour KV curve below 100 writes, with no unchanged-run subject spike. Rollback may restore the previous deployment SHA or schedule, but must not restore unconditional full-subject media planning.
+The historical stopgap acceptance required one successful scheduled live Workflow and a 24-hour KV curve below 100 writes, with no unchanged-run subject spike. Current rollback deploys the previous compatible immutable SHA through the same migration-before-upload pipeline; it must not restore unconditional full-subject media planning, reverse additive D1 migrations, or delete D1/R2/KV/Queue/Workflow/Durable Object data.
 
 ## Spec Patch
 

@@ -1,4 +1,25 @@
-# BangumiTV Cloudflare 迁移设计方案
+---
+role: historical-design
+status: superseded
+superseded_by:
+  - docs/superpowers/specs/2026-06-29-monorepo-multi-worker-design.md
+  - docs/superpowers/specs/2026-07-22-free-plan-d1-r2-incremental-sync-design.md
+---
+
+# BangumiTV Cloudflare 迁移设计方案（历史提案）
+
+> 本文 2026-06-16 的单 Worker、Pages、OAuth 管理页和部署期自动建资源内容仅保留为历史设计记录，不是当前配置或 runbook。当前实现以 `README.md`、4 个 `apps/*/wrangler.toml`、`.github/workflows/deploy.yml` 及下方更正为准；后文出现的“当前”“将”“自动创建”等表述都属于原提案时间点。
+
+## 2026-07-29 当前实现更正
+
+- 生产是 `airing-cal-frontend`、`airing-cal-read`、`airing-cal-sync`、`airing-cal-media` 四 Worker monorepo，不是单 Worker + Pages。
+- 长期资源固定为 D1 `airing-cal-state`、data R2 `airing-cal-data`、image R2 `airing-cal-images`、KV `airing-cal-kv` 与 Queue `airing-cal-media`。bootstrap 手工创建或复用，routine deploy 只读 resolve。
+- Worker Cron 只有 `0 20 * * *`，即每日 20:00 UTC / 次日 04:00 Asia/Shanghai；handler 只创建 live Workflow instance，没有公开 HTTP Cron route。
+- D1 主表为 `collection_items`、`subject_media`、`sync_runs`、`sync_budget`、`app_state`，另有 `sync_budget_reservations` 幂等 helper。shadow publication 使用 data R2 `snapshots/v1/{generation}-{content_hash}.json`，验证后写 KV `public:current`。
+- D1/data R2 当前只属于 manual shadow 权威路径。公开 collections/calendar/health/cache 仍由 read-worker 从 legacy KV `snapshot:active`/versioned keys 读取，图片来自 image R2；read-worker 虽有 D1/data R2 binding，但 handler 不消费。import、公开 read cutover 与旧 KV cleanup 只属于后续 `migrate-public-reads-from-kv` change。
+- 部署固定为 immutable SHA validation → resource resolve/Cron preflight → remote D1 migration → read/media → sync/Workflow + control-plane describe → frontend。migration 失败发生在首个 Worker upload 之前。
+- 发布失败保留旧公开读取：D1 pending、R2 PUT/readback 或 pointer write 未完成时可 replay，不反向回滚 D1 行。runtime 回退部署前一个兼容完整 SHA；D1/R2/KV/Queue/Workflow/Durable Object 数据和 additive migration 全部保留，不做 destructive reverse migration。
+- `/api/health` 仍是 legacy KV 视图，不证明 D1/data R2 shadow 健康。D1 只持久化分类 `error_code` 和有界计数/hash；D1/R2/Queue/KV 用量分别从 Cloudflare 控制面核对。公开错误、health 和日志不得包含 OAuth/Cloudflare token、完整认证上游 body 或用户评价正文。
 
 ## 背景
 

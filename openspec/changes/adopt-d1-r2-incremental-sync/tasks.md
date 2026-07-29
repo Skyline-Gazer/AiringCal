@@ -28,6 +28,12 @@
 - [x] 5.2 Apply D1 migrations before Worker deploy and extend config/dry-run/control-plane tests
 - [ ] 5.3 Update README, resource tables, architecture, environment variables, deployment and rollback runbooks
 
+Scope boundary for 5.3: this change documents but does not perform legacy data
+import, public reads from `public:current`/data R2, or legacy KV cleanup. Those
+three operations are owned exclusively by change `migrate-public-reads-from-kv`.
+The 5.3 checkbox remains for the coordinator after independent spec and quality
+review.
+
 ## 6. Verification and Shadow Release
 
 - [ ] 6.1 Run package and full repository gates plus Wrangler dry-runs with materialized test IDs

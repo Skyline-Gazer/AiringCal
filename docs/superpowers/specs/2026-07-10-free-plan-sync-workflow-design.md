@@ -8,6 +8,26 @@ status: final
 
 # Free Plan Cloudflare Workflow 同步技术设计
 
+## 2026-07-29 D1/R2 shadow 增量
+
+原设计的 live Workflow、legacy KV snapshot 与 `SnapshotCoordinator` 预算仍在
+生产读路径上。当前新增的 D1/data R2 路径只在明确的 manual shadow 中执行：
+
+- D1 `airing-cal-state` 以 `collection_items`、`subject_media`、`sync_runs`、
+  `sync_budget`、`app_state` 五张主表保存新权威状态；
+  `sync_budget_reservations` 仅为幂等 reservation helper。
+- shadow 完整 fetch 后先运行 D1 diff，再写
+  `airing-cal-data/snapshots/v1/{generation}-{content_hash}.json`，回读验证
+  schema/hash/key/bytes，最后更新 KV `public:current`。相同内容零 R2/pointer
+  写。
+- `public:current` 当前不是 read pointer。公开 read/health 仍跟随 legacy KV
+  `snapshot:active`/versioned keys，图片仍来自 `airing-cal-images`；read-worker
+  的 D1/data-R2 binding 只为后续 cutover 准备，handler 不消费。
+- shadow 不传 media Queue submitter，D1 media grant/submit 为 0。scheduled/manual
+  live 继续共用 `SnapshotCoordinator` 的 soft 50 / hard 100 兼容预算。
+- import、公开 read cutover 和 legacy KV cleanup 只由后续
+  `migrate-public-reads-from-kv` change 完成。
+
 ## 架构边界
 
 `SyncWorkflow` 是快照数据面的耐久编排器。它分页获取 collections 与 calendar，将规范化 payload 写入 instance staging KV，发布 shadow 或 live snapshot，规划 subject refresh jobs，并记录 `SyncRun`。它不调用 subject detail API，也不等待 Media Queue。
@@ -21,11 +41,12 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 1. `initialize` 通过全局 `SnapshotCoordinator` SQLite Durable Object 分配单调 generation，写入 `sync:run:{instanceId}` 与 `sync:current`，记录 mode/source/status/stage/heartbeat。
 2. `fetch-collections-page-0` 以 `limit=50` 获取 total 与第一页；后续页按页码创建固定 step，并把规范化数据写入 `sync:staging:{instanceId}:collections:{page}`。
 3. `fetch-calendar` 写入 instance calendar staging。
-4. `publish-{collectionType}` 与 `publish-calendar` 只读取 staging 和已有 cache。shadow 写 `snapshot:shadow:{instanceId}:*`；live 写 generation-scoped versioned keys，但此时不改变 active pointer。
-5. `plan-refresh-{chunk}` 每 10 个 subject 有界读取 refresh/detail/meta/image KV，只为缺失、变化、到期或应重试组件生成确定性候选 V3 job。
-6. live 候选按 new/changed、hot due、7 日 cold shard、retry 排序；scheduled/manual live 通过 `SnapshotCoordinator` 共享 UTC 自然日 soft limit 50 / hard limit 100。shadow 不预留预算且不投递 Media Queue。
-7. coordinator 以稳定 reservation 先占逻辑预算并最多调用一次 Queue producer；确认歧义时 fail-closed 保留预算、不重发。随后 `SnapshotCoordinator.commit()` 原子接受最新 generation 的完整 manifest；媒体预算耗尽或投递结果 uncertain 均不阻塞 snapshot 发布，较旧 Workflow 返回 `obsolete`。
-8. `finalize` 更新 summary、`sync:meta` 与最终 `SyncRun`；若 commit/finalize 失败，`record-error` 保留此前已到达的最新聚合计数。
+4. `publish-{collectionType}` 与 `publish-calendar` 只读取 staging 和已有 cache。shadow 写 `snapshot:shadow:{instanceId}:*`；live 写 generation-scoped legacy KV keys，但此时不改变 `snapshot:active`。
+5. shadow 进入 `persist-d1-shadow`：D1 diff/state → immutable data R2 PUT/readback → `public:current` pointer-last；缺失 D1/data R2 或 publication pending 都使 step 失败/replay，不转为成功。
+6. live 的 `plan-refresh-{chunk}` 每 10 个 subject 有界读取 refresh/detail/meta/image KV，只为缺失、变化、到期或应重试组件生成确定性候选 V3 job。
+7. live 候选按 new/changed、hot due、7 日 cold shard、retry 排序；scheduled/manual live 通过 `SnapshotCoordinator` 共享 UTC 自然日 soft limit 50 / hard limit 100。shadow 不预留预算且不投递 Media Queue。
+8. coordinator 以稳定 reservation 先占逻辑预算并最多调用一次 Queue producer；确认歧义时 fail-closed 保留预算、不重发。随后 `SnapshotCoordinator.commit()` 原子接受最新 legacy generation 的完整 manifest；媒体预算耗尽或投递结果 uncertain 均不阻塞 legacy snapshot 发布，较旧 Workflow 返回 `obsolete`。
+9. `finalize` 更新 summary、`sync:meta` 与最终 legacy `SyncRun`；若 commit/finalize 失败，`record-error` 保留此前已到达的最新聚合计数。D1 shadow run 的 crash-safe result/分类错误另存于 D1 `sync_runs`。
 
 所有外部 fetch、KV 和 Queue 副作用都位于 `step.do()`。step 名不使用时间或随机值，返回值只包含 staging key、count 和校验摘要。401/403 抛 `NonRetryableError`；429、5xx、timeout 和 network error按 45 秒 timeout、最多 3 次指数退避处理。
 
@@ -39,6 +60,8 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 - `subject:refresh:{subjectId}`：queued/running/ok/partial/failed 与 `job_id`。
 - `image:status:{subjectId}`：仅保存真实图片缓存结果。
 - `sync:meta`：保留现有字段，增加 `workflow_instance_id` 和 `workflow_stage`。
+- `public:current`：新 shadow pointer，只包含 schema version、generation、content hash、data R2 key 与发布时间；当前 read-worker 不读取。
+- D1 `sync_runs`：保存 shadow stage/status、计数、input/public hash、replay manifest 与分类 `error_code`，不保存 token、完整认证上游 body 或用户评价正文。
 
 迁移期间仅在 `snapshot:active` 不存在，或 pointer 恰好是合法的 `instance_id`、`mode: live`、`published_at`、`subject_count` 旧四字段结构时整套读取旧 key；截断旧 pointer 返回 503。出现任一 V3 字段后，manifest 不是准确七个 required key、任一 key 缺失或摘要不匹配也返回 503 `SNAPSHOT_INCOMPLETE`。consumer 兼容旧 job，但 generation 0 不得覆盖已接受的 V3 generation。已激活 instance 的 step 名和输出 shape 不原地修改；不兼容行为使用新 step 名或 Workflow 版本。
 
@@ -48,7 +71,7 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 
 账号 `/api/sync/apply` 直接消费 compare 返回的最多 5 个校验 items，不再每批重拉源 collections。旧 `subject_ids` 保留一个兼容版本。用户 token 不进入 Workflow、KV、Queue 或 operation log；敏感响应使用 `Cache-Control: no-store`。
 
-`/api/cache` 使用 cursor pagination 且 `limit <= 100`；calendar hydration 限制并发。`/api/health` 通过 `sync:current` 返回实际当前 Workflow instance、stage、heartbeat、完成时间和脱敏错误，未完成且 20 分钟无 heartbeat 时生成唯一 effective stale 状态，并让 `workflow.status` 与兼容 `cron.last.status` 保持一致。
+`/api/cache` 使用 cursor pagination 且 `limit <= 100`；calendar hydration 限制并发。`/api/health` 通过 legacy KV `sync:current` 返回实际当前 Workflow instance、stage、heartbeat、完成时间和脱敏错误，未完成且 20 分钟无 heartbeat 时生成唯一 effective stale 状态，并让 `workflow.status` 与兼容 `cron.last.status` 保持一致。它不读取 D1/data R2，也不证明 shadow publication 健康；D1/R2/Queue/KV 用量分别从 Cloudflare 控制面观察。
 
 ## 部署迁移
 
@@ -58,8 +81,9 @@ CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、�
 4. shadow 核对 step 数、重试、输出、正式 key 隔离后，独立提交启用每天 20:00 UTC（04:00 Asia/Shanghai）的 `0 20 * * *` Worker Cron 桥接并删除旧业务 Cron。
 5. 至少观察一个完整 live 周期和 media backlog 收敛后，删除旧 trigger queue/handler/script。
 6. 增加 `resolve_ref` job，将自动或手动 ref 固定成 `dev` ancestor 的完整 SHA；所有部署 job checkout 同一 SHA，并在任何上传前完成 Cron 配额 preflight。任一部署 job 失败时，`recovery_report` 查询四个 Worker 当前 deployment JSON、汇总 job 结果并输出使用该完整 SHA 的精确收敛命令。
+7. D1/data R2 binding 上线后，deploy 在首个 Worker upload 前执行 remote D1 migration；顺序固定为 resolve/preflight → migration → read/media → sync/Workflow describe → frontend。
 
-回退顺序为移除 schedule、终止异常 instance、以已进入 `dev` 的不可变稳定 SHA 部署、验证 Workflow/DO/health/active generation、恢复 schedule；不删除 Workflow、Durable Object、KV、R2 或 Queue 资源。
+回退顺序为暂停 schedule、终止异常 instance、以已进入 `dev` 的前一个兼容不可变 SHA 部署、验证 Workflow/DO/health/active generation、恢复 schedule。回退只替换 runtime，不 reverse D1 migration，也不删除 D1 rows、两个 R2 bucket、KV、Queue、Workflow 或 Durable Object。
 
 ## 验证重点
 
