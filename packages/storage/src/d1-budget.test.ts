@@ -8,6 +8,8 @@ import {
   type BudgetReservationRequest,
 } from './d1-budget.ts'
 
+const currentUtcDate = new Date().toISOString().slice(0, 10)
+
 function result<T = Record<string, unknown>>(changes = 0, rows: T[] = []): D1ResultLike<T> {
   return {
     results: rows,
@@ -127,7 +129,7 @@ function request(
   privilegedCount = jobs,
 ): BudgetReservationRequest {
   return {
-    date: '2026-07-27',
+    date: currentUtcDate,
     resource: 'media',
     reservationId,
     jobs: Array.from({ length: jobs }, (_, subject_id) => ({ subject_id, components: ['detail'] })),
@@ -147,7 +149,7 @@ test('two concurrent reservations grant the final hard-limit slot only once', as
   ])
 
   assert.deepEqual(results.map(({ granted }) => granted).sort(), [0, 1])
-  assert.deepEqual(database.budget('2026-07-27'), { reserved: 100, consumed: 0 })
+  assert.deepEqual(database.budget(currentUtcDate), { reserved: 100, consumed: 0 })
 })
 
 test('same reservation returns a byte-equivalent stored result without consuming twice', async () => {
@@ -157,7 +159,25 @@ test('same reservation returns a byte-equivalent stored result without consuming
   const replay = await reserveDailyBudget(database, structuredClone(original))
 
   assert.equal(JSON.stringify(replay), JSON.stringify(first))
-  assert.deepEqual(database.budget('2026-07-27'), { reserved: 40, consumed: 0 })
+  assert.deepEqual(database.budget(currentUtcDate), { reserved: 40, consumed: 0 })
+})
+
+test('first claim charges the authoritative current UTC day while preserving request date fingerprint', async () => {
+  const database = new TransactionalSqliteD1()
+  const dayTwoNow = Date.UTC(2026, 6, 28, 0, 0, 1) / 1_000
+  await reserveDailyBudget(database, {
+    ...request('day-two-full', 100, 100),
+    date: '2026-07-28',
+  }, dayTwoNow)
+
+  const stalePending = { ...request('stale-pending', 1, 1), date: '2026-07-27' }
+  const first = await reserveDailyBudget(database, stalePending, dayTwoNow)
+  const replay = await reserveDailyBudget(database, structuredClone(stalePending), dayTwoNow + 60)
+
+  assert.equal(first.granted, 0)
+  assert.equal(JSON.stringify(replay), JSON.stringify(first))
+  assert.equal(database.budget('2026-07-27'), undefined)
+  assert.deepEqual(database.budget('2026-07-28'), { reserved: 100, consumed: 0 })
 })
 
 test('same reservation ID with changed jobs rejects the fingerprint mismatch', async () => {
@@ -170,7 +190,7 @@ test('same reservation ID with changed jobs rejects the fingerprint mismatch', a
     }),
     /reservation payload mismatch/,
   )
-  assert.deepEqual(database.budget('2026-07-27'), { reserved: 1, consumed: 0 })
+  assert.deepEqual(database.budget(currentUtcDate), { reserved: 1, consumed: 0 })
 })
 
 test('reservation fingerprint distinguishes D1-only V4 from legacy-compatible V3', async () => {
@@ -208,7 +228,7 @@ test('reservation fingerprint distinguishes D1-only V4 from legacy-compatible V3
     }),
     /reservation payload mismatch/,
   )
-  assert.deepEqual(database.budget('2026-07-27'), { reserved: 1, consumed: 0 })
+  assert.deepEqual(database.budget(currentUtcDate), { reserved: 1, consumed: 0 })
 })
 
 test('soft headroom is ordinary-only while privileged work can reach hard limit', async () => {
@@ -216,7 +236,7 @@ test('soft headroom is ordinary-only while privileged work can reach hard limit'
   assert.equal((await reserveDailyBudget(database, request('ordinary', 80, 0))).granted, 50)
   assert.equal((await reserveDailyBudget(database, request('privileged', 60, 60))).granted, 50)
   assert.equal((await reserveDailyBudget(database, request('exhausted', 1, 1))).granted, 0)
-  assert.deepEqual(database.budget('2026-07-27'), { reserved: 100, consumed: 0 })
+  assert.deepEqual(database.budget(currentUtcDate), { reserved: 100, consumed: 0 })
 })
 
 test('submission transition atomically moves occupied capacity from reserved to consumed', async () => {
@@ -229,7 +249,7 @@ test('submission transition atomically moves occupied capacity from reserved to 
 
   assert.equal(uncertain.submission, 'uncertain')
   assert.equal(JSON.stringify(replay), JSON.stringify(uncertain))
-  assert.deepEqual(database.budget('2026-07-27'), { reserved: 0, consumed: 3 })
+  assert.deepEqual(database.budget(currentUtcDate), { reserved: 0, consumed: 3 })
 })
 
 test('budget adapter rejects malformed D1 result cardinality and metadata', async () => {

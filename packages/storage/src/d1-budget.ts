@@ -264,19 +264,21 @@ export async function claimDailyBudgetReservation(
   now = Math.floor(Date.now() / 1000),
 ): Promise<BudgetReservationClaim> {
   validateRequest(request)
+  if (!Number.isSafeInteger(now) || now < 0) throw new Error('Invalid budget clock')
+  const effectiveDate = new Date(now * 1_000).toISOString().slice(0, 10)
   const fingerprint = await requestFingerprint(request)
   const requested = request.jobs.length
   const statements = [
-    database.prepare(INSERT_BUDGET).bind(request.date, request.resource, now),
+    database.prepare(INSERT_BUDGET).bind(effectiveDate, request.resource, now),
     database.prepare(INSERT_RESERVATION).bind(
-      request.date,
+      effectiveDate,
       request.resource,
       requested,
       request.privilegedCount,
       request.softLimit,
       request.hardLimit,
       request.reservationId,
-      request.date,
+      effectiveDate,
       request.resource,
       fingerprint,
       now,
@@ -285,7 +287,7 @@ export async function claimDailyBudgetReservation(
     database.prepare(APPLY_RESERVATION).bind(
       request.reservationId,
       now,
-      request.date,
+      effectiveDate,
       request.resource,
     ),
     database.prepare(SELECT_RESERVATION).bind(request.reservationId),

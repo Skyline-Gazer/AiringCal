@@ -51,6 +51,7 @@ export type {
   SyncBudgetResource,
   SyncBudgetRow,
   SyncRunRow,
+  SyncRunCheckpointGuard,
   SyncRunCompletion,
   SyncRunFailure,
   SyncTerminalTransitionResult,

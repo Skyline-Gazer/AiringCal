@@ -349,6 +349,13 @@ cursor 目标。只有 `sync_runs` 精确采用该 manifest 后才允许发生�
 `subject_media` 重新选取任务。预算幂等状态会返回已存结果并阻止第二次 Queue send，
 因此计数与 cursor 也保持原运行语义。
 
+`collections → media_pending → prepared → complete` 的每次状态采用都以当前
+stage 与完整 replay manifest 做 D1 compare-and-set；旧并发尝试不能覆盖已采用的
+后续阶段。外部提交前还会回读并验证精确 `media_pending` manifest。媒体请求先以
+canonical JSON round-trip 后再同时用于 artifact 与首次提交，因此首次与重放的
+JSON bytes 一致。请求里的 `date` 只参与审计与幂等 fingerprint；首次预算认领始终按
+协调器当前 UTC 日期计费，跨午夜重放不会占用前一天额度。
+
 到期的 V4 检查即使 detail、NSFW、源 URL 与 R2 引用均未变化，也会只推进
 `checked_at` 与 `next_refresh_at` 调度水位；图片对象、detail/media hash 和其他
 不可变 payload 不重写。hot 下一次检查继续使用现有确定性 6～8 天分散规则，因此

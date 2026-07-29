@@ -90,6 +90,8 @@ resource resolve 必须在任一 Worker upload 前确认 D1、data R2、image R2
 
 收藏阶段成功后、执行任何媒体预算/Queue 外部动作前，系统必须先以 versioned `media_pending` manifest 覆盖 collection checkpoint。该 artifact 内嵌已采用的 collection checkpoint，并冻结规范 `BudgetReservationRequest`、候选计数、逐任务优先级、cold cursor 尾部与 cursor 版本；只有回读确认 `sync_runs.result_json` 精确采用该 manifest 后才允许提交媒体。若 Queue 已接受而进程在 prepared result 落盘前丢失，running replay 必须复用 byte-identical request，而不能重新读取已变化的 `subject_media` 或重新规划；预算 reservation ID 的幂等结果阻止第二次 Queue send，并由冻结的优先级与 cursor 计算同一计数和目标 cursor。
 
+所有 `collections → media_pending → prepared → terminal` transition 都必须以精确 expected stage 与 expected manifest 做 D1 compare-and-set；collection mutation 与 checkpoint CAS 保持同一 batch，guard 失败必须回滚整批。CAS loser 重新加载、校验并沿用 winner artifact，不得以旧 manifest 回退 stage，也不得直接进入失败终态。request 在首次持久化前先经过 canonical JSON round-trip，artifact 与第一次外部提交使用同一个 shaped object，使普通 `JSON.stringify` bytes 在首次与重放间保持一致。request 自带的 `date` 是冻结的审计/fingerprint 字段；预算 reservation 首次创建时必须以协调器权威时钟导出的当前 UTC 日期作为实际 `sync_budget` date，并在同一原子结果中保存，之后重放只返回已存结果。
+
 媒体阶段完成后以 versioned prepared-result manifest 覆盖 `media_pending` 检查点；该 artifact 同时保存目标 cold cursor 与单调版本，并且必须先于 cursor 推进持久化。cursor 通过 `app_state.updated_at` compare-and-set，仅允许更高版本或同版本同值写入，因此旧崩溃实例重放不能覆盖较新实例的全局 cursor。cursor 提交前崩溃时，running replay 幂等补写目标 cursor；cursor 提交后崩溃时，running replay 复用同一 prepared result，不重新规划媒体或重复预算动作。随后 running replay 只补 terminal transition，terminal replay 直接返回同一结果，不重复收藏实际变更、媒体预算或完成动作。
 
 artifact manifest 必须在任何 chunk 写入前完成大小验证；若中途 chunk 写失败，仅对已确认成功写入的 keys 做 best-effort 清理，且清理错误不得覆盖原始写失败。collection apply/adoption 失败时也只清理当前 `sync_runs.result_json` 未引用的新 artifact；删除前必须重新读取 run，若 manifest 仍逐字节相同则拒绝删除。stale artifact chunks 在替代 manifest 成功提交后删除；collection chunks 在 `media_pending` manifest 成功提交后删除，`media_pending` chunks 在 prepared-result manifest 成功提交后删除。
@@ -107,7 +109,7 @@ artifact manifest 必须在任何 chunk 写入前完成大小验证；若中途 
 3. 计算 grant，持久化 reservation 与新用量。
 4. 提交后最多尝试一次外部任务投递。
 
-若外部提交结果不确定，reservation 保持占用并标记 `uncertain`，重放不释放、不重发。媒体预算耗尽或提交不确定不阻塞收藏 diff 与 snapshot publication。
+若外部提交结果不确定，reservation 保持占用并标记 `uncertain`，重放不释放、不重发。请求日期只用于 audit/fingerprint；首次 reservation claim 按权威 `now` 的 UTC 日期计费并持久化该 effective date，避免跨日延迟任务回写旧日额度。媒体预算耗尽或提交不确定不阻塞收藏 diff 与 snapshot publication。
 
 ### 3.5 `app_state`
 

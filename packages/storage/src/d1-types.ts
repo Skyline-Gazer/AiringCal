@@ -47,6 +47,11 @@ export interface SyncRunUpdate {
   result_json?: string | null
 }
 
+export interface SyncRunCheckpointGuard {
+  stage: string
+  result_json: string | null
+}
+
 export interface SyncRunCompletion {
   heartbeat_at: number
   completed_at: number

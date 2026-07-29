@@ -28,7 +28,7 @@
 - **THEN** 生成的 `{ observed_at, run_id }` 完全相同，且较新的 authoritative observation 按 tuple 顺序推进 V4 围栏
 
 ### Requirement: 媒体外部提交必须由 durable pending checkpoint 保护
-系统 MUST 在预算/Queue 外部提交前持久化并采用 versioned `media_pending` artifact，冻结规范请求、候选优先级与 cold cursor 计划。running replay MUST 使用冻结请求及稳定 reservation ID，不得根据后续变化的 `subject_media` 重新规划。
+系统 MUST 在预算/Queue 外部提交前持久化并采用 versioned `media_pending` artifact，冻结规范请求、候选优先级与 cold cursor 计划。running replay MUST 使用冻结请求及稳定 reservation ID，不得根据后续变化的 `subject_media` 重新规划。所有 checkpoint 与 terminal transition MUST 以精确 expected stage/manifest 做 D1 compare-and-set；request MUST 在首次持久化前 canonical round-trip，并以同一 shaped object 首次提交。
 
 #### Scenario: Queue 接受后进程丢失
 - **WHEN** Queue 已接受媒体提交，但进程在 prepared result 持久化前丢失，且重放前 `subject_media` 发生变化
@@ -37,6 +37,18 @@
 #### Scenario: pending checkpoint 未采用
 - **WHEN** `media_pending` manifest 持久化或 `sync_runs` adoption 失败
 - **THEN** 系统不得调用预算/Queue 提交，运行保留最后一个已采用 checkpoint 并进入分类失败路径
+
+#### Scenario: 并发旧尝试不能回退 winner
+- **WHEN** attempt B 已采用 `media_pending`，attempt A 才以旧 collection manifest 尝试 collection、pending、prepared 或 terminal transition
+- **THEN** A 的 CAS 失败且相关 collection batch 回滚，A 加载 winner artifact；公开请求、计数和 cold cursor 保持 winner 语义且 Queue 只发送一次
+
+#### Scenario: 首次与重放请求 JSON bytes 相同
+- **WHEN** 同一 pending reservation 首次提交后由 running replay 再次进入提交边界
+- **THEN** 两次请求的普通 JSON serialization byte-identical，且 fingerprint 与稳定 reservation ID 不变
+
+#### Scenario: 跨日首次预算认领
+- **WHEN** D 日冻结的 pending request 在 D+1 才第一次认领预算，且 D+1 hard limit 已耗尽
+- **THEN** request date 仍用于审计与 fingerprint，但实际按 D+1 UTC budget 计费、grant 为零且不发送 Queue；后续 replay 返回相同结果
 
 ### Requirement: cold media 必须七日轮转
 `watched` subject MUST 作为 cold 按 subject ID 确定性分成七个 shard，其他收藏状态 MUST 作为 hot 按到期时间调度。

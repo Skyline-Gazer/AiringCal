@@ -442,7 +442,7 @@ test('D1 reservation submits Queue at most once and replay preserves uncertain c
   assert.equal(first.submission, 'uncertain')
   assert.equal(JSON.stringify(replay), JSON.stringify(first))
   assert.equal(queue.sendCalls, 1)
-  assert.deepEqual(database.budget('2026-07-27'), { reserved: 0, consumed: 1 })
+  assert.deepEqual(database.budget('1970-01-01'), { reserved: 0, consumed: 1 })
 })
 
 test('reserved replay recovers a crash after claim and concurrent replays grant one Queue attempt', async () => {
@@ -468,7 +468,41 @@ test('reserved replay recovers a crash after claim and concurrent replays grant 
 
   assert.equal(replays.every(({ submission }) => submission === 'submitted' || submission === 'uncertain'), true)
   assert.equal(queue.sendCalls, 1)
-  assert.deepEqual(database.budget('2026-07-27'), { reserved: 0, consumed: 1 })
+  assert.deepEqual(database.budget('1970-01-01'), { reserved: 0, consumed: 1 })
+})
+
+test('cross-day first D1 claim charges the current UTC budget and never sends when exhausted', async () => {
+  const { TransactionalBudgetD1 } = await import('../../../packages/storage/src/testing/transactional-budget-d1.ts')
+  const database = new TransactionalBudgetD1()
+  const queue = new MemoryQueue()
+  const dayTwoNow = Date.UTC(2026, 6, 28, 0, 0, 1) / 1_000
+  await claimDailyBudgetReservation(database, {
+    date: '2026-07-28',
+    resource: 'media',
+    reservationId: 'day-two-full:media',
+    jobs: d1MediaJobs(100),
+    privilegedCount: 100,
+    softLimit: 50,
+    hardLimit: 100,
+  }, dayTwoNow)
+  const stalePending = {
+    date: '2026-07-27',
+    resource: 'media' as const,
+    reservationId: 'stale-pending:media',
+    jobs: d1MediaJobs(1),
+    privilegedCount: 1,
+    softLimit: 50,
+    hardLimit: 100,
+  }
+
+  const first = await reserveAndSubmitMedia(database, queue, stalePending, dayTwoNow)
+  const replay = await reserveAndSubmitMedia(database, queue, stalePending, dayTwoNow + 60)
+
+  assert.equal(first.granted, 0)
+  assert.equal(JSON.stringify(replay), JSON.stringify(first))
+  assert.equal(queue.sendCalls, 0)
+  assert.deepEqual(database.budget('2026-07-28'), { reserved: 100, consumed: 0 })
+  assert.equal(database.budget('2026-07-27'), undefined)
 })
 
 test('media exhaustion and ambiguous Queue result do not prevent snapshot publication', async () => {

@@ -1420,6 +1420,86 @@ test('sync run lifecycle uses positional binds and persists only classified erro
   assert.equal(JSON.stringify(statements).includes('raw body'), false)
 })
 
+test('sync run checkpoint CAS prevents a stale attempt from regressing an adopted stage', async () => {
+  const store = new D1StateStore(new SqliteD1())
+  const collectionManifest = '{"artifact":{"kind":"collection"}}'
+  const pendingManifest = '{"artifact":{"kind":"media_pending"}}'
+  await store.startSyncRun(syncRun({ stage: 'collections', result_json: null }))
+  const initialPlan = emptyPlan()
+  initialPlan.unchanged = 0
+  initialPlan.inserts = [collection()]
+  await store.applyCollectionDiff(initialPlan)
+
+  await store.updateSyncRun('run-1', {
+    stage: 'collections_pending',
+    heartbeat_at: 110,
+    result_json: collectionManifest,
+  }, {
+    stage: 'collections',
+    result_json: null,
+  })
+  await store.updateSyncRun('run-1', {
+    stage: 'media_pending',
+    heartbeat_at: 120,
+    result_json: pendingManifest,
+  }, {
+    stage: 'collections_pending',
+    result_json: collectionManifest,
+  })
+
+  const staleCollectionPlan = emptyPlan()
+  staleCollectionPlan.unchanged = 0
+  staleCollectionPlan.updates = [collection({
+    rate: 9,
+    content_hash: 'b'.repeat(64),
+    state_version: 2,
+    changed_at: 200,
+  })]
+  await assert.rejects(
+    store.applyCollectionDiff(staleCollectionPlan, {
+      instanceId: 'run-1',
+      guard: {
+        stage: 'collections_pending',
+        result_json: collectionManifest,
+      },
+      update: {
+        stage: 'collections_pending',
+        heartbeat_at: 125,
+        result_json: collectionManifest,
+      },
+    }),
+    /malformed JSON|checkpoint conflict/i,
+  )
+  await assert.rejects(
+    store.updateSyncRun('run-1', {
+      stage: 'media_pending',
+      heartbeat_at: 130,
+      result_json: '{"artifact":{"kind":"different_pending"}}',
+    }, {
+      stage: 'collections_pending',
+      result_json: collectionManifest,
+    }),
+    /sync run checkpoint conflict/i,
+  )
+  await assert.rejects(
+    store.completeSyncRun('run-1', {
+      heartbeat_at: 140,
+      completed_at: 140,
+      result_json: collectionManifest,
+    }, {
+      stage: 'collections_pending',
+      result_json: collectionManifest,
+    }),
+    /sync run checkpoint conflict/i,
+  )
+
+  const current = await store.getSyncRun('run-1')
+  assert.equal(current?.status, 'running')
+  assert.equal(current?.stage, 'media_pending')
+  assert.equal(current?.result_json, pendingManifest)
+  assert.equal((await store.listCollectionRows())[0]?.rate, collection().rate)
+})
+
 test('getSyncRun selects the persisted replay result without interpreting its artifact', async () => {
   const fake = new RecordingD1()
   const row = syncRun({

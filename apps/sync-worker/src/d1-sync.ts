@@ -21,6 +21,7 @@ import {
   type PublicCollectionItemV1,
   type PublicImageRefV1,
   type SyncRunCompletion,
+  type SyncRunCheckpointGuard,
   type SyncRunFailure,
   type SyncRunRow,
   type SyncRunUpdate,
@@ -60,11 +61,23 @@ export interface D1IncrementalSyncStore {
   getSyncRun(instanceId: string): Promise<SyncRunRow | undefined>
   applyCollectionDiff(
     plan: CollectionDiffPlan,
-    checkpoint?: { instanceId: string; update: SyncRunUpdate },
+    checkpoint?: {
+      instanceId: string
+      update: SyncRunUpdate
+      guard?: SyncRunCheckpointGuard
+    },
   ): Promise<{ rowsWritten: number }>
   startSyncRun(row: SyncRunRow): Promise<void>
-  updateSyncRun(instanceId: string, update: SyncRunUpdate): Promise<void>
-  completeSyncRun(instanceId: string, completion: SyncRunCompletion): Promise<SyncTerminalTransitionResult>
+  updateSyncRun(
+    instanceId: string,
+    update: SyncRunUpdate,
+    guard?: SyncRunCheckpointGuard,
+  ): Promise<void>
+  completeSyncRun(
+    instanceId: string,
+    completion: SyncRunCompletion,
+    guard?: SyncRunCheckpointGuard,
+  ): Promise<SyncTerminalTransitionResult>
   failSyncRun(instanceId: string, failure: SyncRunFailure): Promise<SyncTerminalTransitionResult>
 }
 
@@ -836,6 +849,8 @@ export async function runD1IncrementalSync({
   let preparedResultJson = existingRun?.result_json ?? undefined
   let activeArtifact: LoadedReplayArtifact | undefined
   const supersededArtifacts: LoadedReplayArtifact[] = []
+  let adoptedStage = existingRun?.stage ?? run.stage
+  let adoptedResultJson = existingRun?.result_json ?? null
 
   try {
     if (existingRun !== undefined) {
@@ -891,13 +906,32 @@ export async function runD1IncrementalSync({
           )
         }
       }
-      const transition = await store.completeSyncRun(instanceId, {
-        heartbeat_at: now,
-        completed_at: now,
-        input_hash: completeInputHash,
-        public_hash: preparedResult.publicationInput.content_hash,
-        result_json: preparedResultJson,
-      })
+      let transition: SyncTerminalTransitionResult
+      try {
+        transition = await store.completeSyncRun(instanceId, {
+          heartbeat_at: now,
+          completed_at: now,
+          input_hash: completeInputHash,
+          public_hash: preparedResult.publicationInput.content_hash,
+          result_json: preparedResultJson,
+        }, {
+          stage: adoptedStage,
+          result_json: adoptedResultJson,
+        })
+      } catch (error) {
+        const persisted = await store.getSyncRun(instanceId)
+        if (persisted?.input_hash === completeInputHash) {
+          return runD1IncrementalSync({
+            env,
+            instanceId,
+            completeInput,
+            now,
+            store,
+            submitMedia: suppliedSubmitMedia,
+          })
+        }
+        throw error
+      }
       if (transition.terminal !== 'ok') throw new Error(`Sync run completion preserved ${transition.terminal}`)
       return preparedResult
     }
@@ -970,6 +1004,10 @@ export async function runD1IncrementalSync({
       try {
         await store.applyCollectionDiff(plan, {
           instanceId,
+          guard: {
+            stage: adoptedStage,
+            result_json: adoptedResultJson,
+          },
           update: {
             stage: 'collections_pending',
             heartbeat_at: now,
@@ -984,6 +1022,8 @@ export async function runD1IncrementalSync({
         })
         collectionApplied = true
         collectionArtifactAdopted = true
+        adoptedStage = 'collections_pending'
+        adoptedResultJson = checkpointJson
       } catch (error) {
         if (error instanceof StaleCollectionDiffError) {
           const persisted = await store.getSyncRun(instanceId)
@@ -999,6 +1039,8 @@ export async function runD1IncrementalSync({
           staleReplans++
           responseLossReconciliations = 0
           if (checkpointWasAdopted) {
+            adoptedStage = persisted!.stage
+            adoptedResultJson = persisted!.result_json
             supersededArtifacts.push(collectionArtifact)
           } else {
             await cleanupReplayArtifactBestEffort(store, instanceId, collectionArtifact)
@@ -1025,8 +1067,40 @@ export async function runD1IncrementalSync({
           && await decodeCollectionCheckpoint(persistedArtifact.artifactJson, completeInputHash)
           && responseLossReconciliations < MAX_RESPONSE_LOSS_RECONCILIATIONS
         ) {
+          adoptedStage = persisted!.stage
+          adoptedResultJson = persisted!.result_json
           responseLossReconciliations++
           continue
+        }
+        const winningArtifact = persisted?.status === 'running'
+          && persisted.input_hash === completeInputHash
+          && persisted.result_json !== null
+          ? await loadReplayArtifact(
+            store,
+            persisted.result_json,
+            completeInputHash,
+            instanceId,
+          )
+          : undefined
+        if (
+          persisted?.status === 'running'
+          && persisted.input_hash === completeInputHash
+          && (persisted.stage !== adoptedStage || persisted.result_json !== adoptedResultJson)
+          && (
+            winningArtifact?.kind === 'collection'
+            || winningArtifact?.kind === 'media_pending'
+            || winningArtifact?.kind === 'prepared'
+          )
+        ) {
+          await cleanupReplayArtifactBestEffort(store, instanceId, collectionArtifact)
+          return runD1IncrementalSync({
+            env,
+            instanceId,
+            completeInput,
+            now,
+            store,
+            submitMedia: suppliedSubmitMedia,
+          })
         }
         if (!collectionArtifactAdopted) {
           await cleanupReplayArtifactBestEffort(store, instanceId, collectionArtifact)
@@ -1054,7 +1128,7 @@ export async function runD1IncrementalSync({
         previousCursor,
       )
       const jobs = mediaJobs(instanceId, completeInput.observedAt, selection.selected)
-      const request: BudgetReservationRequest<MediaRefreshJobV4> = {
+      const request = requireMediaRequest(JSON.parse(canonicalJson({
         date: utcDay,
         resource: 'media',
         reservationId: `${instanceId}:media`,
@@ -1063,7 +1137,7 @@ export async function runD1IncrementalSync({
           .filter(({ priority }) => priority === 'new_or_changed').length,
         softLimit: MEDIA_SOFT_LIMIT,
         hardLimit: MEDIA_HARD_LIMIT,
-      }
+      } satisfies BudgetReservationRequest<MediaRefreshJobV4>)), instanceId)
       const pendingCheckpoint: MediaPendingCheckpoint = {
         collection: collectionCheckpoint,
         request,
@@ -1099,10 +1173,37 @@ export async function runD1IncrementalSync({
           input_hash: completeInputHash,
           public_hash: publicInput.content_hash,
           result_json: mediaPendingArtifact.manifestJson,
+        }, {
+          stage: adoptedStage,
+          result_json: adoptedResultJson,
         })
+        adoptedStage = 'media_pending'
+        adoptedResultJson = mediaPendingArtifact.manifestJson
       } catch (error) {
         const persisted = await store.getSyncRun(instanceId)
-        if (persisted?.result_json !== mediaPendingArtifact.manifestJson) {
+        if (
+          persisted?.status === 'running'
+          && persisted.input_hash === completeInputHash
+          && persisted.stage === 'media_pending'
+          && persisted.result_json === mediaPendingArtifact.manifestJson
+        ) {
+          adoptedStage = persisted.stage
+          adoptedResultJson = persisted.result_json
+        } else if (
+          persisted?.status === 'running'
+          && persisted.input_hash === completeInputHash
+          && (persisted.stage !== adoptedStage || persisted.result_json !== adoptedResultJson)
+        ) {
+          await cleanupReplayArtifactBestEffort(store, instanceId, mediaPendingArtifact)
+          return runD1IncrementalSync({
+            env,
+            instanceId,
+            completeInput,
+            now,
+            store,
+            submitMedia: suppliedSubmitMedia,
+          })
+        } else {
           await cleanupReplayArtifactBestEffort(store, instanceId, mediaPendingArtifact)
           throw error
         }
@@ -1115,6 +1216,24 @@ export async function runD1IncrementalSync({
     if (!mediaPendingCheckpoint || !mediaPendingArtifact) {
       throw new Error('Media checkpoint preparation failed')
     }
+    const adoptedPending = await store.getSyncRun(instanceId)
+    if (
+      adoptedPending?.status !== 'running'
+      || adoptedPending.input_hash !== completeInputHash
+      || adoptedPending.stage !== 'media_pending'
+      || adoptedPending.result_json !== mediaPendingArtifact.manifestJson
+    ) {
+      return runD1IncrementalSync({
+        env,
+        instanceId,
+        completeInput,
+        now,
+        store,
+        submitMedia: suppliedSubmitMedia,
+      })
+    }
+    adoptedStage = adoptedPending.stage
+    adoptedResultJson = adoptedPending.result_json
     const request = mediaPendingCheckpoint.request
     const jobs = request.jobs
     const reservation = jobs.length === 0 || suppliedSubmitMedia === undefined
@@ -1183,10 +1302,37 @@ export async function runD1IncrementalSync({
         input_hash: completeInputHash,
         public_hash: publicInput.content_hash,
         result_json: preparedResultJson,
+      }, {
+        stage: adoptedStage,
+        result_json: adoptedResultJson,
       })
+      adoptedStage = 'media'
+      adoptedResultJson = preparedResultJson
     } catch (error) {
       const persisted = await store.getSyncRun(instanceId)
-      if (persisted?.result_json !== preparedResultJson) {
+      if (
+        persisted?.status === 'running'
+        && persisted.input_hash === completeInputHash
+        && persisted.stage === 'media'
+        && persisted.result_json === preparedResultJson
+      ) {
+        adoptedStage = persisted.stage
+        adoptedResultJson = persisted.result_json
+      } else if (
+        persisted?.status === 'running'
+        && persisted.input_hash === completeInputHash
+        && (persisted.stage !== adoptedStage || persisted.result_json !== adoptedResultJson)
+      ) {
+        await cleanupReplayArtifactBestEffort(store, instanceId, preparedArtifact)
+        return runD1IncrementalSync({
+          env,
+          instanceId,
+          completeInput,
+          now,
+          store,
+          submitMedia: suppliedSubmitMedia,
+        })
+      } else {
         await cleanupReplayArtifactBestEffort(store, instanceId, preparedArtifact)
         throw error
       }
@@ -1206,13 +1352,32 @@ export async function runD1IncrementalSync({
         mediaPendingCheckpoint.cold_cursor_version,
       )
     }
-    const transition = await store.completeSyncRun(instanceId, {
-      heartbeat_at: now,
-      completed_at: now,
-      input_hash: completeInputHash,
-      public_hash: publicInput.content_hash,
-      result_json: preparedResultJson,
-    })
+    let transition: SyncTerminalTransitionResult
+    try {
+      transition = await store.completeSyncRun(instanceId, {
+        heartbeat_at: now,
+        completed_at: now,
+        input_hash: completeInputHash,
+        public_hash: publicInput.content_hash,
+        result_json: preparedResultJson,
+      }, {
+        stage: adoptedStage,
+        result_json: adoptedResultJson,
+      })
+    } catch (error) {
+      const persisted = await store.getSyncRun(instanceId)
+      if (persisted?.input_hash === completeInputHash) {
+        return runD1IncrementalSync({
+          env,
+          instanceId,
+          completeInput,
+          now,
+          store,
+          submitMedia: suppliedSubmitMedia,
+        })
+      }
+      throw error
+    }
     if (transition.terminal !== 'ok') throw new Error(`Sync run completion preserved ${transition.terminal}`)
 
     return preparedResult

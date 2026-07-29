@@ -17,6 +17,7 @@ import {
   type D1PreparedStatementLike,
   type D1ResultLike,
   type SyncRunCompletion,
+  type SyncRunCheckpointGuard,
   type SyncRunFailure,
   type SyncRunRow,
   type SyncRunUpdate,
@@ -259,10 +260,21 @@ class RecordingStore implements D1IncrementalSyncStore {
 
   async applyCollectionDiff(
     plan: CollectionDiffPlanLike,
-    checkpoint?: { instanceId: string; update: SyncRunUpdate },
+    checkpoint?: {
+      instanceId: string
+      update: SyncRunUpdate
+      guard?: SyncRunCheckpointGuard
+    },
   ) {
     this.applied.push(structuredClone(plan))
     if (this.applyError) throw this.applyError
+    if (
+      checkpoint?.guard
+      && (
+        this.currentRun?.stage !== checkpoint.guard.stage
+        || this.currentRun.result_json !== checkpoint.guard.result_json
+      )
+    ) throw new Error('Sync run checkpoint conflict')
     if (this.staleOnce) {
       this.staleOnce = false
       this.rows = structuredClone(plan.inserts)
@@ -314,20 +326,42 @@ class RecordingStore implements D1IncrementalSyncStore {
     this.started.push(structuredClone(row))
     this.currentRun = structuredClone(row)
   }
-  async updateSyncRun(_instanceId: string, update: SyncRunUpdate) {
+  async updateSyncRun(
+    _instanceId: string,
+    update: SyncRunUpdate,
+    guard?: SyncRunCheckpointGuard,
+  ) {
     this.updated.push(structuredClone(update))
     if (this.failUpdateBeforePersistOnce) {
       this.failUpdateBeforePersistOnce = false
       throw new Error('media checkpoint persistence failed before commit')
     }
+    if (
+      guard
+      && (
+        this.currentRun?.stage !== guard.stage
+        || this.currentRun.result_json !== guard.result_json
+      )
+    ) throw new Error('Sync run checkpoint conflict')
     if (this.currentRun) this.currentRun = { ...this.currentRun, ...structuredClone(update) }
     if (this.loseUpdateResponseOnce) {
       this.loseUpdateResponseOnce = false
       throw new Error('prepared-result update response lost after commit')
     }
   }
-  async completeSyncRun(_instanceId: string, completion: SyncRunCompletion) {
+  async completeSyncRun(
+    _instanceId: string,
+    completion: SyncRunCompletion,
+    guard?: SyncRunCheckpointGuard,
+  ) {
     this.completed.push(structuredClone(completion))
+    if (
+      guard
+      && (
+        this.currentRun?.stage !== guard.stage
+        || this.currentRun.result_json !== guard.result_json
+      )
+    ) throw new Error('Sync run checkpoint conflict')
     if (this.currentRun) this.currentRun = { ...this.currentRun, status: 'ok', stage: 'complete', ...completion }
     if (this.loseCompleteResponseOnce) {
       this.loseCompleteResponseOnce = false
@@ -349,16 +383,19 @@ class RecordingStore implements D1IncrementalSyncStore {
   }
 }
 
-async function run(store: RecordingStore, input = completeInput(), submitMedia?: (
+async function run(store: D1IncrementalSyncStore, input = completeInput(), submitMedia?: (
   request: BudgetReservationRequest,
 ) => Promise<BudgetReservationResult>, now = input.observedAt, instanceId = 'run-1') {
+  const defaultSubmit = store instanceof RecordingStore
+    ? async () => store.reservation
+    : undefined
   return runD1IncrementalSync({
     env: {},
     instanceId,
     completeInput: input,
     now,
     store,
-    submitMedia: submitMedia ?? (async () => store.reservation),
+    submitMedia: submitMedia ?? defaultSubmit,
   })
 }
 
@@ -1222,6 +1259,7 @@ test('accepted media submission process loss replays the frozen request and cold
 
   assert.equal(queueSends, 1)
   assert.equal(requests.length, 2)
+  assert.equal(JSON.stringify(requests[1]), JSON.stringify(requests[0]))
   assert.equal(await sha256Canonical(requests[1]), await sha256Canonical(requests[0]))
   assert.deepEqual(replay.media, {
     candidates: 52,
@@ -1232,6 +1270,84 @@ test('accepted media submission process loss replays the frozen request and cold
   })
   assert.deepEqual(store.appState.get('media:cold-cursor'), { subject_ids: coldIds.slice(1) })
   assert.equal(store.currentRun?.status, 'ok')
+})
+
+test('stale collection attempt reloads a concurrently adopted real D1 media checkpoint', async () => {
+  const database = new LosingMultiBatchSqliteD1()
+  const store = new D1StateStore(database)
+  const originalApply = store.applyCollectionDiff.bind(store)
+  let releaseFirstApply!: () => void
+  const firstApplyReleased = new Promise<void>((resolve) => { releaseFirstApply = resolve })
+  let firstApplyAdopted!: () => void
+  const firstApplyReady = new Promise<void>((resolve) => { firstApplyAdopted = resolve })
+  let applyCalls = 0
+  store.applyCollectionDiff = async (...args) => {
+    const result = await originalApply(...args)
+    applyCalls++
+    if (applyCalls === 1) {
+      firstApplyAdopted()
+      await firstApplyReleased
+    }
+    return result
+  }
+
+  const durableResult = {
+    granted: 1,
+    consumed: 1,
+    soft_limit: 50,
+    hard_limit: 100,
+    submission: 'submitted' as const,
+  }
+  let releaseAcceptedSubmit!: () => void
+  const acceptedSubmitReleased = new Promise<void>((resolve) => {
+    releaseAcceptedSubmit = resolve
+  })
+  let firstSubmitAccepted!: () => void
+  const firstSubmitReady = new Promise<void>((resolve) => { firstSubmitAccepted = resolve })
+  let replaySubmitted!: () => void
+  const replaySubmitReady = new Promise<void>((resolve) => { replaySubmitted = resolve })
+  const requests: BudgetReservationRequest[] = []
+  let queueSends = 0
+  let storedResult: typeof durableResult | undefined
+  const submit = async (request: BudgetReservationRequest) => {
+    requests.push(structuredClone(request))
+    if (!storedResult) {
+      queueSends++
+      storedResult = durableResult
+      firstSubmitAccepted()
+      await acceptedSubmitReleased
+    } else {
+      replaySubmitted()
+    }
+    return storedResult
+  }
+  const instanceId = 'real-d1-stage-interleaving'
+  const input = completeInput()
+
+  const staleAttempt = run(store, input, submit, observedAt, instanceId)
+  await firstApplyReady
+  const winningAttempt = run(store, input, submit, observedAt, instanceId)
+  await firstSubmitReady
+  releaseFirstApply()
+  await replaySubmitReady
+  releaseAcceptedSubmit()
+
+  const [staleResult, winningResult] = await Promise.all([staleAttempt, winningAttempt])
+  assert.equal(queueSends, 1)
+  assert.equal(requests.length, 2)
+  assert.equal(JSON.stringify(requests[1]), JSON.stringify(requests[0]))
+  assert.deepEqual(staleResult.media, winningResult.media)
+  assert.deepEqual(staleResult.media, {
+    candidates: 1,
+    granted: 1,
+    confirmed: 1,
+    uncertain: 0,
+    deferred: 0,
+  })
+  const completed = await store.getSyncRun(instanceId)
+  assert.equal(completed?.status, 'ok')
+  assert.equal(completed?.stage, 'complete')
+  assert.equal(completed?.result_json, JSON.stringify(JSON.parse(completed.result_json!)))
 })
 
 test('cold cursor commit crash replays the exact prepared media result without another reservation', async () => {

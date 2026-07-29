@@ -16,6 +16,7 @@ import type {
   PublicSnapshotPointerV1,
   PublicationWriteOwner,
   SyncRunCompletion,
+  SyncRunCheckpointGuard,
   SyncRunFailure,
   SyncRunRow,
   SyncTerminalTransitionResult,
@@ -580,16 +581,30 @@ export class D1StateStore {
     throw new StaleCollectionDiffError(write.userId, write.subjectId)
   }
 
-  private syncRunUpdateStatement(instanceId: string, update: SyncRunUpdate): D1PreparedStatementLike {
+  private syncRunUpdateStatement(
+    instanceId: string,
+    update: SyncRunUpdate,
+    guard?: SyncRunCheckpointGuard,
+  ): D1PreparedStatementLike {
     const optionalColumns = [
       'generation', 'collection_count', 'changed_count', 'missing_count', 'deleted_count',
       'media_selected_count', 'media_granted_count', 'input_hash', 'public_hash', 'result_json',
     ] as const
     const present = optionalColumns.filter((column) => update[column] !== undefined)
-    const columns = ['stage', 'heartbeat_at', ...present] as const
+    const trailingColumns = ['heartbeat_at', ...present] as const
+    const stageAssignment = guard
+      ? "stage = CASE WHEN stage = ? AND result_json IS ? THEN ? ELSE json_extract('sync run checkpoint conflict', '$') END"
+      : 'stage = ?'
     return this.database.prepare(
-      `UPDATE sync_runs SET ${columns.map((column) => `${column} = ?`).join(', ')} WHERE instance_id = ? AND status NOT IN ('ok', 'error')`,
-    ).bind(...columns.map((column) => update[column]), instanceId)
+      `UPDATE sync_runs SET ${[
+        stageAssignment,
+        ...trailingColumns.map((column) => `${column} = ?`),
+      ].join(', ')} WHERE instance_id = ? AND status NOT IN ('ok', 'error')`,
+    ).bind(
+      ...(guard ? [guard.stage, guard.result_json, update.stage] : [update.stage]),
+      ...trailingColumns.map((column) => update[column]),
+      instanceId,
+    )
   }
 
   private async assertSyncRunUpdateApplied(instanceId: string, changes: number): Promise<void> {
@@ -645,7 +660,11 @@ export class D1StateStore {
 
   async applyCollectionDiff(
     plan: CollectionDiffPlanLike,
-    checkpoint?: { instanceId: string; update: SyncRunUpdate },
+    checkpoint?: {
+      instanceId: string
+      update: SyncRunUpdate
+      guard?: SyncRunCheckpointGuard
+    },
   ): Promise<{ rowsWritten: number }> {
     const writes: PendingWrite[] = []
     const addBusinessUpdate = (row: CollectionRow, order: number) => {
@@ -730,7 +749,7 @@ export class D1StateStore {
     const mutationBatchSize = checkpoint ? MAX_BATCH_STATEMENTS - 1 : MAX_BATCH_STATEMENTS
     if (writes.length === 0 && checkpoint) {
       const [checkpointChanges] = await this.executeBatchChanges([
-        this.syncRunUpdateStatement(checkpoint.instanceId, checkpoint.update),
+        this.syncRunUpdateStatement(checkpoint.instanceId, checkpoint.update, checkpoint.guard),
       ])
       await this.assertSyncRunUpdateApplied(checkpoint.instanceId, checkpointChanges!)
     }
@@ -738,7 +757,11 @@ export class D1StateStore {
       const chunk = writes.slice(offset, offset + mutationBatchSize)
       const statements = chunk.map(({ statement }) => statement)
       if (checkpoint) {
-        statements.push(this.syncRunUpdateStatement(checkpoint.instanceId, checkpoint.update))
+        statements.push(this.syncRunUpdateStatement(
+          checkpoint.instanceId,
+          checkpoint.update,
+          checkpoint.guard,
+        ))
       }
       const changes = await this.executeBatchChanges(statements)
       const mutationChanges = changes.slice(0, chunk.length)
@@ -1353,14 +1376,38 @@ export class D1StateStore {
     }
   }
 
-  async updateSyncRun(instanceId: string, update: SyncRunUpdate): Promise<void> {
-    const changes = await this.executeBatch([this.syncRunUpdateStatement(instanceId, update)])
+  async updateSyncRun(
+    instanceId: string,
+    update: SyncRunUpdate,
+    guard?: SyncRunCheckpointGuard,
+  ): Promise<void> {
+    let changes: number
+    try {
+      changes = await this.executeBatch([
+        this.syncRunUpdateStatement(instanceId, update, guard),
+      ])
+    } catch (error) {
+      if (guard) {
+        const current = await this.getSyncRun(instanceId)
+        if (
+          current
+          && (current.stage !== guard.stage || current.result_json !== guard.result_json)
+        ) {
+          throw new Error(`Sync run checkpoint conflict: ${instanceId}`, { cause: error })
+        }
+      }
+      throw error
+    }
     await this.assertSyncRunUpdateApplied(instanceId, changes)
   }
 
-  async completeSyncRun(instanceId: string, completion: SyncRunCompletion): Promise<SyncTerminalTransitionResult> {
+  async completeSyncRun(
+    instanceId: string,
+    completion: SyncRunCompletion,
+    guard?: SyncRunCheckpointGuard,
+  ): Promise<SyncTerminalTransitionResult> {
     const statement = this.database.prepare(
-      "UPDATE sync_runs SET status = 'ok', stage = 'complete', heartbeat_at = ?, completed_at = ?, generation = COALESCE(?, generation), input_hash = COALESCE(?, input_hash), public_hash = COALESCE(?, public_hash), result_json = COALESCE(?, result_json), error_code = NULL WHERE instance_id = ? AND status NOT IN ('ok', 'error')",
+      `UPDATE sync_runs SET status = 'ok', stage = 'complete', heartbeat_at = ?, completed_at = ?, generation = COALESCE(?, generation), input_hash = COALESCE(?, input_hash), public_hash = COALESCE(?, public_hash), result_json = COALESCE(?, result_json), error_code = NULL WHERE instance_id = ? AND status NOT IN ('ok', 'error')${guard ? ' AND stage = ? AND result_json IS ?' : ''}`,
     ).bind(
       completion.heartbeat_at,
       completion.completed_at,
@@ -1369,6 +1416,7 @@ export class D1StateStore {
       completion.public_hash ?? null,
       completion.result_json ?? null,
       instanceId,
+      ...(guard ? [guard.stage, guard.result_json] : []),
     )
     const changes = await this.executeBatch([statement])
     if (changes === 0) {
@@ -1376,6 +1424,7 @@ export class D1StateStore {
       if (status === undefined) throw new Error(`Sync run not found: ${instanceId}`)
       if (status === 'ok') return { outcome: 'already_same_terminal', terminal: 'ok' }
       if (status === 'error') return { outcome: 'preserved_opposite_terminal', terminal: 'error' }
+      if (guard) throw new Error(`Sync run checkpoint conflict: ${instanceId}`)
       throw new Error(`Sync run completion not applied: ${instanceId}`)
     }
     return { outcome: 'applied', terminal: 'ok' }
