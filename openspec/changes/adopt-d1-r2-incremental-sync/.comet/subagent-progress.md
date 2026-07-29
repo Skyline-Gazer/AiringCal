@@ -321,9 +321,10 @@
 - OpenSpec 6.1 and 6.2 deliberately remain unchecked for coordinator review and
   production evidence.
 
-## Final Review V3 Compatibility Fix
+## Historical Final Review V3 Compatibility Fix (Superseded)
 
-- Stage: full local verification GREEN; ready for coordinator handoff.
+- Stage: historical local verification, superseded by the media projection,
+  schedule-watermark, and durable media-pending corrections below.
 - Verified runtime source SHA:
   `79cbb3462ea91680fcc3c3fb62ea96af401bfb68`.
 - Review base: `6be4fd8eb94d065d952ef29896d6575de863f4fc`.
@@ -348,3 +349,46 @@
   include the versioned job payload and reject V4/V3 replay substitution.
 - Boundary: no remote migration, deployment, OpenSpec 6.1/6.2 checkoff, Task 12
   production action, build guard, or Comet transition was performed.
+
+## Task 12 Durable Media-Pending Replay Correction
+
+- Stage: full local verification GREEN; ready for coordinator handoff.
+- Current authoritative runtime source:
+  `eafc6c04b968a2a0a61be17dfab339d16214ab67`.
+- Superseded runtime sequence: V3 compatibility `79cbb3462ea91680fcc3c3fb62ea96af401bfb68`;
+  media projection/schedule `ff999c0d5d21bbf450d1315c8b440182b79948c7`;
+  this durable pending fix supersedes both as the release candidate.
+- Root cause: after collection checkpoint adoption, media planning and Queue
+  submission occurred before a durable media-result checkpoint. If Queue
+  accepted and the process disappeared, running replay re-read mutable
+  `subject_media`, could select different work, and could change truthful
+  counters or the cold cursor target.
+- RED evidence: an accepted-then-process-loss integration mutated every
+  `subject_media` retry watermark before replay; the old implementation made
+  only one logical request instead of replaying the frozen one and replanned
+  zero jobs.
+- Fix: a bounded versioned `media_pending` artifact is adopted before any
+  budget/Queue submission. It freezes the exact V4 reservation request,
+  candidate count, per-job priority, collection/publication checkpoint, cold
+  cursor tail, and cursor version. Replay submits byte-identical request bytes;
+  the durable reservation returns its stored result and prevents a second
+  Queue send. Prepared-result adoption then safely replaces and cleans the
+  pending artifact.
+- External-side-effect fence: injected pending-adoption failure performs zero
+  submit calls and retains only the last adopted collection manifest. A lost
+  update response is reconciled by exact manifest equality before submission.
+- Backward compatibility: this only adds internal replay artifact kind
+  `media_pending`; old collection/prepared artifacts still decode unchanged.
+  No D1 migration, public HTTP shape, KV pointer, or R2 snapshot schema changes.
+- Fresh GREEN evidence: checkpoint/orchestration 41/41; sync-worker 192/192;
+  focused eight-file release gate 136/136; full repository 531/531; all nine
+  typechecks; all four build checks; strict OpenSpec; and `git diff --check`.
+- Materialized evidence: canonical fake D1/KV identifiers; executable exact
+  required/forbidden binding and no-placeholder assertion; four Wrangler
+  4.100.0 dry-runs pass at frontend 69.36/16.65 KiB, read 22.91/6.15, media
+  112.28/21.82, and sync 237.24/47.60.
+- Audit: all 17/17 OpenSpec added requirements and all 8/8 Design §10 criteria
+  have current source plus executable evidence.
+- Boundary: no remote migration, merge, deployment, live Workflow, production
+  metrics, public smoke test, OpenSpec 6.1/6.2 checkoff, build guard, or Comet
+  transition was performed.
