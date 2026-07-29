@@ -53,6 +53,12 @@ remain pending for the coordinator.
   pre-migration history. Its current provisioning section states that real
   D1/KV IDs are materialized only into runner-temporary configs, bindings and
   Cron remain checked in, and Worker secrets are managed outside routine deploy.
+- Quality-review correction: the 2026-06-17 implementation plan is now marked
+  archived historical at both file and obsolete Cron-task scope, with
+  `README.md` and superseding designs named as current sources. The 2026-06-29
+  design no longer claims blanket implementation: its current amendments are
+  scoped explicitly, webmaster meta output is implemented, and analytics
+  scripts are accurately recorded as unimplemented/no-output.
 
 ## Stale-claim classification
 
@@ -64,7 +70,8 @@ rg -n '0 \*/4|every 4 hours|每 4 小时|KV.*权威|逐 subject KV|D1.*future|R2
 
 Allowed residual matches must be one of:
 
-- explicit historical records in superseded plans/designs;
+- explicit historical records in plans/designs with an archive/superseded
+  banner or a local historical callout;
 - tests/plans that forbid `0 */4` or a public `/__cron/sync`;
 - explicit negative requirements such as “no per-subject KV write”.
 

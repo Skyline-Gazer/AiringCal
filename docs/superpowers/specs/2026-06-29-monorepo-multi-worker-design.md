@@ -1,10 +1,12 @@
 # Monorepo Multi-Worker Architecture Design
 
-> Status: implemented; amended for D1/R2 shadow on 2026-07-29
+> Status: mixed historical design record; amended for D1/R2 shadow on 2026-07-29
 > Date: 2026-06-29
 
-The original target rationale remains below, but this amendment is the current
-code-backed contract where the two differ.
+Only the D1/R2 shadow amendment, sections explicitly labeled `Implemented` or
+`Current`, and other explicit current-state callouts are code-backed
+implementation claims. The remaining original target/`should`/`must` text is a
+historical proposal, not a blanket claim that every feature was implemented.
 
 ## D1/R2 shadow amendment
 
@@ -38,6 +40,9 @@ code-backed contract where the two differ.
 - Runtime rollback deploys the previous compatible immutable SHA. Additive D1
   migrations and all D1/R2/KV/Queue/Workflow/Durable Object data remain in
   place; no destructive reverse migration is run.
+- Frontend webmaster verification meta tags are implemented. Analytics
+  environment names remain reserved, but `renderAnalyticsScripts()` currently
+  returns an empty string for every input and no analytics script is emitted.
 
 ## Goals
 
@@ -568,9 +573,13 @@ If commit data is unavailable, footer shows `Build unknown` without a commit lin
 
 Footer tests must render every public page template and assert that they all use the shared footer output, rather than each page carrying a local footer variant.
 
-## Build-Time Analytics and Webmaster Injection
+## Proposed Build-Time Analytics and Webmaster Injection
 
-Analytics scripts and webmaster verification meta tags are generated during the widget/frontend build. They are not guessed at runtime and not inserted on every request.
+This original target is only partially implemented. Webmaster verification meta
+tags are rendered from configured frontend variables. Analytics script
+injection is not implemented: the frontend still passes the reserved values,
+but `renderAnalyticsScripts()` deliberately returns an empty string and tests
+pin the no-script behavior.
 
 ### Analytics Env
 
@@ -581,9 +590,12 @@ BANGUMI_YANDEX_METRICA_ID
 BANGUMI_BAIDU_TONGJI_ID
 ```
 
-If a value is present, the build renders that platform's snippet. If absent, no snippet for that platform appears in the HTML.
+These names are reserved for a possible future implementation. Supplying them
+currently emits no analytics snippet.
 
-Before implementation, each snippet must be verified against official platform documentation or current platform-provided install code. Do not write snippet details from memory.
+Before any future implementation, each snippet must be verified against
+official platform documentation or current platform-provided install code. Do
+not write snippet details from memory.
 
 ### Webmaster Verification Env
 
@@ -607,12 +619,11 @@ If a value is absent, the corresponding meta tag is omitted.
 
 ### Build Tests
 
-`packages/widget` must test:
+Current `packages/widget` tests establish:
 
-- Empty env renders no analytics snippets.
-- Empty env renders no webmaster meta tags.
-- Each analytics env renders only its own snippet.
-- Each verification env renders only its own meta tag.
+- Configured analytics env values still render no placeholder scripts.
+- Configured webmaster values render only their matching tags and omit
+  unconfigured platforms.
 - Footer commit link renders with a valid SHA.
 - Footer falls back cleanly when SHA is missing.
 
@@ -891,6 +902,7 @@ The cache statistics page is public. Queue remains the selected media processing
 - Queue is the selected media execution path.
 - New image shape removes legacy fields.
 - Public `/cache` is included and secret-safe.
-- Build-time analytics and webmaster injection are included.
+- The original target includes analytics and webmaster injection; current code
+  implements webmaster meta tags and deliberately emits no analytics scripts.
 - CI/CD simplification and native cron requirements are included.
 - README obligations are explicit.
