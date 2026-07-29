@@ -713,7 +713,7 @@ git push
 - Config D1 ID placeholder: `<AIRING_CAL_D1_DATABASE_ID>`.
 - Deploy dependency order: resolve → migration → read/media → sync/Workflow → frontend.
 
-- [ ] **Step 1: Re-verify config and migration CLI immediately before config edits**
+- [x] **Step 1: Re-verify config and migration CLI immediately before config edits**
 
 ```bash
 ./node_modules/.bin/wrangler d1 migrations apply --help
@@ -723,7 +723,7 @@ rg -n 'interface Env|AIRING_CAL_R2|AIRING_CAL_KV' apps/*/src apps/*/worker-confi
 
 Expected: `--remote` is supported; binding/config fields match Task 1 evidence.
 
-- [ ] **Step 2: Write RED config/deploy-order tests**
+- [x] **Step 2: Write RED config/deploy-order tests**
 
 Require sync: D1 + data R2 + KV + Queue; media: D1 + image R2; read: D1 + both R2 + KV. Parse workflow jobs and assert `apply_d1_migrations` needs resolver and both upload jobs need migration:
 
@@ -733,7 +733,7 @@ assert.deepEqual(deployOrder, ['resolve_cloudflare', 'apply_d1_migrations', 'dep
 
 Materialization with an unresolved D1 placeholder must fail before dry-run.
 
-- [ ] **Step 3: Implement configs and CI**
+- [x] **Step 3: Implement configs and CI**
 
 Add verified TOML:
 
@@ -757,7 +757,7 @@ pnpm exec wrangler d1 migrations apply AIRING_CAL_D1 --remote --config "$RUNNER_
 
 It must materialize config first and be a hard dependency of every upload. Read Worker accepts bindings but its handlers remain on legacy KV.
 
-- [ ] **Step 4: Regenerate Worker types using the repository’s verified script**
+- [x] **Step 4: Regenerate Worker types using the repository’s verified script**
 
 Run:
 
@@ -769,7 +769,7 @@ pnpm -F @airing-cal/sync-worker cf:types
 
 Expected: generated env types expose the exact binding names and TypeScript compiles.
 
-- [ ] **Step 5: Run GREEN config gates and dry-runs**
+- [x] **Step 5: Run GREEN config gates and dry-runs**
 
 Use a syntactically valid test D1 UUID and KV ID:
 
@@ -783,7 +783,7 @@ pnpm build:check
 
 Repeat materialize/dry-run for media and sync. Expected: all PASS; grep shows no placeholder in `/tmp/wrangler-*.toml`.
 
-- [ ] **Step 6: Review, mark 5.1–5.2 complete, commit and push**
+- [x] **Step 6: Review, mark 5.1–5.2 complete, commit and push**
 
 ```bash
 git add apps .github/workflows/deploy.yml packages/worker-common scripts openspec/changes/adopt-d1-r2-incremental-sync

@@ -24,8 +24,8 @@
 
 ## 5. Bindings and Deployment
 
-- [ ] 5.1 Add D1 and data R2 bindings to internal Workers while retaining legacy bindings for compatibility
-- [ ] 5.2 Apply D1 migrations before Worker deploy and extend config/dry-run/control-plane tests
+- [x] 5.1 Add D1 and data R2 bindings to internal Workers while retaining legacy bindings for compatibility
+- [x] 5.2 Apply D1 migrations before Worker deploy and extend config/dry-run/control-plane tests
 - [ ] 5.3 Update README, resource tables, architecture, environment variables, deployment and rollback runbooks
 
 ## 6. Verification and Shadow Release

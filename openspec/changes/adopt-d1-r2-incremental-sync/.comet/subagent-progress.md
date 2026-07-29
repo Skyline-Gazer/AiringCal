@@ -256,3 +256,18 @@
 - Final review result: spec compliance APPROVED (including official Workflow execution-model adjudication) and code quality APPROVED with no remaining blockers.
 - Implementation/fix commits: `7811700`, `5bf1342`, `7e1c624`, `2c4ed5f`, `4679e97`, `f0fbb0b`, `55a5562`, and `0ca2db3` are pushed.
 - Task 9 checkoff: plan Steps 1–5 and OpenSpec 4.2–4.3 complete; no runtime binding/config work was included.
+
+## Task 10 Implementation
+
+- Plan task: `Task 10: Bindings, migration-before-upload and dry-run gates`.
+- OpenSpec mappings: `5.1` D1/data-R2 bindings with compatibility bindings retained; `5.2` migration-before-upload and control-plane/config dry-run gates.
+- Stage: `checkoff`.
+- Implementation base: `47e8873`.
+- Verify-before-write evidence: installed Wrangler 4.100.0 help confirms positional D1 binding/database plus `--remote` and `--config`; local config schema confirms D1/R2 binding keys and `migrations_dir`; local generated types confirm `D1Database`/`R2Bucket`; GitHub Actions docs confirm `needs` failure propagation.
+- RED evidence: focused config/workflow suite initially passed 18/22; missing binding matrices, runtime env fields, and migration/deploy chain failed. Quality RED later reproduced Sync success without D1/data R2 and Media V3 fallback to legacy KV across Queue/direct/DO paths.
+- Binding/deploy contract: sync binds D1 + data R2 + KV + Queue; media binds D1 + image R2; read binds D1 + image/data R2 + KV while handlers remain legacy. Deploy order is resolver → D1 migration → read/media → sync/Workflow → frontend; recovery reporting includes migration failure.
+- Runtime fail-closed contract: Sync shadow requires D1/data R2 and always attempts authoritative persistence/publication. Media V3 without D1 remains unacked/retryable and performs zero legacy KV writes; V2 keeps legacy behavior.
+- GREEN evidence: focused config gate 41/41; fail-closed sync 19/19; media/DO 36/36; full `pnpm test`, `pnpm typecheck`, and `pnpm build:check`; generated types; YAML parse; placeholder scan; three materialized Wrangler dry-runs all pass.
+- Final review result: spec compliance APPROVED and code quality APPROVED with no remaining findings.
+- Implementation/fix commits: `6985a9b` and `7d1e82c` are pushed.
+- Task 10 checkoff: plan Steps 1–6 and OpenSpec 5.1–5.2 complete; Task 11 remained untouched.
