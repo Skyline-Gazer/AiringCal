@@ -26,7 +26,7 @@
 
 - [x] 5.1 Add D1 and data R2 bindings to internal Workers while retaining legacy bindings for compatibility
 - [x] 5.2 Apply D1 migrations before Worker deploy and extend config/dry-run/control-plane tests
-- [ ] 5.3 Update README, resource tables, architecture, environment variables, deployment and rollback runbooks
+- [x] 5.3 Update README, resource tables, architecture, environment variables, deployment and rollback runbooks
 
 Scope boundary for 5.3: this change documents but does not perform legacy data
 import, public reads from `public:current`/data R2, or legacy KV cleanup. Those

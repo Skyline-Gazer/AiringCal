@@ -808,11 +808,11 @@ git push
 **Interfaces:**
 - Documents exact resource/binding/env names, daily schedule, shadow-only read boundary, migration-before-upload, failure recovery, previous-SHA rollback, and no destructive reverse migration.
 
-- [ ] **Step 1: Write a documentation truth-table before editing**
+- [x] **Step 1: Write a documentation truth-table before editing**
 
 List every code-backed statement and its evidence path: resources, bindings, five tables, budget limits, pointer key/object key, deploy order, public read source, rollback, secret redaction. Any statement without code/test evidence must be omitted or explicitly labeled future change.
 
-- [ ] **Step 2: Update docs and run stale-claim scan**
+- [x] **Step 2: Update docs and run stale-claim scan**
 
 ```bash
 rg -n '0 \*/4|every 4 hours|每 4 小时|KV.*权威|逐 subject KV|D1.*future|R2.*future|/__cron/sync' README.md docs
@@ -820,7 +820,7 @@ rg -n '0 \*/4|every 4 hours|每 4 小时|KV.*权威|逐 subject KV|D1.*future|R2
 
 Expected: remaining matches are clearly historical/prohibited or are corrected. State explicitly that `migrate-public-reads-from-kv` owns cutover/import/cleanup.
 
-- [ ] **Step 3: Run docs/config gates**
+- [x] **Step 3: Run docs/config gates**
 
 ```bash
 node --test packages/worker-common/src/deploy-config.test.ts scripts/*.test.mjs
@@ -828,7 +828,7 @@ node --test packages/worker-common/src/deploy-config.test.ts scripts/*.test.mjs
 git diff --check
 ```
 
-- [ ] **Step 4: Review, mark 5.3 complete, commit and push**
+- [x] **Step 4: Review, mark 5.3 complete, commit and push**
 
 ```bash
 git add README.md docs openspec/changes/adopt-d1-r2-incremental-sync

@@ -271,3 +271,18 @@
 - Final review result: spec compliance APPROVED and code quality APPROVED with no remaining findings.
 - Implementation/fix commits: `6985a9b` and `7d1e82c` are pushed.
 - Task 10 checkoff: plan Steps 1–6 and OpenSpec 5.1–5.2 complete; Task 11 remained untouched.
+
+## Task 11 Implementation
+
+- Plan task: `Task 11: Documentation, rollback and repository-constraint synchronization`.
+- OpenSpec mapping: `5.3` README/resource/architecture/environment/deployment/rollback documentation.
+- Stage: `checkoff`.
+- Implementation base: `dc4a192`.
+- Truth-table evidence: exact D1/data-R2/image-R2/KV/Queue resources, five primary D1 tables plus reservation helper, 50/100 media budgets, `public:current`, immutable snapshot keys, deploy order, legacy public reads, rollback and secret boundaries were traced to source/config/tests before editing.
+- Documentation boundary: current daily `0 20 * * *` schedule is Shanghai 04:00; D1/R2 runs in fail-closed shadow; Read Worker still serves legacy KV; import/cutover/cleanup belongs exclusively to `migrate-public-reads-from-kv`.
+- Operational safety: remote migrations precede uploads; rollback deploys one previous compatible full SHA and never reverses migrations or deletes D1/R2/KV data; secret values are not recorded.
+- Historical cleanup: the obsolete single-Worker/public `POST /__cron/sync`/four-hour Cron plan is explicitly archived and non-executable. The monorepo design scopes implemented amendments and records current analytics no-output behavior.
+- GREEN evidence: docs/config 32/32; strict OpenSpec; stale-claim scan; `git diff --check`.
+- Final review result: documentation spec/truth APPROVED and quality APPROVED with no remaining findings; durable repository rules correctly remained unchanged.
+- Implementation/fix commits: `626518a`, `8944443`, and `528c937` are pushed.
+- Task 11 checkoff: plan Steps 1–4 and OpenSpec 5.3 complete; production evidence and Task 12 remain pending.
