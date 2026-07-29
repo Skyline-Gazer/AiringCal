@@ -194,6 +194,15 @@ export function isMediaRefreshJobV4(value: unknown): value is MediaRefreshJobV4 
     && hasValidMediaGeneration(value)
 }
 
+export function hasUnsupportedMediaJobVersion(value: unknown): boolean {
+  return typeof value === 'object'
+    && value !== null
+    && 'version' in value
+    && !isMediaRefreshJobV2(value)
+    && !isMediaRefreshJobV3(value)
+    && !isMediaRefreshJobV4(value)
+}
+
 export interface StorageAdapter {
   get<T>(key: string, validate?: (value: unknown) => value is T): Promise<T | null>
   put<T>(key: string, value: T, options?: { expirationTtl?: number }): Promise<void>

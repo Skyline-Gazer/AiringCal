@@ -31,6 +31,49 @@ test('the same completed job is a duplicate instead of being processed twice', a
   assert.equal((await coordinator.begin(4, 'job-4')).status, 'duplicate')
 })
 
+test('the Durable Object rejects an unknown present version before fence or external side effects', async () => {
+  const state = new MemoryState()
+  const calls = { kv: 0, r2: 0, d1: 0, upstream: 0 }
+  const coordinator = new SubjectRefreshCoordinator({ storage: state } as any, {
+    AIRING_CAL_D1: {
+      prepare() { calls.d1++; throw new Error('unexpected D1 access') },
+    },
+    AIRING_CAL_KV: {
+      async get() { calls.kv++; return null },
+      async put() { calls.kv++ },
+      async delete() { calls.kv++ },
+    },
+    AIRING_CAL_R2: {
+      async get() { calls.r2++; return null },
+      async put() { calls.r2++; return {} },
+    },
+  } as any)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    calls.upstream++
+    throw new Error('unexpected upstream access')
+  }
+
+  try {
+    const response = await coordinator.fetch(new Request('https://subject-refresh-coordinator/process', {
+      method: 'POST',
+      body: JSON.stringify({
+        version: 5,
+        generation: 1,
+        job_id: 'unknown-do:23080',
+        subject_id: 23080,
+        title: 'Unknown',
+        components: [],
+      }),
+    }))
+    assert.equal(response.status, 400)
+    assert.equal(state.values.size, 0)
+    assert.deepEqual(calls, { kv: 0, r2: 0, d1: 0, upstream: 0 })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('a D1-only V4 job without D1 fails without legacy KV writes and still makes an older retry obsolete', async () => {
   const state = new MemoryState()
   const kv = {

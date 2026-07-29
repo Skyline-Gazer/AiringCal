@@ -2,7 +2,7 @@ export const appBoundary = 'media-worker'
 
 import { BgmClient, BgmHttpError, BgmNetworkError, BgmTimeoutError } from '@airing-cal/bgm-api'
 import { imageRef, isActiveNotFoundSubjectMeta, isConfirmedNotFoundSubjectMeta, subjectDetailImages, subjectMetaFromDetail, subjectMetaFromNotFound, type SubjectMeta } from '@airing-cal/domain'
-import { getCachedSubjectDetail, imageIndexKey, imageStatusKey, isMediaRefreshJobV2, isMediaRefreshJobV3, isMediaRefreshJobV4, KVStorage, putJsonIfChanged, R2ImageStore, SUBJECT_DETAIL_TTL_SECONDS, subjectDetailKey, subjectMetaKey, subjectRefreshKey, type D1DatabaseLike, type ImageSourceSize, type MediaRefreshJobV2, type MediaRefreshJobV3, type MediaRefreshJobV4, type SubjectDetailCacheEntry, type SubjectRefreshState } from '@airing-cal/storage'
+import { getCachedSubjectDetail, hasUnsupportedMediaJobVersion, imageIndexKey, imageStatusKey, isMediaRefreshJobV2, isMediaRefreshJobV3, isMediaRefreshJobV4, KVStorage, putJsonIfChanged, R2ImageStore, SUBJECT_DETAIL_TTL_SECONDS, subjectDetailKey, subjectMetaKey, subjectRefreshKey, type D1DatabaseLike, type ImageSourceSize, type MediaRefreshJobV2, type MediaRefreshJobV3, type MediaRefreshJobV4, type SubjectDetailCacheEntry, type SubjectRefreshState } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 import { refreshSubjectMediaD1 } from './d1-media-state.ts'
 
@@ -255,6 +255,7 @@ async function putRefreshState(storage: KVStorage, job: LegacyVersionedMediaJob,
 }
 
 async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | 'duplicate' | 'retry_scheduled'> {
+  if (hasUnsupportedMediaJobVersion(job)) throw new Error('Unsupported media job version')
   if (hasMediaVersion(job, 4)) {
     if (!isMediaRefreshJobV4(job)) throw new Error('Invalid D1-only V4 media job')
     if (!env.AIRING_CAL_D1) throw new Error('Missing required AIRING_CAL_D1 binding for V4 media job')
@@ -264,10 +265,6 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | '
     }, job)
     return result.status === 'retry_scheduled' ? 'retry_scheduled' : 'processed'
   }
-  if (
-    hasMediaVersion(job, 2) && !isMediaRefreshJobV2(job)
-    || hasMediaVersion(job, 3) && !isMediaRefreshJobV3(job)
-  ) throw new Error('Invalid legacy media job')
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const imageStore = new R2ImageStore(env.AIRING_CAL_R2)
   const client = new BgmClient()
@@ -356,6 +353,11 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | '
 
 async function queue(batch: QueueBatch, env: MediaEnv): Promise<void> {
   for (const message of batch.messages) {
+    if (hasUnsupportedMediaJobVersion(message.body)) {
+      const delays = [30, 120, 300]
+      message.retry?.({ delaySeconds: delays[Math.min(Math.max((message.attempts ?? 1) - 1, 0), delays.length - 1)] })
+      continue
+    }
     try {
       if (env.SUBJECT_REFRESH_COORDINATOR) {
         const response = await env.SUBJECT_REFRESH_COORDINATOR.getByName(String(message.body.subject_id)).fetch(new Request('https://subject-refresh-coordinator/process', {

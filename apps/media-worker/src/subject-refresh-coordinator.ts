@@ -1,4 +1,4 @@
-import { isMediaRefreshJobV2, isMediaRefreshJobV3, isMediaRefreshJobV4, KVStorage, putJsonIfChanged, subjectRefreshKey, type MediaRefreshJobV2, type MediaRefreshJobV3, type SubjectRefreshState } from '@airing-cal/storage'
+import { hasUnsupportedMediaJobVersion, isMediaRefreshJobV2, isMediaRefreshJobV3, isMediaRefreshJobV4, KVStorage, putJsonIfChanged, subjectRefreshKey, type MediaRefreshJobV2, type MediaRefreshJobV3, type SubjectRefreshState } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 import { processJob, type MediaEnv, type MediaJob } from './index.ts'
 
@@ -59,14 +59,9 @@ export class SubjectRefreshCoordinator {
 
   private async process(job: MediaJob): Promise<Response> {
     if (typeof job.subject_id !== 'number') return Response.json({ error: 'Invalid coordinator request' }, { status: 400 })
-    if (
-      'version' in job
-      && (
-        job.version === 2 && !isMediaRefreshJobV2(job)
-        || job.version === 3 && !isMediaRefreshJobV3(job)
-        || job.version === 4 && !isMediaRefreshJobV4(job)
-      )
-    ) return Response.json({ error: 'Invalid coordinator request' }, { status: 400 })
+    if (hasUnsupportedMediaJobVersion(job)) {
+      return Response.json({ error: 'Invalid coordinator request' }, { status: 400 })
+    }
     const generation = isMediaRefreshJobV3(job) || isMediaRefreshJobV4(job) ? job.generation : 0
     const jobId = 'job_id' in job && typeof job.job_id === 'string' ? job.job_id : `legacy:${job.subject_id}`
     const decision = await this.core.begin(generation, jobId)

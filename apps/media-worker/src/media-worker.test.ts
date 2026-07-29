@@ -56,6 +56,99 @@ function trackedBatch(body: unknown, attempts = 1) {
   }
 }
 
+test('processJob rejects an unknown present version before any external side effect', async () => {
+  const calls = { kv: 0, r2: 0, d1: 0, upstream: 0 }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    calls.upstream++
+    return Response.json({
+      id: 23080,
+      type: 2,
+      name: 'A',
+      name_cn: 'A CN',
+      summary: '',
+      date: '2026-01-01',
+      eps: 12,
+      total_episodes: 12,
+      nsfw: false,
+      images: {},
+    })
+  }
+  const outcome = await processJob({
+    version: 5,
+    generation: 1,
+    job_id: 'unknown-direct:23080',
+    subject_id: 23080,
+    title: 'Unknown',
+    components: [],
+  } as any, {
+    AIRING_CAL_D1: {
+      prepare() { calls.d1++; throw new Error('unexpected D1 access') },
+    },
+    AIRING_CAL_KV: {
+      async get() { calls.kv++; return null },
+      async put() { calls.kv++ },
+      async delete() { calls.kv++ },
+    },
+    AIRING_CAL_R2: {
+      async get() { calls.r2++; return null },
+      async put() { calls.r2++; return {} },
+    },
+  } as any).then(() => null, (error) => error)
+
+  try {
+    assert.deepEqual(calls, { kv: 0, r2: 0, d1: 0, upstream: 0 })
+    assert.match(String(outcome), /Unsupported media job version/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Queue retries an unknown present version before coordinator or external side effects', async () => {
+  const calls = { coordinator: 0, kv: 0, r2: 0, d1: 0, upstream: 0 }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    calls.upstream++
+    throw new Error('unexpected upstream access')
+  }
+  const message = trackedBatch({
+    version: 5,
+    generation: 1,
+    job_id: 'unknown-queue:23080',
+    subject_id: 23080,
+    title: 'Unknown',
+    components: [],
+  })
+
+  try {
+    await worker.queue(message.batch as any, {
+      AIRING_CAL_D1: {
+        prepare() { calls.d1++; throw new Error('unexpected D1 access') },
+      },
+      AIRING_CAL_KV: {
+        async get() { calls.kv++; return null },
+        async put() { calls.kv++ },
+        async delete() { calls.kv++ },
+      },
+      AIRING_CAL_R2: {
+        async get() { calls.r2++; return null },
+        async put() { calls.r2++; return {} },
+      },
+      SUBJECT_REFRESH_COORDINATOR: {
+        getByName() {
+          calls.coordinator++
+          return { async fetch() { return Response.json({ status: 'processed' }) } }
+        },
+      },
+    } as any)
+    assert.deepEqual(calls, { coordinator: 0, kv: 0, r2: 0, d1: 0, upstream: 0 })
+    assert.equal(message.state.acked, 0)
+    assert.deepEqual(message.state.retries, [{ delaySeconds: 30 }])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('media-worker retries a D1-only V4 queue message without D1 and performs no legacy per-subject writes', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()
