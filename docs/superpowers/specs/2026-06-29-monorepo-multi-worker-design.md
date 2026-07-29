@@ -686,7 +686,15 @@ SUBJECT_REFRESH_COORDINATOR Durable Object
 
 ## CI/CD and Cron Deployment
 
-The current workflow performs too many deployment-time infrastructure mutations: creating KV/R2 resources, listing KV namespaces, rewriting Wrangler config files, uploading secrets on every run, calling Cloudflare REST APIs with `curl` to inspect or create cron schedules, and deploying multiple Workers through ad hoc commands. The monorepo architecture replaces this with a smaller and more predictable pipeline.
+### Historical Migration Motivation
+
+Before the monorepo migration, the deployment workflow performed too many
+deployment-time infrastructure mutations: creating KV/R2 resources, listing KV
+namespaces, rewriting Wrangler config files, uploading secrets on every run,
+calling Cloudflare REST APIs with `curl` to inspect or create Cron schedules,
+and deploying multiple Workers through ad hoc commands. The implemented
+monorepo pipeline replaced those migration-era behaviors with the bounded
+workflow documented below.
 
 ### CI/CD Goals
 
@@ -700,19 +708,23 @@ The current workflow performs too many deployment-time infrastructure mutations:
 
 ### Resource Provisioning Model
 
-Cloudflare resources are provisioned once outside normal deploy runs:
+The manual `Bootstrap Cloudflare Resources` workflow creates or reuses these
+long-lived data resources outside routine deploy runs:
 
 ```text
 D1 database: airing-cal-state
 R2 data bucket: airing-cal-data
 KV namespace title: airing-cal-kv
-KV namespace id: copied into each Worker config as kv_namespaces.id
 R2 image bucket: airing-cal-images
 Queue: airing-cal-media
-Service bindings
-Worker secrets
-Cron schedule in sync-worker config
 ```
+
+Checked-in `wrangler.toml` files retain audited D1/KV ID placeholders. Routine
+deploy resolves the real IDs and materializes only runner-temporary configs; it
+does not copy IDs back into committed files. Service, storage, Queue, Workflow,
+Durable Object bindings, and the Worker Cron are declared in checked-in config
+and applied with Worker deployment. Worker secrets are managed separately;
+routine deploy does not run `wrangler secret put`.
 
 After initial provisioning, GitHub Actions resolves D1, both R2 buckets, KV and Queue before upload. Bootstrap prepares or reuses all five resource types and the resolver verifies all five. D1/data R2 runtime bindings are now checked in: manual shadow and media V3 access the new resources, while read handlers deliberately remain on legacy KV/image R2 until `migrate-public-reads-from-kv`.
 
@@ -735,9 +747,9 @@ Every post-resolution job checks out the same SHA. Each upload job materializes
 only a temporary Wrangler config and runs a dry-run before deploy; committed
 `wrangler.toml` files retain their audited placeholders.
 
-### Removed Workflow Steps
+### Historical Workflow Steps Removed
 
-The new workflow must remove these old patterns:
+The implemented workflow removed these migration-era patterns:
 
 - `wrangler kv namespace create` during normal deploy.
 - `wrangler r2 bucket create` during normal deploy.
@@ -750,9 +762,12 @@ The new workflow must remove these old patterns:
 
 ### Native Cron Requirement
 
-`sync-worker` must implement `scheduled(event, env, ctx)` and its Worker config must declare the cron schedule. The deployed Worker should run from Cloudflare scheduled events without a public HTTP cron endpoint.
+`sync-worker` implements `scheduled(event, env, ctx)`, and its checked-in Worker
+config declares the Cron schedule. The deployed Worker runs from Cloudflare
+scheduled events without a public HTTP Cron endpoint.
 
-The README must describe cron as native Worker scheduled events. It must not tell users to manually call a `/__cron/sync` URI or rely on a public cron secret.
+The README describes Cron as native Worker scheduled events and does not tell
+operators to call a `/__cron/sync` URI or rely on a public Cron secret.
 
 ### GitHub Permissions
 

@@ -48,6 +48,11 @@ remain pending for the coordinator.
 - `docs/rules/docs-sync.md` was not changed: Task 11 implements no new
   repository-wide durable rule beyond the existing verify-before-writing and
   documentation-sync constraints.
+- Post-review correction: the 2026-06-29 design now labels deployment-time
+  provisioning/config rewrite/secret upload/schedule `curl` behavior as
+  pre-migration history. Its current provisioning section states that real
+  D1/KV IDs are materialized only into runner-temporary configs, bindings and
+  Cron remain checked in, and Worker secrets are managed outside routine deploy.
 
 ## Stale-claim classification
 
