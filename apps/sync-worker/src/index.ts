@@ -2,10 +2,13 @@ export const appBoundary = 'sync-worker'
 
 import { BgmClient, BgmHttpError, BgmPlatformClient, fetchAllCollections } from '@airing-cal/bgm-api'
 import { compareAccounts, executeSync, imageRefsFromStatus, isActiveNotFoundSubjectMeta, isConfirmedNotFoundSubjectMeta, mergeCollections, subjectDetailImages, SyncValidationError, transformCalendar, withSubjectDetail, type SubjectDetailMap, type SubjectImages, type SubjectMeta } from '@airing-cal/domain'
-import { getCachedSubjectDetail, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectDetailKey, subjectMetaKey, subjectRefreshKey, syncMetaKey, type MediaRefreshJobV2 } from '@airing-cal/storage'
+import { getCachedSubjectDetail, imageStatusKey, KVStorage, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, subjectDetailKey, subjectMetaKey, subjectRefreshKey, syncMetaKey, type D1DatabaseLike, type MediaRefreshJobV2 } from '@airing-cal/storage'
 import { publicError, sanitizeErrorMessage, syncHeaders } from '@airing-cal/worker-common'
+import type { PublicationDataBucket } from './r2-publication.ts'
 
 interface SyncEnv {
+  AIRING_CAL_D1: D1DatabaseLike
+  AIRING_CAL_DATA_R2: PublicationDataBucket
   AIRING_CAL_KV: {
     get(key: string, type: 'json'): Promise<unknown>
     put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>

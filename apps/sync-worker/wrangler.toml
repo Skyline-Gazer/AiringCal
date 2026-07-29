@@ -9,9 +9,19 @@ crons = ["0 20 * * *"]
 [vars]
 SYNC_MODE = "merge"
 
+[[d1_databases]]
+binding = "AIRING_CAL_D1"
+database_name = "airing-cal-state"
+database_id = "<AIRING_CAL_D1_DATABASE_ID>"
+migrations_dir = "../../migrations"
+
 [[kv_namespaces]]
 binding = "AIRING_CAL_KV"
 id = "<AIRING_CAL_KV_NAMESPACE_ID>"
+
+[[r2_buckets]]
+binding = "AIRING_CAL_DATA_R2"
+bucket_name = "airing-cal-data"
 
 [[queues.producers]]
 binding = "MEDIA_QUEUE"

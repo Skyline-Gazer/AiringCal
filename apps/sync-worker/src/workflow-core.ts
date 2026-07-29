@@ -14,6 +14,7 @@ import {
   syncStagingKey,
   SYNC_RUN_TTL_SECONDS,
   SYNC_STAGING_TTL_SECONDS,
+  D1StateStore,
   type CollectionType,
   type D1DatabaseLike,
   type MediaRefreshJobV3,
@@ -32,6 +33,7 @@ import { assembleFullFetch } from './full-fetch-boundary.ts'
 import { runD1IncrementalSync, type D1SyncResult } from './d1-sync.ts'
 import {
   publishPublicSnapshot,
+  type PublicationDataBucket,
   type PublishPublicSnapshotArguments,
 } from './r2-publication.ts'
 
@@ -43,6 +45,7 @@ const STORAGE_STEP = { retries: { limit: 3, delay: 500, backoff: 'exponential' a
 
 interface KVNamespaceLike {
   get(key: string, type: 'json'): Promise<unknown>
+  get(key: string, type: 'text'): Promise<string | null>
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
   delete(key: string): Promise<void>
 }
@@ -58,6 +61,7 @@ export interface SyncWorkflowEnv {
   BANGUMI_TOKEN: string
   BANGUMI_USERS: string
   AIRING_CAL_D1?: D1DatabaseLike
+  AIRING_CAL_DATA_R2?: PublicationDataBucket
 }
 
 export interface SyncWorkflowDependencies {
@@ -432,7 +436,8 @@ export async function runSyncWorkflow(
       return { key, count: 1, digest: await digest(value) }
     })
 
-    if (mode === 'shadow' && env.AIRING_CAL_D1) {
+    const d1Database = env.AIRING_CAL_D1
+    if (mode === 'shadow' && d1Database) {
       await step.do('persist-d1-shadow', STORAGE_STEP, async () => {
         const completeInput = await getJson<ReturnType<typeof assembleFullFetch>>(
           env.AIRING_CAL_KV,
@@ -446,16 +451,26 @@ export async function runSyncWorkflow(
           completeInput,
           now: completeInput.observedAt,
         })
-        if (dependencies.publication) {
+        const publicationBindings = dependencies.publication ?? (env.AIRING_CAL_DATA_R2
+          ? {
+              state: new D1StateStore(d1Database),
+              dataBucket: env.AIRING_CAL_DATA_R2,
+              pointerKv: {
+                get: (key: string) => env.AIRING_CAL_KV.get(key, 'text'),
+                put: (key: string, value: string) => env.AIRING_CAL_KV.put(key, value),
+              },
+            }
+          : undefined)
+        if (publicationBindings) {
           const publisher = dependencies.publishPublicSnapshot ?? publishPublicSnapshot
-          const publication = await publisher({
-            ...dependencies.publication,
+          const publicationResult = await publisher({
+            ...publicationBindings,
             input: result.publicationInput,
             now: completeInput.observedAt,
             sourceObservedAt: completeInput.observedAt,
             publicationId: event.instanceId,
           })
-          if (publication.status === 'pending') {
+          if (publicationResult.status === 'pending') {
             throw new Error('Public snapshot publication remains pending')
           }
         }

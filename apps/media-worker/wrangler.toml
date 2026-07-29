@@ -3,6 +3,12 @@ main = "src/index.ts"
 compatibility_date = "2026-06-17"
 keep_vars = true
 
+[[d1_databases]]
+binding = "AIRING_CAL_D1"
+database_name = "airing-cal-state"
+database_id = "<AIRING_CAL_D1_DATABASE_ID>"
+migrations_dir = "../../migrations"
+
 [[kv_namespaces]]
 binding = "AIRING_CAL_KV"
 id = "<AIRING_CAL_KV_NAMESPACE_ID>"

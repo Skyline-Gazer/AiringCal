@@ -1,10 +1,14 @@
 export const appBoundary = 'read-worker'
 
-import { imageOriginalKey, imageStatusKey, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncCurrentKey, syncMetaKey, syncRunKey, type SnapshotManifest, type SyncRun } from '@airing-cal/storage'
+import { imageOriginalKey, imageStatusKey, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncCurrentKey, syncMetaKey, syncRunKey, type D1DatabaseLike, type SnapshotManifest, type SyncRun } from '@airing-cal/storage'
 import { isConfirmedNotFoundSubjectMeta, type SubjectMeta } from '@airing-cal/domain'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 
 interface ReadEnv {
+  AIRING_CAL_D1: D1DatabaseLike
+  AIRING_CAL_DATA_R2: {
+    get(key: string): Promise<unknown>
+  }
   AIRING_CAL_KV: {
     get(key: string, type: 'json'): Promise<unknown>
     put(key: string, value: string): Promise<void>

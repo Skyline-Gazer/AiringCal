@@ -20,14 +20,16 @@ class MockKV {
     this.apiCallsByStep.set(this.activeStep, (this.apiCallsByStep.get(this.activeStep) ?? 0) + 1)
   }
 
-  async get(key: string, type: 'json') {
+  async get(key: string, type: 'json'): Promise<unknown>
+  async get(key: string, type: 'text'): Promise<string | null>
+  async get(key: string, type: 'json' | 'text') {
     this.recordCall()
-    assert.equal(type, 'json')
     if (this.failingGets.has(key)) throw new Error(`KV read failed for ${key}`)
     if (this.nullGets.has(key)) return null
     if (this.nullOnceGets.delete(key)) return null
-    if (this.replacementGets.has(key)) return this.replacementGets.get(key)
-    return this.values.get(key) ?? null
+    const value = this.replacementGets.has(key) ? this.replacementGets.get(key) : this.values.get(key)
+    if (type === 'text') return typeof value === 'string' ? value : value === undefined ? null : JSON.stringify(value)
+    return value ?? null
   }
 
   recordExternalCall() {
@@ -945,9 +947,12 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
   }> = []
   let mediaUncertain = 0
   let publicationAttempts = 0
+  const dataBucket = {} as never
+  kv.values.set('public:current', 'legacy-pointer')
   const env = {
     ...workflowEnv(kv, []),
     AIRING_CAL_D1: {} as never,
+    AIRING_CAL_DATA_R2: dataBucket,
   }
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async (url: string | URL | Request) => {
@@ -986,12 +991,10 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
         mediaUncertain = result.media.uncertain
         return result
       },
-      publication: {
-        state: {},
-        dataBucket: {},
-        pointerKv: {},
-      } as never,
-      publishPublicSnapshot: async ({ input, publicationId, sourceObservedAt }) => {
+      publishPublicSnapshot: async ({ state, dataBucket: actualDataBucket, pointerKv, input, publicationId, sourceObservedAt }) => {
+        assert.ok(state)
+        assert.equal(actualDataBucket, dataBucket)
+        assert.equal(await pointerKv.get('public:current'), 'legacy-pointer')
         publicationAttempts++
         publicationCalls.push({
           contentHash: input.content_hash,

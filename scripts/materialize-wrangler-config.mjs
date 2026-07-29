@@ -49,6 +49,10 @@ let config = source
     const rewrittenMain = relative(targetDir, resolve(sourceDir, mainPath)).split(sep).join('/')
     return `main = "${rewrittenMain}"`
   })
+  .replace(/^migrations_dir\s*=\s*"([^"]+)"/gm, (_, migrationsPath) => {
+    const rewrittenMigrations = relative(targetDir, resolve(sourceDir, migrationsPath)).split(sep).join('/')
+    return `migrations_dir = "${rewrittenMigrations}"`
+  })
 
 function tomlString(value) {
   return JSON.stringify(String(value))

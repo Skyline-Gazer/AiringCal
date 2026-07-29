@@ -19,7 +19,7 @@ export interface LegacyMediaJob {
 export type MediaJob = LegacyMediaJob | MediaRefreshJobV2 | MediaRefreshJobV3
 
 export interface MediaEnv {
-  AIRING_CAL_D1?: D1DatabaseLike
+  AIRING_CAL_D1: D1DatabaseLike
   AIRING_CAL_KV: {
     get(key: string, type: 'json'): Promise<unknown>
     put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
