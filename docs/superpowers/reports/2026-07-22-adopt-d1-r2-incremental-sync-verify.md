@@ -1,102 +1,192 @@
 ---
 comet_change: adopt-d1-r2-incremental-sync
-role: task-11-documentation-verification
-status: implemented-pending-review
-verified_scope: documentation-and-config-contracts
+role: task-12-verification-ready
+status: local-evidence-ready-pending-independent-review-and-production
+verified_scope: full-local-gates-materialized-dry-runs-requirement-audit
+verified_source_sha: 38dd213eed4da58b6deef1104c9181528fe6654e
 ---
 
-# D1/R2 incremental sync documentation verification
+# D1/R2 incremental sync verification-ready evidence
 
-This report verifies the Task 11 documentation boundary against implementation
-at base `dc4a1928b8535c014f3493c3d12079be1714b930`. It is not Task 12 production
-shadow evidence: remote migration, deployment, live metrics, and OpenSpec 6.1/6.2
-remain pending for the coordinator.
+This report records fresh local evidence for source SHA
+`38dd213eed4da58b6deef1104c9181528fe6654e`. The verification documentation
+commit contains no runtime or configuration change, so this SHA is the exact
+implementation reviewed by the gates below.
 
-## Code-backed truth table
+This is deliberately not production evidence. No remote D1 migration, merge to
+`dev`, Worker deployment, production Workflow run, live metric query, public
+smoke test, or Comet `verify` transition was performed. OpenSpec 6.1 and 6.2
+remain unchecked for coordinator review and production integration.
 
-| Contract | Current implementation | Evidence |
+## Fresh local gates
+
+The installed CLIs were checked before use:
+
+- `pnpm exec wrangler deploy --help` confirms `--dry-run`, `--outdir`, and
+  `--config`;
+- `./node_modules/.bin/openspec validate --help` confirms `--strict`.
+
+| Command | Result | Exact evidence |
 |---|---|---|
-| Resources | D1 `airing-cal-state`, data R2 `airing-cal-data`, image R2 `airing-cal-images`, KV `airing-cal-kv`, Queue `airing-cal-media` | `scripts/cloudflare-resource-contract.mjs`; `scripts/resolve-cloudflare-resources.test.mjs` |
-| Bindings | read = D1 + KV + image/data R2; sync = D1 + KV + data R2 + Queue + Workflow + SnapshotCoordinator; media = D1 + KV + image R2 + SubjectRefreshCoordinator | `apps/*/wrangler.toml`; `packages/worker-common/src/deploy-config.test.ts` |
-| Runtime read boundary | read-worker handlers still use legacy KV snapshots/status and image R2; D1/data R2 bindings are unused by handlers | `apps/read-worker/src/index.ts`; `packages/worker-common/src/deploy-config.test.ts` |
-| Exact schedule | `0 20 * * *`, once daily at 20:00 UTC / following 04:00 Asia/Shanghai; Cron only creates one deterministic live Workflow instance | `apps/sync-worker/wrangler.toml`; `apps/sync-worker/src/scheduled-trigger.ts` |
-| D1 schema | Primary application tables: `collection_items`, `subject_media`, `sync_runs`, `sync_budget`, `app_state`; `sync_budget_reservations` is the idempotency helper; migration 0002 additively adds `sync_runs.result_json` | `migrations/0001_d1_authoritative_state.sql`; `migrations/0002_sync_run_replay_result.sql` |
-| Budget | Soft 50 / hard 100; only `new_or_changed` receives privileged headroom. Current D1 invocation is shadow-only and has no Queue submitter, so its grant/submission is zero; live still uses compatibility SnapshotCoordinator budgeting | `apps/sync-worker/src/d1-sync.ts`; `apps/sync-worker/src/workflow-core.ts`; `packages/storage/src/d1-budget.test.ts` |
-| Shadow authority | Only manual shadow runs D1 diff/state and data-R2 publication; missing D1/data R2 fails closed | `apps/sync-worker/src/workflow-core.ts`; `apps/sync-worker/src/workflow.test.ts` |
-| Pointer/object keys | KV `public:current`; data R2 `snapshots/v1/{generation}-{content_hash}.json`; pointer contains only version/generation/hash/key/time | `apps/sync-worker/src/r2-publication.ts`; `packages/storage/src/d1-types.ts`; `packages/domain/src/public-snapshot.ts` |
-| Publication recovery | D1 pending → conditional R2 PUT → R2 readback/schema/hash/key/byte verification → fenced pointer PUT → verified D1 state. Pending or ambiguous outcomes replay; previous public pointer remains available | `apps/sync-worker/src/r2-publication.ts`; `packages/storage/src/d1-state-store.test.ts` |
-| Deploy order | immutable SHA validation → resolve/Cron preflight → remote D1 migration → read/media → sync/Workflow describe → frontend | `.github/workflows/deploy.yml`; `packages/worker-common/src/deploy-config.test.ts` |
-| Rollback | Deploy the previous compatible full SHA; retain additive D1 migrations and all D1/R2/KV/Queue/Workflow/Durable Object state; no destructive reverse migration | `README.md`; `.github/workflows/deploy.yml` |
-| Health/metrics | Public health remains a legacy-KV view and does not prove D1/data-R2 health. D1 stores bounded run fields and classified error codes; D1/R2/Queue/KV usage comes from their Cloudflare control planes | `apps/read-worker/src/index.ts`; `migrations/0001_d1_authoritative_state.sql`; `apps/sync-worker/src/d1-sync.ts` |
-| Secret boundary | Public errors omit raw error text; sanitization redacts Bearer/common token values; D1 persists classified error codes; deploy failure-log output redacts Bearer header forms | `packages/worker-common/src/index.ts`; `packages/worker-common/src/errors.test.ts`; `.github/workflows/deploy.yml` |
-| Later owner | Legacy import, `public:current` read cutover, and legacy KV cleanup are not part of this change and belong only to `migrate-public-reads-from-kv` | `openspec/changes/adopt-d1-r2-incremental-sync/design.md`; `openspec/changes/migrate-public-reads-from-kv/` |
+| `pnpm test` | PASS | 514/514 tests, 0 failed |
+| `pnpm typecheck` | PASS | all 9 workspace projects completed |
+| `pnpm build:check` | PASS | frontend/read/media/sync types current and dry-runs completed |
+| `./node_modules/.bin/openspec validate adopt-d1-r2-incremental-sync --strict` | PASS | `Change 'adopt-d1-r2-incremental-sync' is valid` |
+| `git diff --check` | PASS | no output |
+| focused acceptance command listed below | PASS | 271/271 tests, 0 failed |
 
-## Documentation result
+Wrangler's default macOS debug-log directory is outside this worktree sandbox.
+The first `pnpm build:check` still exited 0 and completed all bundles, but
+emitted `EPERM` diagnostics while attempting to write that debug log. Source
+inspection of installed Wrangler 4.100.0 confirmed `WRANGLER_LOG_PATH`; the
+same gate was rerun as
+`WRANGLER_LOG_PATH=/tmp/bangumitv-task12-wrangler-logs pnpm build:check` and
+completed cleanly.
 
-- `README.md` now names the exact resources, bindings, materialized ID env names,
-  daily schedule, five-table model, helper table, budget boundary, pointer/object
-  keys, public-read boundary, deployment order, failure recovery, health/metrics
-  scope, and previous-compatible-SHA rollback.
-- The 2026-06-16 single-Worker proposal is explicitly historical and starts with
-  a current-state correction, so its original examples cannot be mistaken for
-  an operational runbook.
-- The monorepo and Free Plan Workflow designs now include the implemented
-  D1/data-R2 shadow branch and exact deployment/read boundaries.
-- The KV write-amplification document describes the four-hour behavior in the
-  past tense and records what the D1 core superseded versus what remains the
-  compatibility live path.
-- `docs/rules/docs-sync.md` was not changed: Task 11 implements no new
-  repository-wide durable rule beyond the existing verify-before-writing and
-  documentation-sync constraints.
-- Post-review correction: the 2026-06-29 design now labels deployment-time
-  provisioning/config rewrite/secret upload/schedule `curl` behavior as
-  pre-migration history. Its current provisioning section states that real
-  D1/KV IDs are materialized only into runner-temporary configs, bindings and
-  Cron remain checked in, and Worker secrets are managed outside routine deploy.
-- Quality-review correction: the 2026-06-17 implementation plan is now marked
-  archived historical at both file and obsolete Cron-task scope, with
-  `README.md` and superseding designs named as current sources. The 2026-06-29
-  design no longer claims blanket implementation: its current amendments are
-  scoped explicitly, webmaster meta output is implemented, and analytics
-  scripts are accurately recorded as unimplemented/no-output.
+### Full test count
 
-## Stale-claim classification
+| Suite | Passed |
+|---|---:|
+| `@airing-cal/widget` | 26 |
+| `@airing-cal/worker-common` | 13 |
+| `@airing-cal/storage` | 84 |
+| `@airing-cal/domain` | 67 |
+| `@airing-cal/bgm-api` | 28 |
+| `@airing-cal/frontend-worker` | 7 |
+| `@airing-cal/read-worker` | 33 |
+| `@airing-cal/sync-worker` | 183 |
+| `@airing-cal/media-worker` | 50 |
+| root script tests | 23 |
+| **Total** | **514** |
 
-The required scan is:
+Package counts that were not visible in the terminal's truncated full-run
+stream were confirmed with Node's native test runner plus the installed `tsx`
+loader; those count checks also passed.
+
+### Focused acceptance command
 
 ```bash
-rg -n '0 \*/4|every 4 hours|每 4 小时|KV.*权威|逐 subject KV|D1.*future|R2.*future|/__cron/sync' README.md docs
+node --import tsx --test \
+  packages/domain/src/collection-diff.test.ts \
+  packages/storage/src/d1-state-store.test.ts \
+  packages/storage/src/d1-budget.test.ts \
+  apps/sync-worker/src/d1-sync.test.ts \
+  apps/sync-worker/src/r2-publication.test.ts \
+  apps/sync-worker/src/refresh-planner.test.ts \
+  apps/sync-worker/src/workflow.test.ts \
+  apps/media-worker/src/d1-media-state.test.ts \
+  apps/media-worker/src/media-worker.test.ts \
+  apps/read-worker/src/read-worker.test.ts \
+  packages/worker-common/src/deploy-config.test.ts
 ```
 
-Allowed residual matches must be one of:
+Result: **271/271 passed, 0 failed**.
 
-- explicit historical records in plans/designs with an archive/superseded
-  banner or a local historical callout;
-- tests/plans that forbid `0 */4` or a public `/__cron/sync`;
-- explicit negative requirements such as “no per-subject KV write”.
+## Materialized Wrangler verification
 
-No current runbook may instruct operators to use the four-hour schedule, a
-public Cron endpoint, or D1/data R2 as the current public read source.
+Temporary configs used only canonical fake identifiers:
 
-## Verification gates
+- D1 database ID:
+  `11111111-1111-4111-8111-111111111111`;
+- KV namespace ID:
+  `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;
+- frontend build SHA:
+  `38dd213eed4da58b6deef1104c9181528fe6654e`.
 
-Task 11 runs and records these gates before commit:
+Read, Media, and Sync were materialized with resource IDs only, matching their
+deploy jobs. Frontend was materialized with build metadata, matching its
+separate deploy job. An executable assertion rejected unresolved
+`<PLACEHOLDER>`-style values and checked both required and forbidden bindings.
+
+| Config | Asserted materialized matrix | Dry-run |
+|---|---|---|
+| Read | D1 + legacy KV + image R2 + data R2; no Queue/Workflow/DO | PASS, 22.91 KiB / gzip 6.15 KiB |
+| Media | D1 + legacy KV compatibility + image R2 + Queue consumer + `SubjectRefreshCoordinator`; no data R2/Workflow | PASS, 107.60 KiB / gzip 21.03 KiB |
+| Sync | `SyncWorkflow` + D1 + data R2 + legacy KV compatibility + media Queue producer + `SnapshotCoordinator`; no image R2/Queue consumer | PASS, 225.08 KiB / gzip 45.33 KiB |
+| Frontend | Read and Sync service bindings plus build metadata only | PASS, 69.36 KiB / gzip 16.65 KiB |
+
+The four exact materialized configs all passed:
 
 ```bash
-node --test packages/worker-common/src/deploy-config.test.ts scripts/*.test.mjs
-./node_modules/.bin/openspec validate adopt-d1-r2-incremental-sync --strict
-git diff --check
+WRANGLER_LOG_PATH=/tmp/bangumitv-task12-wrangler-logs/<app> \
+  pnpm exec wrangler deploy --dry-run \
+  --outdir /tmp/bangumitv-task12-wrangler/dist-<app> \
+  --config /tmp/bangumitv-task12-wrangler/wrangler-<app>.toml
 ```
 
-Final results:
+One discarded setup attempt incorrectly supplied frontend-only
+`BANGUMI_GIT_*` variables to Sync and therefore appended a duplicate `[vars]`
+table. `.github/workflows/deploy.yml` proves those variables are scoped only to
+the frontend job. The production-mirroring rematerialization above is the
+accepted evidence; no repository file was changed to hide the setup error.
 
-- docs/config contract suite: **32/32 passed**;
-- strict OpenSpec validation: **passed** (`Change 'adopt-d1-r2-incremental-sync' is valid`);
-- `git diff --check`: **passed**;
-- stale-claim scan: **passed after classification**. Remaining matches are
-  historical implementation records, scan commands, explicit prohibitions of
-  the old Cron endpoint/schedule, or negative requirements forbidding
-  per-subject KV writes. No current runbook contains an actionable stale claim.
+## OpenSpec requirement audit
 
-Task 12 package/full gates, remote migration, deployment, shadow metrics, and
-OpenSpec 6.1/6.2 checkoff are deliberately not claimed here.
+Every added requirement was checked against implementation and an executable
+test. The result is **16/16 locally approved**.
+
+| OpenSpec requirement | Authoritative source | Fresh executable evidence | Result |
+|---|---|---|---|
+| State resources are replay-safe to bootstrap | `scripts/cloudflare-resource-contract.mjs`; `scripts/provision-cloudflare-resources.mjs` | provision tests create once, reuse D1 ID, re-list races, and replay later pages/cursors | PASS |
+| D1 migration precedes Worker upload | `.github/workflows/deploy.yml` | deploy-config test reconstructs `resolve → migration → read/media → sync → frontend` dependencies | PASS |
+| Missing resources fail before upload | `scripts/resolve-cloudflare-resources.mjs` | resolver tests cover missing D1, KV, data R2, image R2, and Queue | PASS |
+| D1 stores mutable authoritative state | `migrations/0001_d1_authoritative_state.sql`; `packages/storage/src/d1-state-store.ts` | migration/schema and typed state-store tests in the 514-test gate | PASS |
+| Collection diff ignores runtime fields | `packages/storage/src/canonical-json.ts`; `packages/domain/src/collection-diff.ts` | canonical hash excludes observation fields; later identical observation plans zero writes | PASS |
+| Deletion requires two successful complete reads | `packages/domain/src/collection-diff.ts` | first/second missing, same-run replay, incomplete input, and vanished staged page tests | PASS |
+| QoS budget reservation is atomic | `packages/storage/src/d1-budget.ts` | final-slot concurrency, stable reservation replay, and hard-limit tests | PASS |
+| Workflow incrementally commits D1 | `apps/sync-worker/src/d1-sync.ts` | unchanged writes zero rows, one change writes one, replay avoids a second mutation, lifecycle counters persist | PASS |
+| Workflow publishes a verifiable R2 candidate | `apps/sync-worker/src/workflow-core.ts`; `apps/sync-worker/src/r2-publication.ts` | D1-before-publication integration plus changed/no-op/failure publication tests | PASS |
+| Subject media authority is D1 and new flow avoids subject KV | `apps/media-worker/src/d1-media-state.ts`; `apps/media-worker/src/index.ts` | semantic no-op is zero D1/R2 writes; V3 Queue/direct/DO paths perform no legacy per-subject puts | PASS |
+| Cold media rotates across seven days | `apps/sync-worker/src/refresh-planner.ts` | all seven residues selected exactly once and D1 orchestration exercises seven UTC shards | PASS |
+| Public snapshot is one immutable object | `packages/domain/src/public-snapshot.ts`; `apps/sync-worker/src/r2-publication.ts` | exact content-addressed key plus changed publication ordering test | PASS |
+| Unchanged public content performs zero publication writes | `apps/sync-worker/src/r2-publication.ts` | identical verified content allocates no generation and performs zero R2/KV writes | PASS |
+| Pointer switches last | `apps/sync-worker/src/r2-publication.ts` | event-order test and D1/R2/readback/KV injected failures preserve the prior pointer | PASS |
+| D1/R2 publication is automatically verified | `.github/workflows/ci.yml`; package test scripts | full 514/514 plus focused 271/271 acceptance gates | PASS |
+| Deploy config resolves all state resources | `scripts/materialize-wrangler-config.mjs`; Worker TOMLs; deploy workflow | no-placeholder matrix assertion plus four materialized Wrangler dry-runs | PASS |
+
+## Design §10 acceptance audit
+
+The result is **8/8 locally approved**.
+
+| Criterion | Evidence | Result |
+|---|---|---|
+| Identical complete input: collection 0 writes, data R2 0 PUT, generation unchanged, `public:current` 0 PUT | `d1-sync.test.ts`: unchanged input and response-loss replay; `d1-state-store.test.ts`: unchanged plan/replayed transition zero writes; `r2-publication.test.ts`: unchanged before allocation/R2/KV | PASS |
+| Rate, tags, comment, collection status, episode and volume progress change without depending on `updated_at` | collection-diff business-field matrix changes each field independently while the fixture timestamp remains constant and plans exactly one update | PASS |
+| First missing is retained; only a later complete miss deletes; partial/failed pages never advance deletion | domain, D1 orchestration, and staged-page disappearance tests | PASS |
+| Daily media grant stays `<= 100` under concurrency and replay | D1 final-slot concurrency and replay tests; coordinator concurrent/replayed hard-limit tests; Workflow hard-limited counter test | PASS |
+| New media flow writes no per-subject legacy KV | V3 no-D1 fail-closed, D1-only Queue/direct/DO, and unchanged 659-subject Workflow tests | PASS |
+| R2/pointer failures retain the old public version | D1 pending, R2 PUT/GET, schema/generation/hash/key, definite KV, and ambiguous KV tests | PASS |
+| Bootstrap is replayable and missing resource/migration failures stop before upload | provision/resolve tests plus deploy dependency audit | PASS |
+| Existing public APIs remain on legacy KV | `apps/read-worker/src/index.ts` constructs `KVStorage` for collections/calendar/health and reads cache keys from KV; deploy-config test proves D1/data-R2 are not referenced after `ReadEnv`; read-worker 33/33 tests pass | PASS |
+
+## Code-quality review
+
+- No runtime, config, migration, test, or public documentation defect was found.
+- D1 collection mutations are CAS-protected and replay reconciliation accepts
+  only exact persisted outcomes.
+- Publication uses D1 pending/verified/source/claim state, immutable R2 bytes,
+  full readback validation, a fenced single KV pointer write, and post-pointer
+  D1 promotion.
+- Media V3 fails closed without D1 and never falls back to legacy subject KV;
+  legacy V2 compatibility remains intentionally separate.
+- Read Worker shadow bindings are present for deployment compatibility but are
+  unused by current public handlers.
+
+Fresh verifier verdict: **APPROVED for independent spec/code-quality review**.
+The coordinator must still obtain those independent approvals before checking
+OpenSpec 6.1 or integrating the release candidate.
+
+## Explicitly pending production evidence
+
+- remote D1 migration: **pending**;
+- release-candidate integration into `dev`: **pending user decision**;
+- deployment workflow URL/run ID/deployed SHA: **pending**;
+- live resolved resource matrix and metrics: **pending**;
+- shadow snapshot readback and legacy comparison: **pending**;
+- public production smoke tests: **pending**;
+- OpenSpec 6.1 and 6.2: **unchecked**;
+- Comet build guard and transition to `verify`: **not run**.
+
+The next production step must preserve the public Read Worker on legacy KV. The
+separate `migrate-public-reads-from-kv` change continues to own import, cutover,
+fallback, and legacy cleanup.

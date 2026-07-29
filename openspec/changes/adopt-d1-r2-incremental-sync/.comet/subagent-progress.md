@@ -286,3 +286,34 @@
 - Final review result: documentation spec/truth APPROVED and quality APPROVED with no remaining findings; durable repository rules correctly remained unchanged.
 - Implementation/fix commits: `626518a`, `8944443`, and `528c937` are pushed.
 - Task 11 checkoff: plan Steps 1–4 and OpenSpec 5.3 complete; production evidence and Task 12 remain pending.
+
+## Task 12 Verification-ready Implementation
+
+- Plan task: `Task 12: 完整验证、生产 migration 与 shadow release`, Steps 1–4 only.
+- Stage: `implemented-pending-independent-review`.
+- Verified source SHA: `38dd213eed4da58b6deef1104c9181528fe6654e`.
+- Full gates: repository tests 514/514; all nine workspace typechecks; all four
+  Worker build checks; strict OpenSpec; and `git diff --check` pass.
+- Focused acceptance evidence: 271/271 across collection diff, D1 state/budget,
+  D1 orchestration, R2 publication, refresh planning, Workflow, D1 media,
+  Media Worker, Read Worker, and deploy-config suites.
+- Materialized config evidence: canonical fake D1/KV IDs, executable
+  no-placeholder and exact binding-matrix assertions, and all four
+  read/media/sync/frontend Wrangler dry-runs pass. Sync exposes Workflow, D1,
+  data R2, KV, Queue, and Durable Object; Read and Media match their intended
+  compatibility matrices; Frontend exposes only Read/Sync services plus build
+  metadata.
+- Requirement audit: every one of the 16 OpenSpec added requirements and every
+  one of the eight Design §10 criteria has source plus executable evidence;
+  fresh verifier found no defect requiring a RED/fix cycle.
+- Public-read boundary: Read Worker handlers still use legacy KV; D1/data-R2
+  bindings remain unused by handlers.
+- Setup investigation: one discarded dry-run setup incorrectly supplied
+  frontend-only build metadata to Sync, duplicating `[vars]`. The deploy
+  workflow proves the variables are frontend-scoped; production-mirroring
+  rematerialization passed without repository changes.
+- Pending boundary: no remote migration, `dev` integration, deploy, live metric
+  query, shadow comparison, public smoke test, OpenSpec 6.1/6.2 checkoff, build
+  guard, or Comet `verify` transition was performed.
+- OpenSpec 6.1 and 6.2 deliberately remain unchecked for coordinator review and
+  production evidence.
