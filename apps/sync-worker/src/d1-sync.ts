@@ -10,6 +10,7 @@ import {
 import {
   canonicalJson,
   D1StateStore,
+  isMediaRefreshJobV4,
   sha256Canonical,
   StaleCollectionDiffError,
   type BudgetReservationRequest,
@@ -37,6 +38,7 @@ import {
   selectRefreshCandidates,
   type ColdRefreshCursor,
   type RefreshCandidate,
+  type RefreshPriority,
 } from './refresh-planner.ts'
 
 const MEDIA_SOFT_LIMIT = 50
@@ -117,6 +119,22 @@ interface CollectionCheckpointEnvelope {
   input_hash: string
   checkpoint_hash: string
   collection: CollectionCheckpoint
+}
+
+interface MediaPendingCheckpoint {
+  collection: CollectionCheckpoint
+  request: BudgetReservationRequest<MediaRefreshJobV4>
+  candidates: number
+  selected_priorities: RefreshPriority[]
+  cold_cursor: ColdRefreshCursor
+  cold_cursor_version: number
+}
+
+interface MediaPendingCheckpointEnvelope {
+  schema_version: 1
+  input_hash: string
+  checkpoint_hash: string
+  media_pending: MediaPendingCheckpoint
 }
 
 function requireNonNegativeInteger(value: unknown, field: string): number {
@@ -267,6 +285,101 @@ async function decodeCollectionCheckpoint(
     deleted: requireNonNegativeInteger(raw.deleted, 'collection.deleted'),
     restored: requireNonNegativeInteger(raw.restored, 'collection.restored'),
     publicationInput: await decodePublicationInput(raw.publicationInput),
+  }
+}
+
+function requireMediaRequest(
+  value: unknown,
+  expectedInstanceId: string,
+): BudgetReservationRequest<MediaRefreshJobV4> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Invalid D1 sync media checkpoint request')
+  }
+  const raw = value as Partial<BudgetReservationRequest<unknown>>
+  if (
+    typeof raw.date !== 'string'
+    || !/^\d{4}-\d{2}-\d{2}$/.test(raw.date)
+    || raw.resource !== 'media'
+    || raw.reservationId !== `${expectedInstanceId}:media`
+    || !Array.isArray(raw.jobs)
+    || !raw.jobs.every(isMediaRefreshJobV4)
+    || raw.jobs.some((job) => job.generation.run_id !== expectedInstanceId)
+    || !Number.isSafeInteger(raw.privilegedCount)
+    || (raw.privilegedCount as number) < 0
+    || (raw.privilegedCount as number) > raw.jobs.length
+    || raw.softLimit !== MEDIA_SOFT_LIMIT
+    || raw.hardLimit !== MEDIA_HARD_LIMIT
+  ) {
+    throw new Error('Invalid D1 sync media checkpoint request')
+  }
+  return raw as BudgetReservationRequest<MediaRefreshJobV4>
+}
+
+async function decodeMediaPendingCheckpoint(
+  resultJson: string | null,
+  expectedInputHash: string,
+  expectedInstanceId: string,
+): Promise<MediaPendingCheckpoint | undefined> {
+  if (resultJson === null) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(resultJson)
+  } catch {
+    throw new Error('Invalid D1 sync media checkpoint JSON')
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('Invalid D1 sync media checkpoint')
+  }
+  if (!Object.hasOwn(parsed, 'media_pending')) return undefined
+  const envelope = parsed as Partial<MediaPendingCheckpointEnvelope>
+  if (envelope.schema_version !== 1 || envelope.input_hash !== expectedInputHash) {
+    throw new Error('D1 sync instance input mismatch')
+  }
+  if (
+    typeof envelope.checkpoint_hash !== 'string'
+    || !/^[0-9a-f]{64}$/.test(envelope.checkpoint_hash)
+    || typeof envelope.media_pending !== 'object'
+    || envelope.media_pending === null
+    || Array.isArray(envelope.media_pending)
+    || await sha256Canonical(envelope.media_pending) !== envelope.checkpoint_hash
+  ) {
+    throw new Error('Invalid D1 sync media checkpoint')
+  }
+  const raw = envelope.media_pending
+  const request = requireMediaRequest(raw.request, expectedInstanceId)
+  const priorities = raw.selected_priorities
+  const allowedPriorities = new Set<RefreshPriority>(['new_or_changed', 'hot', 'cold', 'retry'])
+  if (
+    !Array.isArray(priorities)
+    || priorities.length !== request.jobs.length
+    || !priorities.every((priority) => allowedPriorities.has(priority))
+    || request.privilegedCount !== priorities.filter(
+      (priority) => priority === 'new_or_changed',
+    ).length
+  ) {
+    throw new Error('Invalid D1 sync media checkpoint priorities')
+  }
+  const candidates = requireNonNegativeInteger(raw.candidates, 'media_pending.candidates')
+  if (candidates < request.jobs.length) {
+    throw new Error('Invalid D1 sync media checkpoint candidates')
+  }
+  return {
+    collection: {
+      plan: requireCollectionPlan(raw.collection?.plan),
+      rowsWritten: requireNonNegativeInteger(raw.collection?.rowsWritten, 'media_pending.collection.rowsWritten'),
+      firstMissing: requireNonNegativeInteger(raw.collection?.firstMissing, 'media_pending.collection.firstMissing'),
+      deleted: requireNonNegativeInteger(raw.collection?.deleted, 'media_pending.collection.deleted'),
+      restored: requireNonNegativeInteger(raw.collection?.restored, 'media_pending.collection.restored'),
+      publicationInput: await decodePublicationInput(raw.collection?.publicationInput),
+    },
+    request,
+    candidates,
+    selected_priorities: priorities as RefreshPriority[],
+    cold_cursor: decodeColdCursor(raw.cold_cursor),
+    cold_cursor_version: requireNonNegativeInteger(
+      raw.cold_cursor_version,
+      'media_pending.cold_cursor_version',
+    ),
   }
 }
 
@@ -717,6 +830,7 @@ export async function runD1IncrementalSync({
   }
 
   let collectionCheckpoint: CollectionCheckpoint | undefined
+  let mediaPendingCheckpoint: MediaPendingCheckpoint | undefined
   let preparedResult: D1SyncResult | undefined
   let preparedColdCursor: PreparedColdCursorTransition | undefined
   let preparedResultJson = existingRun?.result_json ?? undefined
@@ -735,12 +849,24 @@ export async function runD1IncrementalSync({
       if (activeArtifact?.kind === 'collection') {
         collectionCheckpoint = await decodeCollectionCheckpoint(artifactJson, completeInputHash)
         if (!collectionCheckpoint) throw new Error('Invalid D1 sync collection replay artifact')
+      } else if (activeArtifact?.kind === 'media_pending') {
+        mediaPendingCheckpoint = await decodeMediaPendingCheckpoint(
+          artifactJson,
+          completeInputHash,
+          instanceId,
+        )
+        if (!mediaPendingCheckpoint) throw new Error('Invalid D1 sync media replay artifact')
+        collectionCheckpoint = mediaPendingCheckpoint.collection
       } else if (activeArtifact?.kind === 'prepared') {
         preparedResult = await decodePreparedResult(artifactJson, completeInputHash, instanceId)
         if (!preparedResult) throw new Error('Invalid prepared D1 sync replay artifact')
       } else {
         collectionCheckpoint = await decodeCollectionCheckpoint(artifactJson, completeInputHash)
-        preparedResult = collectionCheckpoint
+        mediaPendingCheckpoint = collectionCheckpoint
+          ? undefined
+          : await decodeMediaPendingCheckpoint(artifactJson, completeInputHash, instanceId)
+        if (mediaPendingCheckpoint) collectionCheckpoint = mediaPendingCheckpoint.collection
+        preparedResult = collectionCheckpoint || mediaPendingCheckpoint
           ? undefined
           : await decodePreparedResult(artifactJson, completeInputHash, instanceId)
       }
@@ -786,9 +912,10 @@ export async function runD1IncrementalSync({
     let restored = collectionCheckpoint?.restored ?? 0
     let staleReplans = 0
     let responseLossReconciliations = 0
-    let collectionApplied = false
+    let collectionApplied = mediaPendingCheckpoint !== undefined
     let mediaRowsForRun: SubjectMediaRow[] | undefined
     let collectionArtifact = collectionCheckpoint ? activeArtifact : undefined
+    if (mediaPendingCheckpoint) collectionArtifact = undefined
     let collectionArtifactAdopted = collectionArtifact !== undefined
     while (!collectionApplied) {
       if (!plan || !publicInput) {
@@ -907,32 +1034,89 @@ export async function runD1IncrementalSync({
         throw error
       }
     }
-    if (!collectionApplied || !plan || !publicInput) {
+    if (!collectionApplied || !plan || !publicInput || !collectionCheckpoint) {
       throw new Error('Collection diff reconciliation failed')
     }
     for (const supersededArtifact of supersededArtifacts) {
       await cleanupReplayArtifactIfUnreferenced(store, instanceId, supersededArtifact)
     }
     supersededArtifacts.length = 0
-    const mediaRows = mediaRowsForRun ?? await store.listSubjectMediaRows()
-    const utcDay = new Date(now * 1000).toISOString().slice(0, 10)
-    const previousCursor = await store.getAppState('media:cold-cursor', decodeColdCursor) ?? { subject_ids: [] }
-    const selection = selectRefreshCandidates(
-      planMediaCandidates(completeInput, mediaRows, plan, now),
-      utcDay,
-      { soft: MEDIA_SOFT_LIMIT, hard: MEDIA_HARD_LIMIT },
-      previousCursor,
-    )
-    const jobs = mediaJobs(instanceId, completeInput.observedAt, selection.selected)
-    const request: BudgetReservationRequest<MediaRefreshJobV4> = {
-      date: new Date(now * 1000).toISOString().slice(0, 10),
-      resource: 'media',
-      reservationId: `${instanceId}:media`,
-      jobs,
-      privilegedCount: selection.selected.filter(({ priority }) => priority === 'new_or_changed').length,
-      softLimit: MEDIA_SOFT_LIMIT,
-      hardLimit: MEDIA_HARD_LIMIT,
+    let mediaPendingArtifact = mediaPendingCheckpoint ? activeArtifact : undefined
+    if (!mediaPendingCheckpoint) {
+      const mediaRows = mediaRowsForRun ?? await store.listSubjectMediaRows()
+      const utcDay = new Date(now * 1000).toISOString().slice(0, 10)
+      const previousCursor = await store.getAppState('media:cold-cursor', decodeColdCursor)
+        ?? { subject_ids: [] }
+      const selection = selectRefreshCandidates(
+        planMediaCandidates(completeInput, mediaRows, plan, now),
+        utcDay,
+        { soft: MEDIA_SOFT_LIMIT, hard: MEDIA_HARD_LIMIT },
+        previousCursor,
+      )
+      const jobs = mediaJobs(instanceId, completeInput.observedAt, selection.selected)
+      const request: BudgetReservationRequest<MediaRefreshJobV4> = {
+        date: utcDay,
+        resource: 'media',
+        reservationId: `${instanceId}:media`,
+        jobs,
+        privilegedCount: selection.selected
+          .filter(({ priority }) => priority === 'new_or_changed').length,
+        softLimit: MEDIA_SOFT_LIMIT,
+        hardLimit: MEDIA_HARD_LIMIT,
+      }
+      const pendingCheckpoint: MediaPendingCheckpoint = {
+        collection: collectionCheckpoint,
+        request,
+        candidates: selection.candidates,
+        selected_priorities: selection.selected.map(({ priority }) => priority),
+        cold_cursor: selection.cold_cursor,
+        cold_cursor_version: now,
+      }
+      mediaPendingCheckpoint = pendingCheckpoint
+      const mediaCheckpointArtifactJson = canonicalJson({
+        schema_version: 1,
+        input_hash: completeInputHash,
+        checkpoint_hash: await sha256Canonical(pendingCheckpoint),
+        media_pending: pendingCheckpoint,
+      } satisfies MediaPendingCheckpointEnvelope)
+      mediaPendingArtifact = await persistReplayArtifact(
+        store,
+        instanceId,
+        completeInputHash,
+        'media_pending',
+        mediaCheckpointArtifactJson,
+      )
+      try {
+        await store.updateSyncRun(instanceId, {
+          stage: 'media_pending',
+          heartbeat_at: now,
+          collection_count: completeInput.collections.length,
+          changed_count: changedRows(plan).length,
+          missing_count: plan.firstMissing.length,
+          deleted_count: plan.confirmedDeleted.length,
+          media_selected_count: request.jobs.length,
+          media_granted_count: 0,
+          input_hash: completeInputHash,
+          public_hash: publicInput.content_hash,
+          result_json: mediaPendingArtifact.manifestJson,
+        })
+      } catch (error) {
+        const persisted = await store.getSyncRun(instanceId)
+        if (persisted?.result_json !== mediaPendingArtifact.manifestJson) {
+          await cleanupReplayArtifactBestEffort(store, instanceId, mediaPendingArtifact)
+          throw error
+        }
+      }
+      if (collectionArtifact) {
+        await cleanupReplayArtifactIfUnreferenced(store, instanceId, collectionArtifact)
+        collectionArtifact = undefined
+      }
     }
+    if (!mediaPendingCheckpoint || !mediaPendingArtifact) {
+      throw new Error('Media checkpoint preparation failed')
+    }
+    const request = mediaPendingCheckpoint.request
+    const jobs = request.jobs
     const reservation = jobs.length === 0 || suppliedSubmitMedia === undefined
       ? {
           granted: 0,
@@ -946,11 +1130,12 @@ export async function runD1IncrementalSync({
     const uncertain = reservation.submission === 'uncertain' ? reservation.granted : 0
     const nextColdCursor = {
       subject_ids: [
-        ...selection.selected
+        ...jobs
           .slice(reservation.granted)
-          .filter(({ priority }) => priority === 'cold')
+          .filter((_, index) =>
+            mediaPendingCheckpoint!.selected_priorities[index + reservation.granted] === 'cold')
           .map(({ subject_id }) => subject_id),
-        ...selection.cold_cursor.subject_ids,
+        ...mediaPendingCheckpoint.cold_cursor.subject_ids,
       ],
     }
     const changed = changedRows(plan).length
@@ -962,11 +1147,11 @@ export async function runD1IncrementalSync({
       restored,
       publicationInput: publicInput,
       media: {
-        candidates: selection.candidates,
+        candidates: mediaPendingCheckpoint.candidates,
         granted: reservation.granted,
         confirmed,
         uncertain,
-        deferred: Math.max(0, selection.candidates - reservation.granted),
+        deferred: Math.max(0, mediaPendingCheckpoint.candidates - reservation.granted),
       },
       runId: instanceId,
     }
@@ -975,7 +1160,7 @@ export async function runD1IncrementalSync({
       input_hash: completeInputHash,
       result: preparedResult,
       cold_cursor: nextColdCursor,
-      cold_cursor_version: now,
+      cold_cursor_version: mediaPendingCheckpoint.cold_cursor_version,
     } satisfies PreparedResultEnvelope)
     const preparedArtifact = await persistReplayArtifact(
       store,
@@ -1009,8 +1194,17 @@ export async function runD1IncrementalSync({
     if (collectionArtifact && collectionArtifact.chunkKeys.length > 0) {
       await cleanupReplayArtifactIfUnreferenced(store, instanceId, collectionArtifact)
     }
-    if (!sameCursor(previousCursor, nextColdCursor)) {
-      await store.putAppStateIfNewer('media:cold-cursor', nextColdCursor, now)
+    if (mediaPendingArtifact.chunkKeys.length > 0) {
+      await cleanupReplayArtifactIfUnreferenced(store, instanceId, mediaPendingArtifact)
+    }
+    const currentColdCursor = await store.getAppState('media:cold-cursor', decodeColdCursor)
+      ?? { subject_ids: [] }
+    if (!sameCursor(currentColdCursor, nextColdCursor)) {
+      await store.putAppStateIfNewer(
+        'media:cold-cursor',
+        nextColdCursor,
+        mediaPendingCheckpoint.cold_cursor_version,
+      )
     }
     const transition = await store.completeSyncRun(instanceId, {
       heartbeat_at: now,

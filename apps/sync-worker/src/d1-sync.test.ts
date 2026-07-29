@@ -204,6 +204,7 @@ class RecordingStore implements D1IncrementalSyncStore {
   loseApplyResponseCount = 0
   applyResponseLossCheckpoint: 'exact' | 'missing' | 'input_mismatch' = 'exact'
   loseUpdateResponseOnce = false
+  failUpdateBeforePersistOnce = false
   loseCompleteResponseOnce = false
   reservation: BudgetReservationResult = {
     granted: 0,
@@ -315,6 +316,10 @@ class RecordingStore implements D1IncrementalSyncStore {
   }
   async updateSyncRun(_instanceId: string, update: SyncRunUpdate) {
     this.updated.push(structuredClone(update))
+    if (this.failUpdateBeforePersistOnce) {
+      this.failUpdateBeforePersistOnce = false
+      throw new Error('media checkpoint persistence failed before commit')
+    }
     if (this.currentRun) this.currentRun = { ...this.currentRun, ...structuredClone(update) }
     if (this.loseUpdateResponseOnce) {
       this.loseUpdateResponseOnce = false
@@ -1121,16 +1126,111 @@ test('completion response loss returns the persisted prepared result without a d
   assert.equal(store.currentRun?.status, 'ok')
 })
 
-test('prepared-result update response loss recovers the checkpoint before completion', async () => {
+test('media-pending update response loss is reconciled before submission and completion', async () => {
   const store = new RecordingStore()
   store.loseUpdateResponseOnce = true
 
   const result = await run(store, completeInput(), undefined, observedAt, 'lost-prepared-update')
 
   assert.equal(result.rowsWritten, 1)
-  assert.equal(store.updated.length, 1)
+  assert.equal(store.updated.length, 2)
   assert.equal(store.completed.length, 1)
   assert.equal(store.failed.length, 0)
+  assert.equal(store.currentRun?.status, 'ok')
+})
+
+test('media submission has zero external side effects before its pending checkpoint is adopted', async () => {
+  const store = new RecordingStore()
+  store.failUpdateBeforePersistOnce = true
+  let submissions = 0
+
+  await assert.rejects(
+    run(store, completeInput(), async () => {
+      submissions++
+      return {
+        granted: 1,
+        consumed: 1,
+        soft_limit: 50,
+        hard_limit: 100,
+        submission: 'submitted',
+      }
+    }, observedAt, 'media-checkpoint-failure'),
+    /media checkpoint persistence failed before commit/,
+  )
+
+  assert.equal(submissions, 0)
+  assert.equal(store.currentRun?.status, 'error')
+  const retained = JSON.parse(store.currentRun!.result_json!)
+  assert.equal(retained.artifact.kind, 'collection')
+  assert.equal(
+    [...store.appState.keys()].filter((key) =>
+      key.startsWith('sync:artifact:media-checkpoint-failure:')).length,
+    retained.artifact.chunk_count,
+  )
+})
+
+test('accepted media submission process loss replays the frozen request and cold cursor target', async () => {
+  const utcShard = new Date(observedAt * 1000).getUTCDay()
+  const coldIds = Array.from({ length: 52 }, (_, index) => utcShard + 7 * (index + 1))
+  const watched = coldIds.map((subjectId) => {
+    const entry = collection(subjectId)
+    return { ...entry, collection: { ...entry.collection, type: 2 } }
+  })
+  const store = new RecordingStore()
+  await run(store, completeInput(watched), undefined, observedAt, 'accepted-loss-seed')
+  store.mediaRows = coldIds.map((subjectId) => mediaRow(subjectId))
+  store.loseFailurePersistenceOnce = true
+  const requests: BudgetReservationRequest[] = []
+  let queueSends = 0
+  const durableResult = {
+    granted: 1,
+    consumed: 1,
+    soft_limit: 50,
+    hard_limit: 100,
+    submission: 'submitted' as const,
+  }
+  const submit = async (request: BudgetReservationRequest) => {
+    requests.push(structuredClone(request))
+    if (requests.length === 1) {
+      assert.equal(JSON.parse(store.currentRun!.result_json!).artifact.kind, 'media_pending')
+      queueSends++
+      throw new Error('simulated process loss after accepted Queue submission')
+    }
+    return durableResult
+  }
+  const instanceId = 'accepted-media-process-loss'
+
+  await assert.rejects(
+    run(store, completeInput(watched), submit, observedAt, instanceId),
+    /simulated process loss after accepted Queue submission/,
+  )
+  assert.equal(store.currentRun?.status, 'running')
+  assert.equal(queueSends, 1)
+
+  store.mediaRows = coldIds.map((subjectId) => mediaRow(subjectId, {
+    retry_count: 1,
+    retry_after: observedAt + 86_400,
+    error_code: 'UPSTREAM_ERROR',
+  }))
+  const replay = await run(
+    store,
+    completeInput(watched),
+    submit,
+    observedAt + 60,
+    instanceId,
+  )
+
+  assert.equal(queueSends, 1)
+  assert.equal(requests.length, 2)
+  assert.equal(await sha256Canonical(requests[1]), await sha256Canonical(requests[0]))
+  assert.deepEqual(replay.media, {
+    candidates: 52,
+    granted: 1,
+    confirmed: 1,
+    uncertain: 0,
+    deferred: 51,
+  })
+  assert.deepEqual(store.appState.get('media:cold-cursor'), { subject_ids: coldIds.slice(1) })
   assert.equal(store.currentRun?.status, 'ok')
 })
 

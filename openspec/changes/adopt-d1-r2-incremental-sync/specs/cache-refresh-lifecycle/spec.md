@@ -27,6 +27,17 @@
 - **WHEN** 同一稳定运行与完整输入在不同执行时间重试 media planning
 - **THEN** 生成的 `{ observed_at, run_id }` 完全相同，且较新的 authoritative observation 按 tuple 顺序推进 V4 围栏
 
+### Requirement: 媒体外部提交必须由 durable pending checkpoint 保护
+系统 MUST 在预算/Queue 外部提交前持久化并采用 versioned `media_pending` artifact，冻结规范请求、候选优先级与 cold cursor 计划。running replay MUST 使用冻结请求及稳定 reservation ID，不得根据后续变化的 `subject_media` 重新规划。
+
+#### Scenario: Queue 接受后进程丢失
+- **WHEN** Queue 已接受媒体提交，但进程在 prepared result 持久化前丢失，且重放前 `subject_media` 发生变化
+- **THEN** 重放提交 byte-identical 请求并由预算幂等状态返回已存结果，不执行第二次 Queue send，且候选计数、deferred 计数和 cold cursor 目标保持不变
+
+#### Scenario: pending checkpoint 未采用
+- **WHEN** `media_pending` manifest 持久化或 `sync_runs` adoption 失败
+- **THEN** 系统不得调用预算/Queue 提交，运行保留最后一个已采用 checkpoint 并进入分类失败路径
+
 ### Requirement: cold media 必须七日轮转
 `watched` subject MUST 作为 cold 按 subject ID 确定性分成七个 shard，其他收藏状态 MUST 作为 hot 按到期时间调度。
 

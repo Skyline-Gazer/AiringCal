@@ -4,7 +4,7 @@ const REPLAY_ARTIFACT_CHUNK_CHARS = 128_000
 const REPLAY_ARTIFACT_MANIFEST_MAX_BYTES = 100_000
 const LOWERCASE_SHA256 = /^[0-9a-f]{64}$/
 
-export type ReplayArtifactKind = 'collection' | 'prepared'
+export type ReplayArtifactKind = 'collection' | 'media_pending' | 'prepared'
 
 interface ReplayArtifactManifestEnvelope {
   schema_version: 2
@@ -115,7 +115,9 @@ export async function loadReplayArtifact(
     || typeof artifact !== 'object'
     || artifact === null
     || Array.isArray(artifact)
-    || (artifact.kind !== 'collection' && artifact.kind !== 'prepared')
+    || (artifact.kind !== 'collection'
+      && artifact.kind !== 'media_pending'
+      && artifact.kind !== 'prepared')
     || typeof artifact.aggregate_hash !== 'string'
     || !LOWERCASE_SHA256.test(artifact.aggregate_hash)
     || !Number.isSafeInteger(artifact.byte_length)

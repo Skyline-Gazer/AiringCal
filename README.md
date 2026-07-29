@@ -342,6 +342,13 @@ ID 不匹配时回退到本轮完整收藏/calendar 数据；subject tombstone �
 `nsfw: true` 隐藏内容，并可保留已经验证的图片引用。媒体任务完成后不进行同日二次
 发布，其结果最早进入下一次每日 snapshot。
 
+收藏 checkpoint 完整采用后，sync-worker 会在预算预留或 Queue 提交前再持久化一个
+有界 `media_pending` replay artifact，冻结本轮规范媒体请求、候选优先级和 cold
+cursor 目标。只有 `sync_runs` 精确采用该 manifest 后才允许发生外部提交；若 Queue
+已接受后进程丢失，重放使用同一 request/reservation ID，而不会按后来变化的
+`subject_media` 重新选取任务。预算幂等状态会返回已存结果并阻止第二次 Queue send，
+因此计数与 cursor 也保持原运行语义。
+
 到期的 V4 检查即使 detail、NSFW、源 URL 与 R2 引用均未变化，也会只推进
 `checked_at` 与 `next_refresh_at` 调度水位；图片对象、detail/media hash 和其他
 不可变 payload 不重写。hot 下一次检查继续使用现有确定性 6～8 天分散规则，因此
