@@ -250,7 +250,8 @@ async function putRefreshState(storage: KVStorage, job: MediaRefreshJobV2 | Medi
 }
 
 async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | 'duplicate' | 'retry_scheduled'> {
-  if (isVersionedJob(job) && job.version === 3 && env.AIRING_CAL_D1) {
+  if (isVersionedJob(job) && job.version === 3) {
+    if (!env.AIRING_CAL_D1) throw new Error('Missing required AIRING_CAL_D1 binding for V3 media job')
     const result = await refreshSubjectMediaD1({
       AIRING_CAL_D1: env.AIRING_CAL_D1,
       AIRING_CAL_R2: env.AIRING_CAL_R2,
@@ -365,7 +366,6 @@ async function queue(batch: QueueBatch, env: MediaEnv): Promise<void> {
     } catch (error) {
       const d1Authoritative = isVersionedJob(message.body)
         && message.body.version === 3
-        && env.AIRING_CAL_D1 !== undefined
       if (d1Authoritative) {
         const delays = [30, 120, 300]
         message.retry?.({ delaySeconds: delays[Math.min(Math.max((message.attempts ?? 1) - 1, 0), delays.length - 1)] })

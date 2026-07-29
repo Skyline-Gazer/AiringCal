@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { subjectDetailKey, subjectRefreshKey } from '@airing-cal/storage'
-import worker from './index.ts'
+import worker, { processJob } from './index.ts'
 
 class MockKV {
   values = new Map<string, unknown>()
@@ -56,80 +56,48 @@ function trackedBatch(body: unknown, attempts = 1) {
   }
 }
 
-test('media-worker reusable V3 media writes no unchanged business KV state', async () => {
+test('media-worker retries a V3 queue message without D1 and performs no legacy per-subject writes', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()
-  const now = 1_782_650_000
-  const previousMeta = {
-    subject_id: 23080,
-    exists: true,
-    nsfw: false,
-    checked_at: now - 100,
-    expires_at: null,
-    reason: 'subject_detail',
-  }
-  const previousImageStatus = {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => { throw new Error('missing D1 must fail before upstream access') }) as typeof globalThis.fetch
+  const message = trackedBatch({
+    version: 3,
+    generation: 2,
+    job_id: 'missing-d1:23080',
     subject_id: 23080,
     title: 'A CN',
-    common: { status: 'cached', hash: 'a'.repeat(64), uri: `/image/${'a'.repeat(64)}`, r2_key: `images/${'a'.repeat(64)}/original`, queued_at: 1, cached_at: 2, last_error: null, source_url: 'https://img.example/common.jpg' },
-    large: { status: 'cached', hash: 'b'.repeat(64), uri: `/image/${'b'.repeat(64)}`, r2_key: `images/${'b'.repeat(64)}/original`, queued_at: 3, cached_at: 4, last_error: null, source_url: 'https://img.example/large.jpg' },
-    subject_checked_at: now - 100,
-  }
-  const previousRefresh = {
-    subject_id: 23080,
-    job_id: 'workflow-1:23080',
-    generation: 1,
-    status: 'ok',
-    queued_at: now - 200,
-    updated_at: now - 100,
-    completed_at: now - 100,
-    error: null,
-  }
-  kv.values.set(subjectDetailKey(23080), {
-    cached_at: now,
-    subject: {
-      id: 23080,
-      nsfw: false,
-      images: {
-        common: 'https://img.example/common.jpg',
-        large: 'https://img.example/large.jpg',
-      },
-    },
-  })
-  kv.values.set('subject:meta:23080', previousMeta)
-  kv.values.set('image:status:23080', previousImageStatus)
-  kv.values.set(subjectRefreshKey(23080), previousRefresh)
-  const originalFetch = globalThis.fetch
-  const originalNow = Date.now
-  globalThis.fetch = (async () => { throw new Error('reusable media must not access upstream') }) as typeof globalThis.fetch
-  Date.now = () => now * 1000
+    components: [],
+  }, 2)
 
   try {
-    await worker.queue(batch({
-      version: 3,
-      generation: 2,
-      job_id: 'workflow-2:23080',
-      subject_id: 23080,
-      title: 'A CN',
-      components: ['detail', 'meta', 'image_common', 'image_large'],
-      images: {
-        common: 'https://img.example/common.jpg',
-        large: 'https://img.example/large.jpg',
-      },
-    }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
-
-    const businessPuts = kv.puts.filter(({ key }) => key === 'subject:meta:23080'
-      || key === 'image:status:23080'
-      || key === subjectRefreshKey(23080))
-    assert.deepEqual(businessPuts, [])
-    assert.deepEqual(kv.values.get('subject:meta:23080'), previousMeta)
-    assert.deepEqual(kv.values.get('image:status:23080'), previousImageStatus)
-    assert.deepEqual(kv.values.get(subjectRefreshKey(23080)), previousRefresh)
+    await worker.queue(message.batch as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.equal(message.state.acked, 0)
+    assert.deepEqual(message.state.retries, [{ delaySeconds: 120 }])
+    assert.deepEqual(kv.puts, [])
     assert.equal(r2.writes.length, 0)
   } finally {
-    Date.now = originalNow
     globalThis.fetch = originalFetch
   }
+})
+
+test('processJob rejects a V3 job without D1 before legacy per-subject writes', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+
+  await assert.rejects(
+    processJob({
+      version: 3,
+      generation: 3,
+      job_id: 'missing-d1-direct:23080',
+      subject_id: 23080,
+      title: 'A CN',
+      components: [],
+    }, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any),
+    /AIRING_CAL_D1/,
+  )
+  assert.deepEqual(kv.puts, [])
+  assert.equal(r2.writes.length, 0)
 })
 
 test('media-worker routes D1-only V3 jobs without new legacy per-subject KV puts', async () => {
@@ -290,8 +258,7 @@ test('media-worker changed image source still writes cached status', async () =>
 
   try {
     await worker.queue(batch({
-      version: 3,
-      generation: 2,
+      version: 2,
       job_id: 'changed-source:23080',
       subject_id: 23080,
       title: 'A CN',
@@ -327,8 +294,7 @@ test('media-worker retries a changed image source transient failure while preser
   }
   kv.values.set('image:status:23080', previousImageStatus)
   const message = trackedBatch({
-    version: 3,
-    generation: 2,
+    version: 2,
     job_id: 'changed-source-transient:23080',
     subject_id: 23080,
     title: 'A CN',
@@ -395,8 +361,7 @@ test('media-worker persists one successful image component before retrying its t
     throw new Error(`unexpected fetch ${url}`)
   }) as typeof globalThis.fetch
   const job = {
-    version: 3 as const,
-    generation: 2,
+    version: 2 as const,
     job_id: 'partial-images:23080',
     subject_id: 23080,
     title: 'A CN',
@@ -438,8 +403,7 @@ test('media-worker image status normalization ignores only observation queued_at
   const originalNow = Date.now
   globalThis.fetch = (async () => new Response('not found', { status: 404 })) as typeof globalThis.fetch
   const job = (generation: number, sourceUrl: string) => ({
-    version: 3 as const,
-    generation,
+    version: 2 as const,
     job_id: `failed-image-${generation}:23080`,
     subject_id: 23080,
     title: 'A CN',
@@ -664,7 +628,7 @@ test('media-worker treats subject detail 404 as restricted NSFW', async () => {
   }
 })
 
-test('media-worker stops a V3 detail and image job after its first confirmed 404', async () => {
+test('media-worker stops a V2 detail and image job after its first confirmed 404', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()
   const previousStatus = {
@@ -687,8 +651,7 @@ test('media-worker stops a V3 detail and image job after its first confirmed 404
 
   try {
     await worker.queue(batch({
-      version: 3,
-      generation: 1,
+      version: 2,
       job_id: 'first-404',
       subject_id: 23080,
       title: 'Stale job title',
@@ -727,7 +690,7 @@ test('media-worker tombstones a confirmed 404 for exactly 24 hours then recovers
     return Response.json({ id: 23080, nsfw: false, eps: 24 })
   }) as typeof globalThis.fetch
   const job = {
-    version: 3 as const, generation: 1, job_id: 'job-1', subject_id: 23080, title: 'A CN', components: ['detail', 'meta'] as const,
+    version: 2 as const, job_id: 'job-1', subject_id: 23080, title: 'A CN', components: ['detail', 'meta'] as const,
   }
 
   try {
@@ -740,11 +703,11 @@ test('media-worker tombstones a confirmed 404 for exactly 24 hours then recovers
     assert.equal(kv.values.has(subjectDetailKey(23080)), false)
 
     Date.now = () => (checkedAt + 86399) * 1000
-    await worker.queue(batch({ ...job, job_id: 'job-2', generation: 2 }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    await worker.queue(batch({ ...job, job_id: 'job-2' }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
     assert.equal(subjectCalls, 1)
 
     Date.now = () => (checkedAt + 86400) * 1000
-    await worker.queue(batch({ ...job, job_id: 'job-3', generation: 3 }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    await worker.queue(batch({ ...job, job_id: 'job-3' }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
     assert.equal(subjectCalls, 2)
     assert.equal((kv.values.get('subject:meta:23080') as any).exists, true)
     assert.equal((kv.values.get(subjectDetailKey(23080)) as any).subject.eps, 24)
@@ -767,7 +730,7 @@ test('media-worker keeps stale detail and does not tombstone transient subject e
 
     try {
       await worker.queue(batch({
-        version: 3, generation: 1, job_id: `transient-${failure instanceof Response ? failure.status : 'network'}`,
+        version: 2, job_id: `transient-${failure instanceof Response ? failure.status : 'network'}`,
         subject_id: 23080, title: 'A CN', components: ['detail', 'meta'],
       }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
       assert.notEqual((kv.values.get('subject:meta:23080') as any)?.reason, 'not_found')
@@ -789,7 +752,7 @@ test('media-worker active tombstone suppresses subject and image upstream for im
   globalThis.fetch = async () => { calls++; throw new Error('must not access upstream') }
   Date.now = () => (now + 1) * 1000
   try {
-    await worker.queue(batch({ version: 3, generation: 1, job_id: 'image-only', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    await worker.queue(batch({ version: 2, job_id: 'image-only', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
     assert.equal(calls, 0)
   } finally {
     Date.now = originalNow
@@ -818,7 +781,7 @@ test('media-worker expired tombstone forces image-only jobs through a confirmed 
   }
   Date.now = () => now * 1000
   try {
-    await worker.queue(batch({ version: 3, generation: 2, job_id: 'expired-image-only-404', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    await worker.queue(batch({ version: 2, job_id: 'expired-image-only-404', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
     assert.deepEqual(calls, ['https://api.bgm.tv/v0/subjects/23080'])
     assert.deepEqual(kv.values.get('image:status:23080'), previousStatus)
     assert.equal(r2.writes.length, 0)
@@ -846,7 +809,7 @@ test('media-worker expired tombstone recovery uses fresh detail images for image
   }
   Date.now = () => now * 1000
   try {
-    await worker.queue(batch({ version: 3, generation: 2, job_id: 'expired-image-only-recovery', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    await worker.queue(batch({ version: 2, job_id: 'expired-image-only-recovery', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
     assert.deepEqual(calls, ['https://api.bgm.tv/v0/subjects/23080', 'https://img.example/recovered.jpg'])
     assert.equal((kv.values.get('subject:meta:23080') as any).exists, true)
     assert.equal((kv.values.get('image:status:23080') as any).common.source_url, 'https://img.example/recovered.jpg')
@@ -872,7 +835,7 @@ test('media-worker immediately reprobes legacy tombstones and migrates repeated 
   }
   Date.now = () => now * 1000
   try {
-    await worker.queue(batch({ version: 3, generation: 2, job_id: 'legacy-image-only-404', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    await worker.queue(batch({ version: 2, job_id: 'legacy-image-only-404', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
     assert.deepEqual(calls, ['https://api.bgm.tv/v0/subjects/23080'])
     assert.deepEqual(kv.values.get('subject:meta:23080'), {
       subject_id: 23080, exists: false, nsfw: true, checked_at: now, expires_at: now + 86400, reason: 'not_found',
@@ -909,7 +872,7 @@ test('media-worker keeps legacy tombstones fail-closed when forced reprobe is fo
   }
   Date.now = () => now * 1000
   try {
-    await worker.queue(batch({ version: 3, generation: 2, job_id: 'legacy-image-only-403', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    await worker.queue(batch({ version: 2, job_id: 'legacy-image-only-403', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
     assert.deepEqual(calls, ['https://api.bgm.tv/v0/subjects/23080'])
     assert.deepEqual(kv.values.get('subject:meta:23080'), tombstone)
     assert.deepEqual(kv.values.get('image:status:23080'), previousStatus)
@@ -932,7 +895,7 @@ test('media-worker remains fail-closed when stale detail deletion fails after to
   globalThis.fetch = async () => new Response('Not found', { status: 404 })
   Date.now = () => now * 1000
   try {
-    await worker.queue(batch({ version: 3, generation: 1, job_id: 'delete-fails', subject_id: 23080, title: 'A', components: ['detail', 'meta'] }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    await worker.queue(batch({ version: 2, job_id: 'delete-fails', subject_id: 23080, title: 'A', components: ['detail', 'meta'] }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
     assert.equal((kv.values.get('subject:meta:23080') as any).reason, 'not_found')
     assert.equal((kv.values.get(subjectDetailKey(23080)) as any).subject.eps, 99)
   } finally {

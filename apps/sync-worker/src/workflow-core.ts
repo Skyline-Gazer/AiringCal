@@ -60,8 +60,8 @@ export interface SyncWorkflowEnv {
   }
   BANGUMI_TOKEN: string
   BANGUMI_USERS: string
-  AIRING_CAL_D1?: D1DatabaseLike
-  AIRING_CAL_DATA_R2?: PublicationDataBucket
+  AIRING_CAL_D1: D1DatabaseLike
+  AIRING_CAL_DATA_R2: PublicationDataBucket
 }
 
 export interface SyncWorkflowDependencies {
@@ -436,9 +436,12 @@ export async function runSyncWorkflow(
       return { key, count: 1, digest: await digest(value) }
     })
 
-    const d1Database = env.AIRING_CAL_D1
-    if (mode === 'shadow' && d1Database) {
+    if (mode === 'shadow') {
       await step.do('persist-d1-shadow', STORAGE_STEP, async () => {
+        const d1Database = env.AIRING_CAL_D1
+        if (!d1Database) throw new Error('Missing required AIRING_CAL_D1 binding')
+        const dataBucket = env.AIRING_CAL_DATA_R2
+        if (!dataBucket) throw new Error('Missing required AIRING_CAL_DATA_R2 binding')
         const completeInput = await getJson<ReturnType<typeof assembleFullFetch>>(
           env.AIRING_CAL_KV,
           prepared.completeInputKey ?? '',
@@ -451,28 +454,24 @@ export async function runSyncWorkflow(
           completeInput,
           now: completeInput.observedAt,
         })
-        const publicationBindings = dependencies.publication ?? (env.AIRING_CAL_DATA_R2
-          ? {
-              state: new D1StateStore(d1Database),
-              dataBucket: env.AIRING_CAL_DATA_R2,
-              pointerKv: {
-                get: (key: string) => env.AIRING_CAL_KV.get(key, 'text'),
-                put: (key: string, value: string) => env.AIRING_CAL_KV.put(key, value),
-              },
-            }
-          : undefined)
-        if (publicationBindings) {
-          const publisher = dependencies.publishPublicSnapshot ?? publishPublicSnapshot
-          const publicationResult = await publisher({
-            ...publicationBindings,
-            input: result.publicationInput,
-            now: completeInput.observedAt,
-            sourceObservedAt: completeInput.observedAt,
-            publicationId: event.instanceId,
-          })
-          if (publicationResult.status === 'pending') {
-            throw new Error('Public snapshot publication remains pending')
-          }
+        const publicationBindings = dependencies.publication ?? {
+          state: new D1StateStore(d1Database),
+          dataBucket,
+          pointerKv: {
+            get: (key: string) => env.AIRING_CAL_KV.get(key, 'text'),
+            put: (key: string, value: string) => env.AIRING_CAL_KV.put(key, value),
+          },
+        }
+        const publisher = dependencies.publishPublicSnapshot ?? publishPublicSnapshot
+        const publicationResult = await publisher({
+          ...publicationBindings,
+          input: result.publicationInput,
+          now: completeInput.observedAt,
+          sourceObservedAt: completeInput.observedAt,
+          publicationId: event.instanceId,
+        })
+        if (publicationResult.status === 'pending') {
+          throw new Error('Public snapshot publication remains pending')
         }
         return {
           key: syncRunKey(event.instanceId),

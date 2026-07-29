@@ -74,17 +74,15 @@ export class SubjectRefreshCoordinator {
       const safeError = sanitizeErrorMessage(error instanceof Error ? error.message : String(error))
       if (
         'version' in job
-        && (job.version === 2 || job.version === 3)
-        && !(job.version === 3 && this.env.AIRING_CAL_D1)
+        && job.version === 2
       ) {
-        const versioned = job as MediaRefreshJobV2 | MediaRefreshJobV3
+        const versioned = job as MediaRefreshJobV2
         const storage = new KVStorage(this.env.AIRING_CAL_KV)
         const now = Math.floor(Date.now() / 1000)
         const previous = await storage.get<SubjectRefreshState>(subjectRefreshKey(job.subject_id))
         await putJsonIfChanged(storage, subjectRefreshKey(job.subject_id), {
           subject_id: job.subject_id,
           job_id: versioned.job_id,
-          ...('generation' in versioned ? { generation: versioned.generation } : {}),
           status: 'failed',
           queued_at: previous?.job_id === versioned.job_id ? previous.queued_at : now,
           updated_at: now,

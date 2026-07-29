@@ -31,12 +31,13 @@ test('the same completed job is a duplicate instead of being processed twice', a
   assert.equal((await coordinator.begin(4, 'job-4')).status, 'duplicate')
 })
 
-test('a failed newer generation still makes an older retry obsolete', async () => {
+test('a V3 job without D1 fails without legacy KV writes and still makes an older retry obsolete', async () => {
   const state = new MemoryState()
   const kv = {
     values: new Map<string, unknown>(),
+    puts: 0,
     async get(key: string) { return this.values.get(key) ?? null },
-    async put(key: string, value: string) { this.values.set(key, JSON.parse(value)) },
+    async put(key: string, value: string) { this.puts++; this.values.set(key, JSON.parse(value)) },
     async delete(key: string) { this.values.delete(key) },
   }
   const coordinator = new SubjectRefreshCoordinator({ storage: state } as any, {
@@ -56,7 +57,8 @@ test('a failed newer generation still makes an older retry obsolete', async () =
     assert.equal((await coordinator.fetch(request(2, ['image_common']))).status, 503)
     const obsolete = await coordinator.fetch(request(1, []))
     assert.deepEqual(await obsolete.json(), { status: 'obsolete', generation: 1 })
-    assert.equal((kv.values.get('subject:refresh:23080') as any).generation, 2)
+    assert.equal(kv.puts, 0)
+    assert.equal(kv.values.has('subject:refresh:23080'), false)
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -64,6 +66,9 @@ test('a failed newer generation still makes an older retry obsolete', async () =
 
 test('the Durable Object leaves business KV unchanged for duplicate and obsolete jobs', async () => {
   const state = new MemoryState()
+  state.values.set('lastCompletedGeneration', 3)
+  state.values.set('lastCompletedJob', 'job-3')
+  state.values.set('highestAcceptedGeneration', 3)
   const kv = {
     values: new Map<string, unknown>(),
     puts: 0,
@@ -87,7 +92,6 @@ test('the Durable Object leaves business KV unchanged for duplicate and obsolete
     }),
   })
 
-  assert.equal((await coordinator.fetch(request(3))).status, 200)
   const putsAfterNewJob = kv.puts
   const duplicate = await coordinator.fetch(request(3))
   assert.deepEqual(await duplicate.json(), { status: 'duplicate', generation: 3 })
@@ -126,7 +130,7 @@ test('concurrent process requests stay serialized across image download awaits',
   const request = (generation: number, image: string) => new Request('https://subject-refresh-coordinator/process', {
     method: 'POST',
     body: JSON.stringify({
-      version: 3, generation, job_id: `job-${generation}`, subject_id: 23080, title: `Job ${generation}`,
+      version: 2, job_id: `job-${generation}`, subject_id: 23080, title: `Job ${generation}`,
       components: ['image_common'], images: { common: `https://img.example/${image}` },
     }),
   })

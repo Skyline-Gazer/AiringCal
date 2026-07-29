@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { nextSubjectRefreshAt, syncStagingKey } from '@airing-cal/storage'
 import { SnapshotCoordinator } from './snapshot-coordinator.ts'
-import { runSyncWorkflow, type SyncWorkflowEnv, type WorkflowStepLike } from './workflow-core.ts'
+import { runSyncWorkflow, type SyncWorkflowDependencies, type SyncWorkflowEnv, type WorkflowStepLike } from './workflow-core.ts'
 
 class MockKV {
   values = new Map<string, unknown>()
@@ -209,6 +209,43 @@ function workflowEnv(kv: MockKV, queueMessages: unknown[], coordinator = new Moc
     },
     BANGUMI_TOKEN: 'server-token',
     BANGUMI_USERS: 'alice',
+    AIRING_CAL_D1: {} as never,
+    AIRING_CAL_DATA_R2: {} as never,
+  }
+}
+
+function shadowPersistenceDependencies(): SyncWorkflowDependencies {
+  return {
+    runD1IncrementalSync: async ({ instanceId, completeInput }) => ({
+      rowsWritten: 0,
+      firstMissing: 0,
+      deleted: 0,
+      restored: 0,
+      publicationInput: {
+        collections: [],
+        calendar: [],
+        published_at: completeInput.observedAt,
+        content_hash: 'a'.repeat(64),
+      },
+      media: { candidates: 0, granted: 0, confirmed: 0, uncertain: 0, deferred: 0 },
+      runId: instanceId,
+    }),
+    publication: {
+      state: {} as never,
+      dataBucket: {} as never,
+      sourceObservedAt: 0,
+      pointerKv: {
+        async get() { return null },
+        async put() {},
+      },
+    },
+    publishPublicSnapshot: async ({ input }) => ({
+      status: 'published',
+      generation: 1,
+      contentHash: input.content_hash,
+      r2Puts: 1,
+      pointerPuts: 1,
+    }),
   }
 }
 
@@ -287,7 +324,7 @@ test('shadow workflow fetches 549 collections in 11 deterministic page steps wit
       instanceId: 'shadow-commit',
       payload: { mode: 'shadow', source: 'manual' },
       schedule: undefined,
-    }, step, (message) => new TestNonRetryableError(message))
+    }, step, (message) => new TestNonRetryableError(message), shadowPersistenceDependencies())
 
     assert.deepEqual(step.names.filter((name) => name.startsWith('fetch-collections-page-')), Array.from({ length: 11 }, (_, index) => `fetch-collections-page-${index}`))
     assert.equal(calls.filter((url) => url.includes('/collections?')).length, 11)
@@ -442,7 +479,7 @@ test('workflow accepts the same subject for two users while retaining a stable o
     await runSyncWorkflow(env, {
       instanceId: 'multi-user-retry',
       payload: { mode: 'shadow', source: 'manual' },
-    }, step, (message) => new TestNonRetryableError(message))
+    }, step, (message) => new TestNonRetryableError(message), shadowPersistenceDependencies())
 
     assert.equal(step.attempts.get('prepare-snapshot-inputs'), 2)
     const run = kv.values.get('sync:run:multi-user-retry') as { started_at: number }
@@ -898,7 +935,7 @@ test('live workflow commits the snapshot after an ambiguous queue submission wit
   }
 })
 
-test('shadow workflow reports every prepared subject as skipped without planning or reserving', async () => {
+test('shadow workflow fails instead of reporting success when the D1 binding is missing', async () => {
   const kv = new MockKV()
   const step = new FakeStep(kv)
   const originalFetch = globalThis.fetch
@@ -910,25 +947,61 @@ test('shadow workflow reports every prepared subject as skipped without planning
   }) as typeof globalThis.fetch
 
   try {
-    const result = await runSyncWorkflow(workflowEnv(kv, []), {
-      instanceId: 'shadow-counters',
-      payload: { mode: 'shadow', source: 'manual' },
-    }, step, (message) => new TestNonRetryableError(message))
+    const env = workflowEnv(kv, [])
+    delete (env as Partial<SyncWorkflowEnv>).AIRING_CAL_D1
+    await assert.rejects(
+      runSyncWorkflow(env, {
+        instanceId: 'shadow-missing-d1',
+        payload: { mode: 'shadow', source: 'manual' },
+      }, step, (message) => new TestNonRetryableError(message)),
+      /AIRING_CAL_D1/,
+    )
+    assert.equal(step.names.includes('persist-d1-shadow'), true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
 
-    assert.deepEqual(result, {
-      instance_id: 'shadow-counters',
-      status: 'ok',
-      subject_count: 2,
-      refresh_jobs: 0,
-      refresh_candidates: 0,
-      refresh_candidates_by_priority: { new_or_changed: 0, hot: 0, cold: 0, retry: 0 },
-      refresh_selected: 0,
-      refresh_granted: 0,
-      refresh_deferred: 0,
-      refresh_confirmed: 0,
-      refresh_uncertain: 0,
-      refresh_skipped: 2,
-    })
+test('shadow workflow fails instead of skipping publication when the data R2 binding is missing', async () => {
+  const kv = new MockKV()
+  const step = new FakeStep(kv)
+  const env = {
+    ...workflowEnv(kv, []),
+    AIRING_CAL_D1: {} as never,
+  }
+  delete (env as Partial<SyncWorkflowEnv>).AIRING_CAL_DATA_R2
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) return Response.json({ total: 1, data: [collection(1)] })
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await assert.rejects(
+      runSyncWorkflow(env, {
+        instanceId: 'shadow-missing-data-r2',
+        payload: { mode: 'shadow', source: 'manual' },
+      }, step, (message) => new TestNonRetryableError(message), {
+        runD1IncrementalSync: async ({ instanceId, completeInput }) => ({
+          rowsWritten: 1,
+          firstMissing: 0,
+          deleted: 0,
+          restored: 0,
+          publicationInput: {
+            collections: [],
+            calendar: [],
+            published_at: completeInput.observedAt,
+            content_hash: 'a'.repeat(64),
+          },
+          media: { candidates: 0, granted: 0, confirmed: 0, uncertain: 0, deferred: 0 },
+          runId: instanceId,
+        }),
+      }),
+      /AIRING_CAL_DATA_R2/,
+    )
+    assert.equal(step.names.includes('persist-d1-shadow'), true)
   } finally {
     globalThis.fetch = originalFetch
   }
