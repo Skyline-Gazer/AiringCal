@@ -2,7 +2,7 @@ export const appBoundary = 'media-worker'
 
 import { BgmClient, BgmHttpError, BgmNetworkError, BgmTimeoutError } from '@airing-cal/bgm-api'
 import { imageRef, isActiveNotFoundSubjectMeta, isConfirmedNotFoundSubjectMeta, subjectDetailImages, subjectMetaFromDetail, subjectMetaFromNotFound, type SubjectMeta } from '@airing-cal/domain'
-import { getCachedSubjectDetail, imageIndexKey, imageStatusKey, KVStorage, putJsonIfChanged, R2ImageStore, SUBJECT_DETAIL_TTL_SECONDS, subjectDetailKey, subjectMetaKey, subjectRefreshKey, type D1DatabaseLike, type ImageSourceSize, type MediaRefreshJobV2, type MediaRefreshJobV3, type SubjectDetailCacheEntry, type SubjectRefreshState } from '@airing-cal/storage'
+import { getCachedSubjectDetail, imageIndexKey, imageStatusKey, isMediaRefreshJobV2, isMediaRefreshJobV3, isMediaRefreshJobV4, KVStorage, putJsonIfChanged, R2ImageStore, SUBJECT_DETAIL_TTL_SECONDS, subjectDetailKey, subjectMetaKey, subjectRefreshKey, type D1DatabaseLike, type ImageSourceSize, type MediaRefreshJobV2, type MediaRefreshJobV3, type MediaRefreshJobV4, type SubjectDetailCacheEntry, type SubjectRefreshState } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 import { refreshSubjectMediaD1 } from './d1-media-state.ts'
 
@@ -16,7 +16,8 @@ export interface LegacyMediaJob {
   }
 }
 
-export type MediaJob = LegacyMediaJob | MediaRefreshJobV2 | MediaRefreshJobV3
+export type MediaJob = LegacyMediaJob | MediaRefreshJobV2 | MediaRefreshJobV3 | MediaRefreshJobV4
+type LegacyVersionedMediaJob = MediaRefreshJobV2 | MediaRefreshJobV3
 
 export interface MediaEnv {
   AIRING_CAL_D1: D1DatabaseLike
@@ -40,8 +41,12 @@ interface QueueBatch {
   }>
 }
 
-function isVersionedJob(job: MediaJob): job is MediaRefreshJobV2 | MediaRefreshJobV3 {
-  return 'version' in job && (job.version === 2 || job.version === 3) && typeof job.job_id === 'string' && Array.isArray(job.components)
+function hasMediaVersion(job: MediaJob, version: number): boolean {
+  return 'version' in job && job.version === version
+}
+
+function isLegacyVersionedJob(job: MediaJob): job is LegacyVersionedMediaJob {
+  return isMediaRefreshJobV2(job) || isMediaRefreshJobV3(job)
 }
 
 function isTransient(error: unknown): boolean {
@@ -125,7 +130,7 @@ function sameSubjectMeta(meta: SubjectMeta | null, subjectId: number, subject: a
 }
 
 async function isFullyReusableJob(
-  job: MediaRefreshJobV2 | MediaRefreshJobV3,
+  job: LegacyVersionedMediaJob,
   storage: KVStorage,
   meta: SubjectMeta | null,
   previousStatus: any,
@@ -187,7 +192,7 @@ async function processImage(size: ImageSourceSize, sourceUrl: string | undefined
       source_url: sourceUrl,
     }
   } catch (error) {
-    if (isTransient(error) && (isVersionedJob(job) || !cachedImageStatus(previous))) throw error
+    if (isTransient(error) && (isLegacyVersionedJob(job) || !cachedImageStatus(previous))) throw error
     return cachedImageStatus(previous) ?? {
       ...emptyImageStatus(),
       status: 'failed',
@@ -235,7 +240,7 @@ async function fetchSubjectDetail(job: MediaJob, client: BgmClient, storage: KVS
   }
 }
 
-async function putRefreshState(storage: KVStorage, job: MediaRefreshJobV2 | MediaRefreshJobV3, state: SubjectRefreshState['status'], now: number, error: string | null = null): Promise<boolean> {
+async function putRefreshState(storage: KVStorage, job: LegacyVersionedMediaJob, state: SubjectRefreshState['status'], now: number, error: string | null = null): Promise<boolean> {
   const previous = await storage.get<SubjectRefreshState>(subjectRefreshKey(job.subject_id))
   return putJsonIfChanged(storage, subjectRefreshKey(job.subject_id), {
     subject_id: job.subject_id,
@@ -250,21 +255,26 @@ async function putRefreshState(storage: KVStorage, job: MediaRefreshJobV2 | Medi
 }
 
 async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | 'duplicate' | 'retry_scheduled'> {
-  if (isVersionedJob(job) && job.version === 3) {
-    if (!env.AIRING_CAL_D1) throw new Error('Missing required AIRING_CAL_D1 binding for V3 media job')
+  if (hasMediaVersion(job, 4)) {
+    if (!isMediaRefreshJobV4(job)) throw new Error('Invalid D1-only V4 media job')
+    if (!env.AIRING_CAL_D1) throw new Error('Missing required AIRING_CAL_D1 binding for V4 media job')
     const result = await refreshSubjectMediaD1({
       AIRING_CAL_D1: env.AIRING_CAL_D1,
       AIRING_CAL_R2: env.AIRING_CAL_R2,
     }, job)
     return result.status === 'retry_scheduled' ? 'retry_scheduled' : 'processed'
   }
+  if (
+    hasMediaVersion(job, 2) && !isMediaRefreshJobV2(job)
+    || hasMediaVersion(job, 3) && !isMediaRefreshJobV3(job)
+  ) throw new Error('Invalid legacy media job')
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const imageStore = new R2ImageStore(env.AIRING_CAL_R2)
   const client = new BgmClient()
   const now = Math.floor(Date.now() / 1000)
   let meta: SubjectMeta | null = null
   let previousStatus: any = null
-  if (isVersionedJob(job)) {
+  if (isLegacyVersionedJob(job)) {
     const refresh = await storage.get<SubjectRefreshState>(subjectRefreshKey(job.subject_id))
     const activeDuplicate = refresh?.job_id === job.job_id
       && (refresh.status === 'ok' || refresh.status === 'partial' || refresh.status === 'running' && now - refresh.updated_at < 600)
@@ -283,11 +293,11 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | '
   }
   meta ??= await storage.get<SubjectMeta>(subjectMetaKey(job.subject_id))
   if (isActiveNotFoundSubjectMeta(meta, now)) {
-    if (isVersionedJob(job)) await putRefreshState(storage, job, 'ok', now)
+    if (isLegacyVersionedJob(job)) await putRefreshState(storage, job, 'ok', now)
     return 'processed'
   }
   previousStatus ??= await storage.get<any>(imageStatusKey(job.subject_id))
-  const refreshDetail = !isVersionedJob(job)
+  const refreshDetail = !isLegacyVersionedJob(job)
     || job.components.includes('detail')
     || job.components.includes('meta')
     || isConfirmedNotFoundSubjectMeta(meta)
@@ -297,21 +307,21 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | '
   if (refreshDetail && !subject) {
     const refreshedMeta = await storage.get<SubjectMeta>(subjectMetaKey(job.subject_id))
     if (isConfirmedNotFoundSubjectMeta(refreshedMeta)) {
-      if (isVersionedJob(job)) await putRefreshState(storage, job, 'ok', now)
+      if (isLegacyVersionedJob(job)) await putRefreshState(storage, job, 'ok', now)
       return 'processed'
     }
   }
   const detailImages = subjectDetailImages(subject)
   const images = {
-    common: detailImages.common ?? (isVersionedJob(job) ? job.images?.common : undefined),
-    large: detailImages.large ?? (isVersionedJob(job) ? job.images?.large : undefined),
+    common: detailImages.common ?? (isLegacyVersionedJob(job) ? job.images?.common : undefined),
+    large: detailImages.large ?? (isLegacyVersionedJob(job) ? job.images?.large : undefined),
   }
 
   const imageResults = await Promise.allSettled([
-    !isVersionedJob(job) || job.components.includes('image_common')
+    !isLegacyVersionedJob(job) || job.components.includes('image_common')
       ? processImage('common', images.common, previousStatus?.common, job, client, imageStore, storage, now)
       : previousStatus?.common ?? emptyImageStatus(),
-    !isVersionedJob(job) || job.components.includes('image_large')
+    !isLegacyVersionedJob(job) || job.components.includes('image_large')
       ? processImage('large', images.large, previousStatus?.large, job, client, imageStore, storage, now)
       : previousStatus?.large ?? emptyImageStatus(),
   ])
@@ -331,7 +341,7 @@ async function processJob(job: MediaJob, env: MediaEnv): Promise<'processed' | '
   }, normalizeImageStatus)
   const transientFailure = imageResults.find((result) => result.status === 'rejected' && isTransient(result.reason))
   if (transientFailure?.status === 'rejected') throw transientFailure.reason
-  if (isVersionedJob(job)) {
+  if (isLegacyVersionedJob(job)) {
     const requestedImages = [
       job.components.includes('image_common') ? common : null,
       job.components.includes('image_large') ? large : null,
@@ -364,14 +374,13 @@ async function queue(batch: QueueBatch, env: MediaEnv): Promise<void> {
       }
       message.ack?.()
     } catch (error) {
-      const d1Authoritative = isVersionedJob(message.body)
-        && message.body.version === 3
+      const d1Authoritative = hasMediaVersion(message.body, 4)
       if (d1Authoritative) {
         const delays = [30, 120, 300]
         message.retry?.({ delaySeconds: delays[Math.min(Math.max((message.attempts ?? 1) - 1, 0), delays.length - 1)] })
         continue
       }
-      if (isVersionedJob(message.body) && isTransient(error)) {
+      if (isLegacyVersionedJob(message.body) && isTransient(error)) {
         if (!env.SUBJECT_REFRESH_COORDINATOR) {
           const storage = new KVStorage(env.AIRING_CAL_KV)
           const now = Math.floor(Date.now() / 1000)
@@ -381,7 +390,7 @@ async function queue(batch: QueueBatch, env: MediaEnv): Promise<void> {
         message.retry?.({ delaySeconds: delays[Math.min(Math.max((message.attempts ?? 1) - 1, 0), delays.length - 1)] })
         continue
       }
-      if (isVersionedJob(message.body)) {
+      if (isLegacyVersionedJob(message.body)) {
         if (!env.SUBJECT_REFRESH_COORDINATOR) {
           const storage = new KVStorage(env.AIRING_CAL_KV)
           await putRefreshState(storage, message.body, 'failed', Math.floor(Date.now() / 1000), 'Media refresh failed')

@@ -1,5 +1,7 @@
 import {
   claimDailyBudgetReservation,
+  isMediaRefreshJobV3,
+  isMediaRefreshJobV4,
   markBudgetSubmission,
   snapshotActiveKey,
   transitionBudgetSubmission,
@@ -7,6 +9,7 @@ import {
   type BudgetReservationResult,
   type D1DatabaseLike,
   type MediaRefreshJobV3,
+  type MediaRefreshJobV4,
   type SnapshotManifest,
 } from '@airing-cal/storage'
 
@@ -28,15 +31,16 @@ interface SnapshotCoordinatorEnv {
 }
 
 interface MediaQueueLike {
-  sendBatch(messages: Array<{ body: MediaRefreshJobV3; contentType?: 'json' }>): Promise<unknown>
+  sendBatch(messages: Array<{ body: MediaRefreshJobV4; contentType?: 'json' }>): Promise<unknown>
 }
 
 export async function reserveAndSubmitMedia(
   database: D1DatabaseLike,
   queue: MediaQueueLike | undefined,
-  request: BudgetReservationRequest<MediaRefreshJobV3>,
+  request: BudgetReservationRequest<MediaRefreshJobV4>,
   now = Math.floor(Date.now() / 1000),
 ): Promise<BudgetReservationResult> {
+  if (!request.jobs.every(isMediaRefreshJobV4)) throw new Error('Invalid D1-only media reservation jobs')
   const claim = await claimDailyBudgetReservation(database, request, now)
   if (claim.result.granted === 0) {
     if (claim.result.submission !== 'reserved') return claim.result
@@ -254,6 +258,7 @@ export class SnapshotCoordinator {
         && body.privileged_requested <= body.requested
         && Array.isArray(body.jobs)
         && body.jobs.length === body.requested
+        && body.jobs.every(isMediaRefreshJobV3)
       ) {
         return Response.json(await this.core.reserveMedia(
           body.date,

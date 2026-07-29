@@ -32,7 +32,7 @@ status: final
 
 `SyncWorkflow` 是快照数据面的耐久编排器。它分页获取 collections 与 calendar，将规范化 payload 写入 instance staging KV，发布 shadow 或 live snapshot，规划 subject refresh jobs，并记录 `SyncRun`。它不调用 subject detail API，也不等待 Media Queue。
 
-`airing-cal-media` 是 subject detail、metadata、图片与 R2 的唯一刷新执行器。Queue message 使用带 Workflow generation 的 `MediaRefreshJobV3`，以 `${instanceId}:${subjectId}` 为 `job_id`；每个 subject 的 `SubjectRefreshCoordinator` SQLite Durable Object 使用覆盖 bgm.tv、KV 与 R2 await 的互斥区串行化全部副作用和失败状态，并在副作用前持久化最高已接受 generation，因此新任务失败后迟到旧任务仍会被拒绝。旧 V2/legacy job 按 generation 0 兼容。旧缓存继续服务，下一刷新时间按 subject ID 分散到 6 至 8 天。
+`airing-cal-media` 是 subject detail、metadata、图片与 R2 的唯一刷新执行器。live Queue message 使用带 Workflow generation 的 `MediaRefreshJobV3`，以 `${instanceId}:${subjectId}` 为 `job_id`，并继续写 legacy detail/meta/image/refresh KV，使现有 Read Worker 与下一轮 planner 能观察结果。D1-only shadow producer 使用独立的 `MediaRefreshJobV4`，只写 D1 `subject_media` 与 image R2，缺失 D1 时可重试且不回退 KV。每个 subject 的 `SubjectRefreshCoordinator` SQLite Durable Object 使用覆盖 bgm.tv、KV/D1 与 R2 await 的互斥区串行化全部副作用和失败状态，并在副作用前持久化最高已接受 generation，因此新任务失败后迟到旧任务仍会被拒绝。旧 V2/legacy job 按 generation 0 兼容。旧缓存继续服务，下一刷新时间按 subject ID 分散到 6 至 8 天。
 
 CI/CD 是控制面。它运行质量门禁、解析既有 Cloudflare 资源、部署 Worker/Workflow、检查 Workflow 注册状态并部署 frontend，不触发业务同步、不轮询 KV，也不等待 media backlog。
 

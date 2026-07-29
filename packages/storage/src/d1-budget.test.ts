@@ -173,6 +173,23 @@ test('same reservation ID with changed jobs rejects the fingerprint mismatch', a
   assert.deepEqual(database.budget('2026-07-27'), { reserved: 1, consumed: 0 })
 })
 
+test('reservation fingerprint distinguishes D1-only V4 from legacy-compatible V3', async () => {
+  const database = new TransactionalSqliteD1()
+  const original = {
+    ...request('media-version', 1),
+    jobs: [{ version: 4, generation: 7, job_id: 'run:1', subject_id: 1, title: 'A', components: ['detail'] }],
+  }
+  await reserveDailyBudget(database, original)
+  await assert.rejects(
+    reserveDailyBudget(database, {
+      ...original,
+      jobs: [{ ...original.jobs[0]!, version: 3 }],
+    }),
+    /reservation payload mismatch/,
+  )
+  assert.deepEqual(database.budget('2026-07-27'), { reserved: 1, consumed: 0 })
+})
+
 test('soft headroom is ordinary-only while privileged work can reach hard limit', async () => {
   const database = new TransactionalSqliteD1()
   assert.equal((await reserveDailyBudget(database, request('ordinary', 80, 0))).granted, 50)

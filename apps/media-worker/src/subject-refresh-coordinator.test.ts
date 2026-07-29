@@ -31,7 +31,7 @@ test('the same completed job is a duplicate instead of being processed twice', a
   assert.equal((await coordinator.begin(4, 'job-4')).status, 'duplicate')
 })
 
-test('a V3 job without D1 fails without legacy KV writes and still makes an older retry obsolete', async () => {
+test('a D1-only V4 job without D1 fails without legacy KV writes and still makes an older retry obsolete', async () => {
   const state = new MemoryState()
   const kv = {
     values: new Map<string, unknown>(),
@@ -47,7 +47,7 @@ test('a V3 job without D1 fails without legacy KV writes and still makes an olde
   const request = (generation: number, components: string[]) => new Request('https://subject-refresh-coordinator/process', {
     method: 'POST',
     body: JSON.stringify({
-      version: 3, generation, job_id: `job-${generation}`, subject_id: 23080, title: `Job ${generation}`,
+      version: 4, generation, job_id: `job-${generation}`, subject_id: 23080, title: `Job ${generation}`,
       components, images: { common: 'https://img.example/fail.jpg' },
     }),
   })

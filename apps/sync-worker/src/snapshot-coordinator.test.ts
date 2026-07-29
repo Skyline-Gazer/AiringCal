@@ -4,6 +4,7 @@ import {
   claimDailyBudgetReservation,
   type D1DatabaseLike,
   type MediaRefreshJobV3,
+  type MediaRefreshJobV4,
   type SnapshotManifest,
 } from '@airing-cal/storage'
 import {
@@ -37,11 +38,11 @@ class MemoryKV {
 }
 
 class MemoryQueue {
-  messages: MediaRefreshJobV3[] = []
+  messages: Array<MediaRefreshJobV3 | MediaRefreshJobV4> = []
   acceptThenLoseResponseNext = false
   sendCalls = 0
 
-  async sendBatch(messages: Array<{ body: MediaRefreshJobV3; contentType?: 'json' }>) {
+  async sendBatch(messages: Array<{ body: MediaRefreshJobV3 | MediaRefreshJobV4; contentType?: 'json' }>) {
     this.sendCalls += 1
     this.messages.push(...messages.map(({ body }) => body))
     if (this.acceptThenLoseResponseNext) {
@@ -63,6 +64,10 @@ function mediaJobs(count: number, startSubjectId = 1): MediaRefreshJobV3[] {
       components: ['detail'],
     }
   })
+}
+
+function d1MediaJobs(count: number, startSubjectId = 1): MediaRefreshJobV4[] {
+  return mediaJobs(count, startSubjectId).map((job) => ({ ...job, version: 4 }))
 }
 
 function reserveRequest(
@@ -224,6 +229,26 @@ test('media budget replays one stable reservation without consuming or enqueuein
   assert.deepEqual(first, { granted: 40, consumed: 40, soft_limit: 50, hard_limit: 100, submission: 'confirmed' })
   assert.deepEqual(replay, first)
   assert.equal(queue.messages.length, 40)
+})
+
+test('live media reservation rejects a D1-only V4 job before budget or Queue mutation', async () => {
+  const queue = new MemoryQueue()
+  const state = new MemoryState()
+  const coordinator = new SnapshotCoordinator(
+    { storage: state } as any,
+    { AIRING_CAL_KV: new MemoryKV(), MEDIA_QUEUE: queue } as any,
+  )
+  const response = await reserveRequest(coordinator, {
+    date: '2026-07-22',
+    reservation_id: 'workflow-v4:media',
+    requested: 1,
+    privileged_requested: 0,
+    jobs: [{ ...mediaJobs(1)[0]!, version: 4 }] as any,
+  })
+
+  assert.equal(response.status, 400)
+  assert.equal(queue.sendCalls, 0)
+  assert.equal(state.values.size, 0)
 })
 
 test('media budget keeps an accepted queue batch consumed when its response is lost', async () => {
@@ -397,7 +422,7 @@ test('D1 reservation submits Queue at most once and replay preserves uncertain c
     date: '2026-07-27',
     resource: 'media' as const,
     reservationId: 'workflow-d1:media',
-    jobs: mediaJobs(1),
+    jobs: d1MediaJobs(1),
     privilegedCount: 1,
     softLimit: 50,
     hardLimit: 100,
@@ -420,7 +445,7 @@ test('reserved replay recovers a crash after claim and concurrent replays grant 
     date: '2026-07-27',
     resource: 'media' as const,
     reservationId: 'crashed-after-claim:media',
-    jobs: mediaJobs(1),
+    jobs: d1MediaJobs(1),
     privilegedCount: 1,
     softLimit: 50,
     hardLimit: 100,
@@ -450,7 +475,7 @@ test('media exhaustion and ambiguous Queue result do not prevent snapshot public
     date: '2026-07-27',
     resource: 'media',
     reservationId: 'ambiguous:media',
-    jobs: mediaJobs(100),
+    jobs: d1MediaJobs(100),
     privilegedCount: 100,
     softLimit: 50,
     hardLimit: 100,
@@ -459,7 +484,7 @@ test('media exhaustion and ambiguous Queue result do not prevent snapshot public
     date: '2026-07-27',
     resource: 'media',
     reservationId: 'exhausted:media',
-    jobs: mediaJobs(1, 101),
+    jobs: d1MediaJobs(1, 101),
     privilegedCount: 1,
     softLimit: 50,
     hardLimit: 100,

@@ -19,8 +19,9 @@ This change remains the compatibility live path: one daily run, bounded legacy K
   and updates `public:current`. It does not reserve or enqueue media.
 - `public:current` is not consumed by read-worker. Legacy import, public read
   cutover, and cleanup are owned only by `migrate-public-reads-from-kv`.
-- V3 media jobs require D1 `subject_media` and do not fall back to legacy KV;
-  V2/legacy jobs retain the compatibility behavior described in this document.
+- D1-only V4 media jobs require D1 `subject_media` and do not fall back to
+  legacy KV; live V3 and V2/legacy jobs retain the compatibility behavior
+  described in this document.
 
 ## Architecture
 

@@ -9,7 +9,7 @@ import {
   sha256Canonical,
   type D1DatabaseLike,
   type ImageSourceSize,
-  type MediaRefreshJobV3,
+  type MediaRefreshJobV4,
   type SubjectMediaRow,
 } from '@airing-cal/storage'
 
@@ -127,7 +127,7 @@ async function refreshImage(
   size: ImageSourceSize,
   sourceUrl: string | undefined,
   previousKey: string | null,
-  job: MediaRefreshJobV3,
+  job: MediaRefreshJobV4,
   now: number,
   client: BgmClient,
   imageStore: R2ImageStore,
@@ -157,7 +157,7 @@ async function refreshImage(
 
 export async function refreshSubjectMediaD1(
   env: D1MediaEnv,
-  job: MediaRefreshJobV3,
+  job: MediaRefreshJobV4,
 ): Promise<D1MediaRefreshResult> {
   const now = Math.floor(Date.now() / 1000)
   const store = new D1StateStore(env.AIRING_CAL_D1, () => now)

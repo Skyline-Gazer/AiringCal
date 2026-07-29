@@ -317,3 +317,29 @@
   guard, or Comet `verify` transition was performed.
 - OpenSpec 6.1 and 6.2 deliberately remain unchecked for coordinator review and
   production evidence.
+
+## Final Review V3 Compatibility Fix
+
+- Stage: full local verification GREEN; ready for coordinator handoff.
+- Review base: `6be4fd8eb94d065d952ef29896d6575de863f4fc`.
+- Root cause: live Workflow already produced V3, but Task 8 routed every V3 to
+  D1-only media state while Read and the live planner still consumed legacy
+  subject/image KV. Successful live refreshes were therefore publicly stale
+  and planned again.
+- Contract correction: V3 remains the live legacy-compatible job. New V4 is
+  the only D1-only discriminator and is emitted only by D1 incremental media
+  planning. Live reservation rejects V4; D1 reservation accepts only V4.
+- RED evidence: the integrated live Workflow → Media Queue → legacy Read →
+  planner regression failed because Read returned episode count `1` instead of
+  refreshed `24`.
+- Focused GREEN evidence: 117/117 composition, Media, D1 media/orchestration,
+  reservation, validation, and planner tests; storage/media/sync typechecks.
+- Full GREEN evidence: 519/519 repository tests; all nine workspace typechecks;
+  all four build checks; exact materialized binding-matrix/no-placeholder
+  assertion; four Wrangler 4.100.0 materialized dry-runs; strict OpenSpec; and
+  `git diff --check`.
+- Safety evidence: V4 without D1 stays unacked/retryable across Queue/direct/DO
+  and performs zero legacy per-subject KV writes. D1 request fingerprints
+  include the versioned job payload and reject V4/V3 replay substitution.
+- Boundary: no remote migration, deployment, OpenSpec 6.1/6.2 checkoff, Task 12
+  production action, build guard, or Comet transition was performed.

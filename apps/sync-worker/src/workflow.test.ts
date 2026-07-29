@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { nextSubjectRefreshAt, syncStagingKey } from '@airing-cal/storage'
+import mediaWorker from '../../media-worker/src/index.ts'
+import readWorker from '../../read-worker/src/index.ts'
+import { planSubjectRefresh } from './refresh-planner.ts'
 import { SnapshotCoordinator } from './snapshot-coordinator.ts'
 import { runSyncWorkflow, type SyncWorkflowDependencies, type SyncWorkflowEnv, type WorkflowStepLike } from './workflow-core.ts'
 
@@ -81,6 +84,19 @@ class MockKV {
       completed_at: cachedAt,
       error: null,
     })
+  }
+}
+
+class MockImageR2 {
+  writes: Array<{ key: string; value: ArrayBuffer; options: unknown }> = []
+
+  async get() {
+    return null
+  }
+
+  async put(key: string, value: ArrayBuffer, options: unknown) {
+    this.writes.push({ key, value, options })
+    return {}
   }
 }
 
@@ -781,6 +797,131 @@ test('live workflow reports hard-limited aggregate refresh counters', async () =
       refresh_uncertain: 0,
       refresh_skipped: 0,
     })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('live Workflow V3 media refresh remains visible to legacy Read and clears the next legacy plan', async () => {
+  const kv = new MockKV()
+  const r2 = new MockImageR2()
+  const now = Math.floor(Date.now() / 1000)
+  const cachedAt = now - 9 * 24 * 60 * 60
+  kv.seedCompleteSubject(1, cachedAt)
+  kv.values.set('subject:detail:1', {
+    cached_at: cachedAt,
+    subject: {
+      id: 1,
+      type: 2,
+      name: 'Anime 1',
+      name_cn: '',
+      summary: '',
+      nsfw: false,
+      eps: 1,
+      total_episodes: 1,
+      images: {
+        common: 'https://images.example/1/common.jpg',
+        large: 'https://images.example/1/large.jpg',
+      },
+    },
+  })
+  kv.values.set('subject:meta:1', {
+    ...(kv.values.get('subject:meta:1') as Record<string, unknown>),
+    expires_at: null,
+  })
+  const queueMessages: unknown[] = []
+  const coordinator = new MockSnapshotCoordinator(kv)
+  const step = new FakeStep(kv)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) return Response.json({ total: 1, data: [collection(1)] })
+    if (text.endsWith('/calendar')) {
+      return Response.json([{
+        weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+        items: [{
+          id: 1,
+          type: 2,
+          name: 'Anime 1',
+          name_cn: '',
+          summary: '',
+          nsfw: false,
+          date: '2026-07-01',
+          eps: 1,
+          total_episodes: 1,
+          images: {
+            common: 'https://images.example/1/common.jpg',
+            large: 'https://images.example/1/large.jpg',
+          },
+        }],
+      }])
+    }
+    if (text.endsWith('/v0/subjects/1')) {
+      return Response.json({
+        id: 1,
+        type: 2,
+        name: 'Anime 1',
+        name_cn: '',
+        summary: '',
+        nsfw: false,
+        eps: 24,
+        total_episodes: 24,
+        images: {
+          common: 'https://images.example/1/common.jpg',
+          large: 'https://images.example/1/large.jpg',
+        },
+      })
+    }
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
+      instanceId: 'live-v3-compat',
+      payload: { mode: 'live', source: 'manual' },
+    }, step, (message) => new TestNonRetryableError(message))
+
+    assert.equal(queueMessages.length, 1)
+    assert.equal((queueMessages[0] as any).version, 3)
+    assert.deepEqual((queueMessages[0] as any).components, ['detail', 'meta', 'image_common', 'image_large'])
+
+    const delivery = { acked: 0, retries: 0 }
+    await mediaWorker.queue({
+      messages: [{
+        body: queueMessages[0],
+        ack: () => { delivery.acked++ },
+        retry: () => { delivery.retries++ },
+      }],
+    } as any, {
+      AIRING_CAL_KV: kv,
+      AIRING_CAL_R2: r2,
+    } as any)
+
+    const response = await readWorker.fetch(new Request('https://read.local/calendar'), {
+      AIRING_CAL_KV: kv,
+      AIRING_CAL_R2: r2,
+      NSFW_SHOW: 'true',
+    } as any)
+    const calendar = await response.json() as any[]
+    const replanned = planSubjectRefresh({
+      subject_id: 1,
+      title: 'Anime 1',
+      hot: true,
+      images: {
+        common: 'https://images.example/1/common.jpg',
+        large: 'https://images.example/1/large.jpg',
+      },
+    }, {
+      detail: kv.values.get('subject:detail:1') as any ?? null,
+      meta: kv.values.get('subject:meta:1') as any ?? null,
+      image: kv.values.get('image:status:1') as any ?? null,
+      refresh: kv.values.get('subject:refresh:1') as any ?? null,
+    }, now)
+
+    assert.equal(calendar[0]?.items[0]?.eps, 24)
+    assert.equal(calendar[0]?.items[0]?.total_episodes, 24)
+    assert.equal(replanned, null)
+    assert.deepEqual(delivery, { acked: 1, retries: 0 })
   } finally {
     globalThis.fetch = originalFetch
   }

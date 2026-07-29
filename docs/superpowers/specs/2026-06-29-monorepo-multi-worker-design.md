@@ -318,8 +318,8 @@ sync-worker
   -> MEDIA_QUEUE.send(...)
   -> media-worker queue consumer
   -> bgm.tv image fetch / subject detail fetch
-  -> V3: D1 subject_media + image R2
-  -> V2/legacy compatibility: image R2 + KV status writes
+  -> V4: D1 subject_media + image R2, zero per-subject KV
+  -> V3/V2/legacy compatibility: image R2 + KV status writes
 ```
 
 Queue is preferred over direct service-binding calls for heavy work because it naturally batches, retries, and gives each consumer invocation its own subrequest budget.
@@ -737,7 +737,7 @@ Durable Object bindings, and the Worker Cron are declared in checked-in config
 and applied with Worker deployment. Worker secrets are managed separately;
 routine deploy does not run `wrangler secret put`.
 
-After initial provisioning, GitHub Actions resolves D1, both R2 buckets, KV and Queue before upload. Bootstrap prepares or reuses all five resource types and the resolver verifies all five. D1/data R2 runtime bindings are now checked in: manual shadow and media V3 access the new resources, while read handlers deliberately remain on legacy KV/image R2 until `migrate-public-reads-from-kv`.
+After initial provisioning, GitHub Actions resolves D1, both R2 buckets, KV and Queue before upload. Bootstrap prepares or reuses all five resource types and the resolver verifies all five. D1/data R2 runtime bindings are now checked in: manual shadow and D1-only media V4 access the new resources, while live V3 and read handlers deliberately remain on legacy KV/image R2 until `migrate-public-reads-from-kv`.
 
 ### Implemented Workflow
 

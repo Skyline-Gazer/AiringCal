@@ -140,6 +140,60 @@ export interface MediaRefreshJobV3 extends Omit<MediaRefreshJobV2, 'version'> {
   generation: number
 }
 
+export interface MediaRefreshJobV4 extends Omit<MediaRefreshJobV3, 'version'> {
+  version: 4
+}
+
+const MEDIA_REFRESH_COMPONENTS = new Set<MediaRefreshComponent>([
+  'detail',
+  'meta',
+  'image_common',
+  'image_large',
+])
+
+function isMediaRefreshJobBase(value: unknown): value is Omit<MediaRefreshJobV2, 'version'> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const job = value as Record<string, unknown>
+  if (
+    typeof job.job_id !== 'string'
+    || job.job_id.length === 0
+    || typeof job.subject_id !== 'number'
+    || !Number.isSafeInteger(job.subject_id)
+    || job.subject_id <= 0
+    || typeof job.title !== 'string'
+    || !Array.isArray(job.components)
+    || !job.components.every((component) => MEDIA_REFRESH_COMPONENTS.has(component as MediaRefreshComponent))
+  ) return false
+  if (job.images === undefined) return true
+  if (typeof job.images !== 'object' || job.images === null || Array.isArray(job.images)) return false
+  const images = job.images as Record<string, unknown>
+  return (images.common === undefined || typeof images.common === 'string')
+    && (images.large === undefined || typeof images.large === 'string')
+}
+
+function hasValidMediaGeneration(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false
+  const generation = (value as { generation?: unknown }).generation
+  return typeof generation === 'number' && Number.isSafeInteger(generation) && generation >= 0
+}
+
+export function isMediaRefreshJobV2(value: unknown): value is MediaRefreshJobV2 {
+  return isMediaRefreshJobBase(value)
+    && (value as { version?: unknown }).version === 2
+}
+
+export function isMediaRefreshJobV3(value: unknown): value is MediaRefreshJobV3 {
+  return isMediaRefreshJobBase(value)
+    && (value as { version?: unknown }).version === 3
+    && hasValidMediaGeneration(value)
+}
+
+export function isMediaRefreshJobV4(value: unknown): value is MediaRefreshJobV4 {
+  return isMediaRefreshJobBase(value)
+    && (value as { version?: unknown }).version === 4
+    && hasValidMediaGeneration(value)
+}
+
 export interface StorageAdapter {
   get<T>(key: string, validate?: (value: unknown) => value is T): Promise<T | null>
   put<T>(key: string, value: T, options?: { expirationTtl?: number }): Promise<void>

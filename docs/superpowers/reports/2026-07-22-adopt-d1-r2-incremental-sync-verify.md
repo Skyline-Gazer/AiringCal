@@ -136,7 +136,7 @@ test. The result is **16/16 locally approved**.
 | QoS budget reservation is atomic | `packages/storage/src/d1-budget.ts` | final-slot concurrency, stable reservation replay, and hard-limit tests | PASS |
 | Workflow incrementally commits D1 | `apps/sync-worker/src/d1-sync.ts` | unchanged writes zero rows, one change writes one, replay avoids a second mutation, lifecycle counters persist | PASS |
 | Workflow publishes a verifiable R2 candidate | `apps/sync-worker/src/workflow-core.ts`; `apps/sync-worker/src/r2-publication.ts` | D1-before-publication integration plus changed/no-op/failure publication tests | PASS |
-| Subject media authority is D1 and new flow avoids subject KV | `apps/media-worker/src/d1-media-state.ts`; `apps/media-worker/src/index.ts` | semantic no-op is zero D1/R2 writes; V3 Queue/direct/DO paths perform no legacy per-subject puts | PASS |
+| Subject media authority is D1 and new flow avoids subject KV | `apps/media-worker/src/d1-media-state.ts`; `apps/media-worker/src/index.ts` | semantic no-op is zero D1/R2 writes; D1-only V4 Queue/direct/DO paths perform no legacy per-subject puts | PASS |
 | Cold media rotates across seven days | `apps/sync-worker/src/refresh-planner.ts` | all seven residues selected exactly once and D1 orchestration exercises seven UTC shards | PASS |
 | Public snapshot is one immutable object | `packages/domain/src/public-snapshot.ts`; `apps/sync-worker/src/r2-publication.ts` | exact content-addressed key plus changed publication ordering test | PASS |
 | Unchanged public content performs zero publication writes | `apps/sync-worker/src/r2-publication.ts` | identical verified content allocates no generation and performs zero R2/KV writes | PASS |
@@ -154,27 +154,76 @@ The result is **8/8 locally approved**.
 | Rate, tags, comment, collection status, episode and volume progress change without depending on `updated_at` | collection-diff business-field matrix changes each field independently while the fixture timestamp remains constant and plans exactly one update | PASS |
 | First missing is retained; only a later complete miss deletes; partial/failed pages never advance deletion | domain, D1 orchestration, and staged-page disappearance tests | PASS |
 | Daily media grant stays `<= 100` under concurrency and replay | D1 final-slot concurrency and replay tests; coordinator concurrent/replayed hard-limit tests; Workflow hard-limited counter test | PASS |
-| New media flow writes no per-subject legacy KV | V3 no-D1 fail-closed, D1-only Queue/direct/DO, and unchanged 659-subject Workflow tests | PASS |
+| New media flow writes no per-subject legacy KV | V4 no-D1 fail-closed, D1-only Queue/direct/DO, and unchanged 659-subject Workflow tests | PASS |
 | R2/pointer failures retain the old public version | D1 pending, R2 PUT/GET, schema/generation/hash/key, definite KV, and ambiguous KV tests | PASS |
 | Bootstrap is replayable and missing resource/migration failures stop before upload | provision/resolve tests plus deploy dependency audit | PASS |
 | Existing public APIs remain on legacy KV | `apps/read-worker/src/index.ts` constructs `KVStorage` for collections/calendar/health and reads cache keys from KV; deploy-config test proves D1/data-R2 are not referenced after `ReadEnv`; read-worker 33/33 tests pass | PASS |
 
 ## Code-quality review
 
-- No runtime, config, migration, test, or public documentation defect was found.
+- Final review found and corrected one release-blocking V3 compatibility defect;
+  the correction and fresh evidence are recorded below.
 - D1 collection mutations are CAS-protected and replay reconciliation accepts
   only exact persisted outcomes.
 - Publication uses D1 pending/verified/source/claim state, immutable R2 bytes,
   full readback validation, a fenced single KV pointer write, and post-pointer
   D1 promotion.
-- Media V3 fails closed without D1 and never falls back to legacy subject KV;
-  legacy V2 compatibility remains intentionally separate.
+- D1-only media V4 fails closed without D1 and never falls back to legacy
+  subject KV; live V3 and V2/legacy compatibility remain intentionally
+  separate.
 - Read Worker shadow bindings are present for deployment compatibility but are
   unused by current public handlers.
 
-Fresh verifier verdict: **APPROVED for independent spec/code-quality review**.
-The coordinator must still obtain those independent approvals before checking
-OpenSpec 6.1 or integrating the release candidate.
+The earlier verifier verdict was superseded by the final compatibility review.
+The correction below must receive fresh independent approval before OpenSpec
+6.1 or release integration.
+
+## Release-blocking final review correction: V3 compatibility
+
+Review base: `6be4fd8eb94d065d952ef29896d6575de863f4fc`.
+
+The live Workflow already emitted `MediaRefreshJobV3`, while the current Read
+Worker and live refresh planner still consume legacy subject detail, metadata,
+image, and refresh KV. Task 8 had routed every V3 job to D1-only state, so a
+successful live refresh was invisible to public hydration and the next planner
+pass.
+
+The correction preserves V3 as the live legacy-compatible job and introduces
+the explicit D1-only `MediaRefreshJobV4`. Only the D1 incremental producer emits
+V4. Canonical validation, D1 reservation fingerprints, live/D1 Queue routing,
+Durable Object generation handling, and direct Media routing now keep the two
+contracts unambiguous. V4 without D1 remains retryable and performs zero legacy
+per-subject KV writes.
+
+RED composition evidence used the real live Workflow producer, Media Queue
+consumer, Read Worker calendar hydration, and the next legacy planner pass.
+Before source changes, Read returned the stale episode count `1` instead of the
+refreshed `24`.
+
+Fresh focused GREEN evidence:
+
+- 117/117 Workflow, planner, Media, D1 media, D1 orchestration, reservation,
+  canonical-validation, and compatibility tests passed;
+- storage, media-worker, and sync-worker typechecks passed;
+- the live Workflow V3 integration now exposes episode count `24` through Read
+  and produces no next refresh candidate;
+- V4 Queue/direct/DO tests prove missing D1 is retryable with zero legacy KV;
+- the D1 budget fingerprint test rejects a replay that changes only V4 to V3.
+
+Fresh repository verification after the compatibility correction:
+
+- `pnpm test`: **519/519 passed**;
+- `pnpm typecheck`: **all nine workspace projects passed**;
+- `pnpm build:check`: **all four Worker builds and dry-runs passed**;
+- production-shaped frontend/read/media/sync Wrangler configs passed an
+  executable no-placeholder and exact binding-matrix assertion using only
+  canonical fake D1/KV identifiers;
+- Wrangler 4.100.0 materialized dry-runs passed at frontend 69.36 KiB / gzip
+  16.65 KiB, read 22.91 / 6.15, media 110.10 / 21.44, and sync 226.54 / 45.65;
+- strict OpenSpec validation and `git diff --check` passed.
+
+These local gates do not supply the remote migration, deployment, metrics,
+shadow-comparison, or public-smoke evidence required for OpenSpec 6.1/6.2.
 
 ## Explicitly pending production evidence
 

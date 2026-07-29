@@ -1,4 +1,4 @@
-import { KVStorage, putJsonIfChanged, subjectRefreshKey, type MediaRefreshJobV2, type MediaRefreshJobV3, type SubjectRefreshState } from '@airing-cal/storage'
+import { isMediaRefreshJobV2, isMediaRefreshJobV3, isMediaRefreshJobV4, KVStorage, putJsonIfChanged, subjectRefreshKey, type MediaRefreshJobV2, type MediaRefreshJobV3, type SubjectRefreshState } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 import { processJob, type MediaEnv, type MediaJob } from './index.ts'
 
@@ -59,7 +59,15 @@ export class SubjectRefreshCoordinator {
 
   private async process(job: MediaJob): Promise<Response> {
     if (typeof job.subject_id !== 'number') return Response.json({ error: 'Invalid coordinator request' }, { status: 400 })
-    const generation = (job as Partial<MediaRefreshJobV3>).version === 3 ? (job as MediaRefreshJobV3).generation : 0
+    if (
+      'version' in job
+      && (
+        job.version === 2 && !isMediaRefreshJobV2(job)
+        || job.version === 3 && !isMediaRefreshJobV3(job)
+        || job.version === 4 && !isMediaRefreshJobV4(job)
+      )
+    ) return Response.json({ error: 'Invalid coordinator request' }, { status: 400 })
+    const generation = isMediaRefreshJobV3(job) || isMediaRefreshJobV4(job) ? job.generation : 0
     const jobId = 'job_id' in job && typeof job.job_id === 'string' ? job.job_id : `legacy:${job.subject_id}`
     const decision = await this.core.begin(generation, jobId)
     if (decision.status !== 'process') return Response.json(decision)
@@ -73,16 +81,17 @@ export class SubjectRefreshCoordinator {
     } catch (error) {
       const safeError = sanitizeErrorMessage(error instanceof Error ? error.message : String(error))
       if (
-        'version' in job
-        && job.version === 2
+        isMediaRefreshJobV2(job)
+        || isMediaRefreshJobV3(job)
       ) {
-        const versioned = job as MediaRefreshJobV2
+        const versioned = job as MediaRefreshJobV2 | MediaRefreshJobV3
         const storage = new KVStorage(this.env.AIRING_CAL_KV)
         const now = Math.floor(Date.now() / 1000)
         const previous = await storage.get<SubjectRefreshState>(subjectRefreshKey(job.subject_id))
         await putJsonIfChanged(storage, subjectRefreshKey(job.subject_id), {
           subject_id: job.subject_id,
           job_id: versioned.job_id,
+          ...('generation' in versioned ? { generation: versioned.generation } : {}),
           status: 'failed',
           queued_at: previous?.job_id === versioned.job_id ? previous.queued_at : now,
           updated_at: now,

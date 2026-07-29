@@ -554,6 +554,7 @@ test('calendar-only subjects remain eligible for D1 media scheduling', async () 
     return { granted: 1, consumed: 1, soft_limit: 50, hard_limit: 100, submission: 'submitted' }
   })
   assert.deepEqual(requests[0]?.jobs.map((job: any) => job.subject_id), [14])
+  assert.equal(requests[0]?.jobs.every((job: any) => job.version === 4), true)
 })
 
 test('cold watched media is eligible exactly once across seven UTC shards without an expiry gate', async () => {

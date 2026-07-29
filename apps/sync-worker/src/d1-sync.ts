@@ -16,7 +16,7 @@ import {
   type BudgetReservationResult,
   type CollectionRow,
   type D1DatabaseLike,
-  type MediaRefreshJobV3,
+  type MediaRefreshJobV4,
   type PublicCollectionItemV1,
   type SyncRunCompletion,
   type SyncRunFailure,
@@ -91,7 +91,7 @@ export interface D1IncrementalSyncArguments {
   completeInput: CompleteFullFetch
   now: number
   store?: D1IncrementalSyncStore
-  submitMedia?: (request: BudgetReservationRequest<MediaRefreshJobV3>) => Promise<BudgetReservationResult>
+  submitMedia?: (request: BudgetReservationRequest<MediaRefreshJobV4>) => Promise<BudgetReservationResult>
 }
 
 interface PreparedResultEnvelope {
@@ -373,10 +373,10 @@ function classifyError(error: unknown): string {
   return 'SYNC_FAILED'
 }
 
-function mediaJobs(instanceId: string, candidates: RefreshCandidate[]): MediaRefreshJobV3[] {
+function mediaJobs(instanceId: string, candidates: RefreshCandidate[]): MediaRefreshJobV4[] {
   return candidates.map((candidate) => {
     return {
-      version: 3,
+      version: 4,
       generation: 0,
       job_id: `${instanceId}:${candidate.subject_id}`,
       subject_id: candidate.subject_id,
@@ -817,7 +817,7 @@ export async function runD1IncrementalSync({
       previousCursor,
     )
     const jobs = mediaJobs(instanceId, selection.selected)
-    const request: BudgetReservationRequest<MediaRefreshJobV3> = {
+    const request: BudgetReservationRequest<MediaRefreshJobV4> = {
       date: new Date(now * 1000).toISOString().slice(0, 10),
       resource: 'media',
       reservationId: `${instanceId}:media`,

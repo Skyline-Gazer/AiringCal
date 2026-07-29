@@ -56,13 +56,13 @@ function trackedBatch(body: unknown, attempts = 1) {
   }
 }
 
-test('media-worker retries a V3 queue message without D1 and performs no legacy per-subject writes', async () => {
+test('media-worker retries a D1-only V4 queue message without D1 and performs no legacy per-subject writes', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async () => { throw new Error('missing D1 must fail before upstream access') }) as typeof globalThis.fetch
   const message = trackedBatch({
-    version: 3,
+    version: 4,
     generation: 2,
     job_id: 'missing-d1:23080',
     subject_id: 23080,
@@ -81,13 +81,13 @@ test('media-worker retries a V3 queue message without D1 and performs no legacy 
   }
 })
 
-test('processJob rejects a V3 job without D1 before legacy per-subject writes', async () => {
+test('processJob rejects a D1-only V4 job without D1 before legacy per-subject writes', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()
 
   await assert.rejects(
     processJob({
-      version: 3,
+      version: 4,
       generation: 3,
       job_id: 'missing-d1-direct:23080',
       subject_id: 23080,
@@ -100,11 +100,11 @@ test('processJob rejects a V3 job without D1 before legacy per-subject writes', 
   assert.equal(r2.writes.length, 0)
 })
 
-test('media-worker routes D1-only V3 jobs without new legacy per-subject KV puts', async () => {
+test('media-worker routes D1-only V4 jobs without new legacy per-subject KV puts', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()
   const message = trackedBatch({
-    version: 3,
+    version: 4,
     generation: 8,
     job_id: 'd1-only:23080',
     subject_id: 23080,
@@ -199,7 +199,7 @@ test('media-worker retries D1-authoritative read and upsert failures without leg
     for (const failurePoint of ['read', 'upsert'] as const) {
       const kv = new MockKV()
       const message = trackedBatch({
-        version: 3,
+        version: 4,
         generation: 9,
         job_id: `d1-${failurePoint}:23080`,
         subject_id: 23080,

@@ -9,7 +9,7 @@ import {
   type D1MetaLike,
   type D1PreparedStatementLike,
   type D1ResultLike,
-  type MediaRefreshJobV3,
+  type MediaRefreshJobV4,
   type SubjectMediaRow,
 } from '@airing-cal/storage'
 
@@ -178,8 +178,8 @@ async function existingRow(
   return row
 }
 
-const job: MediaRefreshJobV3 = {
-  version: 3,
+const job: MediaRefreshJobV4 = {
+  version: 4,
   generation: 7,
   job_id: 'd1-run:23080',
   subject_id: 23080,
@@ -198,7 +198,7 @@ async function loadRefreshSubjectMediaD1() {
   assert.equal(typeof loaded.refreshSubjectMediaD1, 'function')
   return loaded.refreshSubjectMediaD1 as (
     env: { AIRING_CAL_D1: D1DatabaseLike; AIRING_CAL_R2: RecordingR2 },
-    refreshJob: MediaRefreshJobV3,
+    refreshJob: MediaRefreshJobV4,
   ) => Promise<{ d1Writes: number; imageWrites: number; status: string }>
 }
 

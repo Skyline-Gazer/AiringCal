@@ -13,7 +13,7 @@ AiringCal 是一个 Cloudflare Workers monorepo。它把公开访问、只读数
 | `airing-cal-frontend` | `apps/frontend-worker` | 唯一公开入口，提供页面、widget 静态资源、BFF JSON route 和 `/image/:hash` 代理 |
 | `airing-cal-read` | `apps/read-worker` | 内部只读 API；当前公开响应仍从 legacy KV snapshot/状态与 image R2 读取，D1/data R2 binding 尚未用于 handler |
 | `airing-cal-sync` | `apps/sync-worker` | Cloudflare Workflow 编排 collection/calendar；live 维持 legacy KV 发布，manual shadow 同步 D1 并发布不可变 data R2 snapshot |
-| `airing-cal-media` | `apps/media-worker` | Queue consumer；V3 任务以 D1 保存媒体权威状态并写 image R2，V2/legacy 任务保留 KV 兼容路径 |
+| `airing-cal-media` | `apps/media-worker` | Queue consumer；D1-only V4 任务以 D1 保存媒体权威状态并写 image R2，live V3 与 V2/legacy 任务保留 KV 兼容路径 |
 
 共享 package：
 
@@ -175,9 +175,9 @@ database_id = "<AIRING_CAL_D1_DATABASE_ID>"
 
 对应的 materialization 环境名是 `AIRING_CAL_KV_NAMESPACE_ID` 与 `AIRING_CAL_D1_DATABASE_ID`；它们是 resolver job output 的进程内传递名，不是需要手工新增的 Worker secret。
 
-常规 deploy 只读解析实际 KV namespace ID 与 D1 database ID，同时验证 D1、两个 R2 bucket、KV 与 Queue；资源不存在时会明确失败并提示先运行 bootstrap，不会在发布途中创建资源。bootstrap 会准备或复用全部五类资源，随后使用同一生产凭证运行只读 resolver，确认全部资源可解析后才报告 D1/KV ID。read/sync/media 的 checked-in config 已包含 D1 binding，read/sync 还包含 data R2 binding；sync 的 manual shadow 和 media V3 会实际访问新资源，read handler 暂不访问。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
+常规 deploy 只读解析实际 KV namespace ID 与 D1 database ID，同时验证 D1、两个 R2 bucket、KV 与 Queue；资源不存在时会明确失败并提示先运行 bootstrap，不会在发布途中创建资源。bootstrap 会准备或复用全部五类资源，随后使用同一生产凭证运行只读 resolver，确认全部资源可解析后才报告 D1/KV ID。read/sync/media 的 checked-in config 已包含 D1 binding，read/sync 还包含 data R2 binding；sync 的 manual shadow 和 D1-only media V4 会实际访问新资源，read handler 暂不访问。routine deploy 使用稳定的 checked-in `wrangler.toml` 作为唯一源码，不会把临时 deploy config 提交回仓库。
 
-`SNAPSHOT_COORDINATOR` 与 `SUBJECT_REFRESH_COORDINATOR` 是 SQLite-backed Durable Object binding，migration tag 分别为 `snapshot-coordinator-v1` 与 `subject-refresh-coordinator-v1`。migration 只新增 class，不在自动部署或回退中删除。live Workflow 通过前者分配/提交 generation；Media Queue 按 subject ID 路由到后者，并在覆盖 bgm.tv、KV 与 R2 await 的串行互斥区内完成 generation gate、detail/meta/image/R2 副作用、失败状态与完成标记。最高已接受 generation 在任何副作用前持久化，即使新任务失败，迟到旧任务也只能返回 obsolete。V2/legacy 消息按 generation 0 兼容，不能覆盖已经接受的更高 V3 generation。
+`SNAPSHOT_COORDINATOR` 与 `SUBJECT_REFRESH_COORDINATOR` 是 SQLite-backed Durable Object binding，migration tag 分别为 `snapshot-coordinator-v1` 与 `subject-refresh-coordinator-v1`。migration 只新增 class，不在自动部署或回退中删除。live Workflow 通过前者分配/提交 generation；Media Queue 按 subject ID 路由到后者，并在覆盖 bgm.tv、KV 与 R2 await 的串行互斥区内完成 generation gate、detail/meta/image/R2 副作用、失败状态与完成标记。最高已接受 generation 在任何副作用前持久化，即使新任务失败，迟到旧任务也只能返回 obsolete。V2/legacy 消息按 generation 0 兼容，不能覆盖已经接受的更高 V3/V4 generation；V3 保持 live legacy KV 行为，只有 V4 进入 D1-only 路径。
 
 CI 不上传运行时 secret，也不会手写 `curl` 修改 schedule。定时配置只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers].crons`；Cron handler 只创建 Workflow instance。
 
@@ -325,7 +325,7 @@ Wrangler 本地权限映射把 `workers_scripts:write` 描述为可修改 Worker
 
 D1 migration 当前创建五张主表：
 
-| 表 | Shadow / V3 职责 |
+| 表 | Shadow / D1-only media 职责 |
 |----|------------------|
 | `collection_items` | `(user_id, subject_id)` 收藏权威行、业务 hash、missing/deleted 两次确认状态 |
 | `subject_media` | detail/media hash、NSFW、图片源与 R2 引用、refresh/retry 分类状态 |
