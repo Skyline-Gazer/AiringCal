@@ -241,3 +241,18 @@
 - Final review result: spec compliance APPROVED and code quality APPROVED with no remaining blockers.
 - Implementation/fix commits: `0ba9590`, `1051407`, `af963fe`, `b810b2f`, and `a3c7859` are pushed.
 - Task 8 checkoff: plan Steps 1–4 complete; Task 9 remained untouched.
+
+## Task 9 Implementation
+
+- Plan task: `Task 9: Immutable R2 and pointer-last publication`.
+- OpenSpec mappings: `4.2` D1 → R2 put/verify → KV pointer; `4.3` failure injection, replay, old-pointer survival and identical-input zero writes.
+- Stage: `checkoff`.
+- Implementation base: `8cb0251`.
+- RED/GREEN scope: no-op/success ordering, every pre-pointer failure, malformed schema/generation/hash/key, definite and ambiguous KV outcomes, pending replay, D1 response loss, monotonic concurrency, stale pending supersession, no-op races, source freshness and matching-pending adoption were each reproduced before implementation and locked by regression tests.
+- Publication protocol: versioned D1 `public:pending`, `public:verified`, `public:write-claim`, and `public:source-watermark`; create-only immutable R2 PUT; full R2 GET plus schema/generation/hash/key validation; exactly one `public:current` KV PUT; D1 verified promotion only afterward.
+- Concurrency/replay: D1 cross-key CAS and a 60-second per-attempt lease fence distinct Workflow instances. The only production caller is one durable `step.do` per unique `event.instanceId`; Cloudflare documentation confirms duplicate instance IDs are rejected, restart cancels active steps, and retries do not overlap. Source watermark orders stable `completeInput.observedAt` then publication ID, preventing delayed older runs from allocating after newer no-op runs.
+- Pending recovery: failed B can be CAS-superseded by later C only without an active claim; active claims return pending, expired owners are fenced, exact matching content adopts the existing generation/key/timestamp without allocation, and response-loss replay is idempotent.
+- Final GREEN evidence: focused 141/141; sync-worker 182/182; storage non-listener 80/80; storage and sync-worker typechecks; `git diff --check`. The only unrun storage listener case is an unchanged migration test blocked by sandbox `listen EPERM 127.0.0.1`; its other migration cases and all Task 9 storage tests passed.
+- Final review result: spec compliance APPROVED (including official Workflow execution-model adjudication) and code quality APPROVED with no remaining blockers.
+- Implementation/fix commits: `7811700`, `5bf1342`, `7e1c624`, `2c4ed5f`, `4679e97`, `f0fbb0b`, `55a5562`, and `0ca2db3` are pushed.
+- Task 9 checkoff: plan Steps 1–5 and OpenSpec 4.2–4.3 complete; no runtime binding/config work was included.

@@ -648,7 +648,7 @@ git push
 - `PublicationResult = { status: 'unchanged'|'published'|'pending'; generation; contentHash; r2Puts; pointerPuts }`.
 - D1 `app_state` keys: `public:verified`, `public:pending`; versioned JSON only.
 
-- [ ] **Step 1: Write RED no-op and success tests**
+- [x] **Step 1: Write RED no-op and success tests**
 
 Assert identical verified hash returns `unchanged`, does not allocate generation, and produces zero R2/KV PUT. Changed content must observe calls in exact order:
 
@@ -664,15 +664,15 @@ assert.deepEqual(events, [
 
 The object body must round-trip through `parsePublicSnapshotV1` and hash verification.
 
-- [ ] **Step 2: Write RED failure-injection/replay tests**
+- [x] **Step 2: Write RED failure-injection/replay tests**
 
 Inject D1 commit, R2 PUT, R2 GET, schema, generation, content hash, object-key, KV definite failure and KV ambiguous outcome. In every pre-pointer failure assert the old pointer is byte-identical. For ambiguous KV PUT, read back: exact candidate means success; mismatch/missing means pending. Replay uses the same generation/key and performs no additional allocation.
 
-- [ ] **Step 3: Implement publisher**
+- [x] **Step 3: Implement publisher**
 
 Read verified/pending state; content equality short-circuits before generation allocation. Persist pending generation/hash, PUT with an `onlyIf` precondition supported by the verified R2 type or perform GET-and-exact-compare when object exists; GET and validate full object; then one KV PUT. Complete D1 state only after pointer result is verified.
 
-- [ ] **Step 4: Run GREEN**
+- [x] **Step 4: Run GREEN**
 
 ```bash
 node --import tsx --test apps/sync-worker/src/r2-publication.test.ts apps/sync-worker/src/d1-sync.test.ts apps/sync-worker/src/workflow.test.ts
@@ -680,7 +680,7 @@ pnpm -F @airing-cal/sync-worker test
 pnpm -F @airing-cal/sync-worker typecheck
 ```
 
-- [ ] **Step 5: Review, mark 4.2–4.3 complete, commit and push**
+- [x] **Step 5: Review, mark 4.2–4.3 complete, commit and push**
 
 ```bash
 git add apps/sync-worker packages/storage openspec/changes/adopt-d1-r2-incremental-sync
