@@ -2,16 +2,16 @@
 comet_change: adopt-d1-r2-incremental-sync
 role: task-12-verification-ready
 status: local-evidence-ready-pending-independent-review-and-production
-verified_scope: full-local-gates-materialized-dry-runs-requirement-audit
-verified_source_sha: 38dd213eed4da58b6deef1104c9181528fe6654e
+verified_scope: full-local-gates-materialized-dry-runs-v3-v4-compatibility
+verified_source_sha: 79cbb3462ea91680fcc3c3fb62ea96af401bfb68
 ---
 
 # D1/R2 incremental sync verification-ready evidence
 
-This report records fresh local evidence for source SHA
-`38dd213eed4da58b6deef1104c9181528fe6654e`. The verification documentation
-commit contains no runtime or configuration change, so this SHA is the exact
-implementation reviewed by the gates below.
+This report records current local evidence for runtime source SHA
+`79cbb3462ea91680fcc3c3fb62ea96af401bfb68`. The documentation-truth correction
+after that commit contains no runtime or configuration change, so this remains
+the exact implementation reviewed by the gates below.
 
 This is deliberately not production evidence. No remote D1 migration, merge to
 `dev`, Worker deployment, production Workflow run, live metric query, public
@@ -28,19 +28,19 @@ The installed CLIs were checked before use:
 
 | Command | Result | Exact evidence |
 |---|---|---|
-| `pnpm test` | PASS | 514/514 tests, 0 failed |
+| `pnpm test` | PASS | 519/519 tests, 0 failed |
 | `pnpm typecheck` | PASS | all 9 workspace projects completed |
 | `pnpm build:check` | PASS | frontend/read/media/sync types current and dry-runs completed |
 | `./node_modules/.bin/openspec validate adopt-d1-r2-incremental-sync --strict` | PASS | `Change 'adopt-d1-r2-incremental-sync' is valid` |
 | `git diff --check` | PASS | no output |
-| focused acceptance command listed below | PASS | 271/271 tests, 0 failed |
+| focused V3/V4 compatibility command listed below | PASS | 117/117 tests, 0 failed |
 
 Wrangler's default macOS debug-log directory is outside this worktree sandbox.
 The first `pnpm build:check` still exited 0 and completed all bundles, but
 emitted `EPERM` diagnostics while attempting to write that debug log. Source
 inspection of installed Wrangler 4.100.0 confirmed `WRANGLER_LOG_PATH`; the
 same gate was rerun as
-`WRANGLER_LOG_PATH=/tmp/bangumitv-task12-wrangler-logs pnpm build:check` and
+`WRANGLER_LOG_PATH=/tmp/bangumitv-v3-compat-build-logs pnpm build:check` and
 completed cleanly.
 
 ### Full test count
@@ -49,15 +49,15 @@ completed cleanly.
 |---|---:|
 | `@airing-cal/widget` | 26 |
 | `@airing-cal/worker-common` | 13 |
-| `@airing-cal/storage` | 84 |
+| `@airing-cal/storage` | 87 |
 | `@airing-cal/domain` | 67 |
 | `@airing-cal/bgm-api` | 28 |
 | `@airing-cal/frontend-worker` | 7 |
 | `@airing-cal/read-worker` | 33 |
-| `@airing-cal/sync-worker` | 183 |
+| `@airing-cal/sync-worker` | 185 |
 | `@airing-cal/media-worker` | 50 |
 | root script tests | 23 |
-| **Total** | **514** |
+| **Total** | **519** |
 
 Package counts that were not visible in the terminal's truncated full-run
 stream were confirmed with Node's native test runner plus the installed `tsx`
@@ -67,20 +67,16 @@ loader; those count checks also passed.
 
 ```bash
 node --import tsx --test \
-  packages/domain/src/collection-diff.test.ts \
-  packages/storage/src/d1-state-store.test.ts \
-  packages/storage/src/d1-budget.test.ts \
-  apps/sync-worker/src/d1-sync.test.ts \
-  apps/sync-worker/src/r2-publication.test.ts \
-  apps/sync-worker/src/refresh-planner.test.ts \
-  apps/sync-worker/src/workflow.test.ts \
-  apps/media-worker/src/d1-media-state.test.ts \
+  packages/storage/src/media-job.test.ts \
   apps/media-worker/src/media-worker.test.ts \
-  apps/read-worker/src/read-worker.test.ts \
-  packages/worker-common/src/deploy-config.test.ts
+  apps/media-worker/src/subject-refresh-coordinator.test.ts \
+  apps/media-worker/src/d1-media-state.test.ts \
+  apps/sync-worker/src/d1-sync.test.ts \
+  apps/sync-worker/src/snapshot-coordinator.test.ts \
+  apps/sync-worker/src/workflow.test.ts
 ```
 
-Result: **271/271 passed, 0 failed**.
+Result: **117/117 passed, 0 failed**.
 
 ## Materialized Wrangler verification
 
@@ -89,9 +85,9 @@ Temporary configs used only canonical fake identifiers:
 - D1 database ID:
   `11111111-1111-4111-8111-111111111111`;
 - KV namespace ID:
-  `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`;
+  `11111111111111111111111111111111`;
 - frontend build SHA:
-  `38dd213eed4da58b6deef1104c9181528fe6654e`.
+  `79cbb3462ea91680fcc3c3fb62ea96af401bfb68`.
 
 Read, Media, and Sync were materialized with resource IDs only, matching their
 deploy jobs. Frontend was materialized with build metadata, matching its
@@ -101,17 +97,17 @@ separate deploy job. An executable assertion rejected unresolved
 | Config | Asserted materialized matrix | Dry-run |
 |---|---|---|
 | Read | D1 + legacy KV + image R2 + data R2; no Queue/Workflow/DO | PASS, 22.91 KiB / gzip 6.15 KiB |
-| Media | D1 + legacy KV compatibility + image R2 + Queue consumer + `SubjectRefreshCoordinator`; no data R2/Workflow | PASS, 107.60 KiB / gzip 21.03 KiB |
-| Sync | `SyncWorkflow` + D1 + data R2 + legacy KV compatibility + media Queue producer + `SnapshotCoordinator`; no image R2/Queue consumer | PASS, 225.08 KiB / gzip 45.33 KiB |
+| Media | D1 + legacy KV compatibility + image R2 + Queue consumer + `SubjectRefreshCoordinator`; no data R2/Workflow | PASS, 110.10 KiB / gzip 21.44 KiB |
+| Sync | `SyncWorkflow` + D1 + data R2 + legacy KV compatibility + media Queue producer + `SnapshotCoordinator`; no image R2/Queue consumer | PASS, 226.54 KiB / gzip 45.65 KiB |
 | Frontend | Read and Sync service bindings plus build metadata only | PASS, 69.36 KiB / gzip 16.65 KiB |
 
 The four exact materialized configs all passed:
 
 ```bash
-WRANGLER_LOG_PATH=/tmp/bangumitv-task12-wrangler-logs/<app> \
+WRANGLER_LOG_PATH=/tmp/bangumitv-doc-truth-wrangler.Lh40jP/wrangler-<app>.log \
   pnpm exec wrangler deploy --dry-run \
-  --outdir /tmp/bangumitv-task12-wrangler/dist-<app> \
-  --config /tmp/bangumitv-task12-wrangler/wrangler-<app>.toml
+  --outdir /tmp/bangumitv-doc-truth-wrangler.Lh40jP/dist-<app> \
+  --config /tmp/bangumitv-doc-truth-wrangler.Lh40jP/wrangler-<app>.toml
 ```
 
 One discarded setup attempt incorrectly supplied frontend-only
@@ -130,7 +126,7 @@ test. The result is **16/16 locally approved**.
 | State resources are replay-safe to bootstrap | `scripts/cloudflare-resource-contract.mjs`; `scripts/provision-cloudflare-resources.mjs` | provision tests create once, reuse D1 ID, re-list races, and replay later pages/cursors | PASS |
 | D1 migration precedes Worker upload | `.github/workflows/deploy.yml` | deploy-config test reconstructs `resolve → migration → read/media → sync → frontend` dependencies | PASS |
 | Missing resources fail before upload | `scripts/resolve-cloudflare-resources.mjs` | resolver tests cover missing D1, KV, data R2, image R2, and Queue | PASS |
-| D1 stores mutable authoritative state | `migrations/0001_d1_authoritative_state.sql`; `packages/storage/src/d1-state-store.ts` | migration/schema and typed state-store tests in the 514-test gate | PASS |
+| D1 stores mutable authoritative state | `migrations/0001_d1_authoritative_state.sql`; `packages/storage/src/d1-state-store.ts` | migration/schema and typed state-store tests in the 519-test gate | PASS |
 | Collection diff ignores runtime fields | `packages/storage/src/canonical-json.ts`; `packages/domain/src/collection-diff.ts` | canonical hash excludes observation fields; later identical observation plans zero writes | PASS |
 | Deletion requires two successful complete reads | `packages/domain/src/collection-diff.ts` | first/second missing, same-run replay, incomplete input, and vanished staged page tests | PASS |
 | QoS budget reservation is atomic | `packages/storage/src/d1-budget.ts` | final-slot concurrency, stable reservation replay, and hard-limit tests | PASS |
@@ -141,7 +137,7 @@ test. The result is **16/16 locally approved**.
 | Public snapshot is one immutable object | `packages/domain/src/public-snapshot.ts`; `apps/sync-worker/src/r2-publication.ts` | exact content-addressed key plus changed publication ordering test | PASS |
 | Unchanged public content performs zero publication writes | `apps/sync-worker/src/r2-publication.ts` | identical verified content allocates no generation and performs zero R2/KV writes | PASS |
 | Pointer switches last | `apps/sync-worker/src/r2-publication.ts` | event-order test and D1/R2/readback/KV injected failures preserve the prior pointer | PASS |
-| D1/R2 publication is automatically verified | `.github/workflows/ci.yml`; package test scripts | full 514/514 plus focused 271/271 acceptance gates | PASS |
+| D1/R2 publication is automatically verified | `.github/workflows/ci.yml`; package test scripts | full 519/519 gate plus focused 117/117 V3/V4 compatibility gate | PASS |
 | Deploy config resolves all state resources | `scripts/materialize-wrangler-config.mjs`; Worker TOMLs; deploy workflow | no-placeholder matrix assertion plus four materialized Wrangler dry-runs | PASS |
 
 ## Design §10 acceptance audit
@@ -209,6 +205,7 @@ Fresh focused GREEN evidence:
   and produces no next refresh candidate;
 - V4 Queue/direct/DO tests prove missing D1 is retryable with zero legacy KV;
 - the D1 budget fingerprint test rejects a replay that changes only V4 to V3.
+- the focused documentation/configuration suite passes 28/28.
 
 Fresh repository verification after the compatibility correction:
 
@@ -220,6 +217,7 @@ Fresh repository verification after the compatibility correction:
   canonical fake D1/KV identifiers;
 - Wrangler 4.100.0 materialized dry-runs passed at frontend 69.36 KiB / gzip
   16.65 KiB, read 22.91 / 6.15, media 110.10 / 21.44, and sync 226.54 / 45.65;
+- the focused documentation/configuration suite passed 28/28;
 - strict OpenSpec validation and `git diff --check` passed.
 
 These local gates do not supply the remote migration, deployment, metrics,

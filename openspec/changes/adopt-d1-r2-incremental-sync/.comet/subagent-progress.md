@@ -287,16 +287,19 @@
 - Implementation/fix commits: `626518a`, `8944443`, and `528c937` are pushed.
 - Task 11 checkoff: plan Steps 1–4 and OpenSpec 5.3 complete; production evidence and Task 12 remain pending.
 
-## Task 12 Verification-ready Implementation
+## Historical Task 12 Verification-ready Snapshot (Superseded)
 
 - Plan task: `Task 12: 完整验证、生产 migration 与 shadow release`, Steps 1–4 only.
-- Stage: `implemented-pending-independent-review`.
-- Verified source SHA: `38dd213eed4da58b6deef1104c9181528fe6654e`.
-- Full gates: repository tests 514/514; all nine workspace typechecks; all four
+- Stage: historical local snapshot superseded by the final V3 compatibility
+  correction below.
+- Historical verified source SHA:
+  `38dd213eed4da58b6deef1104c9181528fe6654e`.
+- Historical full gates: repository tests 514/514; all nine workspace
+  typechecks; all four
   Worker build checks; strict OpenSpec; and `git diff --check` pass.
-- Focused acceptance evidence: 271/271 across collection diff, D1 state/budget,
-  D1 orchestration, R2 publication, refresh planning, Workflow, D1 media,
-  Media Worker, Read Worker, and deploy-config suites.
+- Historical focused acceptance evidence: 271/271 across collection diff, D1
+  state/budget, D1 orchestration, R2 publication, refresh planning, Workflow,
+  D1 media, Media Worker, Read Worker, and deploy-config suites.
 - Materialized config evidence: canonical fake D1/KV IDs, executable
   no-placeholder and exact binding-matrix assertions, and all four
   read/media/sync/frontend Wrangler dry-runs pass. Sync exposes Workflow, D1,
@@ -321,6 +324,8 @@
 ## Final Review V3 Compatibility Fix
 
 - Stage: full local verification GREEN; ready for coordinator handoff.
+- Verified runtime source SHA:
+  `79cbb3462ea91680fcc3c3fb62ea96af401bfb68`.
 - Review base: `6be4fd8eb94d065d952ef29896d6575de863f4fc`.
 - Root cause: live Workflow already produced V3, but Task 8 routed every V3 to
   D1-only media state while Read and the live planner still consumed legacy
@@ -335,9 +340,9 @@
 - Focused GREEN evidence: 117/117 composition, Media, D1 media/orchestration,
   reservation, validation, and planner tests; storage/media/sync typechecks.
 - Full GREEN evidence: 519/519 repository tests; all nine workspace typechecks;
-  all four build checks; exact materialized binding-matrix/no-placeholder
-  assertion; four Wrangler 4.100.0 materialized dry-runs; strict OpenSpec; and
-  `git diff --check`.
+  all four build checks; 28/28 focused documentation/configuration tests; exact
+  materialized binding-matrix/no-placeholder assertion; four Wrangler 4.100.0
+  materialized dry-runs; strict OpenSpec; and `git diff --check`.
 - Safety evidence: V4 without D1 stays unacked/retryable across Queue/direct/DO
   and performs zero legacy per-subject KV writes. D1 request fingerprints
   include the versioned job payload and reject V4/V3 replay substitution.
