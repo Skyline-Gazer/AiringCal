@@ -158,6 +158,12 @@ artifact manifest 必须在任何 chunk 写入前完成大小验证；若中途 
 
 同一 subject 只生成一个合并组件任务。存在 retry 状态时，未来退避时间会抑制普通 hot/cold 调度；到期后才按 retry 优先级进入。未到期、URL/hash 未变化的媒体不调度。cold 在预算充足的七个连续 UTC 日中完整覆盖；预算不足时持久化低优先级游标供后续日继续。
 
+成功执行到期 V4 检查后，即使 detail/media 语义内容完全相同，也必须只更新
+`checked_at` 和 `next_refresh_at` 调度水位。正常 subject 的下一次 hot 边界沿用
+`nextSubjectRefreshAt(subject_id, checked_at)` 的确定性 6～8 天分散规则；
+not-found tombstone 沿用 24 小时边界。该 schedule-only mutation 不重写图片 R2
+对象或改变 detail/media hash；未到期的相同内容检查仍为 D1/R2 零写。
+
 ## 5. 公开 Snapshot 契约
 
 ### 5.1 `PublicSnapshotV1`
@@ -181,6 +187,16 @@ snapshots/v1/{generation}-{content_hash}.json
 ```
 
 同一个 key 不覆盖；若对象已存在，内容必须与候选完全一致，否则视为发布冲突。
+
+公开 payload 必须在 collection diff checkpoint 写入前读取一次已提交的
+`subject_media`，并将该次观察到的 detail、NSFW 和图片引用冻结进 checkpoint。
+collection 与 calendar 使用同一媒体投影：只有
+`images/{lowercase-sha256}/original` 形式的 R2 key 才生成
+`{ hash, uri: "/image/{hash}", r2_key }`；detail JSON 缺失、无效或 subject ID
+不匹配时按字段回退到本轮完整上游数据。有效 tombstone 使用 D1 的 NSFW 状态隐藏
+内容，但不删除或丢弃已有合法图片引用。running replay 必须复用 checkpoint 中的
+同一公开投影，不能因为稍后媒体任务完成而改变 hash；媒体结果仍只在下一次日同步
+进入新 snapshot。
 
 ### 5.2 `PublicSnapshotPointerV1`
 

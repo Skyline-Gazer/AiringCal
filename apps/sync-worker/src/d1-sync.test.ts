@@ -6,6 +6,7 @@ import { buildPublicSnapshot } from '@airing-cal/domain'
 import {
   canonicalJson,
   D1StateStore,
+  nextSubjectRefreshAt,
   sha256Canonical,
   StaleCollectionDiffError,
   type BudgetReservationRequest,
@@ -448,6 +449,183 @@ test('multi-user rows retain identity and the planner receives the stable observ
   assert.equal(result.publicationInput.collections.length, 1)
 })
 
+test('the next daily snapshot projects completed D1 media into collections and calendar', async () => {
+  const store = new RecordingStore()
+  const calendar = [{
+    weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+    items: [{
+      id: 1,
+      type: 2,
+      name: 'Calendar fallback',
+      name_cn: '',
+      summary: 'Calendar summary',
+      nsfw: false,
+      date: '2026-07-01',
+      eps: 12,
+      images: { common: '', large: '', medium: '', small: '', grid: '' },
+      rating: { score: 0, rank: 0, total: 0 },
+    }],
+  }]
+  const first = await run(store, { ...completeInput(), calendar }, undefined, observedAt, 'media-projection-before')
+  const commonHash = 'c'.repeat(64)
+  const largeHash = 'd'.repeat(64)
+  const detail = {
+    id: 1,
+    type: 2,
+    name: 'D1 detail',
+    name_cn: 'D1 中文',
+    summary: 'D1 summary',
+    nsfw: true,
+    date: '2026-07-02',
+    eps: 24,
+    total_episodes: 26,
+  }
+  store.mediaRows = [mediaRow(1, {
+    detail_json: canonicalJson(detail),
+    detail_hash: await sha256Canonical(detail),
+    media_hash: 'e'.repeat(64),
+    nsfw: 1,
+    r2_image_common_key: `images/${commonHash}/original`,
+    r2_image_large_key: `images/${largeHash}/original`,
+    checked_at: observedAt + 1,
+    next_refresh_at: observedAt + 7 * 86_400,
+  })]
+
+  const second = await run(
+    store,
+    { ...completeInput(), calendar, observedAt: observedAt + 86_400 },
+    undefined,
+    observedAt + 86_400,
+    'media-projection-after',
+  )
+
+  assert.notEqual(second.publicationInput.content_hash, first.publicationInput.content_hash)
+  assert.deepEqual(second.publicationInput.collections[0], {
+    subject_id: 1,
+    name: 'D1 detail',
+    name_cn: 'D1 中文',
+    summary: 'D1 summary',
+    images: {
+      common: {
+        hash: commonHash,
+        uri: `/image/${commonHash}`,
+        r2_key: `images/${commonHash}/original`,
+      },
+      large: {
+        hash: largeHash,
+        uri: `/image/${largeHash}`,
+        r2_key: `images/${largeHash}/original`,
+      },
+    },
+    eps: 24,
+    total_episodes: 26,
+    ep_status: 1,
+    vol_status: 0,
+    type: 2,
+    collection_type: 3,
+    rate: 7,
+    nsfw: true,
+    date: '2026-07-02',
+    tags: [],
+    updated_at: '2026-07-27T00:00:00Z',
+  })
+  assert.deepEqual(second.publicationInput.calendar[0]?.items[0], {
+    subject_id: 1,
+    id: 1,
+    type: 2,
+    name: 'D1 detail',
+    name_cn: 'D1 中文',
+    summary: 'D1 summary',
+    images: second.publicationInput.collections[0]?.images,
+    nsfw: true,
+    date: '2026-07-02',
+    eps: 24,
+    total_episodes: 26,
+    rating: { score: 0, rank: 0, total: 0 },
+  })
+})
+
+test('D1 media projection falls back for invalid detail and preserves tombstone image references', async () => {
+  const store = new RecordingStore()
+  const commonHash = 'a'.repeat(64)
+  await run(store, completeInput(), undefined, observedAt, 'media-fallback-seed')
+  store.mediaRows = [mediaRow(1, {
+    detail_json: canonicalJson({ id: 999, name: 'wrong subject' }),
+    detail_hash: 'b'.repeat(64),
+    media_hash: 'c'.repeat(64),
+    nsfw: 1,
+    r2_image_common_key: `images/${commonHash}/original`,
+    r2_image_large_key: 'not-an-image-object-key',
+    checked_at: observedAt + 1,
+    next_refresh_at: observedAt + 86_400,
+  })]
+
+  const result = await run(
+    store,
+    { ...completeInput(), observedAt: observedAt + 1 },
+    undefined,
+    observedAt + 1,
+    'media-fallback',
+  )
+
+  assert.equal(result.publicationInput.collections[0]?.name, 'Subject 1')
+  assert.equal(result.publicationInput.collections[0]?.eps, 12)
+  assert.equal(result.publicationInput.collections[0]?.nsfw, true)
+  assert.deepEqual(result.publicationInput.collections[0]?.images, {
+    common: {
+      hash: commonHash,
+      uri: `/image/${commonHash}`,
+      r2_key: `images/${commonHash}/original`,
+    },
+    large: null,
+  })
+
+  store.mediaRows = [mediaRow(1, {
+    detail_json: null,
+    detail_hash: null,
+    media_hash: 'd'.repeat(64),
+    nsfw: 1,
+    r2_image_common_key: `images/${commonHash}/original`,
+    checked_at: observedAt + 2,
+    next_refresh_at: observedAt + 86_402,
+  })]
+  const tombstone = await run(
+    store,
+    { ...completeInput(), observedAt: observedAt + 2 },
+    undefined,
+    observedAt + 2,
+    'media-tombstone',
+  )
+  assert.equal(tombstone.publicationInput.collections[0]?.name, 'Subject 1')
+  assert.equal(tombstone.publicationInput.collections[0]?.nsfw, true)
+  assert.equal(tombstone.publicationInput.collections[0]?.images.common?.hash, commonHash)
+})
+
+test('a completed due refresh watermark suppresses the next daily hot planner run', async () => {
+  const store = new RecordingStore()
+  await run(store, completeInput(), undefined, observedAt, 'due-watermark-seed')
+  const checkedAt = observedAt
+  store.mediaRows = [mediaRow(1, {
+    checked_at: checkedAt,
+    next_refresh_at: nextSubjectRefreshAt(1, checkedAt),
+  })]
+  const nextDayRequests: BudgetReservationRequest[] = []
+
+  const nextDay = await run(
+    store,
+    { ...completeInput(), observedAt: checkedAt + 86_400 },
+    async (request) => {
+      nextDayRequests.push(request)
+      return { granted: request.jobs.length, consumed: request.jobs.length, soft_limit: 50, hard_limit: 100, submission: 'submitted' }
+    },
+    checkedAt + 86_400,
+    'due-watermark-next-day',
+  )
+
+  assert.equal(nextDay.media.candidates, 0)
+  assert.deepEqual(nextDayRequests, [])
+})
+
 test('run lifecycle persists exact diff and media counters', async () => {
   const store = new RecordingStore()
   store.reservation = {
@@ -709,7 +887,7 @@ test('collection apply failure removes only the newly unadopted replay artifact'
   assert.equal(store.currentRun?.status, 'error')
 })
 
-test('replay after collection commit crash returns the original result without a second mutation', async () => {
+test('media projection read failure occurs before collection commit and replay mutates once', async () => {
   const store = new RecordingStore()
   store.crashOnNextMediaList = true
   store.loseFailurePersistenceOnce = true
@@ -720,7 +898,7 @@ test('replay after collection commit crash returns the original result without a
     /simulated process crash/,
   )
   assert.equal(store.currentRun?.status, 'running')
-  assert.equal(store.collectionMutations, 1)
+  assert.equal(store.collectionMutations, 0)
 
   const replay = await run(store, completeInput(), undefined, observedAt, instanceId)
 
@@ -737,6 +915,45 @@ test('replay after collection commit crash returns the original result without a
     uncertain: 0,
     deferred: 1,
   })
+})
+
+test('collection checkpoint replay keeps the media projection observed before its commit', async () => {
+  const store = new RecordingStore()
+  const before = {
+    id: 1,
+    name: 'Media before checkpoint',
+    name_cn: '',
+    summary: '',
+    date: '2026-07-01',
+    eps: 12,
+    total_episodes: 12,
+  }
+  store.mediaRows = [mediaRow(1, {
+    detail_json: canonicalJson(before),
+    detail_hash: await sha256Canonical(before),
+    checked_at: observedAt,
+  })]
+  store.loseApplyResponseCount = 2
+  store.loseFailurePersistenceOnce = true
+  const instanceId = 'media-projection-checkpoint'
+
+  await assert.rejects(
+    run(store, completeInput(), undefined, observedAt, instanceId),
+    /collection batch response lost after commit/,
+  )
+  assert.equal(store.currentRun?.status, 'running')
+  assert.ok(store.currentRun?.result_json)
+
+  const after = { ...before, name: 'Media changed after checkpoint' }
+  store.mediaRows = [mediaRow(1, {
+    detail_json: canonicalJson(after),
+    detail_hash: await sha256Canonical(after),
+    checked_at: observedAt + 1,
+  })]
+  const replay = await run(store, completeInput(), undefined, observedAt + 1, instanceId)
+
+  assert.equal(replay.publicationInput.collections[0]?.name, 'Media before checkpoint')
+  assert.equal(store.collectionMutations, 1)
 })
 
 test('collection batch response loss continues only from the exact persisted checkpoint', async () => {

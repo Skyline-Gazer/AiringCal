@@ -11,6 +11,14 @@
 - **WHEN** subject 到期检查返回与 D1 相同的源 URL 和内容 hash
 - **THEN** 系统不写图片 R2 对象并只在必要时更新检查调度状态
 
+#### Scenario: 到期成功检查推进调度水位
+- **WHEN** 到期 V4 检查成功且 detail、NSFW、源 URL 与 R2 引用均未变化
+- **THEN** 系统只更新 `checked_at` 和确定性 6～8 天 `next_refresh_at`，不重写不可变 payload 或图片对象，且次日 hot planner 不再选择该 subject
+
+#### Scenario: 未到期相同内容保持零写
+- **WHEN** V4 检查发生在当前 `next_refresh_at` 之前且语义内容相同
+- **THEN** D1 与 R2 写入均为零，现有调度水位保持不变
+
 #### Scenario: V3 与 V4 围栏独立且 V4 replay 稳定
 - **WHEN** 同一 subject 依次处理 V3 generation N、V4 run A、重放 A、较新的 V4 run B、迟到 A，再处理 V3 generation N+1
 - **THEN** A 只执行一次且重放为 duplicate，B 执行且迟到 A 为 obsolete，N+1 仍执行，并且两套围栏状态互不覆盖

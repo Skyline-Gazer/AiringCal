@@ -240,17 +240,6 @@ export async function refreshSubjectMediaD1(
     }
   }
 
-  if (
-    !subjectNotFound
-    && current
-    && sameFields(current, semantic, SEMANTIC_MEDIA_FIELDS)
-    && current.retry_count === 0
-    && current.retry_after === null
-    && current.error_code === null
-  ) {
-    return { d1Writes: 0, imageWrites, status: 'unchanged' }
-  }
-
   const next: SubjectMediaRow = {
     ...semantic,
     checked_at: now,
@@ -260,6 +249,19 @@ export async function refreshSubjectMediaD1(
     retry_count: 0,
     retry_after: null,
     error_code: null,
+  }
+  const semanticNoop = !subjectNotFound
+    && current
+    && sameFields(current, semantic, SEMANTIC_MEDIA_FIELDS)
+    && current.retry_count === 0
+    && current.retry_after === null
+    && current.error_code === null
+  if (
+    semanticNoop
+    && current.next_refresh_at !== null
+    && now < current.next_refresh_at
+  ) {
+    return { d1Writes: 0, imageWrites, status: 'unchanged' }
   }
   const { rowsWritten } = await store.putSubjectMediaRow(next)
   return {

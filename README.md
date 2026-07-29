@@ -335,6 +335,18 @@ D1 migration 当前创建五张主表：
 
 `sync_budget_reservations` 是 `sync_budget` 的幂等 helper table，不是第六类业务模型。migration 只做 additive schema 变更且不创建二级 index；部署和回退都不执行 destructive reverse migration。
 
+每日 shadow snapshot 在收藏事务提交前读取一次 `subject_media`，并把这次观察到的
+detail、NSFW 与合法的 `images/{sha256}/original` 引用冻结进 collection
+checkpoint；崩溃重放不会改用稍后到达的媒体状态。detail 缺失、JSON 无效或 subject
+ID 不匹配时回退到本轮完整收藏/calendar 数据；subject tombstone 仍以
+`nsfw: true` 隐藏内容，并可保留已经验证的图片引用。媒体任务完成后不进行同日二次
+发布，其结果最早进入下一次每日 snapshot。
+
+到期的 V4 检查即使 detail、NSFW、源 URL 与 R2 引用均未变化，也会只推进
+`checked_at` 与 `next_refresh_at` 调度水位；图片对象、detail/media hash 和其他
+不可变 payload 不重写。hot 下一次检查继续使用现有确定性 6～8 天分散规则，因此
+成功检查后的次日不会再次入队；尚未到期的相同内容仍保持 D1/R2 零写。
+
 新 shadow 发布 key：
 
 | 存储 | Key | 当前用途 |

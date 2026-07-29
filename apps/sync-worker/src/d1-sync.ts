@@ -18,6 +18,7 @@ import {
   type D1DatabaseLike,
   type MediaRefreshJobV4,
   type PublicCollectionItemV1,
+  type PublicImageRefV1,
   type SyncRunCompletion,
   type SyncRunFailure,
   type SyncRunRow,
@@ -442,7 +443,82 @@ function activeRowsAfterPlan(current: CollectionRow[], plan: CollectionDiffPlan)
   return [...rows.values()].filter(({ deleted_at }) => deleted_at === null)
 }
 
-function publicItemFromRow(row: CollectionRow): PublicCollectionItemV1 {
+interface ProjectedMedia {
+  detail: {
+    id: number
+    name?: string
+    name_cn?: string
+    summary?: string
+    date?: string
+    eps?: number
+    total_episodes?: number
+  } | null
+  images: {
+    common: PublicImageRefV1 | null
+    large: PublicImageRefV1 | null
+  }
+  nsfw: boolean
+}
+
+function publicImageRef(key: string | null): PublicImageRefV1 | null {
+  if (key === null) return null
+  const match = /^images\/([0-9a-f]{64})\/original$/.exec(key)
+  if (!match?.[1]) return null
+  return {
+    hash: match[1],
+    uri: `/image/${match[1]}`,
+    r2_key: key,
+  }
+}
+
+function projectedMedia(row: SubjectMediaRow | undefined, subjectId: number): ProjectedMedia | undefined {
+  if (!row || row.checked_at === null) return undefined
+  let detail: ProjectedMedia['detail'] = null
+  if (row.detail_json !== null) {
+    try {
+      const parsed = JSON.parse(row.detail_json) as Record<string, unknown>
+      if (
+        typeof parsed === 'object'
+        && parsed !== null
+        && !Array.isArray(parsed)
+        && parsed.id === subjectId
+      ) {
+        detail = {
+          id: subjectId,
+          ...(typeof parsed.name === 'string' ? { name: parsed.name } : {}),
+          ...(typeof parsed.name_cn === 'string' ? { name_cn: parsed.name_cn } : {}),
+          ...(typeof parsed.summary === 'string' ? { summary: parsed.summary } : {}),
+          ...(typeof parsed.date === 'string' ? { date: parsed.date } : {}),
+          ...(typeof parsed.eps === 'number'
+            && Number.isSafeInteger(parsed.eps)
+            && parsed.eps >= 0 ? { eps: parsed.eps } : {}),
+          ...(typeof parsed.total_episodes === 'number'
+            && Number.isSafeInteger(parsed.total_episodes)
+            && parsed.total_episodes >= 0 ? { total_episodes: parsed.total_episodes } : {}),
+        }
+      }
+    } catch {
+      // Invalid legacy/imported detail falls back to the complete upstream projection.
+    }
+  }
+  return {
+    detail,
+    images: {
+      common: publicImageRef(row.r2_image_common_key),
+      large: publicImageRef(row.r2_image_large_key),
+    },
+    nsfw: row.nsfw === 1,
+  }
+}
+
+function nonNegativeInteger(value: number | null | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : fallback
+}
+
+function publicItemFromRow(
+  row: CollectionRow,
+  mediaBySubject: Map<number, SubjectMediaRow>,
+): PublicCollectionItemV1 {
   const envelope = JSON.parse(row.subject_json) as {
     subject_type: number
     subject: {
@@ -456,22 +532,24 @@ function publicItemFromRow(row: CollectionRow): PublicCollectionItemV1 {
     } | null
   }
   const subject = envelope.subject
+  const media = projectedMedia(mediaBySubject.get(row.subject_id), row.subject_id)
+  const detail = media?.detail
   const tags = JSON.parse(row.tags_json) as string[]
   return {
     subject_id: row.subject_id,
-    name: subject?.name ?? '',
-    name_cn: subject?.name_cn ?? '',
-    summary: subject?.summary ?? '',
-    images: { common: null, large: null },
-    eps: subject?.eps ?? 0,
-    total_episodes: subject?.total_episodes ?? 0,
+    name: detail?.name ?? subject?.name ?? '',
+    name_cn: detail?.name_cn ?? subject?.name_cn ?? '',
+    summary: detail?.summary ?? subject?.summary ?? '',
+    images: media?.images ?? { common: null, large: null },
+    eps: nonNegativeInteger(detail?.eps, subject?.eps ?? 0),
+    total_episodes: nonNegativeInteger(detail?.total_episodes, subject?.total_episodes ?? 0),
     ep_status: row.ep_status,
     vol_status: row.vol_status,
     type: envelope.subject_type,
     collection_type: row.collection_type,
     rate: row.rate ?? 0,
-    nsfw: subject?.nsfw ?? false,
-    date: subject?.date ?? '',
+    nsfw: media?.nsfw ?? subject?.nsfw ?? false,
+    date: detail?.date ?? subject?.date ?? '',
     tags,
     updated_at: row.upstream_updated_at ?? '',
   }
@@ -562,10 +640,30 @@ function planMediaCandidates(
 async function publicationInput(
   collections: PublicCollectionItemV1[],
   completeInput: CompleteFullFetch,
+  mediaBySubject: Map<number, SubjectMediaRow>,
 ): Promise<D1PublicationInput> {
+  const calendar = transformCalendar(completeInput.calendar).map((day) => ({
+    ...day,
+    items: day.items.map((item) => {
+      const media = projectedMedia(mediaBySubject.get(item.subject_id), item.subject_id)
+      const detail = media?.detail
+      if (!media) return item
+      return {
+        ...item,
+        name: detail?.name ?? item.name,
+        name_cn: detail?.name_cn ?? item.name_cn,
+        summary: detail?.summary ?? item.summary,
+        images: media.images,
+        nsfw: media.nsfw,
+        date: detail?.date ?? item.date,
+        eps: nonNegativeInteger(detail?.eps, item.eps),
+        total_episodes: nonNegativeInteger(detail?.total_episodes, item.total_episodes),
+      }
+    }),
+  }))
   const input = {
     collections,
-    calendar: transformCalendar(completeInput.calendar),
+    calendar,
     published_at: completeInput.observedAt,
   }
   const snapshot = await buildPublicSnapshot(input, 0)
@@ -689,6 +787,7 @@ export async function runD1IncrementalSync({
     let staleReplans = 0
     let responseLossReconciliations = 0
     let collectionApplied = false
+    let mediaRowsForRun: SubjectMediaRow[] | undefined
     let collectionArtifact = collectionCheckpoint ? activeArtifact : undefined
     let collectionArtifactAdopted = collectionArtifact !== undefined
     while (!collectionApplied) {
@@ -700,9 +799,13 @@ export async function runD1IncrementalSync({
           complete: completeInput.complete,
           observedAt: completeInput.observedAt,
         })
+        mediaRowsForRun = await store.listSubjectMediaRows()
+        const mediaBySubject = new Map(mediaRowsForRun.map((row) => [row.subject_id, row]))
         publicInput = await publicationInput(
-          mergePublicCollections(activeRowsAfterPlan(current, plan).map(publicItemFromRow)),
+          mergePublicCollections(activeRowsAfterPlan(current, plan)
+            .map((row) => publicItemFromRow(row, mediaBySubject))),
           completeInput,
+          mediaBySubject,
         )
         rowsWritten = plannedRowsWritten(plan)
         firstMissing = plan.firstMissing.length
@@ -775,6 +878,7 @@ export async function runD1IncrementalSync({
           }
           plan = undefined
           publicInput = undefined
+          mediaRowsForRun = undefined
           collectionCheckpoint = undefined
           collectionArtifact = undefined
           collectionArtifactAdopted = false
@@ -810,7 +914,7 @@ export async function runD1IncrementalSync({
       await cleanupReplayArtifactIfUnreferenced(store, instanceId, supersededArtifact)
     }
     supersededArtifacts.length = 0
-    const mediaRows = await store.listSubjectMediaRows()
+    const mediaRows = mediaRowsForRun ?? await store.listSubjectMediaRows()
     const utcDay = new Date(now * 1000).toISOString().slice(0, 10)
     const previousCursor = await store.getAppState('media:cold-cursor', decodeColdCursor) ?? { subject_ids: [] }
     const selection = selectRefreshCandidates(

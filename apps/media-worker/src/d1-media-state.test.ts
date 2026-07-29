@@ -208,11 +208,13 @@ test('identical canonical detail, media sources, and R2 refs perform exactly zer
   const r2 = new RecordingR2()
   const refreshSubjectMediaD1 = await loadRefreshSubjectMediaD1()
   const originalFetch = globalThis.fetch
+  const originalNow = Date.now
   globalThis.fetch = async (input) => {
     const url = String(input)
     if (url.endsWith('/v0/subjects/23080')) return Response.json(subject())
     throw new Error(`unchanged media must not fetch images: ${url}`)
   }
+  Date.now = () => (previous.next_refresh_at! - 1) * 1000
 
   try {
     assert.deepEqual(
@@ -223,6 +225,46 @@ test('identical canonical detail, media sources, and R2 refs perform exactly zer
     assert.equal(r2.writes.length, 0)
     assert.deepEqual(database.row, previous)
   } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('a successful due semantic no-op advances only its refresh schedule beyond the next daily planner run', async () => {
+  const previous = await existingRow()
+  const database = new RecordingD1(previous)
+  const r2 = new RecordingR2()
+  const refreshSubjectMediaD1 = await loadRefreshSubjectMediaD1()
+  const dueAt = previous.next_refresh_at!
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  globalThis.fetch = async (input) => {
+    const url = String(input)
+    if (url.endsWith('/v0/subjects/23080')) return Response.json(subject())
+    throw new Error(`unchanged due media must not fetch images: ${url}`)
+  }
+  Date.now = () => dueAt * 1000
+
+  try {
+    assert.deepEqual(
+      await refreshSubjectMediaD1({ AIRING_CAL_D1: database, AIRING_CAL_R2: r2 }, job),
+      { d1Writes: 1, imageWrites: 0, status: 'updated' },
+    )
+    assert.equal(database.batchCalls.length, 1)
+    assert.equal(r2.writes.length, 0)
+    assert.deepEqual(
+      Object.fromEntries(SUBJECT_MEDIA_COLUMNS
+        .filter((field) => field !== 'checked_at' && field !== 'next_refresh_at')
+        .map((field) => [field, database.row?.[field]])),
+      Object.fromEntries(SUBJECT_MEDIA_COLUMNS
+        .filter((field) => field !== 'checked_at' && field !== 'next_refresh_at')
+        .map((field) => [field, previous[field]])),
+    )
+    assert.equal(database.row?.checked_at, dueAt)
+    assert.equal(database.row?.next_refresh_at, nextSubjectRefreshAt(job.subject_id, dueAt))
+    assert.ok(database.row!.next_refresh_at! > dueAt + 86_400)
+  } finally {
+    Date.now = originalNow
     globalThis.fetch = originalFetch
   }
 })
