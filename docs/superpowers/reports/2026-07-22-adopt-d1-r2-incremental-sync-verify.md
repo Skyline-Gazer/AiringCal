@@ -2,14 +2,14 @@
 comet_change: adopt-d1-r2-incremental-sync
 role: task-12-verification-ready
 status: local-evidence-ready-pending-independent-review-and-production
-verified_scope: full-local-gates-materialized-dry-runs-media-pending-replay
-verified_source_sha: eafc6c04b968a2a0a61be17dfab339d16214ab67
+verified_scope: full-local-gates-materialized-dry-runs-cas-budget-byte-replay
+verified_source_sha: 0a09dfd550d865d7c8f697a550f2fe79db76f905
 ---
 
 # D1/R2 incremental sync verification-ready evidence
 
 This report records current local evidence for runtime source SHA
-`eafc6c04b968a2a0a61be17dfab339d16214ab67`. The evidence-report update after
+`0a09dfd550d865d7c8f697a550f2fe79db76f905`. The evidence-report update after
 that commit contains no runtime or configuration change, so this remains the
 exact implementation reviewed by the gates below.
 
@@ -33,7 +33,7 @@ The installed CLIs were checked before use:
 | `pnpm build:check` | PASS | frontend/read/media/sync types current and dry-runs completed |
 | `./node_modules/.bin/openspec validate adopt-d1-r2-incremental-sync --strict` | PASS | `Change 'adopt-d1-r2-incremental-sync' is valid` |
 | `git diff --check` | PASS | no output |
-| focused media projection, pending replay, schedule, compatibility, and fence command listed below | PASS | 136/136 tests, 0 failed |
+| focused media projection, CAS/pending replay, cross-day budget, schedule, compatibility, and fence command listed below | PASS | 139/139 tests, 0 failed |
 
 Wrangler's default macOS debug-log directory is outside this worktree sandbox.
 Source inspection of installed Wrangler 4.100.0 confirmed
@@ -47,15 +47,15 @@ completed cleanly.
 |---|---:|
 | `@airing-cal/widget` | 26 |
 | `@airing-cal/worker-common` | 13 |
-| `@airing-cal/storage` | 87 |
+| `@airing-cal/storage` | 89 |
 | `@airing-cal/domain` | 67 |
 | `@airing-cal/bgm-api` | 28 |
 | `@airing-cal/frontend-worker` | 7 |
 | `@airing-cal/read-worker` | 33 |
-| `@airing-cal/sync-worker` | 192 |
+| `@airing-cal/sync-worker` | 194 |
 | `@airing-cal/media-worker` | 55 |
 | root script tests | 23 |
-| **Total** | **531** |
+| **Total** | **535** |
 
 Package counts that were not visible in the terminal's truncated full-run
 stream were confirmed with Node's native test runner plus the installed `tsx`
@@ -75,7 +75,7 @@ node --import tsx --test \
   apps/sync-worker/src/workflow.test.ts
 ```
 
-Result: **136/136 passed, 0 failed**.
+Result: **139/139 passed, 0 failed**.
 
 ## Materialized Wrangler verification
 
@@ -86,7 +86,7 @@ Temporary configs used only canonical fake identifiers:
 - KV namespace ID:
   `11111111111111111111111111111111`;
 - frontend build SHA:
-  `eafc6c04b968a2a0a61be17dfab339d16214ab67`.
+  `0a09dfd550d865d7c8f697a550f2fe79db76f905`.
 
 Read, Media, and Sync were materialized with resource IDs only, matching their
 deploy jobs. Frontend was materialized with build metadata, matching its
@@ -96,8 +96,8 @@ separate deploy job. An executable assertion rejected unresolved
 | Config | Asserted materialized matrix | Dry-run |
 |---|---|---|
 | Read | D1 + legacy KV + image R2 + data R2; no Queue/Workflow/DO | PASS, 22.91 KiB / gzip 6.15 KiB |
-| Media | D1 + legacy KV compatibility + image R2 + Queue consumer + `SubjectRefreshCoordinator`; no data R2/Workflow | PASS, 112.28 KiB / gzip 21.82 KiB |
-| Sync | `SyncWorkflow` + D1 + data R2 + legacy KV compatibility + media Queue producer + `SnapshotCoordinator`; no image R2/Queue consumer | PASS, 237.24 KiB / gzip 47.60 KiB |
+| Media | D1 + legacy KV compatibility + image R2 + Queue consumer + `SubjectRefreshCoordinator`; no data R2/Workflow | PASS, 113.41 KiB / gzip 22.11 KiB |
+| Sync | `SyncWorkflow` + D1 + data R2 + legacy KV compatibility + media Queue producer + `SnapshotCoordinator`; no image R2/Queue consumer | PASS, 242.99 KiB / gzip 48.37 KiB |
 | Frontend | Read and Sync service bindings plus build metadata only | PASS, 69.36 KiB / gzip 16.65 KiB |
 
 The four exact materialized configs all passed:
@@ -122,19 +122,19 @@ test. The result is **17/17 locally approved**.
 | State resources are replay-safe to bootstrap | `scripts/cloudflare-resource-contract.mjs`; `scripts/provision-cloudflare-resources.mjs` | provision tests create once, reuse D1 ID, re-list races, and replay later pages/cursors | PASS |
 | D1 migration precedes Worker upload | `.github/workflows/deploy.yml` | deploy-config test reconstructs `resolve → migration → read/media → sync → frontend` dependencies | PASS |
 | Missing resources fail before upload | `scripts/resolve-cloudflare-resources.mjs` | resolver tests cover missing D1, KV, data R2, image R2, and Queue | PASS |
-| D1 stores mutable authoritative state | `migrations/0001_d1_authoritative_state.sql`; `packages/storage/src/d1-state-store.ts` | migration/schema and typed state-store tests in the 531-test gate | PASS |
+| D1 stores mutable authoritative state | `migrations/0001_d1_authoritative_state.sql`; `packages/storage/src/d1-state-store.ts` | migration/schema, guarded sync transition, and typed state-store tests in the 535-test gate | PASS |
 | Collection diff ignores runtime fields | `packages/storage/src/canonical-json.ts`; `packages/domain/src/collection-diff.ts` | canonical hash excludes observation fields; later identical observation plans zero writes | PASS |
 | Deletion requires two successful complete reads | `packages/domain/src/collection-diff.ts` | first/second missing, same-run replay, incomplete input, and vanished staged page tests | PASS |
 | QoS budget reservation is atomic | `packages/storage/src/d1-budget.ts` | final-slot concurrency, stable reservation replay, and hard-limit tests | PASS |
 | Workflow incrementally commits D1 | `apps/sync-worker/src/d1-sync.ts` | unchanged writes zero rows, one change writes one, replay avoids a second mutation, lifecycle counters persist | PASS |
 | Workflow publishes a verifiable R2 candidate | `apps/sync-worker/src/workflow-core.ts`; `apps/sync-worker/src/d1-sync.ts`; `apps/sync-worker/src/r2-publication.ts` | D1-before-publication integration, next-day media projection/hash change, frozen checkpoint replay, and changed/no-op/failure publication tests | PASS |
 | Subject media authority is D1 and new flow avoids subject KV | `apps/media-worker/src/d1-media-state.ts`; `apps/media-worker/src/index.ts` | not-due semantic no-op is zero D1/R2 writes; due semantic no-op advances only schedule watermarks; D1-only V4 Queue/direct/DO paths perform no legacy per-subject puts | PASS |
-| Media submission is protected by a durable pending checkpoint | `apps/sync-worker/src/d1-sync.ts`; `apps/sync-worker/src/replay-artifact.ts` | checkpoint-adoption failure has zero external submissions; accepted-then-process-loss replay uses a byte-identical request and preserves counters/cold cursor without a second Queue send | PASS |
+| Media submission is protected by a durable pending checkpoint | `apps/sync-worker/src/d1-sync.ts`; `apps/sync-worker/src/replay-artifact.ts`; `packages/storage/src/d1-state-store.ts` | real D1 A/B interleaving and batch rollback prove stale attempts cannot regress winner state; first/replay requests have identical JSON bytes, preserve counters/cold cursor, and send Queue once | PASS |
 | Cold media rotates across seven days | `apps/sync-worker/src/refresh-planner.ts` | all seven residues selected exactly once and D1 orchestration exercises seven UTC shards | PASS |
 | Public snapshot is one immutable object | `packages/domain/src/public-snapshot.ts`; `apps/sync-worker/src/r2-publication.ts` | exact content-addressed key plus changed publication ordering test | PASS |
 | Unchanged public content performs zero publication writes | `apps/sync-worker/src/r2-publication.ts` | identical verified content allocates no generation and performs zero R2/KV writes | PASS |
 | Pointer switches last | `apps/sync-worker/src/r2-publication.ts` | event-order test and D1/R2/readback/KV injected failures preserve the prior pointer | PASS |
-| D1/R2 publication is automatically verified | `.github/workflows/ci.yml`; package test scripts | full 531/531 gate plus focused 136/136 media projection, pending replay, schedule, compatibility, and fence gate | PASS |
+| D1/R2 publication is automatically verified | `.github/workflows/ci.yml`; package test scripts | full 535/535 gate plus focused 139/139 media projection, CAS/pending replay, cross-day budget, schedule, compatibility, and fence gate | PASS |
 | Deploy config resolves all state resources | `scripts/materialize-wrangler-config.mjs`; Worker TOMLs; deploy workflow | no-placeholder matrix assertion plus four materialized Wrangler dry-runs | PASS |
 
 ## Design §10 acceptance audit
@@ -348,6 +348,45 @@ Fresh GREEN evidence for this runtime:
   6.15, media 112.28 / 21.82, and sync 237.24 / 47.60;
 - all **17/17** added OpenSpec requirements and all **8/8** Design §10
   acceptance criteria have source and executable evidence;
+- strict OpenSpec validation and `git diff --check` passed.
+
+## Current authoritative correction: checkpoint CAS and cross-day budget
+
+Runtime `0a09dfd550d865d7c8f697a550f2fe79db76f905` supersedes the durable
+media-pending runtime above. Final review found that nonterminal run updates
+were scoped only by instance/status, so an overlapping stale attempt could
+replace a later manifest, and that D1 budget creation charged the frozen audit
+date instead of the authoritative current UTC day.
+
+The state store now guards every collection, pending, prepared, and successful
+terminal adoption with the exact expected stage and manifest. Collection
+mutation and its guarded checkpoint remain in one transaction; a stale guard
+aborts and rolls back the entire batch. CAS losers reload and validate the
+winner artifact, and the submit boundary re-reads the exact adopted
+`media_pending` manifest before any external action. A real SQLite A/B
+interleaving proves one Queue send, byte-identical winner request, truthful
+result/cursor, and no stage regression.
+
+The frozen media request is canonical JSON round-tripped before both artifact
+persistence and first submit, so ordinary `JSON.stringify` bytes match replay.
+Its `date` remains audit/fingerprint input, while the first D1 reservation
+claim derives its effective budget date from authoritative `now`. A D-day
+pending request first claimed against an exhausted D+1 budget grants zero,
+sends no Queue work, and replays the stored zero grant.
+
+Fresh GREEN evidence:
+
+- focused CAS/budget/orchestration set: **98/98 passed**;
+- storage: **89/89 passed**; sync-worker: **194/194 passed**;
+- focused eight-file release gate: **139/139 passed**;
+- full repository: **535/535 passed**;
+- all nine workspace typechecks and all four checked-in Worker build checks
+  passed;
+- exact materialized no-placeholder/binding assertion and four Wrangler
+  4.100.0 dry-runs passed: frontend 69.36/16.65 KiB, read 22.91/6.15, media
+  113.41/22.11, and sync 242.99/48.37;
+- all **17/17** added OpenSpec requirements and all **8/8** Design §10
+  acceptance criteria retain current source and executable evidence;
 - strict OpenSpec validation and `git diff --check` passed.
 
 ## Explicitly pending production evidence

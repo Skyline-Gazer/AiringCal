@@ -350,9 +350,10 @@
 - Boundary: no remote migration, deployment, OpenSpec 6.1/6.2 checkoff, Task 12
   production action, build guard, or Comet transition was performed.
 
-## Task 12 Durable Media-Pending Replay Correction
+## Historical Task 12 Durable Media-Pending Replay Correction (Superseded)
 
-- Stage: full local verification GREEN; ready for coordinator handoff.
+- Stage: historical local verification, superseded by the guarded checkpoint
+  and cross-day budget correction below.
 - Current authoritative runtime source:
   `eafc6c04b968a2a0a61be17dfab339d16214ab67`.
 - Superseded runtime sequence: V3 compatibility `79cbb3462ea91680fcc3c3fb62ea96af401bfb68`;
@@ -389,6 +390,59 @@
   112.28/21.82, and sync 237.24/47.60.
 - Audit: all 17/17 OpenSpec added requirements and all 8/8 Design §10 criteria
   have current source plus executable evidence.
+- Boundary: no remote migration, merge, deployment, live Workflow, production
+  metrics, public smoke test, OpenSpec 6.1/6.2 checkoff, build guard, or Comet
+  transition was performed.
+
+## Task 12 Guarded Checkpoint and Cross-Day Budget Correction
+
+- Stage: full local verification GREEN; ready for coordinator handoff.
+- Current authoritative runtime source:
+  `0a09dfd550d865d7c8f697a550f2fe79db76f905`.
+- Verified runtime sequence from `git log --reverse`:
+  `79cbb3462ea91680fcc3c3fb62ea96af401bfb68` V3 compatibility →
+  `6f5699f7103987890362caf8c6fb76e1a3d4c98f` unknown-version fail-closed
+  validation →
+  `97469a62ed78769e595ef3f3ca9c3c3ed47cf0e7` independent V4 generation fence →
+  `ff999c0d5d21bbf450d1315c8b440182b79948c7` D1 media projection/schedule →
+  `eafc6c04b968a2a0a61be17dfab339d16214ab67` durable media pending →
+  `0a09dfd550d865d7c8f697a550f2fe79db76f905` checkpoint CAS, effective budget
+  date, and byte-identical request. Interleaved documentation-only commits do
+  not alter this runtime ordering.
+- CAS root cause: `sync_runs` updates were constrained by instance and
+  nonterminal status but not by exact expected stage/manifest, so a stale
+  overlapping attempt could regress a later adopted checkpoint or terminalize
+  the wrong result.
+- CAS fix: collection, media-pending, prepared, and successful terminal
+  transitions now compare exact expected stage/manifest. Collection mutation
+  and guarded checkpoint share one D1 batch; guard mismatch aborts and rolls
+  back the batch. CAS losers load and validate the winner artifact. Immediately
+  before external submit, the exact adopted media-pending manifest is read
+  back again.
+- Interleaving evidence: real SQLite attempt A adopted collection then paused;
+  attempt B adopted media-pending and paused after durable acceptance; stale A
+  resumed, lost CAS, and loaded B's winner. Both observed byte-identical
+  request JSON and truthful result/cursor, only one Queue send occurred, and
+  final stage/result remained the winner. A separate stale collection mutation
+  test proves both row and stage rollback.
+- Budget root cause/fix: frozen request `date` remains audit/fingerprint input,
+  but first claim now derives effective `sync_budget.date` from authoritative
+  UTC `now` and atomically stores the reservation result. A D-day pending
+  request first claimed after an exhausted D+1 hard limit grants zero, sends
+  no Queue work, and returns the same stored result on replay.
+- Byte contract: the request is canonical JSON round-tripped before artifact
+  persistence and first submission. Tests assert ordinary
+  `JSON.stringify(first) === JSON.stringify(replay)`, not only equal hashes.
+- Fresh GREEN evidence: focused CAS/budget/orchestration 98/98; storage 89/89;
+  sync-worker 194/194; focused eight-file release 139/139; full repository
+  535/535; all nine typechecks; all four build checks; strict OpenSpec; and
+  `git diff --check`.
+- Materialized evidence: canonical fake D1/KV identifiers; exact
+  required/forbidden binding and no-placeholder assertion; Wrangler 4.100.0
+  dry-runs pass at frontend 69.36/16.65 KiB, read 22.91/6.15, media
+  113.41/22.11, and sync 242.99/48.37.
+- Audit: all 17/17 OpenSpec added requirements and all 8/8 Design §10 criteria
+  retain current source plus executable evidence.
 - Boundary: no remote migration, merge, deployment, live Workflow, production
   metrics, public smoke test, OpenSpec 6.1/6.2 checkoff, build guard, or Comet
   transition was performed.
