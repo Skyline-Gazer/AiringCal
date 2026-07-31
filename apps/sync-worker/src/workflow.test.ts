@@ -5,6 +5,7 @@ import mediaWorker from '../../media-worker/src/index.ts'
 import readWorker from '../../read-worker/src/index.ts'
 import { planSubjectRefresh } from './refresh-planner.ts'
 import { SnapshotCoordinator } from './snapshot-coordinator.ts'
+import type { DailyShadowPhaseDeps } from './daily-shadow.ts'
 import { runSyncWorkflow, type SyncWorkflowDependencies, type SyncWorkflowEnv, type WorkflowStepLike } from './workflow-core.ts'
 
 class MockKV {
@@ -633,6 +634,48 @@ test('live workflow plans component jobs and reserves the shared media budget be
     }, step, (message) => new TestNonRetryableError(message))
     assert.equal(kv.puts.length, putCount)
     assert.equal(queueMessages.length, 50)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled live workflow runs the daily shadow phase and stays ok on shadow errors', async () => {
+  const kv = new MockKV()
+  const cachedAt = Math.floor(Date.now() / 1000) - 9 * 24 * 60 * 60
+  for (let subjectId = 1; subjectId <= 100; subjectId++) kv.seedCompleteSubject(subjectId, cachedAt)
+  const queueMessages: unknown[] = []
+  const step = new FakeStep(kv)
+  const coordinator = new MockSnapshotCoordinator(kv)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      return Response.json({
+        total: 100,
+        data: Array.from({ length: 50 }, (_, index) => collection(Number(new URL(text).searchParams.get('offset')) + index + 1)),
+      })
+    }
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+  const phaseCalls: Array<{ instanceId: string; activeInstance: string | null }> = []
+  const dependencies: SyncWorkflowDependencies = {
+    runDailyShadowPhase: async (deps: DailyShadowPhaseDeps) => {
+      phaseCalls.push({ instanceId: deps.instanceId, activeInstance: deps.activeInstance })
+      return { shadow_errors: ['incremental: injected'] }
+    },
+  }
+  try {
+    const result = await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
+      instanceId: 'scheduled-live',
+      payload: { mode: 'live', source: 'schedule' },
+      schedule: { cron: '0 20 * * *', scheduledTime: Date.now() },
+    }, step, (message) => new TestNonRetryableError(message), dependencies)
+
+    assert.equal(result.status, 'ok')
+    assert.deepEqual(phaseCalls, [{ instanceId: 'scheduled-live:shadow', activeInstance: 'scheduled-live' }])
+    const meta = kv.values.get('sync:meta') as { workflow_shadow_errors?: string[] }
+    assert.deepEqual(meta.workflow_shadow_errors, ['incremental: injected'])
   } finally {
     globalThis.fetch = originalFetch
   }

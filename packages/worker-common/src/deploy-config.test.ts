@@ -42,17 +42,21 @@ test('Cloudflare resource names use the AiringCal prefix', () => {
   }
 })
 
-test('internal Worker runtime envs expose the shadow bindings while read handlers remain on legacy KV', () => {
+test('internal Worker runtime envs expose shadow bindings and read handlers consume them with legacy fallback', () => {
   const readSource = readFileSync(resolve(root, 'apps/read-worker/src/index.ts'), 'utf8')
   const mediaSource = readFileSync(resolve(root, 'apps/media-worker/src/index.ts'), 'utf8')
   const syncSource = readFileSync(resolve(root, 'apps/sync-worker/src/index.ts'), 'utf8')
+  const r2SnapshotSource = readFileSync(resolve(root, 'apps/read-worker/src/r2-snapshot.ts'), 'utf8')
   const readEnv = readSource.match(/interface ReadEnv \{[\s\S]*?\n\}/)?.[0] ?? ''
 
   assert.match(readEnv, /AIRING_CAL_D1:/)
   assert.match(readEnv, /AIRING_CAL_DATA_R2:/)
   assert.match(mediaSource.match(/export interface MediaEnv \{[\s\S]*?\n\}/)?.[0] ?? '', /AIRING_CAL_D1:/)
   assert.match(syncSource.match(/interface SyncEnv \{[\s\S]*?\n\}/)?.[0] ?? '', /AIRING_CAL_D1:[\s\S]*AIRING_CAL_DATA_R2:/)
-  assert.doesNotMatch(readSource.slice(readSource.indexOf(readEnv) + readEnv.length), /AIRING_CAL_D1|AIRING_CAL_DATA_R2/, 'read handlers must not consume shadow bindings before the later read cutover')
+  assert.match(readSource, /readSnapshotSource/)
+  assert.match(readSource, /buildMigrationHealth/)
+  assert.match(readSource, /snapshotActiveKey\(\)/)
+  assert.match(r2SnapshotSource, /mode: 'legacy'/, 'the R2 read path keeps a legacy KV fallback')
 })
 
 test('media queue consumer uses Free Plan concurrency limits', () => {

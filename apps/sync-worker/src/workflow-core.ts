@@ -3,6 +3,7 @@ import { mergeCollections, subjectDetailImages, transformCalendar } from '@airin
 import {
   snapshotActiveKey,
   snapshotVersionKey,
+  compareShadowSnapshots,
   imageStatusKey,
   subjectDetailKey,
   subjectMetaKey,
@@ -32,7 +33,17 @@ import {
 import { assembleFullFetch } from './full-fetch-boundary.ts'
 import { runD1IncrementalSync, type D1SyncResult } from './d1-sync.ts'
 import {
+  readLegacyPublicResult,
+  runDailyShadowPhase,
+  type DailyShadowPhaseDeps,
+} from './daily-shadow.ts'
+import { runLegacyCleanup } from './legacy-cleanup.ts'
+import { runLegacyMigration } from './migration-runner.ts'
+import { recordDailyKvBudget, shadowGatePassed, switchReadMode, updateShadowStreak } from './read-mode.ts'
+import {
   publishPublicSnapshot,
+  promoteShadowPointer,
+  POINTER_KEY_SHADOW,
   type PublicationDataBucket,
   type PublishPublicSnapshotArguments,
 } from './r2-publication.ts'
@@ -68,6 +79,7 @@ export interface SyncWorkflowDependencies {
   runD1IncrementalSync?: typeof runD1IncrementalSync
   publication?: Omit<PublishPublicSnapshotArguments, 'input' | 'now' | 'publicationId'>
   publishPublicSnapshot?: typeof publishPublicSnapshot
+  runDailyShadowPhase?: typeof runDailyShadowPhase
 }
 
 export interface WorkflowStepLike {
@@ -590,6 +602,87 @@ export async function runSyncWorkflow(
         await coordinatorRequest(env, '/commit', { generation: manifest.generation, manifest })
         return { key: snapshotActiveKey(), count: 1, digest: await digest(manifest) }
       })
+
+      if (source === 'schedule') {
+        await step.do('daily-shadow-phase', STORAGE_STEP, async () => {
+          const shadowErrors: string[] = []
+          try {
+            const d1Database = env.AIRING_CAL_D1
+            if (!d1Database) throw new Error('Missing required AIRING_CAL_D1 binding')
+            const dataBucket = env.AIRING_CAL_DATA_R2
+            if (!dataBucket) throw new Error('Missing required AIRING_CAL_DATA_R2 binding')
+            const completeInput = await getJson<ReturnType<typeof assembleFullFetch>>(
+              env.AIRING_CAL_KV,
+              prepared.completeInputKey ?? '',
+            )
+            if (completeInput?.complete !== true) throw new Error('Missing complete D1 sync input')
+            const now = completeInput.observedAt
+            const d1 = new D1StateStore(d1Database)
+            const pointerKv = {
+              get: (key: string) => env.AIRING_CAL_KV.get(key, 'text'),
+              put: (key: string, value: string) => env.AIRING_CAL_KV.put(key, value),
+            }
+            const legacyKv = {
+              get: (key: string, type: 'json') => env.AIRING_CAL_KV.get(key, type),
+              put: (key: string, value: unknown) => putJson(env.AIRING_CAL_KV, key, value),
+              delete: (key: string) => env.AIRING_CAL_KV.delete(key),
+            }
+            const phase = dependencies.runDailyShadowPhase ?? runDailyShadowPhase
+            const phaseResult = await phase({
+              now,
+              instanceId: `${event.instanceId}:shadow`,
+              activeInstance: event.instanceId,
+              legacySubjectKvWrites: run.refresh_jobs,
+              runIncremental: async () => {
+                const runner = dependencies.runD1IncrementalSync ?? runD1IncrementalSync
+                return await runner({
+                  env,
+                  instanceId: `${event.instanceId}:shadow`,
+                  completeInput,
+                  now,
+                  store: d1,
+                })
+              },
+              publishShadow: async (incrementalResult) => {
+                const publicationBindings = dependencies.publication ?? {
+                  state: new D1StateStore(d1Database),
+                  dataBucket,
+                  pointerKv,
+                }
+                const publisher = dependencies.publishPublicSnapshot ?? publishPublicSnapshot
+                return await publisher({
+                  ...publicationBindings,
+                  input: incrementalResult.publicationInput,
+                  now,
+                  sourceObservedAt: now,
+                  publicationId: `${event.instanceId}:shadow`,
+                  pointerKey: POINTER_KEY_SHADOW,
+                })
+              },
+              legacyResult: () => readLegacyPublicResult(legacyKv, event.instanceId),
+              compare: compareShadowSnapshots,
+              updateStreak: (equal, diffSummary, streakNow) => updateShadowStreak(d1, equal, diffSummary, streakNow),
+              recordKvBudget: (date, writes, budgetNow) => recordDailyKvBudget(d1, date, writes, budgetNow),
+              gatePassed: (date, gateNow) => shadowGatePassed(d1, date, gateNow),
+              promotePointer: (promoteNow) => promoteShadowPointer(pointerKv, promoteNow),
+              switchMode: (switchNow) => switchReadMode(d1, pointerKv, switchNow),
+              runCleanup: (cleanupNow) => runLegacyCleanup(d1, legacyKv, dataBucket, cleanupNow),
+              runMigration: (migrationNow) => runLegacyMigration(d1, legacyKv, migrationNow),
+            } satisfies DailyShadowPhaseDeps)
+            shadowErrors.push(...phaseResult.shadow_errors)
+          } catch (error) {
+            shadowErrors.push(error instanceof Error ? error.message : String(error))
+          }
+          if (shadowErrors.length > 0) {
+            const currentMeta = await getJson<Record<string, unknown>>(env.AIRING_CAL_KV, syncMetaKey()) ?? {}
+            await putJson(env.AIRING_CAL_KV, syncMetaKey(), {
+              ...currentMeta,
+              workflow_shadow_errors: shadowErrors.slice(0, 10),
+            })
+          }
+          return { key: `${event.instanceId}:shadow`, count: shadowErrors.length, digest: await digest(shadowErrors) }
+        })
+      }
     }
 
     await step.do('finalize', STORAGE_STEP, async () => {
