@@ -81,10 +81,13 @@ flowchart TD
 
 - 构建 legacy 公开结果：读取 legacy snapshot versioned keys（无 active 时读
   legacy keys）+ 与 read-worker 相同的水合逻辑（images/nsfw/eps/rating）→
-  五类 collections、calendar、summary。
+  五类 collections、calendar、summary；水合同时包含 `image_status`
+  （无 image:status 记录时默认 `pending_next_cron`，与 read-worker 一致）。
 - 规范化：稳定排序（collection 按 subject_id、calendar 按 weekday 与 item
   顺序、summary 按键），剔除运行时字段（`published_at`、generation、分页与
-  查询元数据）；比较全部业务字段。
+  查询元数据）；`image_status` 归一化为 coarse 三态
+  （cached / failed / pending；queued→pending、missing_source→failed），
+  避免 legacy 状态粒度差异阻塞门禁；其余业务字段全量比较。
 - `compareShadowSnapshots(legacy, r2)` 返回 `{ equal, diffs }`；diff 为脱敏
   摘要（subject_id、字段路径、期望/实际截断值），有界条数。
 - streak 写入 `app_state['migrate:shadow:streak']`：业务一致 +1，任何业务差异
@@ -93,6 +96,18 @@ flowchart TD
 - KV 预算达标：每日记录 legacy 逐 subject KV 写计数（live workflow 的 daily
   counters 派生）到 `app_state['migrate:kv-budget-daily']`；连续 7 日
   `<=100` 且 media budget 未突破 hard limit 才视为达标。
+
+### 4.2.1 R2 快照响应契约（image_status / rating）
+
+- `PublicCollectionItemV1` 增加必需的 `image_status` 与可选的 `rating`；
+  `PublicCalendarSubjectV1` 增加必需的 `image_status`（`rating` 保持可选）。
+- D1 投影从 `subject_media` 派生 `image_status`：R2 key 可解析 → `cached`；
+  有 `error_code` → `failed`；否则 `pending_next_cron`。`rating` 取自
+  `detail_json.subject.rating`，与 legacy 响应水合来源一致；无 media 的
+  calendar 条目默认 `pending_next_cron`。
+- read-worker 的 R2 路径直接服务 snapshot 条目，因此 snapshot 条目必须携带
+  legacy 响应层水合提供的全部字段，否则切换后 JSON shape 会静默变化且
+  shadow 比较无法检出。
 
 ### 4.3 公开读取切换与 fallback
 

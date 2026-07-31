@@ -7,6 +7,11 @@ Read Worker MUST 验证 `public:current`、支持的 schema version、generation
 - **WHEN** `public:current` 的 schema version 不受支持
 - **THEN** Read Worker 不使用该对象并执行兼容 fallback
 
+#### Scenario: R2 条目保留 legacy 响应字段
+- **WHEN** `public:read-mode` 为 r2 且 R2 snapshot 验证通过
+- **THEN** collections 与 calendar 条目必须包含与 legacy 响应相同的
+  `image_status`（以及 collections 的 `rating`）字段，分页与 JSON shape 不变
+
 ### Requirement: 公开读取必须有两级 fallback
 R2 snapshot 验证或读取失败时，Read Worker MUST 先使用 Cache API 中最后已验证版本；不存在时 MUST 回退旧 KV manifest。
 

@@ -15,6 +15,7 @@
 - [x] 3.1 Add verified PublicSnapshotV1 R2 loading and Cache API storage while preserving existing API response shapes and pagination
 - [x] 3.2 Implement fallback order of last verified cache then legacy KV manifest for pointer/R2/schema/hash failures
 - [x] 3.3 Extend health with non-breaking generation, source, budget and migration summaries
+- [x] 3.4 Preserve the legacy image_status/rating response contract in R2 snapshot items and cover it in the shadow comparison
 
 ## 4. Rollback and Cleanup
 
