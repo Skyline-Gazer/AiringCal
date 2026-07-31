@@ -63,6 +63,31 @@ export type {
   Temperature,
 } from './d1-types.ts'
 
+export {
+  MIGRATE_CLEANUP_CURSOR_KEY,
+  MIGRATE_KV_BUDGET_DAILY_KEY,
+  MIGRATE_LEGACY_CURSOR_KEY,
+  MIGRATE_LEGACY_SUMMARY_KEY,
+  MIGRATE_READ_MODE_KEY,
+  MIGRATE_SHADOW_STREAK_KEY,
+  PUBLIC_READ_MODE_KV_KEY,
+  migrateCleanupCursorKey,
+  migrateKvBudgetDailyKey,
+  migrateLegacyCursorKey,
+  migrateLegacySummaryKey,
+  migrateReadModeKey,
+  migrateShadowStreakKey,
+  publicReadModeKvKey,
+} from './legacy-migration-types.ts'
+export type {
+  CleanupCursorV1,
+  KvBudgetDailyV1,
+  MigrationCursorV1,
+  MigrationSummaryV1,
+  ReadModeV1,
+  ShadowStreakV1,
+} from './legacy-migration-types.ts'
+
 export type CollectionType = 'want' | 'watched' | 'watching' | 'on_hold' | 'dropped'
 export type ImageSourceSize = 'common' | 'large'
 export const SUBJECT_DETAIL_TTL_SECONDS = 60 * 60 * 24 * 7
