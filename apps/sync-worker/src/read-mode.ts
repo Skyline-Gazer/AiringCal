@@ -1,7 +1,11 @@
 import {
+  canonicalJson,
   migrateKvBudgetDailyKey,
+  migrateReadModeKey,
   migrateShadowStreakKey,
+  PUBLIC_READ_MODE_KV_KEY,
   type KvBudgetDailyV1,
+  type ReadModeV1,
   type ShadowStreakV1,
 } from '@airing-cal/storage'
 
@@ -11,6 +15,11 @@ export const MAX_LEGACY_KV_WRITES_PER_DAY = 100
 export interface ShadowGateD1 {
   getAppState<T>(key: string, decode: (value: unknown) => T): Promise<T | undefined>
   putAppStateIfNewer<T>(key: string, value: T, version: number): Promise<boolean>
+}
+
+export interface ReadModeKv {
+  get(key: string, type: 'json'): Promise<unknown>
+  put(key: string, value: string): Promise<void>
 }
 
 export function decodeShadowStreak(value: unknown): ShadowStreakV1 {
@@ -109,4 +118,34 @@ export async function shadowGatePassed(
     if (!budget || budget.legacy_subject_kv_writes > MAX_LEGACY_KV_WRITES_PER_DAY) return false
   }
   return true
+}
+
+export async function switchReadMode(
+  store: ShadowGateD1,
+  kv: ReadModeKv,
+  now: number,
+): Promise<ReadModeV1> {
+  const next: ReadModeV1 = { mode: 'r2', switched_at: now }
+  await store.putAppStateIfNewer(migrateReadModeKey(), next, now)
+  try {
+    await kv.put(PUBLIC_READ_MODE_KV_KEY, canonicalJson(next))
+  } catch {
+    // The D1 authority is already advanced; the next scheduled run retries the mirror.
+  }
+  return next
+}
+
+export async function rollbackReadMode(
+  store: ShadowGateD1,
+  kv: ReadModeKv,
+  now: number,
+): Promise<ReadModeV1> {
+  const next: ReadModeV1 = { mode: 'legacy', switched_at: null }
+  await store.putAppStateIfNewer(migrateReadModeKey(), next, now)
+  try {
+    await kv.put(PUBLIC_READ_MODE_KV_KEY, canonicalJson(next))
+  } catch {
+    // The D1 authority is already rolled back; the next scheduled run retries the mirror.
+  }
+  return next
 }

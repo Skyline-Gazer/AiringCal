@@ -2,11 +2,15 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   migrateKvBudgetDailyKey,
+  migrateReadModeKey,
   type KvBudgetDailyV1,
+  type ReadModeV1,
 } from '@airing-cal/storage'
 import {
   recordDailyKvBudget,
+  rollbackReadMode,
   shadowGatePassed,
+  switchReadMode,
   updateShadowStreak,
   type ShadowGateD1,
 } from './read-mode.ts'
@@ -109,4 +113,47 @@ test('a newer budget record replaces an older one', async () => {
     (value) => value as KvBudgetDailyV1,
   )
   assert.equal(budget?.legacy_subject_kv_writes, 3)
+})
+
+class FakeReadModeKv {
+  values = new Map<string, string>()
+
+  async get(key: string, _type: 'json'): Promise<unknown> {
+    const value = this.values.get(key)
+    return value === undefined ? null : JSON.parse(value)
+  }
+
+  async put(key: string, value: string): Promise<void> {
+    this.values.set(key, value)
+  }
+}
+
+test('switchReadMode writes the D1 authority and mirrors the KV flag', async () => {
+  const store = new FakeShadowD1()
+  const kv = new FakeReadModeKv()
+
+  const mode = await switchReadMode(store, kv, now)
+
+  assert.equal(mode.mode, 'r2')
+  assert.equal(mode.switched_at, now)
+  const authority = await store.getAppState(migrateReadModeKey(), (value) => value as ReadModeV1)
+  assert.equal(authority?.mode, 'r2')
+  const mirror = JSON.parse(kv.values.get('public:read-mode') ?? '{}')
+  assert.equal(mirror.mode, 'r2')
+})
+
+test('rollbackReadMode returns to legacy and is idempotent', async () => {
+  const store = new FakeShadowD1()
+  const kv = new FakeReadModeKv()
+  await switchReadMode(store, kv, now)
+
+  const rolledBack = await rollbackReadMode(store, kv, now + 1)
+  const again = await rollbackReadMode(store, kv, now + 2)
+
+  assert.equal(rolledBack.mode, 'legacy')
+  assert.equal(again.mode, 'legacy')
+  const authority = await store.getAppState(migrateReadModeKey(), (value) => value as ReadModeV1)
+  assert.equal(authority?.mode, 'legacy')
+  const mirror = JSON.parse(kv.values.get('public:read-mode') ?? '{}')
+  assert.equal(mirror.mode, 'legacy')
 })
