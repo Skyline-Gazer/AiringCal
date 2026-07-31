@@ -1,8 +1,15 @@
 export const appBoundary = 'read-worker'
 
-import { imageOriginalKey, imageStatusKey, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncCurrentKey, syncMetaKey, syncRunKey, type D1DatabaseLike, type SnapshotManifest, type SyncRun } from '@airing-cal/storage'
+import { D1StateStore, imageOriginalKey, imageStatusKey, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncCurrentKey, syncMetaKey, syncRunKey, type D1DatabaseLike, type SnapshotManifest, type SyncRun } from '@airing-cal/storage'
 import { isConfirmedNotFoundSubjectMeta, type SubjectMeta } from '@airing-cal/domain'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
+import {
+  readSnapshotSource,
+  type ReadSnapshotCache,
+  type ReadSnapshotDataR2,
+  type ReadSnapshotKv,
+} from './r2-snapshot.ts'
+import { buildMigrationHealth, type MigrationHealthD1, type MigrationHealthEnv } from './health.ts'
 
 interface ReadEnv {
   AIRING_CAL_D1: D1DatabaseLike
@@ -33,6 +40,36 @@ const MAX_CURSOR_LENGTH = 1024
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000)
+}
+
+function defaultSnapshotCache(): ReadSnapshotCache {
+  const cache = (globalThis as { caches?: { default?: Cache } }).caches?.default
+  return {
+    async match(request: Request): Promise<Response | undefined> {
+      if (!cache) throw new Error('Cache API unavailable')
+      return await cache.match(request)
+    },
+    async put(request: Request, response: Response): Promise<void> {
+      if (!cache) throw new Error('Cache API unavailable')
+      await cache.put(request, response)
+    },
+  }
+}
+
+function snapshotSourceFor(env: ReadEnv) {
+  return readSnapshotSource(
+    env.AIRING_CAL_KV as ReadSnapshotKv,
+    env.AIRING_CAL_DATA_R2 as unknown as ReadSnapshotDataR2,
+    defaultSnapshotCache(),
+  )
+}
+
+function migrationHealthEnvFor(env: ReadEnv): MigrationHealthEnv {
+  const d1: MigrationHealthD1 = {
+    getAppState: (key, decode) => new D1StateStore(env.AIRING_CAL_D1).getAppState(key, decode),
+    prepare: (sql) => env.AIRING_CAL_D1.prepare(sql),
+  }
+  return { AIRING_CAL_KV: env.AIRING_CAL_KV, AIRING_CAL_D1: d1 }
 }
 
 function json(data: unknown, init?: ResponseInit): Response {
@@ -304,6 +341,18 @@ async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
   const type = parseCollectionType(singleQueryParameter(url.searchParams, 'type'))
   const page = parsePositiveInteger('page', singleQueryParameter(url.searchParams, 'page'), 1)
   const limit = parsePositiveInteger('limit', singleQueryParameter(url.searchParams, 'limit'), 24, 100)
+  const source = await snapshotSourceFor(env)
+  if (source.mode === 'r2') {
+    const data = source.snapshot.collections[type]
+    const start = (page - 1) * limit
+    return json({
+      data: data.slice(start, start + limit),
+      total: data.length,
+      page,
+      limit,
+      types: { ...source.snapshot.summary },
+    })
+  }
   const activeInstance = await activeSnapshotInstance(storage)
   const data = await readSnapshot<unknown[]>(storage, activeInstance, `collections:${type}`, snapshotCollectionsKey(type)) ?? []
   const start = (page - 1) * limit
@@ -315,6 +364,8 @@ async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
 
 async function handleCalendar(env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
+  const source = await snapshotSourceFor(env)
+  if (source.mode === 'r2') return json(source.snapshot.calendar)
   const activeInstance = await activeSnapshotInstance(storage)
   const data = await readSnapshot<unknown[]>(storage, activeInstance, 'calendar', snapshotCalendarKey()) ?? []
   return json(await hydrateCalendarImages(data, env))
@@ -370,6 +421,7 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
         stale: workflowStale,
       })
     : null
+  const migrationHealth = await buildMigrationHealth(migrationHealthEnvFor(env))
   return json({
     ok: true,
     worker: 'read-worker',
@@ -391,6 +443,7 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
           },
           workflow,
         },
+    ...migrationHealth,
   })
 }
 
