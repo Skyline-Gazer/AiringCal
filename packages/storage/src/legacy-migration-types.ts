@@ -60,8 +60,8 @@ export function migrateReadModeKey(): string {
   return MIGRATE_READ_MODE_KEY
 }
 
-export function migrateKvBudgetDailyKey(): string {
-  return MIGRATE_KV_BUDGET_DAILY_KEY
+export function migrateKvBudgetDailyKey(date?: string): string {
+  return date === undefined ? MIGRATE_KV_BUDGET_DAILY_KEY : `${MIGRATE_KV_BUDGET_DAILY_KEY}:${date}`
 }
 
 export function migrateCleanupCursorKey(): string {
