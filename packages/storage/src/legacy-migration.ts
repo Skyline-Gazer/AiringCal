@@ -83,7 +83,15 @@ export async function importLegacySubjectBatch(
     updated_at: Date.now(),
   }
   for (const subjectId of subjectIds) {
-    const records = await readLegacySubjectRecords(kv, subjectId)
+    let records: LegacySubjectRecords
+    try {
+      records = await readLegacySubjectRecords(kv, subjectId)
+    } catch {
+      // Malformed stored JSON makes KV.get(..., 'json') throw; count the
+      // subject as errored without stalling the whole migration batch.
+      summary.errored++
+      continue
+    }
     const detailSubject = legacyDetailSubject(records)
     if (detailSubject === 'invalid') {
       summary.errored++

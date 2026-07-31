@@ -21,6 +21,7 @@ function item(subjectId: number, name: string): PublicCollectionItemV1 {
     name_cn: '',
     summary: '',
     images: { common: imageRef, large: null },
+    image_status: { common: 'cached', large: 'pending_next_cron' },
     eps: 1,
     total_episodes: 12,
     ep_status: 1,
@@ -97,6 +98,28 @@ test('a business field difference yields a diff path', () => {
   assert.ok(result.diffs[0]?.includes('name'))
 })
 
+test('coarse image status normalization keeps queued and missing-source legacy states comparable', () => {
+  const a = snapshot(1)
+  a.collections.watched[0]!.image_status = { common: 'queued', large: 'missing_source' }
+  const b = snapshot(1)
+  b.collections.watched[0]!.image_status = { common: 'pending_next_cron', large: 'failed' }
+
+  const result = compareShadowSnapshots(normalizePublicResult(a), normalizePublicResult(b))
+
+  assert.equal(result.equal, true)
+})
+
+test('a genuine image status transition produces a diff', () => {
+  const a = snapshot(1)
+  const b = snapshot(1)
+  b.collections.watched[0]!.image_status = { common: 'pending_next_cron', large: 'cached' }
+
+  const result = compareShadowSnapshots(normalizePublicResult(a), normalizePublicResult(b))
+
+  assert.equal(result.equal, false)
+  assert.ok(result.diffs.some((diff) => diff.includes('image_status')))
+})
+
 test('calendar weekday and summary differences yield diffs', () => {
   const a = normalizePublicResult(snapshot(1))
   const b = snapshot(1)
@@ -113,8 +136,20 @@ test('calendar weekday and summary differences yield diffs', () => {
 
 test('hydrated legacy result compares equal to the R2 snapshot projection', () => {
   const hydrated = {
-    1: { images: { common: imageRef, large: null }, nsfw: true, eps: 3, total_episodes: 24 },
-    2: { images: { common: imageRef, large: null }, nsfw: false, eps: 1, total_episodes: 12 },
+    1: {
+      images: { common: imageRef, large: null },
+      image_status: { common: 'cached', large: 'pending_next_cron' },
+      nsfw: true,
+      eps: 3,
+      total_episodes: 24,
+    },
+    2: {
+      images: { common: imageRef, large: null },
+      image_status: { common: 'cached', large: 'pending_next_cron' },
+      nsfw: false,
+      eps: 1,
+      total_episodes: 12,
+    },
   }
   const legacy = {
     collections: {

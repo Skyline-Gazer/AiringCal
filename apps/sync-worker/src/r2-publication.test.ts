@@ -91,6 +91,7 @@ function collection(subjectId: number): PublicCollectionItemV1 {
     name_cn: `条目 ${subjectId}`,
     summary: '',
     images: { common: null, large: null },
+    image_status: { common: 'pending_next_cron', large: 'pending_next_cron' },
     eps: 12,
     total_episodes: 12,
     ep_status: 1,

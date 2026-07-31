@@ -21,6 +21,7 @@ function item(subjectId: number): PublicCollectionItemV1 {
     name_cn: '',
     summary: '',
     images: { common: imageRef, large: null },
+    image_status: { common: 'cached', large: 'pending_next_cron' },
     eps: 1,
     total_episodes: 12,
     ep_status: 1,
@@ -87,10 +88,12 @@ test('readLegacyPublicResult hydrates images, nsfw, episodes, and rating from le
   assert.equal(first.eps, 3)
   assert.equal(first.total_episodes, 24)
   assert.equal(first.images.common?.r2_key, 'images/h1/original')
+  assert.deepEqual(first.image_status, { common: 'cached', large: 'pending' })
   const second = watched.find((entry) => entry.subject_id === 2)
   assert.ok(second)
   assert.equal(second.nsfw, false)
   assert.equal(second.eps, 1)
+  assert.deepEqual(second.image_status, { common: 'pending', large: 'pending' })
 })
 
 test('readLegacyPublicResult falls back to legacy snapshot keys without an active instance', async () => {

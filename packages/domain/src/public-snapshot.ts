@@ -27,6 +27,13 @@ const COLLECTION_TYPE_ID: Record<PublicCollectionType, number> = {
   dropped: 5,
 }
 const LOWERCASE_SHA256 = /^[0-9a-f]{64}$/
+const IMAGE_STATUS_VALUES = new Set([
+  'cached',
+  'queued',
+  'failed',
+  'missing_source',
+  'pending_next_cron',
+])
 
 export interface PublicSnapshotInput {
   collections: PublicCollectionItemV1[]
@@ -133,18 +140,38 @@ function isImages(value: unknown): value is PublicSubjectImagesV1 {
     && (value.large === null || isImageRef(value.large))
 }
 
+function isImageStatus(value: unknown): value is { common: string; large: string } {
+  return isRecord(value)
+    && hasExactKeys(value, ['common', 'large'])
+    && typeof value.common === 'string'
+    && IMAGE_STATUS_VALUES.has(value.common)
+    && typeof value.large === 'string'
+    && IMAGE_STATUS_VALUES.has(value.large)
+}
+
+function isRating(value: unknown): value is { score: number; rank: number; total: number } {
+  return isRecord(value)
+    && hasExactKeys(value, ['score', 'rank', 'total'])
+    && isFiniteNumber(value.score)
+    && isNonNegativeInteger(value.rank)
+    && isNonNegativeInteger(value.total)
+}
+
 function isPublicCollectionItem(value: unknown): value is PublicCollectionItemV1 {
   if (!isRecord(value) || !hasExactKeys(value, [
-    'subject_id', 'name', 'name_cn', 'summary', 'images', 'eps', 'total_episodes',
+    'subject_id', 'name', 'name_cn', 'summary', 'images', 'image_status',
+    'eps', 'total_episodes',
     'ep_status', 'vol_status', 'type', 'collection_type', 'rate', 'nsfw', 'date',
     'tags', 'updated_at',
-  ])) return false
+  ], ['rating'])) return false
 
   return isNonNegativeInteger(value.subject_id)
     && typeof value.name === 'string'
     && typeof value.name_cn === 'string'
     && typeof value.summary === 'string'
     && isImages(value.images)
+    && isImageStatus(value.image_status)
+    && (value.rating === undefined || isRating(value.rating))
     && isNonNegativeInteger(value.eps)
     && isNonNegativeInteger(value.total_episodes)
     && isNonNegativeInteger(value.ep_status)
@@ -162,7 +189,8 @@ function isPublicCollectionItem(value: unknown): value is PublicCollectionItemV1
 
 function isPublicCalendarSubject(value: unknown): value is PublicCalendarSubjectV1 {
   if (!isRecord(value) || !hasExactKeys(value, [
-    'subject_id', 'id', 'type', 'name', 'name_cn', 'summary', 'images', 'nsfw',
+    'subject_id', 'id', 'type', 'name', 'name_cn', 'summary', 'images',
+    'image_status', 'nsfw',
     'date', 'eps', 'total_episodes',
   ], ['rating'])) return false
   const rating = value.rating
@@ -175,17 +203,12 @@ function isPublicCalendarSubject(value: unknown): value is PublicCalendarSubject
     && typeof value.name_cn === 'string'
     && typeof value.summary === 'string'
     && isImages(value.images)
+    && isImageStatus(value.image_status)
     && typeof value.nsfw === 'boolean'
     && typeof value.date === 'string'
     && isNonNegativeInteger(value.eps)
     && isNonNegativeInteger(value.total_episodes)
-    && (rating === undefined || (
-      isRecord(rating)
-      && hasExactKeys(rating, ['score', 'rank', 'total'])
-      && isFiniteNumber(rating.score)
-      && isNonNegativeInteger(rating.rank)
-      && isNonNegativeInteger(rating.total)
-    ))
+    && (rating === undefined || isRating(rating))
 }
 
 function isCalendarDay(value: unknown): value is PublicCalendarDayV1 {

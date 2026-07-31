@@ -129,7 +129,7 @@ test('empty collection set performs no batches', async () => {
   assert.equal(store.puts, 0)
 })
 
-test('a failing batch is counted as errored without blocking later batches', async () => {
+test('a subject that throws is counted as errored while later subjects in the batch keep importing', async () => {
   const store = new FakeMigrationD1()
   store.rows = Array.from({ length: 120 }, (_, index) => subjectRow(index + 1))
   const kv = seededKv(120)
@@ -137,8 +137,8 @@ test('a failing batch is counted as errored without blocking later batches', asy
 
   const summary = await runLegacyMigration(store, kv, now)
 
-  assert.equal(summary.imported, 70)
-  assert.equal(summary.errored, 50)
+  assert.equal(summary.imported, 119)
+  assert.equal(summary.errored, 1)
   const cursor = store.appState.get(migrateLegacyCursorKey()) as MigrationCursorV1
   assert.equal(cursor.last_subject_id, 120)
 })

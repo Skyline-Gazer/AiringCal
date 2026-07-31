@@ -640,6 +640,11 @@ interface ProjectedMedia {
     common: PublicImageRefV1 | null
     large: PublicImageRefV1 | null
   }
+  imageStatus: {
+    common: string
+    large: string
+  }
+  rating: { score: number; rank: number; total: number } | null
   nsfw: boolean
 }
 
@@ -654,9 +659,29 @@ function publicImageRef(key: string | null): PublicImageRefV1 | null {
   }
 }
 
+function detailRating(detail: Record<string, unknown>): { score: number; rank: number; total: number } | null {
+  const rating = detail.rating
+  if (typeof rating !== 'object' || rating === null || Array.isArray(rating)) return null
+  const candidate = rating as Record<string, unknown>
+  if (typeof candidate.score !== 'number' || !Number.isFinite(candidate.score)
+    || !Number.isSafeInteger(candidate.rank) || (candidate.rank as number) < 0
+    || !Number.isSafeInteger(candidate.total) || (candidate.total as number) < 0) {
+    return null
+  }
+  return {
+    score: candidate.score,
+    rank: candidate.rank as number,
+    total: candidate.total as number,
+  }
+}
+
 function projectedMedia(row: SubjectMediaRow | undefined, subjectId: number): ProjectedMedia | undefined {
   if (!row || row.checked_at === null) return undefined
+  const commonRef = publicImageRef(row.r2_image_common_key)
+  const largeRef = publicImageRef(row.r2_image_large_key)
+  const imageStatusFallback = row.error_code !== null ? 'failed' : 'pending_next_cron'
   let detail: ProjectedMedia['detail'] = null
+  let rating: ProjectedMedia['rating'] = null
   if (row.detail_json !== null) {
     try {
       const parsed = JSON.parse(row.detail_json) as Record<string, unknown>
@@ -679,6 +704,7 @@ function projectedMedia(row: SubjectMediaRow | undefined, subjectId: number): Pr
             && Number.isSafeInteger(parsed.total_episodes)
             && parsed.total_episodes >= 0 ? { total_episodes: parsed.total_episodes } : {}),
         }
+        rating = detailRating(parsed)
       }
     } catch {
       // Invalid legacy/imported detail falls back to the complete upstream projection.
@@ -686,10 +712,12 @@ function projectedMedia(row: SubjectMediaRow | undefined, subjectId: number): Pr
   }
   return {
     detail,
-    images: {
-      common: publicImageRef(row.r2_image_common_key),
-      large: publicImageRef(row.r2_image_large_key),
+    images: { common: commonRef, large: largeRef },
+    imageStatus: {
+      common: commonRef !== null ? 'cached' : imageStatusFallback,
+      large: largeRef !== null ? 'cached' : imageStatusFallback,
     },
+    rating,
     nsfw: row.nsfw === 1,
   }
 }
@@ -724,6 +752,8 @@ function publicItemFromRow(
     name_cn: detail?.name_cn ?? subject?.name_cn ?? '',
     summary: detail?.summary ?? subject?.summary ?? '',
     images: media?.images ?? { common: null, large: null },
+    image_status: media?.imageStatus ?? { common: 'pending_next_cron', large: 'pending_next_cron' },
+    ...(media?.rating ? { rating: media.rating } : {}),
     eps: nonNegativeInteger(detail?.eps, subject?.eps ?? 0),
     total_episodes: nonNegativeInteger(detail?.total_episodes, subject?.total_episodes ?? 0),
     ep_status: row.ep_status,
@@ -830,17 +860,24 @@ async function publicationInput(
     items: day.items.map((item) => {
       const media = projectedMedia(mediaBySubject.get(item.subject_id), item.subject_id)
       const detail = media?.detail
-      if (!media) return item
+      if (!media) {
+        return {
+          ...item,
+          image_status: { common: 'pending_next_cron', large: 'pending_next_cron' },
+        }
+      }
       return {
         ...item,
         name: detail?.name ?? item.name,
         name_cn: detail?.name_cn ?? item.name_cn,
         summary: detail?.summary ?? item.summary,
         images: media.images,
+        image_status: media.imageStatus,
         nsfw: media.nsfw,
         date: detail?.date ?? item.date,
         eps: nonNegativeInteger(detail?.eps, item.eps),
         total_episodes: nonNegativeInteger(detail?.total_episodes, item.total_episodes),
+        ...(media.rating ? { rating: media.rating } : {}),
       }
     }),
   }))

@@ -61,6 +61,7 @@ function publicProjection(entry: CollectionInput): PublicCollectionItemV1 {
     name_cn: subject?.name_cn ?? '',
     summary: subject?.summary ?? '',
     images: { common: null, large: null },
+    image_status: { common: 'pending_next_cron', large: 'pending_next_cron' },
     eps: subject?.eps ?? 0,
     total_episodes: subject?.total_episodes ?? 0,
     ep_status: entry.ep_status,

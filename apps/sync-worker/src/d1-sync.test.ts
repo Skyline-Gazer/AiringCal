@@ -539,6 +539,7 @@ test('the next daily snapshot projects completed D1 media into collections and c
     date: '2026-07-02',
     eps: 24,
     total_episodes: 26,
+    rating: { score: 8.1, rank: 12, total: 340 },
   }
   store.mediaRows = [mediaRow(1, {
     detail_json: canonicalJson(detail),
@@ -577,6 +578,8 @@ test('the next daily snapshot projects completed D1 media into collections and c
         r2_key: `images/${largeHash}/original`,
       },
     },
+    image_status: { common: 'cached', large: 'cached' },
+    rating: { score: 8.1, rank: 12, total: 340 },
     eps: 24,
     total_episodes: 26,
     ep_status: 1,
@@ -597,11 +600,12 @@ test('the next daily snapshot projects completed D1 media into collections and c
     name_cn: 'D1 中文',
     summary: 'D1 summary',
     images: second.publicationInput.collections[0]?.images,
+    image_status: { common: 'cached', large: 'cached' },
     nsfw: true,
     date: '2026-07-02',
     eps: 24,
     total_episodes: 26,
-    rating: { score: 0, rank: 0, total: 0 },
+    rating: { score: 8.1, rank: 12, total: 340 },
   })
 })
 
@@ -638,6 +642,10 @@ test('D1 media projection falls back for invalid detail and preserves tombstone 
       r2_key: `images/${commonHash}/original`,
     },
     large: null,
+  })
+  assert.deepEqual(result.publicationInput.collections[0]?.image_status, {
+    common: 'cached',
+    large: 'pending_next_cron',
   })
 
   store.mediaRows = [mediaRow(1, {

@@ -55,6 +55,13 @@ function cachedRef(status: unknown): { hash: string; uri: string; r2_key: string
     : null
 }
 
+function statusLabel(status: unknown): string {
+  return typeof status === 'object' && status !== null && !Array.isArray(status)
+    && typeof (status as { status?: unknown }).status === 'string'
+    ? (status as { status: string }).status
+    : 'pending_next_cron'
+}
+
 function firstPositive(...values: unknown[]): number | undefined {
   for (const value of values) {
     if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value
@@ -76,6 +83,12 @@ async function hydrationFor(kv: DailyShadowKv, subjectId: number): Promise<Legac
     const common = cachedRef(status.common)
     const large = cachedRef(status.large)
     if (common || large) hydration.images = { common, large }
+  }
+  // Mirror the read worker contract: image_status is always present and
+  // defaults to pending_next_cron when no image status record exists.
+  hydration.image_status = {
+    common: statusLabel(status?.common),
+    large: statusLabel(status?.large),
   }
   const meta = typeof rawMeta === 'object' && rawMeta !== null
     ? rawMeta as Record<string, unknown>

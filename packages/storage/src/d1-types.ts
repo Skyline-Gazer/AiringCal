@@ -145,12 +145,25 @@ export interface PublicSubjectImagesV1 {
   large: PublicImageRefV1 | null
 }
 
+export interface PublicImageStatusV1 {
+  common: string
+  large: string
+}
+
+export interface PublicSubjectRatingV1 {
+  score: number
+  rank: number
+  total: number
+}
+
 export interface PublicCollectionItemV1 {
   subject_id: number
   name: string
   name_cn: string
   summary: string
   images: PublicSubjectImagesV1
+  image_status: PublicImageStatusV1
+  rating?: PublicSubjectRatingV1
   eps: number
   total_episodes: number
   ep_status: number
@@ -172,15 +185,12 @@ export interface PublicCalendarSubjectV1 {
   name_cn: string
   summary: string
   images: PublicSubjectImagesV1
+  image_status: PublicImageStatusV1
   nsfw: boolean
   date: string
   eps: number
   total_episodes: number
-  rating?: {
-    score: number
-    rank: number
-    total: number
-  }
+  rating?: PublicSubjectRatingV1
 }
 
 export interface PublicCalendarDayV1 {

@@ -30,6 +30,7 @@ function collectionItem(
       },
       large: null,
     },
+    image_status: { common: 'cached', large: 'pending_next_cron' },
     eps: 12,
     total_episodes: 12,
     ep_status: 2,
@@ -62,6 +63,7 @@ const calendar: PublicCalendarDayV1[] = [{
         r2_key: `images/${'b'.repeat(64)}/original`,
       },
     },
+    image_status: { common: 'pending_next_cron', large: 'cached' },
     nsfw: true,
     date: '2026-07-27',
     eps: 12,
@@ -105,8 +107,52 @@ test('buildPublicSnapshot groups all five collection types and projects summary,
   })
   assert.equal(snapshot.collections.watching[0]?.nsfw, true)
   assert.equal(snapshot.collections.want[0]?.images.common?.r2_key, `images/${'a'.repeat(64)}/original`)
+  assert.deepEqual(snapshot.collections.want[0]?.image_status, { common: 'cached', large: 'pending_next_cron' })
   assert.equal(snapshot.calendar[0]?.items[0]?.nsfw, true)
   assert.equal(snapshot.calendar[0]?.items[0]?.images.large?.hash, 'b'.repeat(64))
+  assert.deepEqual(snapshot.calendar[0]?.items[0]?.image_status, { common: 'pending_next_cron', large: 'cached' })
+})
+
+test('snapshot collection items carry optional rating and reject missing or invalid image status', async () => {
+  const rated = await buildPublicSnapshot({
+    collections: [collectionItem(1, 1, { rating: { score: 8.1, rank: 12, total: 340 } })],
+    calendar,
+    published_at: 100,
+  }, 1)
+  assert.deepEqual(rated.collections.want[0]?.rating, { score: 8.1, rank: 12, total: 340 })
+  assert.deepEqual(await parsePublicSnapshotV1(structuredClone(rated)), rated)
+
+  const withoutStatus = structuredClone(rated)
+  const wantWithoutStatus = { ...withoutStatus.collections.want[0]! }
+  delete (wantWithoutStatus as { image_status?: unknown }).image_status
+  withoutStatus.collections = { ...withoutStatus.collections, want: [wantWithoutStatus] }
+  withoutStatus.content_hash = await sha256Canonical({
+    schema_version: 1,
+    collections: withoutStatus.collections,
+    calendar: withoutStatus.calendar,
+    summary: withoutStatus.summary,
+  })
+  await assert.rejects(parsePublicSnapshotV1(withoutStatus), /Invalid public snapshot/)
+
+  const invalidStatus = structuredClone(rated)
+  invalidStatus.collections.want[0]!.image_status = { common: 'nope', large: 'cached' }
+  invalidStatus.content_hash = await sha256Canonical({
+    schema_version: 1,
+    collections: invalidStatus.collections,
+    calendar: invalidStatus.calendar,
+    summary: invalidStatus.summary,
+  })
+  await assert.rejects(parsePublicSnapshotV1(invalidStatus), /Invalid public snapshot/)
+
+  const invalidRating = structuredClone(rated)
+  invalidRating.collections.want[0]!.rating = { score: 8.1, rank: -1, total: 340 }
+  invalidRating.content_hash = await sha256Canonical({
+    schema_version: 1,
+    collections: invalidRating.collections,
+    calendar: invalidRating.calendar,
+    summary: invalidRating.summary,
+  })
+  await assert.rejects(parsePublicSnapshotV1(invalidRating), /Invalid public snapshot/)
 })
 
 test('snapshot content hash excludes generation, content_hash and published_at envelope fields', async () => {

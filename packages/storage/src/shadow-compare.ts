@@ -23,6 +23,7 @@ export type NormalizedPublicResult = Omit<
 
 export interface LegacyHydration {
   images?: PublicSubjectImagesV1
+  image_status?: { common: string; large: string }
   nsfw?: boolean
   eps?: number
   total_episodes?: number
@@ -39,16 +40,40 @@ function sortItems<T extends { subject_id: number }>(items: T[]): T[] {
   return [...items].sort((a, b) => a.subject_id - b.subject_id)
 }
 
+const COARSE_IMAGE_STATUS: Record<string, string> = {
+  cached: 'cached',
+  queued: 'pending',
+  failed: 'failed',
+  missing_source: 'failed',
+  pending_next_cron: 'pending',
+}
+
+function coarseImageStatus(status: { common: string; large: string }): { common: string; large: string } {
+  return {
+    common: COARSE_IMAGE_STATUS[status.common] ?? 'pending',
+    large: COARSE_IMAGE_STATUS[status.large] ?? 'pending',
+  }
+}
+
 export function normalizePublicResult(snapshot: PublicSnapshotV1): NormalizedPublicResult {
   const collections = {} as NormalizedPublicResult['collections']
   for (const type of COLLECTION_TYPES) {
-    collections[type] = sortItems(snapshot.collections[type])
+    collections[type] = sortItems(snapshot.collections[type]).map((item) => ({
+      ...item,
+      image_status: coarseImageStatus(item.image_status),
+    }))
   }
   return {
     collections,
     calendar: [...snapshot.calendar]
       .sort((a, b) => a.weekday.id - b.weekday.id)
-      .map((day) => ({ ...day, items: sortItems(day.items) })),
+      .map((day) => ({
+        ...day,
+        items: sortItems(day.items).map((item) => ({
+          ...item,
+          image_status: coarseImageStatus(item.image_status),
+        })),
+      })),
     summary: { ...snapshot.summary },
   }
 }
@@ -59,6 +84,7 @@ function hydrateItem<T extends { subject_id: number }>(entry: T, hydrated: Recor
   return {
     ...entry,
     ...(patch.images ? { images: patch.images } : {}),
+    ...(patch.image_status ? { image_status: patch.image_status } : {}),
     ...(patch.nsfw !== undefined ? { nsfw: patch.nsfw } : {}),
     ...(patch.eps !== undefined ? { eps: patch.eps } : {}),
     ...(patch.total_episodes !== undefined ? { total_episodes: patch.total_episodes } : {}),

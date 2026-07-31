@@ -24,8 +24,10 @@ class FakeStore implements LegacyMigrationD1 {
 
 class FakeKv {
   values = new Map<string, unknown>()
+  throwingKeys = new Set<string>()
 
   async get(key: string, _type: 'json'): Promise<unknown> {
+    if (this.throwingKeys.has(key)) throw new Error(`Invalid JSON for ${key}`)
     return this.values.get(key) ?? null
   }
 }
@@ -121,6 +123,21 @@ test('invalid legacy detail counts as errored without blocking later subjects', 
   assert.equal(summary.errored, 1)
   assert.equal(summary.missing_keys, 1)
   assert.equal(store.puts, 0)
+})
+
+test('a KV that throws on malformed stored JSON counts as errored and keeps importing later subjects', async () => {
+  const store = new FakeStore()
+  const kv = new FakeKv()
+  kv.values.set('subject:detail:2', { subject: { id: 2, name: 'B' } })
+  kv.throwingKeys.add('subject:detail:1')
+
+  const summary = await importLegacySubjectBatch(store, kv, [1, 2])
+
+  assert.equal(summary.errored, 1)
+  assert.equal(summary.imported, 1)
+  assert.equal(store.puts, 1)
+  assert.ok(store.rows.has(2))
+  assert.ok(!store.rows.has(1))
 })
 
 test('re-running the batch after a successful import skips without overwriting', async () => {
