@@ -1820,3 +1820,39 @@ test('D1 published-state definite failure leaves the durable candidate pending a
   assert.equal(fixture.state.pending?.generation, 12)
   assert.equal(fixture.state.verified, fixture.oldPointer)
 })
+
+test('shadow publication writes to the shadow pointer key without touching public:current', async () => {
+  const events: string[] = []
+  const oldInput = emptyInput()
+  const oldPointer = await pointerFor(oldInput, 7)
+  const input = await publicationInput({
+    ...emptyInput(),
+    collections: [collection(1)],
+  })
+  const state = new MemoryState(events, { verified: oldPointer })
+  const dataBucket = new MemoryBucket(events)
+  const pointerKv = new MemoryKv(events)
+  const oldPointerBytes = JSON.stringify(oldPointer)
+  pointerKv.values.set('public:current', oldPointerBytes)
+
+  const result = await publishPublicSnapshot({
+    state,
+    dataBucket,
+    pointerKv,
+    input,
+    now: NOW,
+    sourceObservedAt: NOW,
+    publicationId: 'workflow-shadow',
+    pointerKey: 'public:shadow-current',
+  })
+
+  assert.deepEqual(result, {
+    status: 'published',
+    generation: 8,
+    contentHash: input.content_hash,
+    r2Puts: 1,
+    pointerPuts: 1,
+  })
+  assert.ok(pointerKv.values.has('public:shadow-current'))
+  assert.equal(pointerKv.values.get('public:current'), oldPointerBytes)
+})

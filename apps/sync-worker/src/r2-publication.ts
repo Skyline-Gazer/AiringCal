@@ -11,7 +11,9 @@ import {
   type PublicationWriteOwner,
 } from '@airing-cal/storage'
 
-const POINTER_KEY = 'public:current'
+export const POINTER_KEY = 'public:current'
+export const POINTER_KEY_SHADOW = 'public:shadow-current'
+export const PUBLIC_READ_MODE_KV_KEY = 'public:read-mode'
 const LOWERCASE_SHA256 = /^[0-9a-f]{64}$/
 
 export interface PublicationState {
@@ -76,6 +78,7 @@ export interface PublishPublicSnapshotArguments {
   state: PublicationState
   dataBucket: PublicationDataBucket
   pointerKv: PublicationPointerKv
+  pointerKey?: string
   input: PublicSnapshotInput & { content_hash: string }
   now: number
   sourceObservedAt: number
@@ -253,17 +256,50 @@ async function reconcileVerifiedNoOp(
 async function putPointerAndConfirm(
   pointerKv: PublicationPointerKv,
   pointerBytes: string,
+  pointerKey = POINTER_KEY,
 ): Promise<0 | 1> {
   try {
-    await pointerKv.put(POINTER_KEY, pointerBytes)
+    await pointerKv.put(pointerKey, pointerBytes)
     return 1
   } catch {
     try {
-      return await pointerKv.get(POINTER_KEY) === pointerBytes ? 1 : 0
+      return await pointerKv.get(pointerKey) === pointerBytes ? 1 : 0
     } catch {
       return 0
     }
   }
+}
+
+export async function promoteShadowPointer(
+  pointerKv: PublicationPointerKv,
+  now: number,
+): Promise<{ promoted: boolean; generation: number }> {
+  const raw = await pointerKv.get(POINTER_KEY_SHADOW)
+  if (raw === null) return { promoted: false, generation: 0 }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+    parsePointer(parsed, 'shadow')
+  } catch {
+    return { promoted: false, generation: 0 }
+  }
+  const pointer = parsed as PublicSnapshotPointerV1
+  const pointerBytes = canonicalJson(pointer)
+  const alreadyCurrent = await pointerKv.get(POINTER_KEY)
+  if (alreadyCurrent !== pointerBytes) {
+    const pointerPuts = await putPointerAndConfirm(pointerKv, pointerBytes, POINTER_KEY)
+    if (pointerPuts === 0) return { promoted: false, generation: pointer.generation }
+  }
+  try {
+    await pointerKv.put(
+      PUBLIC_READ_MODE_KV_KEY,
+      canonicalJson({ mode: 'r2', switched_at: now }),
+    )
+  } catch {
+    // The read-mode mirror is best effort; the D1 authority and pointer are
+    // already advanced and the next scheduled run retries the mirror.
+  }
+  return { promoted: true, generation: pointer.generation }
 }
 
 async function releasePublicationWrite(
@@ -283,6 +319,7 @@ export async function publishPublicSnapshot(
     state,
     dataBucket,
     pointerKv,
+    pointerKey,
     input,
     now,
     sourceObservedAt,
@@ -464,7 +501,7 @@ export async function publishPublicSnapshot(
   }
 
   const pointerBytes = canonicalJson(candidate)
-  const pointerPuts = await putPointerAndConfirm(pointerKv, pointerBytes)
+  const pointerPuts = await putPointerAndConfirm(pointerKv, pointerBytes, pointerKey ?? POINTER_KEY)
   if (pointerPuts === 0) {
     await releasePublicationWrite(state, candidate, owner)
     return {
