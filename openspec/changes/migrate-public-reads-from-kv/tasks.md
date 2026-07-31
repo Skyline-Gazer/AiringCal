@@ -26,5 +26,5 @@
 ## 5. Verification and Production Acceptance
 
 - [x] 5.1 Run migration, shadow, fallback, API compatibility, full repository and Wrangler deployment gates
-- [ ] 5.2 Observe seven production shadow runs, perform cutover, observe 14 days, then enable cleanup with KV writes below the accepted budget
+- 5.2（生产时间门禁，pending）Observe seven production shadow runs, perform cutover, observe 14 days, then enable cleanup with KV writes below the accepted budget — 见 `docs/superpowers/reports/2026-07-31-migrate-public-reads-from-kv-verify.md` 的 Explicitly pending production evidence
 - [x] 5.3 Commit and push each accepted task atomically and synchronize all user-facing architecture/runbook documentation

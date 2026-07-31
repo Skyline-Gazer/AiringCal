@@ -62,3 +62,29 @@ quality gates / cache-refresh-lifecycle）的 12 条 ADDED Requirements 均有
 - 切换 `public:read-mode=r2` 后的生产冒烟：**pending**；
 - 14 天观察与限速清理启动：**pending**；
 - Comet build guard 与 verify 阶段转换：**待代码审查通过后执行**。
+
+## Code-quality review
+
+`requesting-code-review` 技能已加载；审查子代理两次派发均因平台子代理消息
+通道故障未返回（与 `migrate_plan` 相同现象），按执行技能回退在主线严格内联
+复查全部新增模块与接线点：
+
+- `daily-shadow.ts`：每阶段独立 try/catch，错误带阶段前缀；增量/发布失败不阻断
+  迁移与清理；门禁失败不提升/切换；比较用 `buildPublicSnapshot` 规范化 R2 候选，
+  与 `readLegacyPublicResult` 的 legacy 水合结果同构。
+- `workflow-core.ts`：`daily-shadow-phase` 步骤复用同 run 已暂存的
+  `complete-input`（不二次抓取上游）；`legacySubjectKvWrites` 取 live 路径
+  实际入队的 `refresh_jobs` 计数；shadow 阶段错误写入 `sync:meta` 的
+  `workflow_shadow_errors`（≤10 条）且不改变 workflow 终态。
+- `r2-snapshot.ts`：pointer 严格校验（schema/generation/hash/r2_key 模式）；
+  R2 读取失败顺序为 R2 → 最后验证缓存 → legacy；缓存按 content_hash 键控。
+- `legacy-cleanup.ts`：14 天观察期与 R2 generation 存在性双门禁；每天独立
+  ≤100 key 上限（修复了累计计数误判）；失败批次不推进游标。
+- `read-mode.ts`：switch/rollback 以 D1 `migrate:read-mode` 为权威、KV 为镜像
+  （镜像失败重试）；streak 仅业务差异重置。
+- `legacy-migration.ts`/`migration-runner.ts`：D1 更新状态与已导入内容不被
+  legacy 覆盖；游标单调推进、缺 key/坏 JSON 计数不阻塞。
+- `health.ts`：D1 不可读降级为 `degraded: true` 零值，不破坏既有字段。
+- 结论：无 Critical/Important 遗留；仅有的偏差（worker-common 契约测试更新为
+  “read handlers 消费 shadow bindings 且保留 legacy fallback”）是本 change
+  的预期行为变更，已在提交说明记录。
