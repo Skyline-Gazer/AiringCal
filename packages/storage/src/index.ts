@@ -87,6 +87,13 @@ export type {
   ReadModeV1,
   ShadowStreakV1,
 } from './legacy-migration-types.ts'
+export {
+  importLegacySubjectBatch,
+  readLegacySubjectRecords,
+  type LegacyKvReader,
+  type LegacyMigrationD1,
+  type LegacySubjectRecords,
+} from './legacy-migration.ts'
 
 export type CollectionType = 'want' | 'watched' | 'watching' | 'on_hold' | 'dropped'
 export type ImageSourceSize = 'common' | 'large'
