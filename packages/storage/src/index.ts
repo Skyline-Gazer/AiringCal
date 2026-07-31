@@ -7,7 +7,11 @@ export {
   persistedCollectionSubject,
   sha256Canonical,
 } from './canonical-json.ts'
-export { D1StateStore, StaleCollectionDiffError } from './d1-state-store.ts'
+export {
+  D1StateStore,
+  StaleCollectionDiffError,
+  SyncRunCheckpointConflictError,
+} from './d1-state-store.ts'
 export {
   claimDailyBudgetReservation,
   markBudgetSubmission,

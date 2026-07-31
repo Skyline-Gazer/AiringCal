@@ -13,6 +13,7 @@ import {
   isMediaRefreshJobV4,
   sha256Canonical,
   StaleCollectionDiffError,
+  SyncRunCheckpointConflictError,
   type BudgetReservationRequest,
   type BudgetReservationResult,
   type CollectionRow,
@@ -78,7 +79,11 @@ export interface D1IncrementalSyncStore {
     completion: SyncRunCompletion,
     guard?: SyncRunCheckpointGuard,
   ): Promise<SyncTerminalTransitionResult>
-  failSyncRun(instanceId: string, failure: SyncRunFailure): Promise<SyncTerminalTransitionResult>
+  failSyncRun(
+    instanceId: string,
+    failure: SyncRunFailure,
+    guard?: SyncRunCheckpointGuard,
+  ): Promise<SyncTerminalTransitionResult>
 }
 
 export interface D1PublicationInput extends PublicSnapshotInput {
@@ -480,6 +485,58 @@ function decodePreparedColdCursor(
       ? 0
       : requireNonNegativeInteger(envelope.cold_cursor_version, 'cold_cursor_version'),
   }
+}
+
+async function hasValidDifferentWinner(
+  store: D1IncrementalSyncStore,
+  instanceId: string,
+  inputHash: string,
+  expected: SyncRunCheckpointGuard,
+): Promise<boolean> {
+  const persisted = await store.getSyncRun(instanceId)
+  if (
+    persisted === undefined
+    || persisted.input_hash !== inputHash
+    || persisted.status === 'error'
+    || (
+      persisted.status === 'running'
+      && persisted.stage === expected.stage
+      && persisted.result_json === expected.result_json
+    )
+    || persisted.result_json === null
+  ) return false
+  let artifact: LoadedReplayArtifact | undefined
+  try {
+    artifact = await loadReplayArtifact(
+      store,
+      persisted.result_json,
+      inputHash,
+      instanceId,
+    )
+  } catch {
+    // A malformed winner artifact cannot prove a different valid checkpoint;
+    // preserve the originating completion/failure error instead.
+    return false
+  }
+  if (persisted.status === 'ok') {
+    return artifact?.kind === 'prepared'
+      && await decodePreparedResult(artifact.artifactJson, inputHash, instanceId) !== undefined
+  }
+  if (persisted.status !== 'running') return false
+  if (persisted.stage === 'collections_pending' && artifact?.kind === 'collection') {
+    return await decodeCollectionCheckpoint(artifact.artifactJson, inputHash) !== undefined
+  }
+  if (persisted.stage === 'media_pending' && artifact?.kind === 'media_pending') {
+    return await decodeMediaPendingCheckpoint(
+      artifact.artifactJson,
+      inputHash,
+      instanceId,
+    ) !== undefined
+  }
+  if (persisted.stage === 'media' && artifact?.kind === 'prepared') {
+    return await decodePreparedResult(artifact.artifactJson, inputHash, instanceId) !== undefined
+  }
+  return false
 }
 
 function changedRows(plan: CollectionDiffPlan): CollectionRow[] {
@@ -907,6 +964,10 @@ export async function runD1IncrementalSync({
         }
       }
       let transition: SyncTerminalTransitionResult
+      const completionGuard = {
+        stage: adoptedStage,
+        result_json: adoptedResultJson,
+      }
       try {
         transition = await store.completeSyncRun(instanceId, {
           heartbeat_at: now,
@@ -914,13 +975,14 @@ export async function runD1IncrementalSync({
           input_hash: completeInputHash,
           public_hash: preparedResult.publicationInput.content_hash,
           result_json: preparedResultJson,
-        }, {
-          stage: adoptedStage,
-          result_json: adoptedResultJson,
-        })
+        }, completionGuard)
       } catch (error) {
-        const persisted = await store.getSyncRun(instanceId)
-        if (persisted?.input_hash === completeInputHash) {
+        if (await hasValidDifferentWinner(
+          store,
+          instanceId,
+          completeInputHash,
+          completionGuard,
+        )) {
           return runD1IncrementalSync({
             env,
             instanceId,
@@ -1353,6 +1415,10 @@ export async function runD1IncrementalSync({
       )
     }
     let transition: SyncTerminalTransitionResult
+    const completionGuard = {
+      stage: adoptedStage,
+      result_json: adoptedResultJson,
+    }
     try {
       transition = await store.completeSyncRun(instanceId, {
         heartbeat_at: now,
@@ -1360,13 +1426,14 @@ export async function runD1IncrementalSync({
         input_hash: completeInputHash,
         public_hash: publicInput.content_hash,
         result_json: preparedResultJson,
-      }, {
-        stage: adoptedStage,
-        result_json: adoptedResultJson,
-      })
+      }, completionGuard)
     } catch (error) {
-      const persisted = await store.getSyncRun(instanceId)
-      if (persisted?.input_hash === completeInputHash) {
+      if (await hasValidDifferentWinner(
+        store,
+        instanceId,
+        completeInputHash,
+        completionGuard,
+      )) {
         return runD1IncrementalSync({
           env,
           instanceId,
@@ -1382,12 +1449,16 @@ export async function runD1IncrementalSync({
 
     return preparedResult
   } catch (error) {
+    const failureGuard = {
+      stage: adoptedStage,
+      result_json: adoptedResultJson,
+    }
     try {
       const transition = await store.failSyncRun(instanceId, {
         heartbeat_at: now,
         completed_at: now,
         error_code: classifyError(error),
-      })
+      }, failureGuard)
       if (transition.terminal === 'ok') {
         const persisted = await store.getSyncRun(instanceId)
         const recoveredArtifact = persisted
@@ -1403,8 +1474,39 @@ export async function runD1IncrementalSync({
         if (recovered) return recovered
         if (preparedResult) return preparedResult
       }
-    } catch {
-      // Preserve the originating error; run failure persistence is best effort.
+    } catch (failureError) {
+      if (await hasValidDifferentWinner(
+        store,
+        instanceId,
+        completeInputHash,
+        failureGuard,
+      )) {
+        return runD1IncrementalSync({
+          env,
+          instanceId,
+          completeInput,
+          now,
+          store,
+          submitMedia: suppliedSubmitMedia,
+        })
+      }
+      if (failureError instanceof SyncRunCheckpointConflictError) {
+        // A guarded failure conflicted without proving a valid different
+        // winner checkpoint, so the run genuinely failed at the adopted
+        // stage. Record the failure without a guard; if even that is
+        // impossible, preserve the originating error.
+        try {
+          await store.failSyncRun(instanceId, {
+            heartbeat_at: now,
+            completed_at: now,
+            error_code: classifyError(error),
+          })
+        } catch {
+          // Preserve the originating error; failure persistence is best effort.
+        }
+      }
+      // Any other failure-persistence error (for example a lost failure
+      // write) preserves the persisted running checkpoint for replay.
     }
     throw error
   }

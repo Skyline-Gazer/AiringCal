@@ -9,6 +9,7 @@ import {
   nextSubjectRefreshAt,
   sha256Canonical,
   StaleCollectionDiffError,
+  SyncRunCheckpointConflictError,
   type BudgetReservationRequest,
   type BudgetReservationResult,
   type CollectionDiffPlanLike,
@@ -207,6 +208,7 @@ class RecordingStore implements D1IncrementalSyncStore {
   loseUpdateResponseOnce = false
   failUpdateBeforePersistOnce = false
   loseCompleteResponseOnce = false
+  failCompleteBeforePersistCount = 0
   reservation: BudgetReservationResult = {
     granted: 0,
     consumed: 0,
@@ -355,6 +357,10 @@ class RecordingStore implements D1IncrementalSyncStore {
     guard?: SyncRunCheckpointGuard,
   ) {
     this.completed.push(structuredClone(completion))
+    if (this.failCompleteBeforePersistCount > 0) {
+      this.failCompleteBeforePersistCount--
+      throw new Error('completion failed before commit')
+    }
     if (
       guard
       && (
@@ -369,11 +375,23 @@ class RecordingStore implements D1IncrementalSyncStore {
     }
     return { outcome: 'applied' as const, terminal: 'ok' as const }
   }
-  async failSyncRun(_instanceId: string, failure: SyncRunFailure) {
+  async failSyncRun(
+    _instanceId: string,
+    failure: SyncRunFailure,
+    guard?: SyncRunCheckpointGuard,
+  ) {
     if (this.loseFailurePersistenceOnce) {
       this.loseFailurePersistenceOnce = false
       throw new Error('simulated process loss before failure persistence')
     }
+    if (
+      guard
+      && this.currentRun?.status === 'running'
+      && (
+        this.currentRun.stage !== guard.stage
+        || this.currentRun.result_json !== guard.result_json
+      )
+    ) throw new SyncRunCheckpointConflictError(this.currentRun.instance_id)
     this.failed.push(structuredClone(failure))
     if (this.currentRun?.status === 'ok') {
       return { outcome: 'preserved_opposite_terminal' as const, terminal: 'ok' as const }
@@ -1163,6 +1181,21 @@ test('completion response loss returns the persisted prepared result without a d
   assert.equal(store.currentRun?.status, 'ok')
 })
 
+test('persistent pre-commit completion failure is bounded without recursive retry', async () => {
+  const store = new RecordingStore()
+  store.failCompleteBeforePersistCount = 2
+
+  await assert.rejects(
+    run(store, completeInput(), undefined, observedAt, 'bounded-completion-failure'),
+    /completion failed before commit/,
+  )
+
+  assert.equal(store.completed.length, 1)
+  assert.equal(store.failed.length, 1)
+  assert.equal(store.currentRun?.status, 'error')
+  assert.equal(store.failCompleteBeforePersistCount, 1)
+})
+
 test('media-pending update response loss is reconciled before submission and completion', async () => {
   const store = new RecordingStore()
   store.loseUpdateResponseOnce = true
@@ -1348,6 +1381,84 @@ test('stale collection attempt reloads a concurrently adopted real D1 media chec
   assert.equal(completed?.status, 'ok')
   assert.equal(completed?.stage, 'complete')
   assert.equal(completed?.result_json, JSON.stringify(JSON.parse(completed.result_json!)))
+})
+
+test('stale pending failure follows a concurrently prepared real D1 winner', async () => {
+  const store = new D1StateStore(new LosingMultiBatchSqliteD1())
+  const originalComplete = store.completeSyncRun.bind(store)
+  let releaseWinnerComplete!: () => void
+  const winnerCompleteReleased = new Promise<void>((resolve) => {
+    releaseWinnerComplete = resolve
+  })
+  let winnerPrepared!: () => void
+  const winnerPreparedReady = new Promise<void>((resolve) => { winnerPrepared = resolve })
+  let firstCompletion = true
+  store.completeSyncRun = async (...args) => {
+    if (firstCompletion) {
+      firstCompletion = false
+      winnerPrepared()
+      await winnerCompleteReleased
+    }
+    return originalComplete(...args)
+  }
+
+  const originalFail = store.failSyncRun.bind(store)
+  let staleFailureFinished!: () => void
+  const staleFailureReady = new Promise<void>((resolve) => {
+    staleFailureFinished = resolve
+  })
+  store.failSyncRun = async (...args) => {
+    try {
+      return await originalFail(...args)
+    } finally {
+      staleFailureFinished()
+    }
+  }
+
+  const durableResult = {
+    granted: 1,
+    consumed: 1,
+    soft_limit: 50,
+    hard_limit: 100,
+    submission: 'submitted' as const,
+  }
+  let releaseStaleSubmit!: () => void
+  const staleSubmitReleased = new Promise<void>((resolve) => { releaseStaleSubmit = resolve })
+  let staleSubmitAccepted!: () => void
+  const staleSubmitReady = new Promise<void>((resolve) => { staleSubmitAccepted = resolve })
+  let queueSends = 0
+  let storedResult: typeof durableResult | undefined
+  const requests: BudgetReservationRequest[] = []
+  const submit = async (request: BudgetReservationRequest) => {
+    requests.push(structuredClone(request))
+    if (!storedResult) {
+      storedResult = durableResult
+      queueSends++
+      staleSubmitAccepted()
+      await staleSubmitReleased
+      throw new Error('stale attempt failed after durable acceptance')
+    }
+    return storedResult
+  }
+  const input = completeInput()
+  const instanceId = 'guarded-failure-interleaving'
+
+  const staleAttempt = run(store, input, submit, observedAt, instanceId)
+  await staleSubmitReady
+  const winningAttempt = run(store, input, submit, observedAt, instanceId)
+  await winnerPreparedReady
+  releaseStaleSubmit()
+  await staleFailureReady
+  releaseWinnerComplete()
+
+  const [staleResult, winningResult] = await Promise.all([staleAttempt, winningAttempt])
+  assert.equal(queueSends, 1)
+  assert.equal(requests.length, 2)
+  assert.equal(JSON.stringify(requests[1]), JSON.stringify(requests[0]))
+  assert.deepEqual(staleResult, winningResult)
+  const completed = await store.getSyncRun(instanceId)
+  assert.equal(completed?.status, 'ok')
+  assert.equal(completed?.stage, 'complete')
 })
 
 test('cold cursor commit crash replays the exact prepared media result without another reservation', async () => {

@@ -1500,6 +1500,42 @@ test('sync run checkpoint CAS prevents a stale attempt from regressing an adopte
   assert.equal((await store.listCollectionRows())[0]?.rate, collection().rate)
 })
 
+test('sync run guarded failure cannot overwrite a later prepared checkpoint', async () => {
+  const store = new D1StateStore(new SqliteD1())
+  const pendingManifest = '{"artifact":{"kind":"media_pending"}}'
+  const preparedManifest = '{"artifact":{"kind":"prepared"}}'
+  await store.startSyncRun(syncRun({
+    stage: 'media_pending',
+    result_json: pendingManifest,
+  }))
+  await store.updateSyncRun('run-1', {
+    stage: 'media',
+    heartbeat_at: 120,
+    result_json: preparedManifest,
+  }, {
+    stage: 'media_pending',
+    result_json: pendingManifest,
+  })
+
+  await assert.rejects(
+    store.failSyncRun('run-1', {
+      heartbeat_at: 130,
+      completed_at: 130,
+      error_code: 'INTERNAL_ERROR',
+    }, {
+      stage: 'media_pending',
+      result_json: pendingManifest,
+    }),
+    /sync run checkpoint conflict/i,
+  )
+
+  const current = await store.getSyncRun('run-1')
+  assert.equal(current?.status, 'running')
+  assert.equal(current?.stage, 'media')
+  assert.equal(current?.result_json, preparedManifest)
+  assert.equal(current?.error_code, null)
+})
+
 test('getSyncRun selects the persisted replay result without interpreting its artifact', async () => {
   const fake = new RecordingD1()
   const row = syncRun({

@@ -107,6 +107,15 @@ export class StaleCollectionDiffError extends Error {
   }
 }
 
+export class SyncRunCheckpointConflictError extends Error {
+  readonly code = 'SYNC_RUN_CHECKPOINT_CONFLICT'
+
+  constructor(instanceId: string, options?: { cause?: unknown }) {
+    super(`Sync run checkpoint conflict: ${instanceId}`, options)
+    this.name = 'SyncRunCheckpointConflictError'
+  }
+}
+
 interface PendingWrite {
   userId: string
   subjectId: number
@@ -1393,7 +1402,7 @@ export class D1StateStore {
           current
           && (current.stage !== guard.stage || current.result_json !== guard.result_json)
         ) {
-          throw new Error(`Sync run checkpoint conflict: ${instanceId}`, { cause: error })
+          throw new SyncRunCheckpointConflictError(instanceId, { cause: error })
         }
       }
       throw error
@@ -1424,23 +1433,34 @@ export class D1StateStore {
       if (status === undefined) throw new Error(`Sync run not found: ${instanceId}`)
       if (status === 'ok') return { outcome: 'already_same_terminal', terminal: 'ok' }
       if (status === 'error') return { outcome: 'preserved_opposite_terminal', terminal: 'error' }
-      if (guard) throw new Error(`Sync run checkpoint conflict: ${instanceId}`)
+      if (guard) throw new SyncRunCheckpointConflictError(instanceId)
       throw new Error(`Sync run completion not applied: ${instanceId}`)
     }
     return { outcome: 'applied', terminal: 'ok' }
   }
 
-  async failSyncRun(instanceId: string, failure: SyncRunFailure): Promise<SyncTerminalTransitionResult> {
+  async failSyncRun(
+    instanceId: string,
+    failure: SyncRunFailure,
+    guard?: SyncRunCheckpointGuard,
+  ): Promise<SyncTerminalTransitionResult> {
     assertClassifiedErrorCode(failure.error_code)
     const statement = this.database.prepare(
-      "UPDATE sync_runs SET status = 'error', heartbeat_at = ?, completed_at = ?, error_code = ? WHERE instance_id = ? AND status NOT IN ('ok', 'error')",
-    ).bind(failure.heartbeat_at, failure.completed_at, failure.error_code, instanceId)
+      `UPDATE sync_runs SET status = 'error', heartbeat_at = ?, completed_at = ?, error_code = ? WHERE instance_id = ? AND status NOT IN ('ok', 'error')${guard ? ' AND stage = ? AND result_json IS ?' : ''}`,
+    ).bind(
+      failure.heartbeat_at,
+      failure.completed_at,
+      failure.error_code,
+      instanceId,
+      ...(guard ? [guard.stage, guard.result_json] : []),
+    )
     const changes = await this.executeBatch([statement])
     if (changes === 0) {
       const status = await this.getSyncRunStatus(instanceId)
       if (status === undefined) throw new Error(`Sync run not found: ${instanceId}`)
       if (status === 'error') return { outcome: 'already_same_terminal', terminal: 'error' }
       if (status === 'ok') return { outcome: 'preserved_opposite_terminal', terminal: 'ok' }
+      if (guard) throw new SyncRunCheckpointConflictError(instanceId)
       throw new Error(`Sync run failure not applied: ${instanceId}`)
     }
     return { outcome: 'applied', terminal: 'error' }
