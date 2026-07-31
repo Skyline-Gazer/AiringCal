@@ -82,12 +82,15 @@ quality gates / cache-refresh-lifecycle）的 12 条 ADDED Requirements 均有
 
 ## Explicitly pending production evidence
 
-- 部署到 `dev` 与 GitHub Actions pipeline：**pending**；
+- 部署：**done（2026-07-31）** — 分支合并 dev（`61c87b0..8de13e5` fast-forward）
+  并推送；GitHub Actions 全链路通过，生产前端 Build `8de13e5`；
+  `/api/health` 已返回新字段（snapshot/migration/budget/degraded，
+  read_mode=legacy）；`/api/collections` 保留 image_status/images/nsfw 契约。
 - 连续 7 次生产每日 shadow 一致 + KV 写预算达标（OpenSpec 6.1/6.2）：
-  **pending 时间门禁**；
-- 切换 `public:read-mode=r2` 后的生产冒烟：**pending**；
-- 14 天观察与限速清理启动：**pending**；
-- Comet build guard 与 verify 阶段转换：**待代码审查通过后执行**。
+  **pending 时间门禁**（首个每日 shadow 阶段在 2026-07-31 20:00 UTC cron 运行）。
+- 切换 `public:read-mode=r2` 后的生产冒烟：**pending**。
+- 14 天观察与限速清理启动：**pending**。
+- Comet verify → archive 守卫：**待生产验收通过后执行（归档前需用户确认）**。
 
 ## Code-quality review
 
