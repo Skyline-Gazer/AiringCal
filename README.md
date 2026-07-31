@@ -11,8 +11,8 @@ AiringCal 是一个 Cloudflare Workers monorepo。它把公开访问、只读数
 | Worker | 目录 | 职责 |
 |--------|------|------|
 | `airing-cal-frontend` | `apps/frontend-worker` | 唯一公开入口，提供页面、widget 静态资源、BFF JSON route 和 `/image/:hash` 代理 |
-| `airing-cal-read` | `apps/read-worker` | 内部只读 API；当前公开响应仍从 legacy KV snapshot/状态与 image R2 读取，D1/data R2 binding 尚未用于 handler |
-| `airing-cal-sync` | `apps/sync-worker` | Cloudflare Workflow 编排 collection/calendar；live 维持 legacy KV 发布，manual shadow 同步 D1 并发布不可变 data R2 snapshot |
+| `airing-cal-read` | `apps/read-worker` | 内部只读 API；公开响应按 `public:read-mode` 从 legacy KV snapshot/状态或验证过的 R2 `PublicSnapshotV1` 读取（迁移期默认 legacy，切换后 R2，带 Cache API 最后验证版与 legacy KV 双层 fallback）；`/api/health` 暴露 generation/source/budget/migration 摘要 |
+| `airing-cal-sync` | `apps/sync-worker` | Cloudflare Workflow 编排 collection/calendar；每日 20:00 UTC cron 的 live 发布后追加 D1 shadow 阶段：增量同步、legacy 导入、shadow 等价比较、KV 预算记录、门禁通过后提升 shadow pointer 并切换 read-mode、14 天后限速清理 legacy key |
 | `airing-cal-media` | `apps/media-worker` | Queue consumer；D1-only V4 任务以 D1 保存媒体权威状态并写 image R2，live V3 与 V2/legacy 任务保留 KV 兼容路径 |
 
 共享 package：
@@ -116,21 +116,21 @@ collections 使用 bgm.tv OpenAPI 允许的 `limit=50` 分页，并受 120 秒�
 
 `/api/health` 的 `data.workflow` 暴露最近 instance 的 `instance_id`、mode、source、stage、heartbeat、完成时间、计数和脱敏错误。聚合计数包含 eligible candidates `refresh_candidates` 及 `refresh_candidates_by_priority`、planner 选中 `refresh_selected`、逻辑获批 `refresh_granted`、预算留待后续 `refresh_deferred`（等于 `refresh_candidates - refresh_granted`）、producer 已确认/不确定的 `refresh_confirmed` / `refresh_uncertain`，以及预留前跳过的 `refresh_skipped`（等于 `subject_count - refresh_candidates`）。`refresh_jobs` 是 `refresh_granted` 的兼容 alias，只表示逻辑预算获批，不表示 Queue 一定物理接收；异步 consumer 的真实 KV PUT 只能从 consumer 与 Cloudflare 指标观察，Workflow 不推算实际写入数。成功或失败 run 都保留已到达的最新聚合值；这些字段只写入已有 run 记录，不创建逐 subject 指标 key。`queued`、`running` 或 `retrying` run 超过 20 分钟没有 heartbeat 时，应用侧返回 `status: "stale"` 与 `stale: true`；实际恢复、重启或终止仍以 Cloudflare Workflow instance 控制面状态为准。
 
-当前 `/api/health` 仍只汇总 legacy KV 的 `snapshot:active`、`sync:meta`、`sync:current` 与 `sync:run:*`，不会读取或证明 D1/data R2 shadow 的健康状态。D1 的 `sync_runs` 只保存有界计数、hash、stage/status 与分类后的 `error_code`；D1 rows、data R2 对象、Queue 和 KV pointer 的实际用量及错误必须分别在 Cloudflare Workflow/D1/R2/Queue/KV 控制面核对，不能从公开 health 推算。
+`/api/health` 在保留上述 legacy 字段的同时新增：`snapshot`（source/legacy 或 r2、generation、r2_key、verified_at）、`migration`（shadow_streak、legacy 导入游标与计数、kv_budget_ok、read_mode）与 `budget`（media reserved/consumed/soft/hard）。D1 读取失败时这些字段返回零值并置 `degraded: true`，不破坏既有契约。D1 rows、data R2 对象、Queue 和 KV pointer 的实际用量及错误必须分别在 Cloudflare Workflow/D1/R2/Queue/KV 控制面核对，不能从公开 health 推算。
 
 Worker Cron 来自 checked-in `wrangler.toml`；routine deploy 只同步代码与配置，不主动触发 live instance。
 
 ### D1 / data R2 shadow 边界
 
-当前 D1/data R2 实现只在明确的 manual `shadow` Workflow 中运行：
+D1/data R2 实现运行在 manual `shadow` Workflow 与每日 20:00 UTC 调度 Workflow 的 shadow 阶段：
 
 1. 完整获取所有用户的 collections 与 calendar，只有完整边界通过才计算 D1 diff。
 2. D1 以 `collection_items`、`subject_media`、`sync_runs`、`sync_budget`、`app_state` 五张主表保存新权威状态；`sync_budget_reservations` 是稳定 reservation 的幂等 helper table。
 3. 新公开契约先写入 `airing-cal-data` 的不可变对象 `snapshots/v1/{generation}-{content_hash}.json`，回读并验证 schema、generation、hash、key 与完整 bytes。
-4. 只有验证成功后才更新 KV `public:current`。pointer 只包含 `schema_version`、`generation`、`content_hash`、`r2_key` 和 `published_at`；相同已验证内容不写 R2、不增加 generation、也不写 pointer。
+4. 迁移期 shadow 发布把 pointer 写入 `public:shadow-current`；只有连续 7 次每日 shadow 一致且 KV 写预算达标后，才把 shadow pointer 提升为 `public:current` 并置 `public:read-mode=r2`。pointer 只包含 `schema_version`、`generation`、`content_hash`、`r2_key` 和 `published_at`；相同已验证内容不写 R2、不增加 generation、也不写 pointer。
 5. D1/R2/pointer 任一步失败都保留 pending/分类错误供同一 instance replay；不会通过回滚 D1 行或覆盖另一个 R2 generation 来“恢复”。
 
-这个 shadow pointer 不是当前公开读取入口。`airing-cal-read` 虽已绑定 `AIRING_CAL_D1` 与 `AIRING_CAL_DATA_R2`，handler 仍只跟随 legacy KV `snapshot:active`/versioned keys（图片继续来自 `AIRING_CAL_R2`）。legacy import、`public:current` 读切换和旧 KV 清理由后续 OpenSpec change `migrate-public-reads-from-kv` 独占负责；在该 change 完成门禁前，不得把 D1/data R2 描述成公开 API 的现行来源。
+公开读取入口由 `public:read-mode` 决定：`legacy` 时跟随 legacy KV `snapshot:active`/versioned keys（图片继续来自 `AIRING_CAL_R2`）；`r2` 时验证 `public:current` 后读取 `airing-cal-data` 的 `PublicSnapshotV1`，并用 Cache API 最后验证版与 legacy KV 双层 fallback。legacy 逐 subject 导入、shadow 门禁、`public:current` 读切换与旧 KV 限速清理由 OpenSpec change `migrate-public-reads-from-kv` 实现；切换与回滚操作见 [docs/runbook/migrate-public-reads.md](docs/runbook/migrate-public-reads.md)。
 
 media soft limit 50、hard limit 100 的 D1 reservation contract 已实现；只有 `new_or_changed` 候选可使用 privileged headroom。当前 shadow 调用不传 Queue submitter，因此 D1 路径 grant/submit 为 0；scheduled/manual live 仍使用 `SNAPSHOT_COORDINATOR` 的兼容预算和 legacy snapshot 发布。
 
