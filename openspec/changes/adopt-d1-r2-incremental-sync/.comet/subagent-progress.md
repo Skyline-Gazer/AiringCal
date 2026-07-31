@@ -446,3 +446,51 @@
 - Boundary: no remote migration, merge, deployment, live Workflow, production
   metrics, public smoke test, OpenSpec 6.1/6.2 checkoff, build guard, or Comet
   transition was performed.
+
+Task 12 evidence above is superseded by Task 13: the failure-terminal guard
+fix adds one storage test and two sync-worker tests, raising the totals it
+records.
+
+## Task 13 Guarded Failure Terminal and Bounded Completion Retry
+
+- Stage: full local verification GREEN; ready for coordinator handoff.
+- Current authoritative runtime source:
+  `79b76880aa2b55f274d284e416fccc83dbf355cd`.
+- Verified runtime sequence from `git log --reverse` (documentation-only
+  commits interleaved and omitted):
+  `79cbb3462ea91680fcc3c3fb62ea96af401bfb68` V3 compatibility →
+  `6f5699f7103987890362caf8c6fb76e1a3d4c98f` unknown-version fail-closed →
+  `97469a62ed78769e595ef3f3ca9c3c3ed47cf0e7` independent V4 generation fence →
+  `ff999c0d5d21bbf450d1315c8b440182b79948c7` D1 media projection/schedule →
+  `eafc6c04b968a2a0a61be17dfab339d16214ab67` durable media pending →
+  `0a09dfd550d865d7c8f697a550f2fe79db76f905` checkpoint CAS and cross-day
+  budget →
+  `79b76880aa2b55f274d284e416fccc83dbf355cd` guarded failure terminal and
+  bounded completion retry.
+- Root causes: the catch path terminalized a run without a checkpoint guard,
+  so a stale overlapping attempt could regress a winner that had advanced past
+  its stage/manifest; and a completion that threw before its D1 commit
+  re-invoked the same prepared checkpoint recursively forever.
+- Fix: `failSyncRun` accepts an exact stage/manifest guard and throws a typed
+  `SyncRunCheckpointConflictError` on mismatch. The catch path follows a valid
+  different winner when a guarded failure conflicts, otherwise records the
+  genuine failure without a guard (checkpoint lost or input mismatch), and
+  preserves the running checkpoint for replay when failure persistence itself
+  fails. Completion catch only follows a different valid winner, bounding a
+  persistent pre-commit completion failure to one error terminal.
+- Interleaving evidence: real SQLite stale pending failure follows a
+  concurrently prepared real D1 winner — single Queue send, byte-identical
+  first/replay request JSON, truthful result/cursor, final stage/result is the
+  winner's; a later prepared checkpoint cannot be overwritten by a guarded
+  stale failure; a pre-commit completion failure is bounded without recursion.
+- Fresh GREEN evidence: storage 90/90; sync-worker 196/196; focused nine-file
+  release gate 194/194; full repository 538/538; all nine typechecks; all four
+  build checks; strict OpenSpec; and `git diff --check`.
+- Materialized evidence: checked-in materialized config dry-runs pass at
+  frontend 69.10/16.53 KiB, read 22.50/6.08, media 113.00/22.03, and sync
+  243.71/48.58.
+- Audit: all 17/17 OpenSpec added requirements and all 8/8 Design §10 criteria
+  retain current source plus executable evidence.
+- Boundary: no remote migration, merge, deployment, live Workflow, production
+  metrics, public smoke test, OpenSpec 6.1/6.2 checkoff, build guard, or Comet
+  transition was performed.

@@ -3,15 +3,15 @@ comet_change: adopt-d1-r2-incremental-sync
 role: task-12-verification-ready
 status: local-evidence-ready-pending-independent-review-and-production
 verified_scope: full-local-gates-materialized-dry-runs-cas-budget-byte-replay
-verified_source_sha: 0a09dfd550d865d7c8f697a550f2fe79db76f905
+verified_source_sha: 79b76880aa2b55f274d284e416fccc83dbf355cd
 ---
 
 # D1/R2 incremental sync verification-ready evidence
 
 This report records current local evidence for runtime source SHA
-`0a09dfd550d865d7c8f697a550f2fe79db76f905`. The evidence-report update after
-that commit contains no runtime or configuration change, so this remains the
-exact implementation reviewed by the gates below.
+`79b76880aa2b55f274d284e416fccc83dbf355cd`, the fix that guards sync-run
+failure terminalization and bounds completion retries. This documentation
+commit changes no runtime behavior.
 
 This is deliberately not production evidence. No remote D1 migration, merge to
 `dev`, Worker deployment, production Workflow run, live metric query, public
@@ -28,12 +28,12 @@ The installed CLIs were checked before use:
 
 | Command | Result | Exact evidence |
 |---|---|---|
-| `pnpm test` | PASS | 529/529 tests, 0 failed |
+| `pnpm test` | PASS | 538/538 tests, 0 failed |
 | `pnpm typecheck` | PASS | all 9 workspace projects completed |
 | `pnpm build:check` | PASS | frontend/read/media/sync types current and dry-runs completed |
 | `./node_modules/.bin/openspec validate adopt-d1-r2-incremental-sync --strict` | PASS | `Change 'adopt-d1-r2-incremental-sync' is valid` |
 | `git diff --check` | PASS | no output |
-| focused media projection, CAS/pending replay, cross-day budget, schedule, compatibility, and fence command listed below | PASS | 139/139 tests, 0 failed |
+| focused media projection, CAS/pending replay, guarded failure, cross-day budget, schedule, compatibility, and fence command listed below | PASS | 194/194 tests, 0 failed |
 
 Wrangler's default macOS debug-log directory is outside this worktree sandbox.
 Source inspection of installed Wrangler 4.100.0 confirmed
@@ -47,15 +47,15 @@ completed cleanly.
 |---|---:|
 | `@airing-cal/widget` | 26 |
 | `@airing-cal/worker-common` | 13 |
-| `@airing-cal/storage` | 89 |
+| `@airing-cal/storage` | 90 |
 | `@airing-cal/domain` | 67 |
 | `@airing-cal/bgm-api` | 28 |
 | `@airing-cal/frontend-worker` | 7 |
 | `@airing-cal/read-worker` | 33 |
-| `@airing-cal/sync-worker` | 194 |
+| `@airing-cal/sync-worker` | 196 |
 | `@airing-cal/media-worker` | 55 |
 | root script tests | 23 |
-| **Total** | **535** |
+| **Total** | **538** |
 
 Package counts that were not visible in the terminal's truncated full-run
 stream were confirmed with Node's native test runner plus the installed `tsx`
@@ -65,6 +65,7 @@ loader; those count checks also passed.
 
 ```bash
 node --import tsx --test \
+  packages/storage/src/d1-state-store.test.ts \
   packages/storage/src/media-job.test.ts \
   packages/storage/src/d1-budget.test.ts \
   apps/media-worker/src/media-worker.test.ts \
@@ -75,7 +76,7 @@ node --import tsx --test \
   apps/sync-worker/src/workflow.test.ts
 ```
 
-Result: **139/139 passed, 0 failed**.
+Result: **194/194 passed, 0 failed**.
 
 ## Materialized Wrangler verification
 
@@ -95,10 +96,10 @@ separate deploy job. An executable assertion rejected unresolved
 
 | Config | Asserted materialized matrix | Dry-run |
 |---|---|---|
-| Read | D1 + legacy KV + image R2 + data R2; no Queue/Workflow/DO | PASS, 22.91 KiB / gzip 6.15 KiB |
-| Media | D1 + legacy KV compatibility + image R2 + Queue consumer + `SubjectRefreshCoordinator`; no data R2/Workflow | PASS, 113.41 KiB / gzip 22.11 KiB |
-| Sync | `SyncWorkflow` + D1 + data R2 + legacy KV compatibility + media Queue producer + `SnapshotCoordinator`; no image R2/Queue consumer | PASS, 242.99 KiB / gzip 48.37 KiB |
-| Frontend | Read and Sync service bindings plus build metadata only | PASS, 69.36 KiB / gzip 16.65 KiB |
+| Read | D1 + legacy KV + image R2 + data R2; no Queue/Workflow/DO | PASS, 22.50 KiB / gzip 6.08 KiB |
+| Media | D1 + legacy KV compatibility + image R2 + Queue consumer + `SubjectRefreshCoordinator`; no data R2/Workflow | PASS, 113.00 KiB / gzip 22.03 KiB |
+| Sync | `SyncWorkflow` + D1 + data R2 + legacy KV compatibility + media Queue producer + `SnapshotCoordinator`; no image R2/Queue consumer | PASS, 243.71 KiB / gzip 48.58 KiB |
+| Frontend | Read and Sync service bindings plus build metadata only | PASS, 69.10 KiB / gzip 16.53 KiB |
 
 The four exact materialized configs all passed:
 
@@ -134,7 +135,7 @@ test. The result is **17/17 locally approved**.
 | Public snapshot is one immutable object | `packages/domain/src/public-snapshot.ts`; `apps/sync-worker/src/r2-publication.ts` | exact content-addressed key plus changed publication ordering test | PASS |
 | Unchanged public content performs zero publication writes | `apps/sync-worker/src/r2-publication.ts` | identical verified content allocates no generation and performs zero R2/KV writes | PASS |
 | Pointer switches last | `apps/sync-worker/src/r2-publication.ts` | event-order test and D1/R2/readback/KV injected failures preserve the prior pointer | PASS |
-| D1/R2 publication is automatically verified | `.github/workflows/ci.yml`; package test scripts | full 535/535 gate plus focused 139/139 media projection, CAS/pending replay, cross-day budget, schedule, compatibility, and fence gate | PASS |
+| D1/R2 publication is automatically verified | `.github/workflows/ci.yml`; package test scripts | full 538/538 gate plus focused 194/194 media projection, CAS/pending replay, guarded failure, cross-day budget, schedule, compatibility, and fence gate | PASS |
 | Deploy config resolves all state resources | `scripts/materialize-wrangler-config.mjs`; Worker TOMLs; deploy workflow | no-placeholder matrix assertion plus four materialized Wrangler dry-runs | PASS |
 
 ## Design §10 acceptance audit
@@ -165,6 +166,11 @@ The result is **8/8 locally approved**.
 - D1-only media V4 fails closed without D1 and never falls back to legacy
   subject KV; live V3 and V2/legacy compatibility remain intentionally
   separate.
+- Sync-run failure terminalization is guarded by the exact adopted
+  stage/manifest: a stale overlapping attempt follows a valid winner instead
+  of regressing it, and a genuine failure without a winner is still recorded.
+  A completion that repeatedly fails before commit is bounded rather than
+  recursively retried.
 - Read Worker shadow bindings are present for deployment compatibility but are
   unused by current public handlers.
 
@@ -350,7 +356,7 @@ Fresh GREEN evidence for this runtime:
   acceptance criteria have source and executable evidence;
 - strict OpenSpec validation and `git diff --check` passed.
 
-## Current authoritative correction: checkpoint CAS and cross-day budget
+## Correction: checkpoint CAS and cross-day budget
 
 Runtime `0a09dfd550d865d7c8f697a550f2fe79db76f905` supersedes the durable
 media-pending runtime above. Final review found that nonterminal run updates
@@ -385,6 +391,46 @@ Fresh GREEN evidence:
 - exact materialized no-placeholder/binding assertion and four Wrangler
   4.100.0 dry-runs passed: frontend 69.36/16.65 KiB, read 22.91/6.15, media
   113.41/22.11, and sync 242.99/48.37;
+- all **17/17** added OpenSpec requirements and all **8/8** Design §10
+  acceptance criteria retain current source and executable evidence;
+- strict OpenSpec validation and `git diff --check` passed.
+
+## Current authoritative correction: guarded failure terminal and bounded completion retry
+
+Runtime `79b76880aa2b55f274d284e416fccc83dbf355cd` supersedes the checkpoint
+CAS runtime above. Final review found two remaining terminal-transition
+defects:
+
+- the catch path called `failSyncRun` without a guard, so a stale overlapping
+  attempt could unconditionally terminalize a run whose checkpoint a winner
+  had already advanced past;
+- a completion that threw before its D1 commit recursively re-invoked the
+  same prepared checkpoint forever instead of recording the failure.
+
+`failSyncRun` now accepts the exact expected stage/manifest guard and throws a
+typed `SyncRunCheckpointConflictError` on mismatch. The catch path first tries
+the guarded failure: a conflict follows a valid different winner checkpoint
+when one exists, otherwise it records the genuine failure without a guard
+(checkpoint lost or input mismatch), and any other failure-persistence error
+preserves the persisted running checkpoint for replay. The completion catch
+only follows a different valid winner checkpoint, so a persistent pre-commit
+completion failure terminates as an error instead of recursing.
+
+Fresh RED composition captured three regressions before the fix: a stale
+guarded failure overwrote a later prepared checkpoint, a completion failed
+before commit recursively self-healed on the third attempt, and a stale
+pending failure did not follow a concurrently prepared real D1 winner.
+
+Fresh GREEN evidence:
+
+- storage: **90/90 passed**; sync-worker: **196/196 passed**;
+- focused nine-file release gate: **194/194 passed** (adds
+  `packages/storage/src/d1-state-store.test.ts`);
+- full repository: **538/538 passed**;
+- all nine workspace typechecks and all four checked-in Worker build checks
+  passed;
+- checked-in materialized config dry-runs: frontend 69.10/16.53 KiB, read
+  22.50/6.08, media 113.00/22.03, and sync 243.71/48.58;
 - all **17/17** added OpenSpec requirements and all **8/8** Design §10
   acceptance criteria retain current source and executable evidence;
 - strict OpenSpec validation and `git diff --check` passed.
