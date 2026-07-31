@@ -94,6 +94,14 @@ export {
   type LegacyMigrationD1,
   type LegacySubjectRecords,
 } from './legacy-migration.ts'
+export {
+  buildLegacyPublicResult,
+  compareShadowSnapshots,
+  normalizePublicResult,
+  type LegacyHydration,
+  type LegacyPublicResult,
+  type NormalizedPublicResult,
+} from './shadow-compare.ts'
 
 export type CollectionType = 'want' | 'watched' | 'watching' | 'on_hold' | 'dropped'
 export type ImageSourceSize = 'common' | 'large'
