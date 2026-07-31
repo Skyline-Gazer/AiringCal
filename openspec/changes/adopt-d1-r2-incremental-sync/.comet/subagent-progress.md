@@ -390,9 +390,23 @@
   112.28/21.82, and sync 237.24/47.60.
 - Audit: all 17/17 OpenSpec added requirements and all 8/8 Design §10 criteria
   have current source plus executable evidence.
-- Boundary: no remote migration, merge, deployment, live Workflow, production
-  metrics, public smoke test, OpenSpec 6.1/6.2 checkoff, build guard, or Comet
-  transition was performed.
+- Boundary at write time: OpenSpec 6.1/6.2 checkoff, build guard, Comet
+  transition, shadow readback, and the `migrate-public-reads-from-kv` build
+  remain pending.
+
+### Production deployment record (2026-07-31)
+
+- Fast-forward `cdaf4fb..3aaee52` merged and pushed to `origin/dev`; revision
+  `3aaee5211d604a004d0277ff6c1e8d0a756b19e0`.
+- GitHub Actions deploy chain passed end-to-end (resolve_cloudflare →
+  apply_d1_migrations → read/media → sync/Workflow → frontend); live frontend
+  renders `Build 3aaee52`.
+- Public smoke: frontend and `/api/health` HTTP 200 on
+  `https://airingcal.q9m3.com/`; collections 551; next cron
+  `2026-07-31T20:00:00Z`.
+- Pre-deployment scheduled workflow `scheduled-1785441645` (2026-07-30T20:00Z)
+  is stale at `refresh_plan`; first post-deployment scheduled run occurs
+  2026-07-31T20:00Z on the corrected runtime.
 
 ## Task 12 Guarded Checkpoint and Cross-Day Budget Correction
 

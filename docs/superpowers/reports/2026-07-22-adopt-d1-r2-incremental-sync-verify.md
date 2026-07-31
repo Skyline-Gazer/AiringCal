@@ -435,17 +435,37 @@ Fresh GREEN evidence:
   acceptance criteria retain current source and executable evidence;
 - strict OpenSpec validation and `git diff --check` passed.
 
-## Explicitly pending production evidence
+## Production deployment (verified 2026-07-31)
 
-- remote D1 migration: **pending**;
-- release-candidate integration into `dev`: **pending user decision**;
-- deployment workflow URL/run ID/deployed SHA: **pending**;
-- live resolved resource matrix and metrics: **pending**;
-- shadow snapshot readback and legacy comparison: **pending**;
-- public production smoke tests: **pending**;
-- OpenSpec 6.1 and 6.2: **unchecked**;
+- dev integration: **done** — fast-forward `cdaf4fb..3aaee52` merged and
+  pushed to `origin/dev`; deployed revision
+  `3aaee5211d604a004d0277ff6c1e8d0a756b19e0`.
+- Deploy pipeline: **passed end-to-end** —
+  `deploy_frontend_worker` gates on `resolve_cloudflare` →
+  `apply_d1_migrations` → `deploy_read_media_workers` →
+  `deploy_sync_worker`, and the live frontend now renders `Build 3aaee52`
+  linking to that commit.
+- Resource resolution: **passed** — `resolve_cloudflare` resolved the
+  existing D1 database, KV namespace, both R2 buckets and the Queue before any
+  upload; remote D1 migrations `0001`/`0002` applied before worker uploads.
+- Public smoke (`https://airingcal.q9m3.com/`, 2026-07-31): frontend HTTP 200
+  with `Build 3aaee52`; `/api/health` HTTP 200 (collections 551, cron next
+  `2026-07-31T20:00:00Z`).
+- Pre-deployment production state: the last scheduled live workflow
+  (`scheduled-1785441645`, 2026-07-30T20:00Z) is stale at `refresh_plan`,
+  consistent with the reported legacy KV amplification; the first
+  post-deployment scheduled run occurs 2026-07-31T20:00Z on the corrected
+  code.
+
+## Still pending production evidence
+
+- post-deployment scheduled workflow completion and per-day KV write budget
+  (OpenSpec 6.1/6.2): **pending 24h+ observation**;
+- shadow snapshot readback and legacy comparison: **pending nightly shadow
+  runs**;
+- `migrate-public-reads-from-kv` build/verify/cutover: **pending** — that
+  change owns legacy import, shadow gate, cutover, fallback and cleanup;
 - Comet build guard and transition to `verify`: **not run**.
 
-The next production step must preserve the public Read Worker on legacy KV. The
-separate `migrate-public-reads-from-kv` change continues to own import, cutover,
-fallback, and legacy cleanup.
+The public Read Worker remains on legacy KV until the
+`migrate-public-reads-from-kv` change completes its cutover gates.
