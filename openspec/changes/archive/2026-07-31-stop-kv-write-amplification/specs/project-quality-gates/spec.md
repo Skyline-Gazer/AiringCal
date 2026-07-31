@@ -3,7 +3,7 @@
 ### Requirement: 文档必须通过实现核对
 README 和技术设计 MUST 与当前路由、绑定、每日同步行为、Workflow 运维命令及部署流程一致，且不得声明 Free Plan 未启用的原生 Workflow schedule、已删除的 trigger queue 或每四小时业务同步。
 
-#### Scenario: Free Plan 每日定时触发已激活
+#### Scenario: Free Plan 定时触发已激活
 - **WHEN** 生产止血变更部署完成
 - **THEN** 文档明确日频 Worker Cron 只创建 live Workflow instance，并记录媒体预算与未变化零写入语义
 

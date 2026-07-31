@@ -43,11 +43,11 @@ CI MUST 使用仓库声明的包管理器和依赖版本，不得用浮动 lates
 - **THEN** 未修改仓库配置的部署仍使用已声明版本
 
 ### Requirement: 文档必须通过实现核对
-README 和技术设计 MUST 与当前路由、绑定、同步行为、Workflow 运维命令及部署流程一致，且不得声明 Free Plan 未启用的原生 Workflow schedule 或已删除的 trigger queue。
+README 和技术设计 MUST 与当前路由、绑定、每日同步行为、Workflow 运维命令及部署流程一致，且不得声明 Free Plan 未启用的原生 Workflow schedule、已删除的 trigger queue 或每四小时业务同步。
 
 #### Scenario: Free Plan 定时触发已激活
-- **WHEN** 生产 shadow 已通过且 Worker Cron 桥接完成切换
-- **THEN** 文档明确 `0 */4 * * *` 只创建 live Workflow instance，且不再声明旧业务 Cron、trigger queue、原生 Workflow schedule 或 post-deploy sync
+- **WHEN** 生产止血变更部署完成
+- **THEN** 文档明确日频 Worker Cron 只创建 live Workflow instance，并记录媒体预算与未变化零写入语义
 
 ### Requirement: 部署不得等待业务同步
 CI/CD MUST 只部署代码、解析既有资源并验证控制面，不得触发 full sync、轮询业务 KV 或等待媒体缓存收敛。
@@ -98,4 +98,11 @@ README MUST 记录基于不可变 `dev` ancestor SHA 的正式回退流程；回
 #### Scenario: 旧 Widget 副本被重新加入
 - **WHEN** `assets/public` 或 `theme/v1` 再次包含部署资产副本
 - **THEN** 自动检查失败并指向唯一源码链路
+
+### Requirement: 写放大必须有自动回归门禁
+质量门禁 MUST 验证大批量未变化 subject 不产生逐 subject KV 写入或媒体投递。
+
+#### Scenario: 659 个稳定 subject 回归样例
+- **WHEN** 测试运行一次完整每日 Workflow 且所有缓存未到期
+- **THEN** 测试观测到零个 Media Queue message 与零个 subject refresh/meta/image PUT
 

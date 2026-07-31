@@ -2,6 +2,8 @@
 comet_change: stop-kv-write-amplification
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-07-31-stop-kv-write-amplification
+status: final
 ---
 
 # Stop KV Write Amplification — Technical Design

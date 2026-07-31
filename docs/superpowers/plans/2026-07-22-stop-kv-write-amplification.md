@@ -2,6 +2,7 @@
 change: stop-kv-write-amplification
 design-doc: docs/superpowers/specs/2026-07-22-stop-kv-write-amplification-design.md
 base-ref: 6281572784cd93e242589656453648f83909705e
+archived-with: 2026-07-31-stop-kv-write-amplification
 ---
 
 # Stop KV Write Amplification Implementation Plan
@@ -22,6 +23,7 @@ base-ref: 6281572784cd93e242589656453648f83909705e
 - Public HTTP response contracts and existing KV read keys remain unchanged.
 - Scheduled sync is once daily at 04:00 Asia/Shanghai; manual and scheduled live runs share one UTC-day soft limit 50 and hard limit 100; shadow reserves and enqueues nothing.
 
+archived-with: 2026-07-31-stop-kv-write-amplification
 ---
 
 ### Task 1: Observable unchanged-cache regression and basic due filtering

@@ -17,6 +17,6 @@ verification_report: docs/superpowers/reports/2026-07-22-stop-kv-write-amplifica
 branch_status: handled
 created_at: 2026-07-22
 verified_at: 2026-07-31
-archived: false
+archived: true
 handoff_context: openspec/changes/stop-kv-write-amplification/.comet/handoff/design-context.json
 handoff_hash: f6a19bd3d884b67e5132085814bde03c7871a7e87646f0711e5efcc4b5688b3e
