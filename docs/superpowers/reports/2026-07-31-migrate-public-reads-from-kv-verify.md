@@ -1,16 +1,42 @@
 ---
 comet_change: migrate-public-reads-from-kv
 role: task-12-verification-ready
-status: local-evidence-ready-pending-independent-review-and-production
+status: verified-pending-production-observation
 verified_scope: full-local-gates-migration-shadow-read-cutover-cleanup
-verified_source_sha: f763f8e
+verified_source_sha: 1d0e89c
 ---
 
 # migrate-public-reads-from-kv verification-ready evidence
 
-本文记录本地门禁证据；运行时 SHA `f763f8e`（`feat(sync): run daily shadow
-migration and gate in scheduled workflow`）。未做远程迁移、merge、部署与生产
-观测；OpenSpec 6.1/6.2 生产验收项 pending。
+本文记录本地门禁证据；最终运行时 SHA `1d0e89c`（build → verify 守卫推进）。
+未做远程迁移、merge、部署与生产观测；OpenSpec 6.1/6.2 生产验收项 pending。
+
+## Full verification checklist（comet-verify full）
+
+| 检查项 | 结果 | 证据 |
+|---|---|---|
+| 1. tasks.md 全部完成 | PASS | 1.1-4.3、5.1、5.3 `[x]`；5.2 为生产时间门禁，显式 pending 并指向本报告 |
+| 2. 实现符合 design.md 高层决策 | PASS | 幂等导入、shadow 门禁、pointer 切换、双 fallback、14 天清理均实现 |
+| 3. 实现符合技术 Design Doc | PASS | §4.1-4.5/§5/§6 的模块与数据模型逐一落地 |
+| 4. 能力规格场景全部通过 | PASS | 12 条 ADDED Requirements 有对应测试；全仓测试 exit 0 |
+| 5. proposal.md 目标满足 | PASS | 导入/shadow 等价/安全切换/延迟清理全部达成 |
+| 6. delta spec 与 design doc 无矛盾 | PASS | build 期仅勾选 tasks，未改 spec；design doc 与 specs 同源 |
+| 7. design doc 可定位 | PASS | `docs/superpowers/specs/2026-07-31-migrate-public-reads-from-kv-design.md` 存在 |
+
+## Fresh final gates（HEAD=1d0e89c）
+
+| Command | Result |
+|---|---|
+| `CI=true pnpm test` | PASS（全仓，exit 0） |
+| `CI=true pnpm typecheck` | PASS（9/9） |
+| `CI=true pnpm build:check` | PASS（4/4 dry-run，read 100.78 KiB / sync 272.85 KiB） |
+| `openspec validate --strict` | PASS |
+| `git diff --check` | PASS |
+| 硬编码密钥扫描（diff 非测试文件） | 无匹配 |
+
+`openspec-verify-change` 技能在本环境不存在，按 comet-verify 回退执行等价完整
+验证并在此记录；`requesting-code-review` 审查子代理通道故障，已按
+requesting-code-review 回退做严格内联审查（见上文 Code-quality review）。
 
 ## Fresh local gates
 
