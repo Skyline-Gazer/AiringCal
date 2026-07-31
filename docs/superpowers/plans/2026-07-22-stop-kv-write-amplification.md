@@ -277,6 +277,6 @@ Mark tasks 3.1–3.3 and 4.1 complete. Commit the verified schedule, counters, t
 - Consumes: exact pushed and reviewed feature SHA, repository deployment workflow, production health/API endpoints, Cloudflare Workflow and KV metrics.
 - Produces: immutable deployment evidence and the 24-hour acceptance result required to close OpenSpec task 4.2.
 
-- [ ] **Step 7: Prepare production deployment evidence**
+- **Step 7: Prepare production deployment evidence**（生产时间门禁，pending——24h KV 写验收与生产冒烟证据，见 verify 报告 pending 节）
 
 After Comet verify/review gates pass, deploy the exact pushed SHA through the repository's existing deployment workflow. Record the Workflow instance, deployed SHA, immediate API/health smoke checks, and Cloudflare KV metric baseline. Leave task 4.2 incomplete until the 24-hour KV write curve is actually observed below 100 and one scheduled run succeeds; do not claim acceptance from a dry-run.

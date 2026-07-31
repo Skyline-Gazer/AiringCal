@@ -1,5 +1,5 @@
 workflow: full
-phase: build
+phase: archive
 context_compression: off
 build_mode: subagent-driven-development
 build_pause: null
@@ -12,11 +12,11 @@ auto_transition: true
 base_ref: 974323a6bc89a3514b4c814664548ff1ac8d9440
 design_doc: docs/superpowers/specs/2026-07-22-stop-kv-write-amplification-design.md
 plan: docs/superpowers/plans/2026-07-22-stop-kv-write-amplification.md
-verify_result: pending
-verification_report: null
-branch_status: pending
+verify_result: pass
+verification_report: docs/superpowers/reports/2026-07-22-stop-kv-write-amplification-verify.md
+branch_status: handled
 created_at: 2026-07-22
-verified_at: null
+verified_at: 2026-07-31
 archived: false
 handoff_context: openspec/changes/stop-kv-write-amplification/.comet/handoff/design-context.json
 handoff_hash: f6a19bd3d884b67e5132085814bde03c7871a7e87646f0711e5efcc4b5688b3e

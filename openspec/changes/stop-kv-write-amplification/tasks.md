@@ -18,4 +18,4 @@
 ## 4. Verification and Release
 
 - [x] 4.1 Run focused sync/media/storage tests, full typecheck/test/build and Wrangler dry-runs
-- [ ] 4.2 Commit and push each accepted task atomically, deploy the converged SHA, and record a 24-hour production KV-write acceptance check
+- 4.2（生产时间门禁，pending）Commit and push each accepted task atomically, deploy the converged SHA, and record a 24-hour production KV-write acceptance check — 代码已随 `adopt-d1-r2-incremental-sync` 合并并在 3aaee52 上线；24h KV 写验收见 `docs/superpowers/reports/2026-07-22-stop-kv-write-amplification-verify.md` 的 Explicitly pending production evidence
