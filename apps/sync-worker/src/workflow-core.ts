@@ -73,6 +73,7 @@ export interface SyncWorkflowDependencies {
 
 export interface WorkflowStepLike {
   do<T>(name: string, config: unknown, callback: () => Promise<T>): Promise<T>
+  sleep(name: string, duration: '1 second'): Promise<void>
 }
 
 export interface SyncWorkflowEventLike {
@@ -527,6 +528,7 @@ export async function runSyncWorkflow(
 
     const planOutputs: StepOutput[] = []
     for (let chunkIndex = 0; mode === 'live' && chunkIndex < (prepared.refreshChunks ?? 0); chunkIndex++) {
+      if (chunkIndex > 0) await step.sleep(`yield-refresh-${chunkIndex - 1}`, '1 second')
       const output = await step.do(`plan-refresh-${chunkIndex}`, STORAGE_STEP, async () => {
         const allInputs = await getJson<RefreshInput[]>(env.AIRING_CAL_KV, prepared.refreshInputKey ?? '') ?? []
         const inputs = allInputs.slice(chunkIndex * REFRESH_CHUNK_SIZE, (chunkIndex + 1) * REFRESH_CHUNK_SIZE)

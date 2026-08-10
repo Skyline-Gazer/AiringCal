@@ -241,7 +241,7 @@ D1、R2 PUT、R2 GET/验证或 KV pointer 任一步失败时，旧 pointer 不�
 - 完整获取 collections/calendar。
 - 调用纯规范化与 diff planner。
 - 以有界 D1 batch/transaction 提交变化。
-- 仅在 D1-only media Queue producer 可用时原子预留媒体预算并投递确定性 V4 任务；V4 generation 固定为持久化完整输入的 `{ observed_at, run_id }`，其中 `run_id` 是稳定 Workflow instance ID，不使用执行或 retry 的当前时钟。默认 shadow/no Queue 只报告候选与 deferred，不占用正式 D1 预算。既有 live Workflow V3 继续写 legacy KV。
+- 仅在 D1-only media Queue producer 可用时原子预留媒体预算并投递确定性 V4 任务；V4 generation 固定为持久化完整输入的 `{ observed_at, run_id }`，其中 `run_id` 是稳定 Workflow instance ID，不使用执行或 retry 的当前时钟。默认 shadow/no Queue 只报告候选与 deferred，不占用正式 D1 预算。既有 live Workflow V3 继续写 legacy KV；其 10-subject refresh chunk 在每个后续 chunk 前以确定性 1 秒 Workflow sleep 持久化并恢复，确保四次 legacy KV 读取不会累积超过单个 Worker invocation 的 Cloudflare service API 限额，且不改变候选、预算或任务顺序。
 - 构建、验证并 shadow 发布 R2 snapshot/pointer 候选。
 - 记录 `sync_runs`，但媒体失败不改变收藏发布结论。
 

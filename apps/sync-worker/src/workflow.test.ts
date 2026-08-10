@@ -8,10 +8,12 @@ import { SnapshotCoordinator } from './snapshot-coordinator.ts'
 import { runSyncWorkflow, type SyncWorkflowDependencies, type SyncWorkflowEnv, type WorkflowStepLike } from './workflow-core.ts'
 
 class MockKV {
+  static readonly CLOUD_FLARE_SERVICE_REQUEST_LIMIT = 1_000
   values = new Map<string, unknown>()
   puts: Array<{ key: string; value: unknown; options?: { expirationTtl?: number } }> = []
   activeStep: string | null = null
   apiCallsByStep = new Map<string, number>()
+  apiCallsByInvocation = new Map<number, number>([[0, 0]])
   externalCallsByStep = new Map<string, number>()
   failingGets = new Set<string>()
   nullGets = new Set<string>()
@@ -19,10 +21,22 @@ class MockKV {
   replacementGets = new Map<string, unknown>()
   staleMetaOnGet?: { after: number; value: unknown }
   private metaGets = 0
+  private invocation = 0
 
   private recordCall() {
-    if (!this.activeStep) return
-    this.apiCallsByStep.set(this.activeStep, (this.apiCallsByStep.get(this.activeStep) ?? 0) + 1)
+    if (this.activeStep) {
+      this.apiCallsByStep.set(this.activeStep, (this.apiCallsByStep.get(this.activeStep) ?? 0) + 1)
+    }
+    const calls = (this.apiCallsByInvocation.get(this.invocation) ?? 0) + 1
+    this.apiCallsByInvocation.set(this.invocation, calls)
+    if (calls > MockKV.CLOUD_FLARE_SERVICE_REQUEST_LIMIT) {
+      throw new Error('Too many API requests by single Worker invocation')
+    }
+  }
+
+  startNextWorkerInvocation() {
+    this.invocation++
+    this.apiCallsByInvocation.set(this.invocation, 0)
   }
 
   async get(key: string, type: 'json'): Promise<unknown>
@@ -114,6 +128,7 @@ class TestNonRetryableError extends Error {
 
 class FakeStep implements WorkflowStepLike {
   names: string[] = []
+  sleeps: Array<{ name: string; duration: number | string }> = []
   attempts = new Map<string, number>()
   outputSizes: number[] = []
   cache = new Map<string, unknown>()
@@ -139,6 +154,11 @@ class FakeStep implements WorkflowStepLike {
       }
     }
     throw new Error('unreachable')
+  }
+
+  async sleep(name: string, duration: number | string): Promise<void> {
+    this.sleeps.push({ name, duration })
+    this.kv?.startNextWorkerInvocation()
   }
 }
 
@@ -958,6 +978,89 @@ test('live workflow defers one subject media-state read failure and still publis
     assert.deepEqual((queueMessages as any[]).map(({ subject_id }) => subject_id), [2])
     assert.equal(coordinator.commits.length, 1)
     assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'subject-read-failure')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled live workflow yields between 551-subject legacy refresh chunks to stay within the Worker invocation API limit', async () => {
+  const kv = new MockKV()
+  const queueMessages: unknown[] = []
+  const step = new FakeStep(kv)
+  const cachedAt = Math.floor(Date.now() / 1000) - 1
+  for (let subjectId = 1; subjectId <= 551; subjectId++) {
+    assert.ok(nextSubjectRefreshAt(subjectId, cachedAt) > Math.floor(Date.now() / 1000))
+    kv.seedCompleteSubject(subjectId, cachedAt)
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      const offset = Number(new URL(text).searchParams.get('offset'))
+      const count = Math.min(50, 551 - offset)
+      return Response.json({ total: 551, data: Array.from({ length: count }, (_, index) => collection(offset + index + 1)) })
+    }
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    const result = await runSyncWorkflow(workflowEnv(kv, queueMessages), {
+      instanceId: 'scheduled-551-invocation-limit',
+      payload: { mode: 'shadow', source: 'manual' },
+      schedule: { cron: '0 20 * * *', scheduledTime: Date.now() },
+    }, step, (message) => new TestNonRetryableError(message))
+
+    assert.deepEqual(step.names.filter((name) => name.startsWith('plan-refresh-')), Array.from({ length: 56 }, (_, index) => `plan-refresh-${index}`))
+    assert.deepEqual(step.sleeps, Array.from({ length: 55 }, (_, index) => ({ name: `yield-refresh-${index}`, duration: '1 second' })))
+    assert.equal(Math.max(...kv.apiCallsByInvocation.values()) <= MockKV.CLOUD_FLARE_SERVICE_REQUEST_LIMIT, true)
+    assert.equal(kv.apiCallsByInvocation.size, 56)
+    assert.equal(queueMessages.length, 0)
+    assert.deepEqual(kv.subjectPuts(), [])
+    assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'scheduled-551-invocation-limit')
+    assert.equal(result.subject_count, 551)
+    assert.equal(result.refresh_candidates, 0)
+    assert.equal(result.refresh_jobs, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('a late scheduled live failure after 551-subject legacy planning still terminalizes within the Worker invocation API limit', async () => {
+  const kv = new MockKV()
+  const coordinator = new MockSnapshotCoordinator(kv)
+  coordinator.failCommit = true
+  const step = new FakeStep(kv)
+  const cachedAt = Math.floor(Date.now() / 1000) - 1
+  for (let subjectId = 1; subjectId <= 551; subjectId++) {
+    assert.ok(nextSubjectRefreshAt(subjectId, cachedAt) > Math.floor(Date.now() / 1000))
+    kv.seedCompleteSubject(subjectId, cachedAt)
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      const offset = Number(new URL(text).searchParams.get('offset'))
+      const count = Math.min(50, 551 - offset)
+      return Response.json({ total: 551, data: Array.from({ length: count }, (_, index) => collection(offset + index + 1)) })
+    }
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await assert.rejects(
+      runSyncWorkflow(workflowEnv(kv, [], coordinator), {
+        instanceId: 'scheduled-551-terminal-error',
+        payload: { mode: 'shadow', source: 'manual' },
+        schedule: { cron: '0 20 * * *', scheduledTime: Date.now() },
+      }, step, (message) => new TestNonRetryableError(message)),
+      /Snapshot coordinator \/commit failed \(503\)/,
+    )
+
+    assert.equal((kv.values.get('sync:run:scheduled-551-terminal-error') as any).status, 'error')
+    assert.deepEqual(step.sleeps, Array.from({ length: 55 }, (_, index) => ({ name: `yield-refresh-${index}`, duration: '1 second' })))
+    assert.equal(Math.max(...kv.apiCallsByInvocation.values()) <= MockKV.CLOUD_FLARE_SERVICE_REQUEST_LIMIT, true)
   } finally {
     globalThis.fetch = originalFetch
   }
