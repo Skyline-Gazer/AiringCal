@@ -1274,6 +1274,13 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
     assert.deepEqual(shadowRun.shadow_diagnostics, expectedDiagnostics)
     assert.deepEqual(shadowAudit.shadow_diagnostics, expectedDiagnostics)
     assert.equal((kv.values.get('sync:meta') as { shadow?: unknown } | undefined)?.shadow, undefined)
+    const healthResponse = await readWorker.fetch(new Request('https://read.local/health'), {
+      AIRING_CAL_KV: kv,
+      AIRING_CAL_R2: {} as never,
+      NSFW_SHOW: 'true',
+    } as any)
+    const health = (await healthResponse.json() as { data: { shadow: unknown } }).data
+    assert.deepEqual(health.shadow, { instance_id: 'shadow-d1', diagnostics: expectedDiagnostics })
   } finally {
     globalThis.fetch = originalFetch
   }

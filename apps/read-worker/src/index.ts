@@ -436,6 +436,11 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
     ? current.instance_id
     : meta?.workflow_instance_id ?? activeInstance
   const workflowRun = workflowInstanceId ? await storage.get<SyncRun>(syncRunKey(workflowInstanceId)) : null
+  const shadow = shadowDiagnosticsFromMeta(
+    workflowRun?.mode === 'shadow'
+      ? { instance_id: workflowRun.instance_id, diagnostics: workflowRun.shadow_diagnostics }
+      : null,
+  ) ?? shadowDiagnosticsFromMeta(meta?.shadow)
   const workflowStale = Boolean(workflowRun && ['queued', 'running', 'retrying'].includes(workflowRun.status) && nowSeconds() - workflowRun.heartbeat_at > WORKFLOW_STALE_SECONDS)
   const effectiveWorkflowStatus = workflowRun ? workflowStale ? 'stale' : workflowRun.status : undefined
   const workflow = workflowRun
@@ -465,7 +470,7 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
             last: scheduledWorkflowCronStatus(workflowRun, cronLastStatus(meta), effectiveWorkflowStatus),
           },
           workflow,
-          shadow: shadowDiagnosticsFromMeta(meta?.shadow),
+          shadow,
         },
   })
 }
