@@ -504,6 +504,40 @@ test('read-worker health exposes the latest Workflow run and marks stale heartbe
   assert.equal(JSON.stringify(workflow).includes('secret-token'), false)
 })
 
+test('read-worker health exposes the bounded shadow publication diagnostics', async () => {
+  const kv = new MockKV()
+  const diagnostics = {
+    schema_version: 1,
+    d1: {
+      rows_written: 3,
+      first_missing: 1,
+      deleted: 0,
+      restored: 1,
+      budget: { candidates: 2, granted: 0, confirmed: 0, uncertain: 0, deferred: 2 },
+    },
+    r2: {
+      schema_version: 1,
+      generation: 4,
+      key: `snapshots/v1/4-${'a'.repeat(64)}.json`,
+      content_hash: 'a'.repeat(64),
+      readback_verified: true,
+      writes: 1,
+    },
+    pointer: { key: 'public:current', writes: 1 },
+  }
+  kv.values.set('sync:meta', {
+    shadow: {
+      instance_id: 'shadow-observe',
+      diagnostics,
+    },
+  })
+
+  const response = await worker.fetch(new Request('https://read.local/health'), env(kv) as any)
+  const health = (await response.json() as any).data
+
+  assert.deepEqual(health.shadow, { instance_id: 'shadow-observe', diagnostics })
+})
+
 test('read-worker health derives snapshot time and last cron from the scheduled Workflow', async () => {
   const kv = new MockKV()
   await setActiveSnapshot(kv, 'scheduled-current', { summary: { watching: 20, _total: 42 } })

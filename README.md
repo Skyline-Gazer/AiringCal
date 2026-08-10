@@ -116,7 +116,7 @@ collections 使用 bgm.tv OpenAPI 允许的 `limit=50` 分页，并受 120 秒�
 
 `/api/health` 的 `data.workflow` 暴露最近 instance 的 `instance_id`、mode、source、stage、heartbeat、完成时间、计数和脱敏错误。聚合计数包含 eligible candidates `refresh_candidates` 及 `refresh_candidates_by_priority`、planner 选中 `refresh_selected`、逻辑获批 `refresh_granted`、预算留待后续 `refresh_deferred`（等于 `refresh_candidates - refresh_granted`）、producer 已确认/不确定的 `refresh_confirmed` / `refresh_uncertain`，以及预留前跳过的 `refresh_skipped`（等于 `subject_count - refresh_candidates`）。`refresh_jobs` 是 `refresh_granted` 的兼容 alias，只表示逻辑预算获批，不表示 Queue 一定物理接收；异步 consumer 的真实 KV PUT 只能从 consumer 与 Cloudflare 指标观察，Workflow 不推算实际写入数。成功或失败 run 都保留已到达的最新聚合值；这些字段只写入已有 run 记录，不创建逐 subject 指标 key。`queued`、`running` 或 `retrying` run 超过 20 分钟没有 heartbeat 时，应用侧返回 `status: "stale"` 与 `stale: true`；实际恢复、重启或终止仍以 Cloudflare Workflow instance 控制面状态为准。
 
-当前 `/api/health` 仍只汇总 legacy KV 的 `snapshot:active`、`sync:meta`、`sync:current` 与 `sync:run:*`，不会读取或证明 D1/data R2 shadow 的健康状态。D1 的 `sync_runs` 只保存有界计数、hash、stage/status 与分类后的 `error_code`；D1 rows、data R2 对象、Queue 和 KV pointer 的实际用量及错误必须分别在 Cloudflare Workflow/D1/R2/Queue/KV 控制面核对，不能从公开 health 推算。
+成功的 manual shadow 会把固定大小、无 URL/原始 payload 的 `data.shadow` 诊断摘要写入既有 `sync:run:*`、`snapshot:shadow:<instance>:audit` 与 `sync:meta`。摘要包含 D1 行/预算计数、不可变 data R2 的 schema/generation/key/hash、是否由本次发布完成 R2 readback，以及 `public:current` 的写入计数；`data.shadow` 从 `sync:meta` 读取该摘要。它不证明 Cloudflare 控制面总体用量，也不改变 legacy 公开读取。D1 的 `sync_runs` 仍只保存有界计数、hash、stage/status 与分类后的 `error_code`；完整资源用量和失败诊断仍应与 Cloudflare Workflow/D1/R2/Queue/KV 控制面核对。
 
 Worker Cron 来自 checked-in `wrangler.toml`；routine deploy 只同步代码与配置，不主动触发 live instance。
 

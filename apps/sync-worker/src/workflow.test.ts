@@ -1223,6 +1223,7 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
           contentHash: input.content_hash,
           r2Puts: 1,
           pointerPuts: 1,
+          r2Readback: true,
         }
       },
     })
@@ -1243,6 +1244,31 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
     })))
     assert.equal(step.attempts.get('persist-d1-shadow'), 2)
     assert.equal(kv.subjectPuts().length, 0)
+    const expectedDiagnostics = {
+      schema_version: 1,
+      d1: {
+        rows_written: 1,
+        first_missing: 0,
+        deleted: 0,
+        restored: 0,
+        budget: { candidates: 1, granted: 1, confirmed: 0, uncertain: 1, deferred: 0 },
+      },
+      r2: {
+        schema_version: 1,
+        generation: 1,
+        key: `snapshots/v1/1-${'a'.repeat(64)}.json`,
+        content_hash: 'a'.repeat(64),
+        readback_verified: true,
+        writes: 1,
+      },
+      pointer: { key: 'public:current', writes: 1 },
+    }
+    const shadowRun = kv.values.get('sync:run:shadow-d1') as { shadow_diagnostics?: unknown }
+    const shadowAudit = kv.values.get('snapshot:shadow:shadow-d1:audit') as { shadow_diagnostics?: unknown }
+    const shadowMeta = kv.values.get('sync:meta') as { shadow?: unknown }
+    assert.deepEqual(shadowRun.shadow_diagnostics, expectedDiagnostics)
+    assert.deepEqual(shadowAudit.shadow_diagnostics, expectedDiagnostics)
+    assert.deepEqual(shadowMeta.shadow, { instance_id: 'shadow-d1', diagnostics: expectedDiagnostics })
   } finally {
     globalThis.fetch = originalFetch
   }

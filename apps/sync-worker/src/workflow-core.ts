@@ -18,6 +18,7 @@ import {
   type CollectionType,
   type D1DatabaseLike,
   type MediaRefreshJobV3,
+  type ShadowPublicationDiagnostics,
   type SnapshotManifest,
   type SyncRun,
   type SyncWorkflowParams,
@@ -115,6 +116,40 @@ async function getJson<T>(kv: KVNamespaceLike, key: string): Promise<T | null> {
 
 async function putJson(kv: KVNamespaceLike, key: string, value: unknown, expirationTtl?: number): Promise<void> {
   await kv.put(key, JSON.stringify(value), expirationTtl ? { expirationTtl } : undefined)
+}
+
+function shadowDiagnostics(
+  result: D1SyncResult,
+  publication: { generation: number; contentHash: string; r2Puts: number; pointerPuts: number },
+): ShadowPublicationDiagnostics {
+  return {
+    schema_version: 1,
+    d1: {
+      rows_written: result.rowsWritten,
+      first_missing: result.firstMissing,
+      deleted: result.deleted,
+      restored: result.restored,
+      budget: {
+        candidates: result.media.candidates,
+        granted: result.media.granted,
+        confirmed: result.media.confirmed,
+        uncertain: result.media.uncertain,
+        deferred: result.media.deferred,
+      },
+    },
+    r2: {
+      schema_version: 1,
+      generation: publication.generation,
+      key: `snapshots/v1/${publication.generation}-${publication.contentHash}.json`,
+      content_hash: publication.contentHash,
+      readback_verified: publication.r2Puts > 0,
+      writes: publication.r2Puts,
+    },
+    pointer: {
+      key: 'public:current',
+      writes: publication.pointerPuts,
+    },
+  }
 }
 
 async function writeRun(env: SyncWorkflowEnv, run: SyncRun): Promise<void> {
@@ -473,6 +508,23 @@ export async function runSyncWorkflow(
         if (publicationResult.status === 'pending') {
           throw new Error('Public snapshot publication remains pending')
         }
+        const diagnostics = shadowDiagnostics(result, publicationResult)
+        run = { ...run, shadow_diagnostics: diagnostics, heartbeat_at: nowSeconds() }
+        await writeRun(env, run)
+        const auditKey = syncShadowKey(event.instanceId, 'audit')
+        const audit = await getJson<Record<string, unknown>>(env.AIRING_CAL_KV, auditKey) ?? {}
+        await putJson(env.AIRING_CAL_KV, auditKey, {
+          ...audit,
+          shadow_diagnostics: diagnostics,
+        }, SYNC_RUN_TTL_SECONDS)
+        const currentMeta = await getJson<Record<string, unknown>>(env.AIRING_CAL_KV, syncMetaKey()) ?? {}
+        await putJson(env.AIRING_CAL_KV, syncMetaKey(), {
+          ...currentMeta,
+          shadow: {
+            instance_id: event.instanceId,
+            diagnostics,
+          },
+        })
         return {
           key: syncRunKey(event.instanceId),
           count: result.rowsWritten,

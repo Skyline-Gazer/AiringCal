@@ -84,6 +84,70 @@ function sanitizeStatus(value: any): any {
   return sanitized
 }
 
+function nonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function shadowDiagnosticsFromMeta(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const shadow = value as { instance_id?: unknown; diagnostics?: unknown }
+  if (typeof shadow.instance_id !== 'string' || shadow.instance_id.length === 0 || shadow.instance_id.length > 128) return null
+  const diagnostics = shadow.diagnostics
+  if (!diagnostics || typeof diagnostics !== 'object' || Array.isArray(diagnostics)) return null
+  const record = diagnostics as Record<string, unknown>
+  const d1 = record.d1 as Record<string, unknown> | undefined
+  const budget = d1?.budget as Record<string, unknown> | undefined
+  const r2 = record.r2 as Record<string, unknown> | undefined
+  const pointer = record.pointer as Record<string, unknown> | undefined
+  const contentHash = r2?.content_hash
+  if (
+    record.schema_version !== 1
+    || !d1
+    || !budget
+    || !r2
+    || !pointer
+    || !['rows_written', 'first_missing', 'deleted', 'restored'].every((key) => nonNegativeInteger(d1[key]))
+    || !['candidates', 'granted', 'confirmed', 'uncertain', 'deferred'].every((key) => nonNegativeInteger(budget[key]))
+    || r2.schema_version !== 1
+    || !nonNegativeInteger(r2.generation)
+    || typeof contentHash !== 'string'
+    || !/^[0-9a-f]{64}$/.test(contentHash)
+    || r2.key !== `snapshots/v1/${r2.generation}-${contentHash}.json`
+    || typeof r2.readback_verified !== 'boolean'
+    || (r2.writes !== 0 && r2.writes !== 1)
+    || pointer.key !== 'public:current'
+    || (pointer.writes !== 0 && pointer.writes !== 1)
+  ) return null
+  return {
+    instance_id: shadow.instance_id,
+    diagnostics: {
+      schema_version: 1,
+      d1: {
+        rows_written: d1.rows_written,
+        first_missing: d1.first_missing,
+        deleted: d1.deleted,
+        restored: d1.restored,
+        budget: {
+          candidates: budget.candidates,
+          granted: budget.granted,
+          confirmed: budget.confirmed,
+          uncertain: budget.uncertain,
+          deferred: budget.deferred,
+        },
+      },
+      r2: {
+        schema_version: 1,
+        generation: r2.generation,
+        key: r2.key,
+        content_hash: contentHash,
+        readback_verified: r2.readback_verified,
+        writes: r2.writes,
+      },
+      pointer: { key: 'public:current', writes: pointer.writes },
+    },
+  }
+}
+
 async function mapConcurrent<T, R>(values: Iterable<T>, concurrency: number, mapper: (value: T) => Promise<R>): Promise<R[]> {
   const items = [...values]
   const results = new Array<R>(items.length)
@@ -355,7 +419,7 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
   const active = await activeSnapshot(storage)
   const activeInstance = activeSnapshotInstanceFrom(active)
   const types = await readSnapshot<Record<string, number>>(storage, activeInstance, 'summary', snapshotSummaryKey())
-  const meta = await storage.get<{ synced_at?: number; users?: string[]; cron?: { last?: unknown }; workflow_instance_id?: string; workflow_stage?: string }>(syncMetaKey())
+  const meta = await storage.get<{ synced_at?: number; users?: string[]; cron?: { last?: unknown }; workflow_instance_id?: string; workflow_stage?: string; shadow?: unknown }>(syncMetaKey())
   const current = await storage.get<{ instance_id?: unknown }>(syncCurrentKey())
   const workflowInstanceId = typeof current?.instance_id === 'string' && current.instance_id
     ? current.instance_id
@@ -390,6 +454,7 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
             last: scheduledWorkflowCronStatus(workflowRun, cronLastStatus(meta), effectiveWorkflowStatus),
           },
           workflow,
+          shadow: shadowDiagnosticsFromMeta(meta?.shadow),
         },
   })
 }

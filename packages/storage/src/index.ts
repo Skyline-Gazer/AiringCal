@@ -101,6 +101,36 @@ export interface SyncRun {
   refresh_uncertain: number
   refresh_skipped: number
   error: string | null
+  shadow_diagnostics?: ShadowPublicationDiagnostics
+}
+
+export interface ShadowPublicationDiagnostics {
+  schema_version: 1
+  d1: {
+    rows_written: number
+    first_missing: number
+    deleted: number
+    restored: number
+    budget: {
+      candidates: number
+      granted: number
+      confirmed: number
+      uncertain: number
+      deferred: number
+    }
+  }
+  r2: {
+    schema_version: 1
+    generation: number
+    key: string
+    content_hash: string
+    readback_verified: boolean
+    writes: number
+  }
+  pointer: {
+    key: 'public:current'
+    writes: number
+  }
 }
 
 export interface SnapshotManifest {
