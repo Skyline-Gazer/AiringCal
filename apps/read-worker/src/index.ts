@@ -88,9 +88,15 @@ function nonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 }
 
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value)
+  return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key))
+}
+
 function shadowDiagnosticsFromMeta(value: unknown): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const shadow = value as { instance_id?: unknown; diagnostics?: unknown }
+  const shadow = value as Record<string, unknown>
+  if (!hasExactKeys(shadow, ['instance_id', 'diagnostics'])) return null
   if (typeof shadow.instance_id !== 'string' || shadow.instance_id.length === 0 || shadow.instance_id.length > 128) return null
   const diagnostics = shadow.diagnostics
   if (!diagnostics || typeof diagnostics !== 'object' || Array.isArray(diagnostics)) return null
@@ -102,10 +108,15 @@ function shadowDiagnosticsFromMeta(value: unknown): unknown {
   const contentHash = r2?.content_hash
   if (
     record.schema_version !== 1
+    || !hasExactKeys(record, ['schema_version', 'd1', 'r2', 'pointer'])
     || !d1
     || !budget
     || !r2
     || !pointer
+    || !hasExactKeys(d1, ['rows_written', 'first_missing', 'deleted', 'restored', 'budget'])
+    || !hasExactKeys(budget, ['candidates', 'granted', 'confirmed', 'uncertain', 'deferred'])
+    || !hasExactKeys(r2, ['schema_version', 'generation', 'key', 'content_hash', 'readback_verified', 'writes'])
+    || !hasExactKeys(pointer, ['key', 'writes'])
     || !['rows_written', 'first_missing', 'deleted', 'restored'].every((key) => nonNegativeInteger(d1[key]))
     || !['candidates', 'granted', 'confirmed', 'uncertain', 'deferred'].every((key) => nonNegativeInteger(budget[key]))
     || r2.schema_version !== 1

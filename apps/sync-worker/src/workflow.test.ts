@@ -17,6 +17,8 @@ class MockKV {
   nullGets = new Set<string>()
   nullOnceGets = new Set<string>()
   replacementGets = new Map<string, unknown>()
+  staleMetaOnGet?: { after: number; value: unknown }
+  private metaGets = 0
 
   private recordCall() {
     if (!this.activeStep) return
@@ -30,6 +32,9 @@ class MockKV {
     if (this.failingGets.has(key)) throw new Error(`KV read failed for ${key}`)
     if (this.nullGets.has(key)) return null
     if (this.nullOnceGets.delete(key)) return null
+    if (key === 'sync:meta' && this.staleMetaOnGet && ++this.metaGets >= this.staleMetaOnGet.after) {
+      return this.staleMetaOnGet.value
+    }
     const value = this.replacementGets.has(key) ? this.replacementGets.get(key) : this.values.get(key)
     if (type === 'text') return typeof value === 'string' ? value : value === undefined ? null : JSON.stringify(value)
     return value ?? null
@@ -1266,10 +1271,37 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
     }
     const shadowRun = kv.values.get('sync:run:shadow-d1') as { shadow_diagnostics?: unknown }
     const shadowAudit = kv.values.get('snapshot:shadow:shadow-d1:audit') as { shadow_diagnostics?: unknown }
-    const shadowMeta = kv.values.get('sync:meta') as { shadow?: unknown }
     assert.deepEqual(shadowRun.shadow_diagnostics, expectedDiagnostics)
     assert.deepEqual(shadowAudit.shadow_diagnostics, expectedDiagnostics)
-    assert.deepEqual(shadowMeta.shadow, { instance_id: 'shadow-d1', diagnostics: expectedDiagnostics })
+    assert.equal((kv.values.get('sync:meta') as { shadow?: unknown } | undefined)?.shadow, undefined)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('shadow diagnostics remain per-instance when finalize observes stale shared meta', async () => {
+  const kv = new MockKV()
+  kv.staleMetaOnGet = { after: 2, value: { synced_at: 1 } }
+  const step = new FakeStep(kv)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) return Response.json({ total: 1, data: [collection(1)] })
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await runSyncWorkflow(workflowEnv(kv, []), {
+      instanceId: 'shadow-stale-meta',
+      payload: { mode: 'shadow', source: 'manual' },
+    }, step, (message) => new TestNonRetryableError(message), shadowPersistenceDependencies())
+
+    const shadowRun = kv.values.get('sync:run:shadow-stale-meta') as { shadow_diagnostics?: unknown }
+    const shadowAudit = kv.values.get('snapshot:shadow:shadow-stale-meta:audit') as { shadow_diagnostics?: unknown }
+    assert.ok(shadowRun.shadow_diagnostics)
+    assert.deepEqual(shadowAudit.shadow_diagnostics, shadowRun.shadow_diagnostics)
+    assert.equal(kv.puts.some(({ key, value }) => key === 'sync:meta' && Object.hasOwn(value as object, 'shadow')), false)
   } finally {
     globalThis.fetch = originalFetch
   }

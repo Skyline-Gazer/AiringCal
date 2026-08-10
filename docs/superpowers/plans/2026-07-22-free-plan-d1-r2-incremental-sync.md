@@ -645,7 +645,7 @@ git push
 
 **Interfaces:**
 - Produces `publishPublicSnapshot({ state, dataBucket, pointerKv, input, now }): Promise<PublicationResult>`.
-- `PublicationResult = { status: 'unchanged'|'published'|'pending'; generation; contentHash; r2Puts; pointerPuts }`.
+- `PublicationResult = { status: 'unchanged'|'published'|'pending'; generation; contentHash; r2Puts; r2Readback; pointerPuts }`; `r2Readback` is true only when this call completed the immutable R2 object GET/schema/generation/hash/key/bytes verification, independently of whether the conditional PUT wrote bytes.
 - D1 `app_state` keys: `public:verified`, `public:pending`; versioned JSON only.
 
 - [x] **Step 1: Write RED no-op and success tests**

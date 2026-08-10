@@ -517,14 +517,6 @@ export async function runSyncWorkflow(
           ...audit,
           shadow_diagnostics: diagnostics,
         }, SYNC_RUN_TTL_SECONDS)
-        const currentMeta = await getJson<Record<string, unknown>>(env.AIRING_CAL_KV, syncMetaKey()) ?? {}
-        await putJson(env.AIRING_CAL_KV, syncMetaKey(), {
-          ...currentMeta,
-          shadow: {
-            instance_id: event.instanceId,
-            diagnostics,
-          },
-        })
         return {
           key: syncRunKey(event.instanceId),
           count: result.rowsWritten,
