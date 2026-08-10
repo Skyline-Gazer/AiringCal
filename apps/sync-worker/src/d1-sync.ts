@@ -1490,23 +1490,12 @@ export async function runD1IncrementalSync({
           submitMedia: suppliedSubmitMedia,
         })
       }
-      if (failureError instanceof SyncRunCheckpointConflictError) {
-        // A guarded failure conflicted without proving a valid different
-        // winner checkpoint, so the run genuinely failed at the adopted
-        // stage. Record the failure without a guard; if even that is
-        // impossible, preserve the originating error.
-        try {
-          await store.failSyncRun(instanceId, {
-            heartbeat_at: now,
-            completed_at: now,
-            error_code: classifyError(error),
-          })
-        } catch {
-          // Preserve the originating error; failure persistence is best effort.
-        }
-      }
+      // A guard conflict proves this attempt no longer owns the checkpoint.
+      // Even when its winner cannot be validated at this instant, leave the
+      // running state for a later replay rather than terminalizing a newer
+      // checkpoint through an unguarded write.
       // Any other failure-persistence error (for example a lost failure
-      // write) preserves the persisted running checkpoint for replay.
+      // write) likewise preserves the persisted running checkpoint for replay.
     }
     throw error
   }

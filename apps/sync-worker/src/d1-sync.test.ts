@@ -1038,8 +1038,8 @@ test('collection batch response loss continues only from the exact persisted che
       /collection batch response lost after commit/,
     )
     assert.equal(rejected.collectionMutations, 1)
-    assert.equal(rejected.failed.length, 1)
-    assert.equal(rejected.currentRun?.status, 'error')
+    assert.equal(rejected.failed.length, 0)
+    assert.equal(rejected.currentRun?.status, 'running')
   }
 })
 
@@ -1194,6 +1194,53 @@ test('persistent pre-commit completion failure is bounded without recursive retr
   assert.equal(store.failed.length, 1)
   assert.equal(store.currentRun?.status, 'error')
   assert.equal(store.failCompleteBeforePersistCount, 1)
+})
+
+test('guarded failure conflict leaves a checkpoint installed after winner inspection running for replay', async () => {
+  const store = new RecordingStore()
+  store.failCompleteBeforePersistCount = 1
+  const originalFail = store.failSyncRun.bind(store)
+  const originalGet = store.getSyncRun.bind(store)
+  let installWinnerAfterInspection = false
+  let injectedConflict = false
+  let winningResultJson: string | null = null
+
+  store.failSyncRun = async (instanceId, failure, guard) => {
+    if (guard && !injectedConflict) {
+      injectedConflict = true
+      const winner = structuredClone(store.currentRun!)
+      winningResultJson = winner.result_json
+      store.currentRun = {
+        ...winner,
+        stage: 'collections_pending',
+        result_json: null,
+      }
+      installWinnerAfterInspection = true
+      throw new SyncRunCheckpointConflictError(instanceId)
+    }
+    return await originalFail(instanceId, failure, guard)
+  }
+  store.getSyncRun = async (instanceId) => {
+    const inspected = await originalGet(instanceId)
+    if (installWinnerAfterInspection) {
+      installWinnerAfterInspection = false
+      store.currentRun = {
+        ...store.currentRun!,
+        stage: 'media',
+        result_json: winningResultJson,
+      }
+    }
+    return inspected
+  }
+
+  await assert.rejects(
+    run(store, completeInput(), undefined, observedAt, 'guard-conflict-toctou'),
+    /completion failed before commit/,
+  )
+  assert.equal(injectedConflict, true)
+  assert.equal(store.currentRun?.status, 'running')
+  assert.equal(store.currentRun?.stage, 'media')
+  assert.equal(store.failed.length, 0)
 })
 
 test('media-pending update response loss is reconciled before submission and completion', async () => {
