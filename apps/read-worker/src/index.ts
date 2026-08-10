@@ -432,13 +432,22 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
   const types = await readSnapshot<Record<string, number>>(storage, activeInstance, 'summary', snapshotSummaryKey())
   const meta = await storage.get<{ synced_at?: number; users?: string[]; cron?: { last?: unknown }; workflow_instance_id?: string; workflow_stage?: string; shadow?: unknown }>(syncMetaKey())
   const current = await storage.get<{ instance_id?: unknown }>(syncCurrentKey())
-  const workflowInstanceId = typeof current?.instance_id === 'string' && current.instance_id
+  const currentWorkflowInstanceId = typeof current?.instance_id === 'string' && current.instance_id
     ? current.instance_id
-    : meta?.workflow_instance_id ?? activeInstance
+    : undefined
+  const metaWorkflowInstanceId = typeof meta?.workflow_instance_id === 'string' && meta.workflow_instance_id
+    ? meta.workflow_instance_id
+    : undefined
+  const workflowInstanceId = currentWorkflowInstanceId ?? metaWorkflowInstanceId ?? activeInstance
   const workflowRun = workflowInstanceId ? await storage.get<SyncRun>(syncRunKey(workflowInstanceId)) : null
+  const metaWorkflowRun = metaWorkflowInstanceId === undefined || metaWorkflowInstanceId === workflowInstanceId
+    ? workflowRun
+    : await storage.get<SyncRun>(syncRunKey(metaWorkflowInstanceId))
   const shadow = shadowDiagnosticsFromMeta(
-    workflowRun?.mode === 'shadow'
-      ? { instance_id: workflowRun.instance_id, diagnostics: workflowRun.shadow_diagnostics }
+    metaWorkflowRun?.mode === 'shadow'
+      ? { instance_id: metaWorkflowRun.instance_id, diagnostics: metaWorkflowRun.shadow_diagnostics }
+      : workflowRun?.mode === 'shadow'
+        ? { instance_id: workflowRun.instance_id, diagnostics: workflowRun.shadow_diagnostics }
       : null,
   ) ?? shadowDiagnosticsFromMeta(meta?.shadow)
   const workflowStale = Boolean(workflowRun && ['queued', 'running', 'retrying'].includes(workflowRun.status) && nowSeconds() - workflowRun.heartbeat_at > WORKFLOW_STALE_SECONDS)

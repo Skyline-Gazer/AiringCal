@@ -1169,6 +1169,15 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
   let publicationAttempts = 0
   const dataBucket = {} as never
   kv.values.set('public:current', 'legacy-pointer')
+  kv.values.set('sync:current', { instance_id: 'live-current', generation: 7, updated_at: 1_783_929_700 })
+  kv.values.set('sync:run:live-current', {
+    instance_id: 'live-current',
+    mode: 'live',
+    source: 'schedule',
+    status: 'running',
+    stage: 'enqueue',
+    heartbeat_at: 1_783_929_700,
+  })
   const env = {
     ...workflowEnv(kv, []),
     AIRING_CAL_D1: {} as never,
@@ -1279,7 +1288,8 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
       AIRING_CAL_R2: {} as never,
       NSFW_SHOW: 'true',
     } as any)
-    const health = (await healthResponse.json() as { data: { shadow: unknown } }).data
+    const health = (await healthResponse.json() as { data: { workflow: { instance_id: string }; shadow: unknown } }).data
+    assert.equal(health.workflow.instance_id, 'live-current')
     assert.deepEqual(health.shadow, { instance_id: 'shadow-d1', diagnostics: expectedDiagnostics })
   } finally {
     globalThis.fetch = originalFetch
