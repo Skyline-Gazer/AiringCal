@@ -132,8 +132,9 @@ class FakeStep implements WorkflowStepLike {
   attempts = new Map<string, number>()
   outputSizes: number[] = []
   cache = new Map<string, unknown>()
+  private completedSleeps = new Set<string>()
 
-  constructor(private kv?: MockKV) {}
+  constructor(private kv?: MockKV, private onSleep?: () => void) {}
 
   async do<T>(name: string, config: any, callback: () => Promise<T>): Promise<T> {
     this.names.push(name)
@@ -158,7 +159,10 @@ class FakeStep implements WorkflowStepLike {
 
   async sleep(name: string, duration: number | string): Promise<void> {
     this.sleeps.push({ name, duration })
+    if (this.completedSleeps.has(name)) return
+    this.onSleep?.()
     this.kv?.startNextWorkerInvocation()
+    this.completedSleeps.add(name)
   }
 }
 
@@ -1064,6 +1068,62 @@ test('a late scheduled live failure after 551-subject legacy planning still term
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('scheduled live refresh planning freezes its due time across a durable sleep and replay', async () => {
+  const cachedAt = 1_700_000_000
+  const plannerNow = nextSubjectRefreshAt(11, cachedAt) - 1
+
+  async function runScenario(advanceClockOnSleep: boolean) {
+    let clock = plannerNow
+    const kv = new MockKV()
+    const queueMessages: unknown[] = []
+    const coordinator = new MockSnapshotCoordinator(kv)
+    const step = new FakeStep(kv, () => {
+      if (advanceClockOnSleep) clock++
+    })
+    for (let subjectId = 1; subjectId <= 11; subjectId++) kv.seedCompleteSubject(subjectId, cachedAt)
+    const originalDateNow = Date.now
+    const originalFetch = globalThis.fetch
+    Date.now = () => clock * 1_000
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const text = String(url)
+      if (text.includes('/collections?')) return Response.json({ total: 11, data: Array.from({ length: 11 }, (_, index) => collection(index + 1)) })
+      if (text.endsWith('/calendar')) return Response.json([])
+      throw new Error(`unexpected fetch ${text}`)
+    }) as typeof globalThis.fetch
+
+    try {
+      const result = await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
+        instanceId: 'planner-now-boundary',
+        payload: { mode: 'shadow', source: 'manual' },
+        schedule: { cron: '0 20 * * *', scheduledTime: clock * 1_000 },
+      }, step, (message) => new TestNonRetryableError(message))
+      clock += 60
+      const replay = await runSyncWorkflow(workflowEnv(kv, queueMessages, coordinator), {
+        instanceId: 'planner-now-boundary',
+        payload: { mode: 'shadow', source: 'manual' },
+        schedule: { cron: '0 20 * * *', scheduledTime: clock * 1_000 },
+      }, step, (message) => new TestNonRetryableError(message))
+      return {
+        result,
+        replay,
+        jobs: queueMessages,
+        reservation: coordinator.reservations[0],
+        chunk: step.cache.get('plan-refresh-1'),
+      }
+    } finally {
+      Date.now = originalDateNow
+      globalThis.fetch = originalFetch
+    }
+  }
+
+  const baseline = await runScenario(false)
+  const afterSleep = await runScenario(true)
+
+  assert.equal((baseline.chunk as any).candidates.some(({ subject_id }: { subject_id: number }) => subject_id === 11), false)
+  assert.deepEqual(afterSleep, baseline)
+  assert.deepEqual(afterSleep.replay, afterSleep.result)
 })
 
 test('unchanged 659-subject workflow enqueues no media and performs no subject KV PUTs', async () => {

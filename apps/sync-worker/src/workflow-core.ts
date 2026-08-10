@@ -527,6 +527,7 @@ export async function runSyncWorkflow(
     }
 
     const planOutputs: StepOutput[] = []
+    const plannerNow = run.started_at
     for (let chunkIndex = 0; mode === 'live' && chunkIndex < (prepared.refreshChunks ?? 0); chunkIndex++) {
       if (chunkIndex > 0) await step.sleep(`yield-refresh-${chunkIndex - 1}`, '1 second')
       const output = await step.do(`plan-refresh-${chunkIndex}`, STORAGE_STEP, async () => {
@@ -540,7 +541,7 @@ export async function runSyncWorkflow(
               image: await getJson<any>(env.AIRING_CAL_KV, imageStatusKey(input.subject_id)),
               refresh: await getJson<any>(env.AIRING_CAL_KV, subjectRefreshKey(input.subject_id)),
             }
-            return { candidate: planSubjectRefresh(input, cached, nowSeconds()) }
+            return { candidate: planSubjectRefresh(input, cached, plannerNow) }
           } catch (error) {
             return {
               candidate: null,
