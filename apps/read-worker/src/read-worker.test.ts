@@ -521,7 +521,7 @@ test('read-worker health exposes the bounded shadow publication diagnostics', as
       key: `snapshots/v1/4-${'a'.repeat(64)}.json`,
       content_hash: 'a'.repeat(64),
       readback_verified: true,
-      writes: 1,
+      writes: 0,
     },
     pointer: { key: 'public:current', writes: 1 },
   }

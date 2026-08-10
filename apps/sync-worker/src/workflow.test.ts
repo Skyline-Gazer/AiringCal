@@ -260,6 +260,7 @@ function shadowPersistenceDependencies(): SyncWorkflowDependencies {
       generation: 1,
       contentHash: input.content_hash,
       r2Puts: 1,
+      r2Readback: true,
       pointerPuts: 1,
     }),
   }
@@ -1221,7 +1222,7 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
           status: publicationAttempts === 1 ? 'pending' : 'published',
           generation: 1,
           contentHash: input.content_hash,
-          r2Puts: 1,
+          r2Puts: 0,
           pointerPuts: 1,
           r2Readback: true,
         }
@@ -1259,7 +1260,7 @@ test('shadow workflow runs the D1 incremental adapter after preserving legacy sn
         key: `snapshots/v1/1-${'a'.repeat(64)}.json`,
         content_hash: 'a'.repeat(64),
         readback_verified: true,
-        writes: 1,
+        writes: 0,
       },
       pointer: { key: 'public:current', writes: 1 },
     }

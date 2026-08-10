@@ -69,6 +69,7 @@ export interface PublicationResult {
   generation: number
   contentHash: string
   r2Puts: number
+  r2Readback: boolean
   pointerPuts: number
 }
 
@@ -193,6 +194,7 @@ function unchangedResult(verified: PublicSnapshotPointerV1): PublicationResult {
     generation: verified.generation,
     contentHash: verified.content_hash,
     r2Puts: 0,
+    r2Readback: false,
     pointerPuts: 0,
   }
 }
@@ -203,6 +205,7 @@ function pendingResult(generation: number, contentHash: string): PublicationResu
     generation,
     contentHash,
     r2Puts: 0,
+    r2Readback: false,
     pointerPuts: 0,
   }
 }
@@ -374,6 +377,7 @@ export async function publishPublicSnapshot(
       generation: candidate.generation,
       contentHash: candidate.content_hash,
       r2Puts: 0,
+      r2Readback: false,
       pointerPuts: 0,
     }
   }
@@ -412,6 +416,7 @@ export async function publishPublicSnapshot(
   }
   if (stored.key !== candidate.r2_key) throw new Error('Published R2 snapshot object key mismatch')
   if (storedBytes !== objectBytes) throw new Error('Published R2 snapshot bytes mismatch')
+  const r2Readback = true
 
   const owner: PublicationWriteOwner = {
     publication_id: publicationId,
@@ -425,6 +430,7 @@ export async function publishPublicSnapshot(
       generation: candidate.generation,
       contentHash: candidate.content_hash,
       r2Puts,
+      r2Readback,
       pointerPuts: 0,
     }
   }
@@ -434,6 +440,7 @@ export async function publishPublicSnapshot(
       generation: candidate.generation,
       contentHash: candidate.content_hash,
       r2Puts,
+      r2Readback,
       pointerPuts: 0,
     }
   }
@@ -449,6 +456,7 @@ export async function publishPublicSnapshot(
       generation: candidate.generation,
       contentHash: candidate.content_hash,
       r2Puts,
+      r2Readback,
       pointerPuts: 0,
     }
   }
@@ -459,6 +467,7 @@ export async function publishPublicSnapshot(
       generation: candidate.generation,
       contentHash: candidate.content_hash,
       r2Puts,
+      r2Readback,
       pointerPuts: 0,
     }
   }
@@ -472,6 +481,7 @@ export async function publishPublicSnapshot(
       generation: candidate.generation,
       contentHash: candidate.content_hash,
       r2Puts,
+      r2Readback,
       pointerPuts,
     }
   }
@@ -493,6 +503,7 @@ export async function publishPublicSnapshot(
         generation: candidate.generation,
         contentHash: candidate.content_hash,
         r2Puts,
+        r2Readback,
         pointerPuts,
       }
     }
@@ -502,6 +513,7 @@ export async function publishPublicSnapshot(
     generation: candidate.generation,
     contentHash: candidate.content_hash,
     r2Puts,
+    r2Readback,
     pointerPuts,
   }
 }

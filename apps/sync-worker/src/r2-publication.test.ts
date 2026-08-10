@@ -604,6 +604,7 @@ test('identical verified content is unchanged before generation allocation or R2
     generation: 4,
     contentHash: verified.content_hash,
     r2Puts: 0,
+    r2Readback: false,
     pointerPuts: 0,
   })
   assert.equal(allocations, 0)
@@ -645,6 +646,7 @@ test('changed content commits pending state, writes and verifies R2, switches on
     generation: 8,
     contentHash: input.content_hash,
     r2Puts: 1,
+    r2Readback: true,
     pointerPuts: 1,
   })
   assert.equal(state.allocations, 1)
@@ -663,6 +665,37 @@ test('changed content commits pending state, writes and verifies R2, switches on
     published_at: NOW,
     r2_key: `snapshots/v1/8-${input.content_hash}.json`,
   }))
+})
+
+test('existing R2 bytes are read back and verified when conditional put reports no write', async () => {
+  const fixture = await changedFixture()
+  const snapshot = await buildPublicSnapshot({
+    ...fixture.input,
+    published_at: NOW,
+  }, 12)
+  fixture.dataBucket.objects.set(
+    `snapshots/v1/12-${fixture.input.content_hash}.json`,
+    canonicalJson(snapshot),
+  )
+
+  const result = await publishPublicSnapshot({
+    state: fixture.state,
+    dataBucket: fixture.dataBucket,
+    pointerKv: fixture.pointerKv,
+    input: fixture.input,
+    now: NOW,
+    sourceObservedAt: NOW,
+    publicationId: 'workflow-existing-r2-bytes',
+  })
+
+  assert.deepEqual(result, {
+    status: 'published',
+    generation: 12,
+    contentHash: fixture.input.content_hash,
+    r2Puts: 0,
+    r2Readback: true,
+    pointerPuts: 1,
+  })
 })
 
 test('D1 pending commit failure performs no R2/KV work and preserves the old pointer bytes', async () => {
@@ -1774,6 +1807,7 @@ test('replay reuses the same pending generation, key, and object without another
     generation: pending.generation,
     contentHash: pending.content_hash,
     r2Puts: 0,
+    r2Readback: true,
     pointerPuts: 1,
   })
   assert.equal(fixture.state.allocations, 1)

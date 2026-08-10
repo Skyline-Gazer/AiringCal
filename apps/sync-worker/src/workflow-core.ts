@@ -120,7 +120,7 @@ async function putJson(kv: KVNamespaceLike, key: string, value: unknown, expirat
 
 function shadowDiagnostics(
   result: D1SyncResult,
-  publication: { generation: number; contentHash: string; r2Puts: number; pointerPuts: number },
+  publication: { generation: number; contentHash: string; r2Puts: number; r2Readback: boolean; pointerPuts: number },
 ): ShadowPublicationDiagnostics {
   return {
     schema_version: 1,
@@ -142,7 +142,7 @@ function shadowDiagnostics(
       generation: publication.generation,
       key: `snapshots/v1/${publication.generation}-${publication.contentHash}.json`,
       content_hash: publication.contentHash,
-      readback_verified: publication.r2Puts > 0,
+      readback_verified: publication.r2Readback,
       writes: publication.r2Puts,
     },
     pointer: {
