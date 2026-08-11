@@ -14,6 +14,7 @@ class MockKV {
   activeStep: string | null = null
   apiCallsByStep = new Map<string, number>()
   apiCallsByInvocation = new Map<number, number>([[0, 0]])
+  serviceRequestsByInvocation = new Map<number, number>([[0, 0]])
   externalCallsByStep = new Map<string, number>()
   failingGets = new Set<string>()
   nullGets = new Set<string>()
@@ -23,20 +24,27 @@ class MockKV {
   private metaGets = 0
   private invocation = 0
 
+  private recordServiceRequest() {
+    const calls = (this.serviceRequestsByInvocation.get(this.invocation) ?? 0) + 1
+    this.serviceRequestsByInvocation.set(this.invocation, calls)
+    if (calls > MockKV.CLOUD_FLARE_SERVICE_REQUEST_LIMIT) {
+      throw new Error('Too many API requests by single Worker invocation')
+    }
+  }
+
   private recordCall() {
     if (this.activeStep) {
       this.apiCallsByStep.set(this.activeStep, (this.apiCallsByStep.get(this.activeStep) ?? 0) + 1)
     }
     const calls = (this.apiCallsByInvocation.get(this.invocation) ?? 0) + 1
     this.apiCallsByInvocation.set(this.invocation, calls)
-    if (calls > MockKV.CLOUD_FLARE_SERVICE_REQUEST_LIMIT) {
-      throw new Error('Too many API requests by single Worker invocation')
-    }
+    this.recordServiceRequest()
   }
 
   startNextWorkerInvocation() {
     this.invocation++
     this.apiCallsByInvocation.set(this.invocation, 0)
+    this.serviceRequestsByInvocation.set(this.invocation, 0)
   }
 
   async get(key: string, type: 'json'): Promise<unknown>
@@ -55,8 +63,10 @@ class MockKV {
   }
 
   recordExternalCall() {
-    if (!this.activeStep) return
-    this.externalCallsByStep.set(this.activeStep, (this.externalCallsByStep.get(this.activeStep) ?? 0) + 1)
+    if (this.activeStep) {
+      this.externalCallsByStep.set(this.activeStep, (this.externalCallsByStep.get(this.activeStep) ?? 0) + 1)
+    }
+    this.recordServiceRequest()
   }
 
   async put(key: string, value: string, options?: { expirationTtl?: number }) {
@@ -126,15 +136,44 @@ class TestNonRetryableError extends Error {
   }
 }
 
+class FakeStepHistory {
+  cache = new Map<string, unknown>()
+  completedSleeps = new Set<string>()
+  private pendingSleeps: string[] = []
+  private sleepWaiters: Array<(name: string) => void> = []
+
+  beginSleep(name: string) {
+    const waiter = this.sleepWaiters.shift()
+    if (waiter) waiter(name)
+    else this.pendingSleeps.push(name)
+  }
+
+  nextSleep(): Promise<string> {
+    const pending = this.pendingSleeps.shift()
+    if (pending) return Promise.resolve(pending)
+    return new Promise((resolve) => this.sleepWaiters.push(resolve))
+  }
+
+  completeSleep(name: string) {
+    this.completedSleeps.add(name)
+  }
+}
+
 class FakeStep implements WorkflowStepLike {
   names: string[] = []
   sleeps: Array<{ name: string; duration: number | string }> = []
   attempts = new Map<string, number>()
   outputSizes: number[] = []
-  cache = new Map<string, unknown>()
-  private completedSleeps = new Set<string>()
+  readonly cache: Map<string, unknown>
 
-  constructor(private kv?: MockKV, private onSleep?: () => void) {}
+  constructor(
+    private kv?: MockKV,
+    private onSleep?: () => void,
+    private history = new FakeStepHistory(),
+    private hibernateOnSleep = false,
+  ) {
+    this.cache = history.cache
+  }
 
   async do<T>(name: string, config: any, callback: () => Promise<T>): Promise<T> {
     this.names.push(name)
@@ -159,10 +198,42 @@ class FakeStep implements WorkflowStepLike {
 
   async sleep(name: string, duration: number | string): Promise<void> {
     this.sleeps.push({ name, duration })
-    if (this.completedSleeps.has(name)) return
+    if (this.history.completedSleeps.has(name)) return
+    if (this.hibernateOnSleep) {
+      this.history.beginSleep(name)
+      await new Promise<void>(() => {})
+      return
+    }
     this.onSleep?.()
     this.kv?.startNextWorkerInvocation()
-    this.completedSleeps.add(name)
+    this.history.completeSleep(name)
+  }
+}
+
+async function driveWorkflowThroughHibernate(
+  env: SyncWorkflowEnv,
+  event: Parameters<typeof runSyncWorkflow>[1],
+  kv: MockKV,
+  history = new FakeStepHistory(),
+  onResume?: () => void,
+): Promise<{ result: Awaited<ReturnType<typeof runSyncWorkflow>>; history: FakeStepHistory }> {
+  for (;;) {
+    const step = new FakeStep(kv, undefined, history, true)
+    const execution = runSyncWorkflow(env, event, step, (message) => new TestNonRetryableError(message))
+    const settled = execution.then(
+      (result) => ({ type: 'result' as const, result }),
+      (error) => ({ type: 'error' as const, error }),
+    )
+    const outcome = await Promise.race([
+      settled,
+      history.nextSleep().then((name) => ({ type: 'sleep' as const, name })),
+    ])
+    if (outcome.type === 'result') return { result: outcome.result, history }
+    if (outcome.type === 'error') throw outcome.error
+    history.completeSleep(outcome.name)
+    kv.startNextWorkerInvocation()
+    onResume?.()
+    void execution.catch(() => undefined)
   }
 }
 
@@ -1016,9 +1087,12 @@ test('scheduled live workflow yields between 551-subject legacy refresh chunks t
     }, step, (message) => new TestNonRetryableError(message))
 
     assert.deepEqual(step.names.filter((name) => name.startsWith('plan-refresh-')), Array.from({ length: 56 }, (_, index) => `plan-refresh-${index}`))
-    assert.deepEqual(step.sleeps, Array.from({ length: 55 }, (_, index) => ({ name: `yield-refresh-${index}`, duration: '1 second' })))
-    assert.equal(Math.max(...kv.apiCallsByInvocation.values()) <= MockKV.CLOUD_FLARE_SERVICE_REQUEST_LIMIT, true)
-    assert.equal(kv.apiCallsByInvocation.size, 56)
+    assert.deepEqual(step.sleeps, [
+      { name: 'yield-refresh-19', duration: '1 second' },
+      { name: 'yield-refresh-39', duration: '1 second' },
+    ])
+    assert.equal(Math.max(...kv.serviceRequestsByInvocation.values()) <= 900, true)
+    assert.equal(kv.serviceRequestsByInvocation.size, 3)
     assert.equal(queueMessages.length, 0)
     assert.deepEqual(kv.subjectPuts(), [])
     assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'scheduled-551-invocation-limit')
@@ -1027,6 +1101,52 @@ test('scheduled live workflow yields between 551-subject legacy refresh chunks t
     assert.equal(result.refresh_jobs, 0)
   } finally {
     globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled live planning rebuilds durable state across grouped hibernation resumes within the Worker service-request limit', async () => {
+  for (const { subjectCount, expectedSleeps } of [
+    { subjectCount: 551, expectedSleeps: ['yield-refresh-19', 'yield-refresh-39'] },
+    { subjectCount: 659, expectedSleeps: ['yield-refresh-19', 'yield-refresh-39', 'yield-refresh-59'] },
+  ]) {
+    const kv = new MockKV()
+    const queueMessages: unknown[] = []
+    const cachedAt = Math.floor(Date.now() / 1000) - 1
+    for (let subjectId = 1; subjectId <= subjectCount; subjectId++) kv.seedCompleteSubject(subjectId, cachedAt)
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const text = String(url)
+      if (text.includes('/collections?')) {
+        const offset = Number(new URL(text).searchParams.get('offset'))
+        const count = Math.min(50, subjectCount - offset)
+        return Response.json({ total: subjectCount, data: Array.from({ length: count }, (_, index) => collection(offset + index + 1)) })
+      }
+      if (text.endsWith('/calendar')) return Response.json([])
+      throw new Error(`unexpected fetch ${text}`)
+    }) as typeof globalThis.fetch
+
+    try {
+      const { result, history } = await driveWorkflowThroughHibernate(
+        workflowEnv(kv, queueMessages),
+        {
+          instanceId: `scheduled-${subjectCount}-hibernate`,
+          payload: { mode: 'live', source: 'schedule' },
+          schedule: { cron: '0 20 * * *', scheduledTime: Date.now() },
+        },
+        kv,
+      )
+
+      assert.deepEqual([...history.completedSleeps], expectedSleeps)
+      assert.equal(kv.serviceRequestsByInvocation.size, expectedSleeps.length + 1)
+      assert.equal(Math.max(...kv.serviceRequestsByInvocation.values()) <= 900, true)
+      assert.equal(queueMessages.length, 0)
+      assert.deepEqual(kv.subjectPuts(), [])
+      assert.equal(result.subject_count, subjectCount)
+      assert.equal([...history.cache.keys()].filter((name) => name.startsWith('plan-refresh-')).length, Math.ceil(subjectCount / 10))
+      assert.equal((kv.values.get('snapshot:active') as any).instance_id, `scheduled-${subjectCount}-hibernate`)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   }
 })
 
@@ -1063,16 +1183,67 @@ test('a late scheduled live failure after 551-subject legacy planning still term
     )
 
     assert.equal((kv.values.get('sync:run:scheduled-551-terminal-error') as any).status, 'error')
-    assert.deepEqual(step.sleeps, Array.from({ length: 55 }, (_, index) => ({ name: `yield-refresh-${index}`, duration: '1 second' })))
-    assert.equal(Math.max(...kv.apiCallsByInvocation.values()) <= MockKV.CLOUD_FLARE_SERVICE_REQUEST_LIMIT, true)
+    assert.deepEqual(step.sleeps, [
+      { name: 'yield-refresh-19', duration: '1 second' },
+      { name: 'yield-refresh-39', duration: '1 second' },
+    ])
+    assert.equal(Math.max(...kv.serviceRequestsByInvocation.values()) <= 900, true)
   } finally {
     globalThis.fetch = originalFetch
   }
 })
 
-test('scheduled live refresh planning freezes its due time across a durable sleep and replay', async () => {
+test('a hibernate-resumed terminal failure replays durable plan and error history without duplicating terminal writes', async () => {
+  const kv = new MockKV()
+  const coordinator = new MockSnapshotCoordinator(kv)
+  coordinator.failCommit = true
+  const history = new FakeStepHistory()
+  const cachedAt = Math.floor(Date.now() / 1000) - 1
+  for (let subjectId = 1; subjectId <= 551; subjectId++) kv.seedCompleteSubject(subjectId, cachedAt)
+  const event = {
+    instanceId: 'scheduled-551-hibernate-terminal-error',
+    payload: { mode: 'live' as const, source: 'schedule' as const },
+    schedule: { cron: '0 20 * * *', scheduledTime: Date.now() },
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      const offset = Number(new URL(text).searchParams.get('offset'))
+      const count = Math.min(50, 551 - offset)
+      return Response.json({ total: 551, data: Array.from({ length: count }, (_, index) => collection(offset + index + 1)) })
+    }
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await assert.rejects(
+      driveWorkflowThroughHibernate(workflowEnv(kv, [], coordinator), event, kv, history),
+      /Snapshot coordinator \/commit failed \(503\)/,
+    )
+
+    assert.deepEqual([...history.completedSleeps], ['yield-refresh-19', 'yield-refresh-39'])
+    assert.equal((kv.values.get('sync:run:scheduled-551-hibernate-terminal-error') as any).status, 'error')
+    assert.equal(history.cache.has('record-error'), true)
+    const finalPlan = history.cache.get('plan-refresh-55')
+    assert.ok(finalPlan)
+    const writesBeforeReplay = kv.puts.length
+    kv.startNextWorkerInvocation()
+    await assert.rejects(
+      runSyncWorkflow(workflowEnv(kv, [], coordinator), event, new FakeStep(kv, undefined, history), (message) => new TestNonRetryableError(message)),
+      /Snapshot coordinator \/commit failed \(503\)/,
+    )
+    assert.equal(kv.puts.length, writesBeforeReplay)
+    assert.deepEqual(history.cache.get('plan-refresh-55'), finalPlan)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled live refresh planning freezes its due time across a grouped durable sleep and replay', async () => {
   const cachedAt = 1_700_000_000
-  const plannerNow = nextSubjectRefreshAt(11, cachedAt) - 1
+  const plannerNow = nextSubjectRefreshAt(191, cachedAt) - 1
 
   async function runScenario(advanceClockOnSleep: boolean) {
     let clock = plannerNow
@@ -1082,13 +1253,17 @@ test('scheduled live refresh planning freezes its due time across a durable slee
     const step = new FakeStep(kv, () => {
       if (advanceClockOnSleep) clock++
     })
-    for (let subjectId = 1; subjectId <= 11; subjectId++) kv.seedCompleteSubject(subjectId, cachedAt)
+    for (let subjectId = 1; subjectId <= 191; subjectId++) kv.seedCompleteSubject(subjectId, cachedAt)
     const originalDateNow = Date.now
     const originalFetch = globalThis.fetch
     Date.now = () => clock * 1_000
     globalThis.fetch = (async (url: string | URL | Request) => {
       const text = String(url)
-      if (text.includes('/collections?')) return Response.json({ total: 11, data: Array.from({ length: 11 }, (_, index) => collection(index + 1)) })
+      if (text.includes('/collections?')) {
+        const offset = Number(new URL(text).searchParams.get('offset'))
+        const count = Math.min(50, 191 - offset)
+        return Response.json({ total: 191, data: Array.from({ length: count }, (_, index) => collection(offset + index + 1)) })
+      }
       if (text.endsWith('/calendar')) return Response.json([])
       throw new Error(`unexpected fetch ${text}`)
     }) as typeof globalThis.fetch
@@ -1110,7 +1285,7 @@ test('scheduled live refresh planning freezes its due time across a durable slee
         replay,
         jobs: queueMessages,
         reservation: coordinator.reservations[0],
-        chunk: step.cache.get('plan-refresh-1'),
+        chunk: step.cache.get('plan-refresh-19'),
       }
     } finally {
       Date.now = originalDateNow
@@ -1121,7 +1296,7 @@ test('scheduled live refresh planning freezes its due time across a durable slee
   const baseline = await runScenario(false)
   const afterSleep = await runScenario(true)
 
-  assert.equal((baseline.chunk as any).candidates.some(({ subject_id }: { subject_id: number }) => subject_id === 11), false)
+  assert.equal((baseline.chunk as any).candidates.some(({ subject_id }: { subject_id: number }) => subject_id === 191), false)
   assert.deepEqual(afterSleep, baseline)
   assert.deepEqual(afterSleep.replay, afterSleep.result)
 })

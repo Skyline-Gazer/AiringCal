@@ -41,6 +41,23 @@ import {
 const COLLECTION_TYPES: CollectionType[] = ['want', 'watched', 'watching', 'on_hold', 'dropped']
 const PAGE_LIMIT = 50
 const REFRESH_CHUNK_SIZE = 10
+// Workers' verified internal-service request limit is 1,000 per invocation. A
+// refresh chunk performs one staged-input read, four legacy KV reads per
+// subject, a staging write, and a run write: 43 requests at full size.
+const WORKER_INTERNAL_SERVICE_REQUEST_LIMIT = 1_000
+const REFRESH_SERVICE_REQUEST_SAFE_BUDGET = WORKER_INTERNAL_SERVICE_REQUEST_LIMIT - 100
+const REFRESH_PLAN_CHUNK_SERVICE_REQUESTS = 43
+// The largest scheduled fixture (659 subjects) performs 76 KV/DO service
+// requests before planning. Resumed groups reserve 40 requests for re-entry,
+// coordinator calls, and terminal KV writes.
+const REFRESH_FIRST_INVOCATION_RESERVED_SERVICE_REQUESTS = 76
+const REFRESH_RESUMED_INVOCATION_RESERVED_SERVICE_REQUESTS = 40
+const REFRESH_FIRST_INVOCATION_CHUNKS = Math.floor(
+  (REFRESH_SERVICE_REQUEST_SAFE_BUDGET - REFRESH_FIRST_INVOCATION_RESERVED_SERVICE_REQUESTS) / REFRESH_PLAN_CHUNK_SERVICE_REQUESTS,
+)
+const REFRESH_RESUMED_INVOCATION_CHUNKS = Math.floor(
+  (REFRESH_SERVICE_REQUEST_SAFE_BUDGET - REFRESH_RESUMED_INVOCATION_RESERVED_SERVICE_REQUESTS) / REFRESH_PLAN_CHUNK_SERVICE_REQUESTS,
+)
 const NETWORK_STEP = { retries: { limit: 3, delay: 1_000, backoff: 'exponential' as const }, timeout: 45_000 }
 const STORAGE_STEP = { retries: { limit: 3, delay: 500, backoff: 'exponential' as const }, timeout: 45_000 }
 
@@ -103,6 +120,12 @@ type NonRetryableFactory = (message: string) => Error
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000)
+}
+
+function refreshYieldBoundary(chunkIndex: number): boolean {
+  return chunkIndex === REFRESH_FIRST_INVOCATION_CHUNKS
+    || (chunkIndex > REFRESH_FIRST_INVOCATION_CHUNKS
+      && (chunkIndex - REFRESH_FIRST_INVOCATION_CHUNKS) % REFRESH_RESUMED_INVOCATION_CHUNKS === 0)
 }
 
 async function digest(value: unknown): Promise<string> {
@@ -529,7 +552,7 @@ export async function runSyncWorkflow(
     const planOutputs: StepOutput[] = []
     const plannerNow = run.started_at
     for (let chunkIndex = 0; mode === 'live' && chunkIndex < (prepared.refreshChunks ?? 0); chunkIndex++) {
-      if (chunkIndex > 0) await step.sleep(`yield-refresh-${chunkIndex - 1}`, '1 second')
+      if (refreshYieldBoundary(chunkIndex)) await step.sleep(`yield-refresh-${chunkIndex}`, '1 second')
       const output = await step.do(`plan-refresh-${chunkIndex}`, STORAGE_STEP, async () => {
         const allInputs = await getJson<RefreshInput[]>(env.AIRING_CAL_KV, prepared.refreshInputKey ?? '') ?? []
         const inputs = allInputs.slice(chunkIndex * REFRESH_CHUNK_SIZE, (chunkIndex + 1) * REFRESH_CHUNK_SIZE)

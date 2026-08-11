@@ -241,7 +241,7 @@ D1、R2 PUT、R2 GET/验证或 KV pointer 任一步失败时，旧 pointer 不�
 - 完整获取 collections/calendar。
 - 调用纯规范化与 diff planner。
 - 以有界 D1 batch/transaction 提交变化。
-- 仅在 D1-only media Queue producer 可用时原子预留媒体预算并投递确定性 V4 任务；V4 generation 固定为持久化完整输入的 `{ observed_at, run_id }`，其中 `run_id` 是稳定 Workflow instance ID，不使用执行或 retry 的当前时钟。默认 shadow/no Queue 只报告候选与 deferred，不占用正式 D1 预算。既有 live Workflow V3 继续写 legacy KV；其 10-subject refresh chunk 在每个后续 chunk 前以确定性 1 秒 Workflow sleep 持久化并恢复，确保四次 legacy KV 读取不会累积超过单个 Worker invocation 的 Cloudflare service API 限额。V3 planner 的 due 时间固定为持久化 `sync:run.started_at`，避免 sleep/wake 的墙钟推进改变 later chunk 的候选、预算或任务顺序。
+- 仅在 D1-only media Queue producer 可用时原子预留媒体预算并投递确定性 V4 任务；V4 generation 固定为持久化完整输入的 `{ observed_at, run_id }`，其中 `run_id` 是稳定 Workflow instance ID，不使用执行或 retry 的当前时钟。默认 shadow/no Queue 只报告候选与 deferred，不占用正式 D1 预算。既有 live Workflow V3 继续写 legacy KV；其 10-subject refresh chunk 以已验证的 1000 次 Cloudflare 内部 service-request 上限为边界，并用 900 次保守预算统计 KV 与 `SNAPSHOT_COORDINATOR` service binding。完整 chunk 至多 43 次请求；659-subject scheduled 路径保留 76 次前置工作，首个 invocation 处理 19 个 chunk（893 次），随后每组处理 20 个 chunk，并保留 40 次给重入、DO 和终态 KV 写入。因此仅在 chunk 19、39、59… 前以确定性 1 秒 Workflow sleep 持久化和恢复，所有输出从 step history 重建而非依赖休眠前局部状态。V3 planner 的 due 时间固定为持久化 `sync:run.started_at`，避免 sleep/wake 的墙钟推进改变 later chunk 的候选、预算或任务顺序。
 - 构建、验证并 shadow 发布 R2 snapshot/pointer 候选。
 - 记录 `sync_runs`，但媒体失败不改变收藏发布结论。
 
