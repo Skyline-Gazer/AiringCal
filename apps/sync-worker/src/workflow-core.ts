@@ -47,14 +47,14 @@ const REFRESH_CHUNK_SIZE = 10
 const WORKER_INTERNAL_SERVICE_REQUEST_LIMIT = 1_000
 const REFRESH_SERVICE_REQUEST_SAFE_BUDGET = WORKER_INTERNAL_SERVICE_REQUEST_LIMIT - 100
 const REFRESH_PLAN_CHUNK_SERVICE_REQUESTS = 43
-// The largest scheduled fixture (659 subjects) performs 76 KV/DO service
-// requests before planning. Resumed groups reserve 40 requests for re-entry,
+// Before planning, the scheduled path uses 34 requests plus three for each
+// durable collection-page output: stage/write, then prepare/read. The page
+// count is persisted with the prepared step result rather than inferred from a
+// fixture or local state. Resumed groups reserve 40 requests for re-entry,
 // coordinator calls, and terminal KV writes.
-const REFRESH_FIRST_INVOCATION_RESERVED_SERVICE_REQUESTS = 76
+const REFRESH_PREPLANNING_BASE_SERVICE_REQUESTS = 34
+const REFRESH_PREPLANNING_SERVICE_REQUESTS_PER_PAGE = 3
 const REFRESH_RESUMED_INVOCATION_RESERVED_SERVICE_REQUESTS = 40
-const REFRESH_FIRST_INVOCATION_CHUNKS = Math.floor(
-  (REFRESH_SERVICE_REQUEST_SAFE_BUDGET - REFRESH_FIRST_INVOCATION_RESERVED_SERVICE_REQUESTS) / REFRESH_PLAN_CHUNK_SERVICE_REQUESTS,
-)
 const REFRESH_RESUMED_INVOCATION_CHUNKS = Math.floor(
   (REFRESH_SERVICE_REQUEST_SAFE_BUDGET - REFRESH_RESUMED_INVOCATION_RESERVED_SERVICE_REQUESTS) / REFRESH_PLAN_CHUNK_SERVICE_REQUESTS,
 )
@@ -110,6 +110,7 @@ interface StepOutput {
   refreshInputKey?: string
   completeInputKey?: string
   refreshChunks?: number
+  collectionPages?: number
   candidates?: RefreshCandidate[]
   planning_errors?: Array<{ subject_id: number; error: string }>
 }
@@ -122,10 +123,18 @@ function nowSeconds(): number {
   return Math.floor(Date.now() / 1000)
 }
 
-function refreshYieldBoundary(chunkIndex: number): boolean {
-  return chunkIndex === REFRESH_FIRST_INVOCATION_CHUNKS
-    || (chunkIndex > REFRESH_FIRST_INVOCATION_CHUNKS
-      && (chunkIndex - REFRESH_FIRST_INVOCATION_CHUNKS) % REFRESH_RESUMED_INVOCATION_CHUNKS === 0)
+function refreshFirstInvocationChunks(collectionPages: number): number {
+  const preplanningRequests = REFRESH_PREPLANNING_BASE_SERVICE_REQUESTS
+    + collectionPages * REFRESH_PREPLANNING_SERVICE_REQUESTS_PER_PAGE
+  return Math.max(0, Math.floor(
+    (REFRESH_SERVICE_REQUEST_SAFE_BUDGET - preplanningRequests) / REFRESH_PLAN_CHUNK_SERVICE_REQUESTS,
+  ))
+}
+
+function refreshYieldBoundary(chunkIndex: number, firstInvocationChunks: number): boolean {
+  return chunkIndex === firstInvocationChunks
+    || (chunkIndex > firstInvocationChunks
+      && (chunkIndex - firstInvocationChunks) % REFRESH_RESUMED_INVOCATION_CHUNKS === 0)
 }
 
 async function digest(value: unknown): Promise<string> {
@@ -446,6 +455,7 @@ export async function runSyncWorkflow(
         completeInputKey,
         refreshInputKey,
         refreshChunks,
+        collectionPages: pageOutputs.length,
         observedAt: fetched.observedAt,
       }, SYNC_STAGING_TTL_SECONDS)
       return {
@@ -455,6 +465,7 @@ export async function runSyncWorkflow(
         refreshInputKey,
         completeInputKey,
         refreshChunks,
+        collectionPages: pageOutputs.length,
         count: ids.length,
         digest: await digest(ids),
       }
@@ -551,8 +562,9 @@ export async function runSyncWorkflow(
 
     const planOutputs: StepOutput[] = []
     const plannerNow = run.started_at
+    const firstRefreshInvocationChunks = refreshFirstInvocationChunks(prepared.collectionPages ?? pageOutputs.length)
     for (let chunkIndex = 0; mode === 'live' && chunkIndex < (prepared.refreshChunks ?? 0); chunkIndex++) {
-      if (refreshYieldBoundary(chunkIndex)) await step.sleep(`yield-refresh-${chunkIndex}`, '1 second')
+      if (refreshYieldBoundary(chunkIndex, firstRefreshInvocationChunks)) await step.sleep(`yield-refresh-${chunkIndex}`, '1 second')
       const output = await step.do(`plan-refresh-${chunkIndex}`, STORAGE_STEP, async () => {
         const allInputs = await getJson<RefreshInput[]>(env.AIRING_CAL_KV, prepared.refreshInputKey ?? '') ?? []
         const inputs = allInputs.slice(chunkIndex * REFRESH_CHUNK_SIZE, (chunkIndex + 1) * REFRESH_CHUNK_SIZE)

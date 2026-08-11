@@ -1150,6 +1150,74 @@ test('scheduled live planning rebuilds durable state across grouped hibernation 
   }
 })
 
+test('scheduled live planning derives its first safe group from durable two-user page history', async () => {
+  const subjectCount = 551
+  const kv = new MockKV()
+  const queueMessages: unknown[] = []
+  const env = workflowEnv(kv, queueMessages)
+  env.BANGUMI_USERS = 'alice,bob'
+  const cachedAt = Math.floor(Date.now() / 1000) - 1
+  for (let subjectId = 1; subjectId <= subjectCount; subjectId++) kv.seedCompleteSubject(subjectId, cachedAt)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      const offset = Number(new URL(text).searchParams.get('offset'))
+      const count = Math.min(50, subjectCount - offset)
+      return Response.json({ total: subjectCount, data: Array.from({ length: count }, (_, index) => collection(offset + index + 1)) })
+    }
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    const { history } = await driveWorkflowThroughHibernate(env, {
+      instanceId: 'scheduled-two-user-first-group',
+      payload: { mode: 'live', source: 'schedule' },
+      schedule: { cron: '0 20 * * *', scheduledTime: Date.now() },
+    }, kv)
+
+    assert.equal((history.cache.get('prepare-snapshot-inputs') as any).collectionPages, 24)
+    assert.deepEqual([...history.completedSleeps], ['yield-refresh-18', 'yield-refresh-38'])
+    assert.equal(Math.max(...kv.serviceRequestsByInvocation.values()) <= 900, true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled live planning keeps a fifty-page first invocation within the service-request budget', async () => {
+  const subjectCount = 2_500
+  const kv = new MockKV()
+  const queueMessages: unknown[] = []
+  const cachedAt = Math.floor(Date.now() / 1000) - 1
+  for (let subjectId = 1; subjectId <= subjectCount; subjectId++) kv.seedCompleteSubject(subjectId, cachedAt)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      const offset = Number(new URL(text).searchParams.get('offset'))
+      const count = Math.min(50, subjectCount - offset)
+      return Response.json({ total: subjectCount, data: Array.from({ length: count }, (_, index) => collection(offset + index + 1)) })
+    }
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    const { history } = await driveWorkflowThroughHibernate(workflowEnv(kv, queueMessages), {
+      instanceId: 'scheduled-fifty-page-first-group',
+      payload: { mode: 'live', source: 'schedule' },
+      schedule: { cron: '0 20 * * *', scheduledTime: Date.now() },
+    }, kv)
+
+    assert.equal((history.cache.get('prepare-snapshot-inputs') as any).collectionPages, 50)
+    assert.equal([...history.completedSleeps][0], 'yield-refresh-16')
+    assert.equal(Math.max(...kv.serviceRequestsByInvocation.values()) <= 900, true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('a late scheduled live failure after 551-subject legacy planning still terminalizes within the Worker invocation API limit', async () => {
   const kv = new MockKV()
   const coordinator = new MockSnapshotCoordinator(kv)
