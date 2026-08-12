@@ -50,7 +50,7 @@ const REFRESH_PLAN_CHUNK_SERVICE_REQUESTS = 43
 // Before planning, the scheduled path uses 34 requests plus three for each
 // durable collection-page output: stage/write, then prepare/read. The page
 // count is persisted with the prepared step result rather than inferred from a
-// fixture or local state. Resumed groups reserve 40 requests for re-entry,
+// fixture or local state. Every group reserves 40 requests for re-entry,
 // coordinator calls, and terminal KV writes.
 const REFRESH_PREPLANNING_BASE_SERVICE_REQUESTS = 34
 const REFRESH_PREPLANNING_SERVICE_REQUESTS_PER_PAGE = 3
@@ -127,7 +127,7 @@ function refreshFirstInvocationChunks(collectionPages: number): number {
   const preplanningRequests = REFRESH_PREPLANNING_BASE_SERVICE_REQUESTS
     + collectionPages * REFRESH_PREPLANNING_SERVICE_REQUESTS_PER_PAGE
   return Math.max(0, Math.floor(
-    (REFRESH_SERVICE_REQUEST_SAFE_BUDGET - preplanningRequests) / REFRESH_PLAN_CHUNK_SERVICE_REQUESTS,
+    (REFRESH_SERVICE_REQUEST_SAFE_BUDGET - preplanningRequests - REFRESH_RESUMED_INVOCATION_RESERVED_SERVICE_REQUESTS) / REFRESH_PLAN_CHUNK_SERVICE_REQUESTS,
   ))
 }
 

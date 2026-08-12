@@ -1088,8 +1088,8 @@ test('scheduled live workflow yields between 551-subject legacy refresh chunks t
 
     assert.deepEqual(step.names.filter((name) => name.startsWith('plan-refresh-')), Array.from({ length: 56 }, (_, index) => `plan-refresh-${index}`))
     assert.deepEqual(step.sleeps, [
-      { name: 'yield-refresh-19', duration: '1 second' },
-      { name: 'yield-refresh-39', duration: '1 second' },
+      { name: 'yield-refresh-18', duration: '1 second' },
+      { name: 'yield-refresh-38', duration: '1 second' },
     ])
     assert.equal(Math.max(...kv.serviceRequestsByInvocation.values()) <= 900, true)
     assert.equal(kv.serviceRequestsByInvocation.size, 3)
@@ -1106,8 +1106,8 @@ test('scheduled live workflow yields between 551-subject legacy refresh chunks t
 
 test('scheduled live planning rebuilds durable state across grouped hibernation resumes within the Worker service-request limit', async () => {
   for (const { subjectCount, expectedSleeps } of [
-    { subjectCount: 551, expectedSleeps: ['yield-refresh-19', 'yield-refresh-39'] },
-    { subjectCount: 659, expectedSleeps: ['yield-refresh-19', 'yield-refresh-39', 'yield-refresh-59'] },
+    { subjectCount: 551, expectedSleeps: ['yield-refresh-18', 'yield-refresh-38'] },
+    { subjectCount: 659, expectedSleeps: ['yield-refresh-18', 'yield-refresh-38', 'yield-refresh-58'] },
   ]) {
     const kv = new MockKV()
     const queueMessages: unknown[] = []
@@ -1178,7 +1178,7 @@ test('scheduled live planning derives its first safe group from durable two-user
     }, kv)
 
     assert.equal((history.cache.get('prepare-snapshot-inputs') as any).collectionPages, 24)
-    assert.deepEqual([...history.completedSleeps], ['yield-refresh-18', 'yield-refresh-38'])
+    assert.deepEqual([...history.completedSleeps], ['yield-refresh-17', 'yield-refresh-37'])
     assert.equal(Math.max(...kv.serviceRequestsByInvocation.values()) <= 900, true)
   } finally {
     globalThis.fetch = originalFetch
@@ -1211,7 +1211,84 @@ test('scheduled live planning keeps a fifty-page first invocation within the ser
     }, kv)
 
     assert.equal((history.cache.get('prepare-snapshot-inputs') as any).collectionPages, 50)
-    assert.equal([...history.completedSleeps][0], 'yield-refresh-16')
+    assert.equal([...history.completedSleeps][0], 'yield-refresh-15')
+    assert.equal(Math.max(...kv.serviceRequestsByInvocation.values()) <= 900, true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled live planning counts fifty durable pages across multiple users in its request ledger', async () => {
+  const kv = new MockKV()
+  const queueMessages: unknown[] = []
+  const env = workflowEnv(kv, queueMessages)
+  env.BANGUMI_USERS = Array.from({ length: 50 }, (_, index) => `user-${index}`).join(',')
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      const user = new URL(text).pathname.match(/users\/([^/]+)\/collections/)?.[1]
+      const subjectId = Number(user?.replace('user-', '')) + 1
+      return Response.json({ total: 1, data: [collection(subjectId)] })
+    }
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    const { history } = await driveWorkflowThroughHibernate(env, {
+      instanceId: 'scheduled-multi-user-fifty-pages',
+      payload: { mode: 'live', source: 'schedule' },
+      schedule: { cron: '0 20 * * *', scheduledTime: Date.now() },
+    }, kv)
+
+    assert.equal((history.cache.get('prepare-snapshot-inputs') as any).collectionPages, 50)
+    assert.equal(Math.max(...kv.serviceRequestsByInvocation.values()) <= 900, true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('a full first group yields before terminal DO and KV work consume its reserved margin', async () => {
+  const kv = new MockKV()
+  const queueMessages: unknown[] = []
+  const env = workflowEnv(kv, queueMessages)
+  env.BANGUMI_USERS = Array.from({ length: 200 }, (_, index) => `user-${index}`).join(',')
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      const user = new URL(text).pathname.match(/users\/([^/]+)\/collections/)?.[1]
+      const subjectId = (Number(user?.replace('user-', '')) % 50) + 1
+      return Response.json({ total: 1, data: [collection(subjectId)] })
+    }
+    if (text.endsWith('/calendar')) {
+      return Response.json([{
+        weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+        items: Array.from({ length: 10 }, (_, index) => ({
+          id: index + 51,
+          type: 2,
+          name: `Calendar ${index + 51}`,
+          name_cn: '',
+          summary: '',
+          date: '2026-07-01',
+          images: {},
+        })),
+      }])
+    }
+    throw new Error(`unexpected fetch ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    const { result, history } = await driveWorkflowThroughHibernate(env, {
+      instanceId: 'scheduled-first-group-terminal-margin',
+      payload: { mode: 'live', source: 'schedule' },
+      schedule: { cron: '0 20 * * *', scheduledTime: Date.now() },
+    }, kv)
+
+    assert.equal((history.cache.get('prepare-snapshot-inputs') as any).collectionPages, 200)
+    assert.deepEqual([...history.completedSleeps], ['yield-refresh-5'])
+    assert.equal(result.refresh_jobs, 60)
     assert.equal(Math.max(...kv.serviceRequestsByInvocation.values()) <= 900, true)
   } finally {
     globalThis.fetch = originalFetch
@@ -1252,8 +1329,8 @@ test('a late scheduled live failure after 551-subject legacy planning still term
 
     assert.equal((kv.values.get('sync:run:scheduled-551-terminal-error') as any).status, 'error')
     assert.deepEqual(step.sleeps, [
-      { name: 'yield-refresh-19', duration: '1 second' },
-      { name: 'yield-refresh-39', duration: '1 second' },
+      { name: 'yield-refresh-18', duration: '1 second' },
+      { name: 'yield-refresh-38', duration: '1 second' },
     ])
     assert.equal(Math.max(...kv.serviceRequestsByInvocation.values()) <= 900, true)
   } finally {
@@ -1291,7 +1368,7 @@ test('a hibernate-resumed terminal failure replays durable plan and error histor
       /Snapshot coordinator \/commit failed \(503\)/,
     )
 
-    assert.deepEqual([...history.completedSleeps], ['yield-refresh-19', 'yield-refresh-39'])
+    assert.deepEqual([...history.completedSleeps], ['yield-refresh-18', 'yield-refresh-38'])
     assert.equal((kv.values.get('sync:run:scheduled-551-hibernate-terminal-error') as any).status, 'error')
     assert.equal(history.cache.has('record-error'), true)
     const finalPlan = history.cache.get('plan-refresh-55')
