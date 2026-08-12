@@ -1,0 +1,16 @@
+{
+  "change": "harden-workflow-request-budget",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "0821e1c0a5dbf8c1d772ead87ab9e6e22089b4116bd34f35ed68083f48d8d4e2",
+  "files": [
+    { "path": "openspec/changes/harden-workflow-request-budget/proposal.md", "sha256": "2eeea1b8486d48e8141c3d7ce428fd020db1482864878d7b71a6314eaf66f565" },
+    { "path": "openspec/changes/harden-workflow-request-budget/design.md", "sha256": "ab6bdcfadc8e72f8108cfcfd01d9e958185245ecbfc529c367256368343e5bb3" },
+    { "path": "openspec/changes/harden-workflow-request-budget/tasks.md", "sha256": "2034c567321baba802f12be5fdd2b2fd8fad234f664c3acc675902dfe5d4514e" },
+    { "path": "openspec/changes/harden-workflow-request-budget/specs/durable-sync-workflow/spec.md", "sha256": "e032109ed1bc51f3ba3b7a8e693526f8ca97c2c4c18487c0b290099face87774" },
+    { "path": "openspec/changes/harden-workflow-request-budget/specs/project-quality-gates/spec.md", "sha256": "5ea77694251cd8cf4c16508b9ef4109065d9ed779eb7dc8019cb3481fab930a1" },
+    { "path": "openspec/changes/harden-workflow-request-budget/specs/workflow-subrequest-budgeting/spec.md", "sha256": "25596d402f73bcfdfeaf60cbd46809b748b5174e7ee30bcbd0cdc9ce61e73381" }
+  ]
+}
