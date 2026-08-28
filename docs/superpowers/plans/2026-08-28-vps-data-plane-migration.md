@@ -46,14 +46,14 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 ### Task 1.1: PostgreSQL package、migration 与 advisory locks
 
 **Files:**
-- Create: `apps/vps-sync/package.json`, `apps/vps-sync/tsconfig.json`, `apps/vps-sync/src/postgres/migrations/0001_initial.sql`
+- Create: `apps/vps-sync/package.json`, `apps/vps-sync/tsconfig.json`, `apps/vps-sync/src/postgres/migrations/0001_initial.sql`；`apps/vps-sync/package.json` 必须包含 `build`（使用经验证的 tsc/tsup 编译到 `dist/`）、`build:check`、`test`（`tsx --test`）和 `typecheck` scripts
 - Create: `apps/vps-sync/src/postgres/migrate.ts`, `apps/vps-sync/src/postgres/migrate.test.ts`
 - Modify: `pnpm-lock.yaml`
 
 **Interfaces:**
 - Produces: `applyMigrations(pool: Pool): Promise<void>`；`withSessionLock<T>(client: PoolClient, key: bigint, work: () => Promise<T>): Promise<{ acquired: boolean; value?: T }>`；不可变 `schema_migrations(name text primary key, checksum text, applied_at timestamptz)`。
 
-- [ ] **Step 1: 验证依赖与 PostgreSQL API** — 执行 `pnpm view pg version`、检查 `node_modules/pg` types，并在临时 PostgreSQL 上执行 `psql --help` 与 `SELECT pg_try_advisory_lock(1);`；把确认的版本和签名记录在实现注释/PR notes。
+- [ ] **Step 1: 验证依赖与 PostgreSQL API** — 执行 `pnpm view pg version`、检查 `node_modules/pg` types，并在临时 PostgreSQL 上执行 `psql --help` 与 `SELECT pg_try_advisory_lock(1);`；把确认的版本和签名记录在实现注释/PR notes。集成测试环境（需先具备 Docker）：本地用 `docker run --rm -e POSTGRES_PASSWORD=test -p 54329:5432 postgres:17-alpine` 启动 disposable 实例，CI 用 `services: postgres:17-alpine` 加 health check；`DATABASE_URL` 指向该实例，测试结束销毁。启动命令写进 `docs/runbook/vps-data-plane.md`。本地无 Docker 时这些集成测试标记为环境前置，不在本机强制执行。
 - [ ] **Step 2: 写 RED 测试** — 测试按文件名顺序应用 migration、重复执行 no-op、checksum 改变时报 `MIGRATION_CHECKSUM_MISMATCH`、两个连接仅一个获得相同 session lock。
   ```ts
   await applyMigrations(pool)
@@ -92,11 +92,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 - Modify: `apps/vps-sync/package.json`, `docs/runbook/vps-data-plane.md`
 
 **Interfaces:**
-- Consumes: `BgmClient`、`assembleFullFetch(...)`。
+- Consumes: `BgmClient`、`assembleFullFetch(...)`；`BgmClient` 必须以 `maxGetRetries: 0` 构造以关闭内置 retry，retry 只在 `withRetry` 单层发生。
 - Produces: `fetchCompleteInput(config, client, clock): Promise<CompleteFullFetch>`；`withRetry<T>(operation, policy): Promise<T>`；分类码 `auth|not_found|rate_limited|upstream|timeout|network|contract`。
 
 - [ ] **Step 1: API 验证** — 在 `docs/example/api/bgm-api.json` 搜索 collection/calendar/detail 端点、method、Bearer mode、limit/offset 与 response schema；再读 `packages/bgm-api/src/bgm-client.ts` 的真实方法签名。
-- [ ] **Step 2: RED tests** — 覆盖 401/403 一次即失败，429/5xx/timeout/network 最多三次且合法 `Retry-After` 有上限，invalid JSON/schema 终止；primary user/任一分页/calendar 不完整时不返回 `CompleteFullFetch`。
+- [ ] **Step 2: RED tests** — 覆盖 401/403 一次即失败，429/5xx/timeout/network 最多三次且合法 `Retry-After` 有上限，invalid JSON/schema 终止；primary user/任一分页/calendar 不完整时不返回 `CompleteFullFetch`；断言 429 只触发外层 `withRetry` 的三次尝试，而非 client 内置 retry 与外层叠加。
 - [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- retry.test.ts fetch.test.ts` 预期 FAIL。
 - [ ] **Step 4: GREEN/REFACTOR** — 复用 client 和 `assembleFullFetch`，注入 sleep/random 使 jitter 可测，错误只携带 stable code/stage/attempt；局部与 package tests/typecheck PASS。
 - [ ] **Step 5: 文档、提交与推送** — 同步 retry 表；commit `feat(vps-sync): fetch complete upstream state` 后 push。
@@ -125,7 +125,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `PublicSnapshotManifestV1` 精确字段；`buildManifest(snapshot, metadata)`；`parsePublicSnapshotManifestV1(value)`；`snapshotKey(generation, hash)`；`canonicalSnapshotBytes(snapshot)`。
 
-- [ ] **Step 1: RED tests** — 精确 keys、ISO UTC、item_count、full git SHA、key/generation/hash 一致；runtime timestamps 不改变 business `content_hash`；相同 content no-op；verified N 的新内容只分配 N+1。
+- [ ] **Step 1: RED tests** — 精确 keys、ISO UTC、item_count、full git SHA、key/generation/hash 一致；runtime timestamps 不改变 business `content_hash`；相同 content no-op；verified N 的新内容只分配 N+1。新增：`PublicSnapshotV1.published_at` 保持 Unix-second integer 不变；`buildManifest` 的 ISO `published_at` 与该 integer 表示同一时刻；同一 business payload 在不同 wall-clock 时间产生相同 `content_hash`。
 - [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/domain test -- public-manifest.test.ts public-snapshot.test.ts` 预期 FAIL。
 - [ ] **Step 3: GREEN** — 基于现有 `sha256Canonical`/`buildPublicSnapshot` 实现 exact parser 与 key grammar，保持 `PublicSnapshotV1` response shape。
 - [ ] **Step 4: REFACTOR/验证** — domain tests/typecheck PASS；确认导出名与后续 tasks 完全一致。
@@ -236,11 +236,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 ### Task 7.1: Alpine production/debug images
 
 **Files:**
-- Create: `Dockerfile.vps-sync`, `scripts/verify-vps-sync-image.mjs`, `scripts/verify-vps-sync-image.test.mjs`
-- Modify: `.dockerignore`, `apps/vps-sync/package.json`
+- Create: `Dockerfile.vps-sync`, `.dockerignore`, `scripts/verify-vps-sync-image.mjs`, `scripts/verify-vps-sync-image.test.mjs`
+- Modify: `apps/vps-sync/package.json`
 
 **Interfaces:**
-- Targets: `production` 与 `debug`；CLI entry executes compiled `apps/vps-sync`；production user non-root。
+- Targets: `production` 与 `debug`；CLI entry executes compiled `apps/vps-sync`；production user non-root；Dockerfile 的 build stage 调用 `pnpm -F @airing-cal/vps-sync build`，production stage 只拷贝 `dist/` 与 production dependencies。
 
 - [ ] **Step 1: image/package 验证** — `docker buildx imagetools inspect node:alpine` 确认架构/digest；在临时 `node:alpine` 容器运行 `apk search` 验证 CA、PostgreSQL client 和 debug HTTPS/DNS/TCP/process/network/JSON 包名；`docker buildx build --help` 验证 flags。
 - [ ] **Step 2: RED verifier** — 测试 production 不含 git/curl/python/editor/jq/DNS/build toolchain/source/tests/dev dependencies，uid 非 0、无监听端口；debug 含经验证工具。
@@ -269,7 +269,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 - Modify: `README.md`
 
 **Interfaces:**
-- Push builds production after tests and publishes immutable full `${GITHUB_SHA}` plus non-authoritative discovery tag；records Node/Alpine/base digest/pnpm/git metadata；never SSH/deploys。
+- Push builds production after tests and publishes immutable full `${GITHUB_SHA}` plus non-authoritative discovery tag；records Node/Alpine/base digest/pnpm/git metadata；never SSH/deploys。CI 的 `setup-node` 大版本必须与构建时 `node:alpine` 实际解析到的 Node 大版本一致。当前仓库 CI 固定为 Node 24，但浮动 `node:alpine` 跟随 Node Current，两者可能不一致。实施时必须先通过官方 image metadata 或在具备 Docker 的环境中验证实际解析版本，再决定同步升级 `setup-node`，或者改用明确的 `node:<major>-alpine`；不得在计划中预设当前大版本或未经验证的命令输出格式。
 
 - [ ] **Step 1: Actions contract 验证** — 读取官方 action README/metadata 与现有 workflows，确认 checkout/setup-buildx/login/metadata/build-push inputs、GHCR permissions、concurrency；所有 action pin 使用已验证 commit SHA。
 - [ ] **Step 2: RED tests** — workflow parser 断言 test/typecheck/build gates 先于 push、tag 为完整 SHA、无 VPS secrets/SSH、已有 SHA package 不覆盖。
@@ -295,7 +295,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 
 **Files:**
 - Modify: `README.md`, `docs/runbook/vps-data-plane.md`, `deploy/vps/README.md`
-- Create: `docs/architecture/vps-data-plane.md`
+- Create: `docs/architecture/vps-data-plane.md`（`docs/architecture/` 目录当前不存在，需一并新建）
 
 **Interfaces:**
 - Documents implemented CLI `sync|migrate|backup|restore-verify`、env、schema、R2 keys、backup/notification、部署/回滚和旧 changes supersession。
