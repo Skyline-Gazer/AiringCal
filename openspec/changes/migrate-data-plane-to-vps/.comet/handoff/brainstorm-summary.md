@@ -16,12 +16,12 @@
 ## 候选技术方案
 
 - 推荐：新增独立 `apps/vps-sync` composition root，领域逻辑继续位于共享 package；PostgreSQL repository、S3-compatible R2 adapter、backup、notification 分成独立端口与适配器。
-- PostgreSQL schema 候选：规范化 `users + collection_items + subjects + subject_media + calendar + sync_runs + publications`，避免每个用户收藏行重复完整 subject JSON，适合托管 PostgreSQL 免费存储限制。
-- 备选：直接移植当前 D1 row shape，迁移快但重复 JSON 且长期边界模糊。
+- 已确认 PostgreSQL 采用规范化 `users + collection_items + subjects + subject_media + calendar + sync_runs + publications`，避免每个用户收藏行重复完整 subject JSON，适合托管 PostgreSQL免费存储限制。
+- 已拒绝直接移植当前 D1 row shape：虽然迁移更快，但重复 JSON 且长期边界模糊。
 
 ## 待确认
 
-- PostgreSQL 数据模型采用规范化模型，还是优先保持 D1 row shape 以减少首轮迁移工作。
+- 媒体 detail/metadata/image 刷新部分失败时，是允许使用最后成功媒体状态发布收藏/calendar snapshot 并将 run 标记 partial，还是阻塞整个公开发布。
 
 ## 测试策略候选
 
