@@ -27,3 +27,14 @@
 #### Scenario: 备份失败但发布成功
 - **WHEN** snapshot 已发布而数据库备份上传失败
 - **THEN** run 终态为 partial 且保留发布与备份各自结果
+
+### Requirement: 媒体部分失败不得阻塞主数据发布
+系统 MUST 在 collection 与 calendar 完整提交后独立处理媒体刷新；单个 detail、metadata 或 image 失败时 MUST 使用 PostgreSQL 中最后成功媒体状态构建 snapshot、将 run 标记 partial 并安排后续重试。
+
+#### Scenario: 单张图片刷新失败
+- **WHEN** collection 与 calendar 成功且一个 subject 图片下载或 R2 写入最终失败
+- **THEN** 系统使用该 subject 最后成功图片引用发布主 snapshot，run 为 partial，且失败图片进入有界重试状态
+
+#### Scenario: 新 subject 尚无成功图片
+- **WHEN** 新 subject 的图片刷新失败且数据库中没有 last-known-good 图片
+- **THEN** snapshot 使用明确的非 cached 图片状态，不得伪造 R2 引用或阻塞其余主数据发布

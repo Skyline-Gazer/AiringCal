@@ -1,5 +1,5 @@
 workflow: full
-phase: design
+phase: build
 context_compression: off
 build_mode: null
 build_pause: null
@@ -10,7 +10,7 @@ isolation: null
 verify_mode: null
 auto_transition: true
 base_ref: 0e585986904a24419f4193f8e173fb68a3cce549
-design_doc: null
+design_doc: docs/superpowers/specs/2026-08-28-vps-data-plane-migration-design.md
 plan: null
 verify_result: pending
 verification_report: null
@@ -18,3 +18,5 @@ branch_status: pending
 created_at: 2026-08-28
 verified_at: null
 archived: false
+handoff_context: openspec/changes/migrate-data-plane-to-vps/.comet/handoff/design-context.json
+handoff_hash: 47c961d397304cc10cc6922e6c82747e031c0f846d579ae0db2f8b753835229e
