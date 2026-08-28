@@ -1,5 +1,5 @@
 workflow: full
-phase: open
+phase: design
 context_compression: off
 build_mode: null
 build_pause: null
@@ -9,7 +9,7 @@ review_mode: off
 isolation: null
 verify_mode: null
 auto_transition: true
-base_ref: 4e61672c7de5c3e7ce4e5f5f0e7eff76dc3eff38
+base_ref: 0e585986904a24419f4193f8e173fb68a3cce549
 design_doc: null
 plan: null
 verify_result: pending
