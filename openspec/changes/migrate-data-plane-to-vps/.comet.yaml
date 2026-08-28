@@ -18,3 +18,5 @@ branch_status: pending
 created_at: 2026-08-28
 verified_at: null
 archived: false
+handoff_context: openspec/changes/migrate-data-plane-to-vps/.comet/handoff/design-context.json
+handoff_hash: 71b3a0fa781b694cc6a1ad56faece463959dd7b704f303752761564e034c0534
