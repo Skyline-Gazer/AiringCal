@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-08-28
+goal: Move periodic data synchronization to a VPS-hosted TypeScript container
+  using provider-neutral PostgreSQL, publish immutable public snapshots and
+  backups to R2, notify Feishu, and retain Cloudflare only for public reads.
