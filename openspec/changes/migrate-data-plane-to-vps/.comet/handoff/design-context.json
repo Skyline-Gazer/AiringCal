@@ -4,12 +4,12 @@
   "mode": "compact",
   "canonical_spec": "openspec",
   "generated_by": "comet-handoff.sh",
-  "context_hash": "71b3a0fa781b694cc6a1ad56faece463959dd7b704f303752761564e034c0534",
+  "context_hash": "47c961d397304cc10cc6922e6c82747e031c0f846d579ae0db2f8b753835229e",
   "files": [
     { "path": "openspec/changes/migrate-data-plane-to-vps/proposal.md", "sha256": "14ffb0c455a9d07ff8b6aa8a499018d6dca6be18c14959ff5d7d20664f51151f" },
     { "path": "openspec/changes/migrate-data-plane-to-vps/design.md", "sha256": "76b7b2776ca274b099ba1a1caae3f5916a87e10f249ffd2191f8ea1da2ba9d32" },
     { "path": "openspec/changes/migrate-data-plane-to-vps/tasks.md", "sha256": "0cd5aa20ed1ca857c33e3e946a1c2458dc2d594c2190e53e323512ff49def018" },
-    { "path": "openspec/changes/migrate-data-plane-to-vps/specs/cache-refresh-lifecycle/spec.md", "sha256": "8d17250d99a0fc8533473d870e0b93c0fdcb4f80c60d7a4244af04783f7ef6aa" },
+    { "path": "openspec/changes/migrate-data-plane-to-vps/specs/cache-refresh-lifecycle/spec.md", "sha256": "cef06087e2b82d12cf8709df44126469b32e45e30d9f424e8cf3009a3260899b" },
     { "path": "openspec/changes/migrate-data-plane-to-vps/specs/durable-sync-workflow/spec.md", "sha256": "90a09993359fbd2d696142c384b86fa0a0d19334f6e290aa3c4ea2e716580f4c" },
     { "path": "openspec/changes/migrate-data-plane-to-vps/specs/postgres-authoritative-state/spec.md", "sha256": "4ce1511c72b946d483f582ba1e2a0be86d4e83e4f79f226a42239d83040831fb" },
     { "path": "openspec/changes/migrate-data-plane-to-vps/specs/postgres-r2-backup/spec.md", "sha256": "5ebf320bb19dfdae9fd9ffc770314cfb8965f1fc68f50b19159cf491d1ec436b" },
@@ -19,6 +19,6 @@
     { "path": "openspec/changes/migrate-data-plane-to-vps/specs/sync-consistency/spec.md", "sha256": "bd544e4abcbe9ec4f2733921c7a222bd68d9890b3befbdd6b2eecc97bba80437" },
     { "path": "openspec/changes/migrate-data-plane-to-vps/specs/sync-run-notifications/spec.md", "sha256": "ee6095e962b2c01c74050f7ce41083d754e6502c58af4a3794dd06a54a7bc312" },
     { "path": "openspec/changes/migrate-data-plane-to-vps/specs/vps-container-delivery/spec.md", "sha256": "83b4433048f54a4663d36d7096f110a0594efd2a3e376560450eb48afb820ba8" },
-    { "path": "openspec/changes/migrate-data-plane-to-vps/specs/vps-data-sync-runtime/spec.md", "sha256": "719624c312034b0fcbb46a77263e42ba28f1bddaaa7f0a4344fde4022b757ac4" }
+    { "path": "openspec/changes/migrate-data-plane-to-vps/specs/vps-data-sync-runtime/spec.md", "sha256": "7e7a1e7ae0826a2f43e9c8851c20645bdd85ddab8a9371bdaaf46caddd0b8540" }
   ]
 }

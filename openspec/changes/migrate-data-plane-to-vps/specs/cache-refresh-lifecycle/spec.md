@@ -1,3 +1,16 @@
+## ADDED Requirements
+
+### Requirement: 媒体生产者必须唯一
+VPS 同步运行时 MUST 是 detail、metadata、image 与 R2 图片对象的唯一正式生产者；Cloudflare Read Worker MUST 只读取 snapshot 与内容寻址图片，不得抓取上游、更新 PostgreSQL 或写入图片对象。
+
+#### Scenario: 图片未命中公开缓存
+- **WHEN** Read Worker 收到一个有效 snapshot 图片 URI 且边缘缓存未命中
+- **THEN** Read Worker 仅从 R2 读取内容并返回缓存响应，不调用 bgm.tv 或产生 R2 PUT
+
+#### Scenario: 从 shadow 切换到 live
+- **WHEN** VPS shadow 验证通过并准备成为正式媒体生产者
+- **THEN** 旧 Cloudflare Media Queue consumer 在 live 切换前停止，避免出现两个正式写者
+
 ## MODIFIED Requirements
 
 ### Requirement: subject 缓存必须支持过期继续服务

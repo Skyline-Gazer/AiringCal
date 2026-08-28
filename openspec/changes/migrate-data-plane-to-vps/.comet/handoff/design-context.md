@@ -3,7 +3,7 @@
 - Change: migrate-data-plane-to-vps
 - Phase: design
 - Mode: compact
-- Context hash: 71b3a0fa781b694cc6a1ad56faece463959dd7b704f303752761564e034c0534
+- Context hash: 47c961d397304cc10cc6922e6c82747e031c0f846d579ae0db2f8b753835229e
 
 Generated-by: comet-handoff.sh
 
@@ -176,10 +176,25 @@ None. The hosted PostgreSQL vendor remains an operational selection because the 
 ## openspec/changes/migrate-data-plane-to-vps/specs/cache-refresh-lifecycle/spec.md
 
 - Source: openspec/changes/migrate-data-plane-to-vps/specs/cache-refresh-lifecycle/spec.md
-- Lines: 1-77
-- SHA256: 8d17250d99a0fc8533473d870e0b93c0fdcb4f80c60d7a4244af04783f7ef6aa
+- Lines: 1-90
+- SHA256: cef06087e2b82d12cf8709df44126469b32e45e30d9f424e8cf3009a3260899b
+
+[TRUNCATED]
 
 ```md
+## ADDED Requirements
+
+### Requirement: 媒体生产者必须唯一
+VPS 同步运行时 MUST 是 detail、metadata、image 与 R2 图片对象的唯一正式生产者；Cloudflare Read Worker MUST 只读取 snapshot 与内容寻址图片，不得抓取上游、更新 PostgreSQL 或写入图片对象。
+
+#### Scenario: 图片未命中公开缓存
+- **WHEN** Read Worker 收到一个有效 snapshot 图片 URI 且边缘缓存未命中
+- **THEN** Read Worker 仅从 R2 读取内容并返回缓存响应，不调用 bgm.tv 或产生 R2 PUT
+
+#### Scenario: 从 shadow 切换到 live
+- **WHEN** VPS shadow 验证通过并准备成为正式媒体生产者
+- **THEN** 旧 Cloudflare Media Queue consumer 在 live 切换前停止，避免出现两个正式写者
+
 ## MODIFIED Requirements
 
 ### Requirement: subject 缓存必须支持过期继续服务
@@ -247,17 +262,9 @@ VPS 媒体刷新 MUST 区分可重试网络/上游错误与 404 等终态，并�
 - **WHEN** 下一轮任务发生在 tombstone 到期前
 - **THEN** 系统不重复请求该 subject 详情
 
-#### Scenario: 上游网络或服务错误
-- **WHEN** 请求因 timeout、429 或 5xx 失败
-- **THEN** 系统保留旧数据并记录可重试状态而非 tombstone
-
-### Requirement: 相同媒体状态不得重复写入
-系统 MUST 在写 PostgreSQL 或 R2 前比较规范媒体内容；可复用且未变化时不得执行对应 UPDATE 或 object PUT。
-
-#### Scenario: 图片与 metadata 均可复用
-- **WHEN** hash、来源和刷新状态与权威记录相同
-- **THEN** 本轮不产生媒体行更新或图片 PUT
 ```
+
+Full source: openspec/changes/migrate-data-plane-to-vps/specs/cache-refresh-lifecycle/spec.md
 
 ## openspec/changes/migrate-data-plane-to-vps/specs/durable-sync-workflow/spec.md
 
@@ -650,8 +657,8 @@ CI MUST 记录实际 Node、Alpine、pnpm、base digest 和 git SHA，并发布�
 ## openspec/changes/migrate-data-plane-to-vps/specs/vps-data-sync-runtime/spec.md
 
 - Source: openspec/changes/migrate-data-plane-to-vps/specs/vps-data-sync-runtime/spec.md
-- Lines: 1-29
-- SHA256: 719624c312034b0fcbb46a77263e42ba28f1bddaaa7f0a4344fde4022b757ac4
+- Lines: 1-40
+- SHA256: 7e7a1e7ae0826a2f43e9c8851c20645bdd85ddab8a9371bdaaf46caddd0b8540
 
 ```md
 ## ADDED Requirements
@@ -683,5 +690,16 @@ CI MUST 记录实际 Node、Alpine、pnpm、base digest 和 git SHA，并发布�
 #### Scenario: 备份失败但发布成功
 - **WHEN** snapshot 已发布而数据库备份上传失败
 - **THEN** run 终态为 partial 且保留发布与备份各自结果
+
+### Requirement: 媒体部分失败不得阻塞主数据发布
+系统 MUST 在 collection 与 calendar 完整提交后独立处理媒体刷新；单个 detail、metadata 或 image 失败时 MUST 使用 PostgreSQL 中最后成功媒体状态构建 snapshot、将 run 标记 partial 并安排后续重试。
+
+#### Scenario: 单张图片刷新失败
+- **WHEN** collection 与 calendar 成功且一个 subject 图片下载或 R2 写入最终失败
+- **THEN** 系统使用该 subject 最后成功图片引用发布主 snapshot，run 为 partial，且失败图片进入有界重试状态
+
+#### Scenario: 新 subject 尚无成功图片
+- **WHEN** 新 subject 的图片刷新失败且数据库中没有 last-known-good 图片
+- **THEN** snapshot 使用明确的非 cached 图片状态，不得伪造 R2 引用或阻塞其余主数据发布
 ```
 
