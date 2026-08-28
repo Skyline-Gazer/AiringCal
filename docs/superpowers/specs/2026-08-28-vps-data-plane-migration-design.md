@@ -53,7 +53,7 @@ The scheduled path is:
 7. Authoritative collection/calendar state is committed in one database transaction.
 8. Due subject detail, metadata, and images are refreshed with bounded concurrency.
 9. The public snapshot is built from committed PostgreSQL state and published or classified no-change.
-10. A database backup is created and uploaded.
+10. A database backup is attempted only after snapshot publication succeeds or business content is verified unchanged. Runs that fail or skip before reaching either milestone do not trigger a backup. Media degradation does not suppress backup after a successful publication; backup failure independently contributes to a terminal partial result.
 11. A terminal run status is persisted and a Feishu message is attempted.
 12. The advisory lock and database pool are closed; the process exits with the documented status code.
 
@@ -82,6 +82,8 @@ The collection/calendar transaction begins only after all configured users and a
 
 The transaction upserts normalized subjects and collection items, records first missing observations, confirms deletion only under the canonical two-successful-complete-observations rule, replaces the current calendar set, and checkpoints the run. No network or R2 call occurs while this transaction is open.
 
+This rule already exists in `packages/domain/src/collection-diff.ts` (`planCollectionDiff`): the first complete missing observation persists `missing_since`, and a later distinct complete observation confirms `deleted_at`. The PostgreSQL implementation reuses that domain rule and must persist equivalent per-`(user_id, subject_id)` `missing_since`/`deleted_at` state transactionally; it must not introduce a separate consecutive-missing counter.
+
 The first release assumes a single scheduled writer but still uses row constraints and advisory locks so manual/replayed runs cannot corrupt state.
 
 ### 4.3 Migrations
@@ -93,6 +95,8 @@ Rollback deploys an older compatible image; it does not reverse or delete applie
 ## 5. Complete fetch and retry policy
 
 The existing bgm.tv API client and `docs/example/api/bgm-api.json` remain the endpoint/schema authority. Implementation must re-verify every endpoint, method, parameter, and authentication mode before adapting the client to the Node runtime.
+
+The Node adapter must disable the client's built-in retry by constructing `BgmClient` with `maxGetRetries: 0`, then apply the policy below in a single outer layer. The adapter also wraps `BgmHttpError`/`BgmTimeoutError`/`BgmNetworkError` so that persisted/notified errors carry only the sanitized fields below — never the client's raw message, which embeds URLs and response-body fragments.
 
 Retry classification is centralized:
 
@@ -107,6 +111,8 @@ Only sanitized category, stable code, attempt count, and stage are persisted or 
 ## 6. VPS-owned media lifecycle
 
 The VPS is the only producer for subject detail, metadata, and image R2 objects after cutover. The Cloudflare Media Worker and Queue remain live only during shadow migration and are stopped before the VPS becomes the live writer.
+
+During shadow mode the VPS writes media objects only under a `shadow/` namespace prefix and never to live `images/` keys; content-hash keys make live collisions harmless only after cutover, when the legacy Media Worker and Queue are stopped before the VPS becomes the live writer.
 
 Due media candidates use the existing deterministic refresh staggering and priority concepts. Refresh work uses bounded concurrency and a per-subject PostgreSQL row/advisory lock. Each candidate carries `observed_at` and `run_id`; a result older than the stored fence is obsolete before any database or R2 mutation.
 
@@ -135,6 +141,8 @@ snapshots/v1/<generation>-<content_hash>.json
 
 This avoids frontend projection changes and lets existing parser/shadow-compare tests remain authoritative.
 
+`PublicSnapshotV1.published_at` remains a Unix-second integer and is part of the public response shape; it is excluded from the canonical business payload and therefore never affects `content_hash`. The manifest's `published_at`/`source_observed_at` are UTC ISO-8601 strings derived from the same instant as the snapshot's numeric `published_at` and the run's `observed_at`. Identical business content fetched at a different wall-clock time produces the same `content_hash` and snapshot key.
+
 ### 7.2 Manifest contract
 
 R2 `public/manifest.json` is a new exact-key `PublicSnapshotManifestV1`:
@@ -152,7 +160,9 @@ interface PublicSnapshotManifestV1 {
 }
 ```
 
-Times are UTC ISO-8601 strings. `snapshot_key` must exactly match generation and hash. `item_count` must match snapshot summary total. `git_sha` is a full 40-character lowercase commit SHA.
+Times are UTC ISO-8601 strings. `snapshot_key` must exactly match generation and hash. `item_count` must match snapshot summary total. `git_sha` is a full 40-character lowercase commit SHA. `snapshot_key` embeds the snapshot's numeric generation and `content_hash`; the snapshot object's numeric `published_at` and the manifest's ISO `published_at` describe the same instant in different encodings.
+
+`git_sha` is injected at image build time as a Docker build `ARG GIT_SHA` baked into a compiled constant; the container has no `.git`. The same constant feeds the manifest, the backup manifest, and the Feishu message. CI passes `GITHUB_SHA`; local builds must supply it explicitly or the build fails.
 
 ### 7.3 Publication state machine
 
@@ -183,6 +193,8 @@ The public URL and response shapes remain unchanged. Public request handlers hav
 
 Backup runs after snapshot publication or a verified no-change result. The production image contains the minimum PostgreSQL client required for custom-format `pg_dump`/`pg_restore` compatibility.
 
+This condition is evaluated at the backup step, before the terminal run status is persisted; it is not conditioned on the final run status. A backup whose own upload or manifest step fails has still been attempted, and that failure contributes to a terminal `partial`.
+
 The task streams a dump through a bounded temporary directory, computes SHA-256 and byte count, uploads the dump, then uploads a JSON manifest containing database schema version, run ID, git SHA, creation time, object key, size, and checksum. Neither file contains connection details or application secrets outside the database's permitted business data.
 
 Retention selection is pure and testable: keep the newest 30 daily restore points and the chronologically last successful backup for every earlier calendar month. Cleanup lists an explicit backup prefix, validates each key against the backup-key grammar, and deletes only the computed set. Listing or parsing uncertainty disables deletion for that run.
@@ -203,12 +215,12 @@ Structured logs use the same sanitized event model and write to stdout/stderr fo
 
 The Dockerfile has dependency/build stages and two final targets:
 
-- `production`: official floating `node:alpine`, compiled application, production dependencies, CA certificates, and minimum PostgreSQL client/runtime libraries.
+- `production`: the official `node:alpine` tag resolved at build time (this floating tag tracks Node Current, not Active LTS), with its immutable digest recorded by CI, compiled application, production dependencies, CA certificates, and minimum PostgreSQL client/runtime libraries.
 - `debug`: extends production and adds only verified Alpine packages for HTTPS, DNS, TCP, process/network, and JSON diagnosis.
 
 Production excludes source, tests, TypeScript compiler, package-manager caches, git, curl, Python, editor, jq, DNS tools, and build toolchains. It runs as non-root with a read-only root filesystem, dropped capabilities, no privileged mode, no Docker socket, no port mapping, and a bounded writable temp mount.
 
-CI records the resolved base digest, Node, Alpine, pnpm, and full git SHA. It publishes production only as an immutable full-SHA GHCR tag plus non-authoritative discovery labels. Manual workflow dispatch may publish `<sha>-debug`. Compose rejects floating/debug production image references and uses a full SHA.
+CI records the resolved base digest, Node, Alpine, pnpm, and full git SHA. It publishes production only as an immutable full-SHA GHCR tag plus non-authoritative discovery labels. Manual workflow dispatch may publish `<sha>-debug`. Compose rejects floating/debug production image references and uses a full SHA. The recorded digest is informational for audit. The full-SHA image tag pinned in Compose provides deployment immutability and traceability for the published artifact; it does not guarantee byte-identical rebuilds from the floating base image.
 
 GitHub Actions builds and pushes only; it never connects to the VPS or production data services. Operators manually update the Compose SHA, pull, migrate, run shadow, and approve live operation.
 
