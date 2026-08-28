@@ -11,7 +11,7 @@ verify_mode: null
 auto_transition: true
 base_ref: 0e585986904a24419f4193f8e173fb68a3cce549
 design_doc: docs/superpowers/specs/2026-08-28-vps-data-plane-migration-design.md
-plan: null
+plan: docs/superpowers/plans/2026-08-28-vps-data-plane-migration.md
 verify_result: pending
 verification_report: null
 branch_status: pending
