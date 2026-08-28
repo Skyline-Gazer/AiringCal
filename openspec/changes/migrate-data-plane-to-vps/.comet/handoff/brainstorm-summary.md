@@ -12,6 +12,8 @@
 - 容器使用最新官方 `node:alpine`，production 最小化，debug 工具隔离到手动 target；GHCR production 使用完整 git SHA。
 - VPS 首版人工拉取和部署，不由 GitHub Actions SSH 自动发布。
 - 现有 `buildPublicSnapshot`、canonical hash、完整分页边界、shadow compare、R2 snapshot reader 与大量 failure-injection tests 可复用；Cloudflare D1/KV/Workflow/Queue/DO adapters 不进入新运行时。
+- VPS 是图片唯一生产者：下载、校验、SHA-256、去重、写 R2 和刷新状态均在 sync 容器完成；Cloudflare 只通过 R2 binding 读取并提供 CDN 缓存。
+- 单个 detail/metadata/image 刷新失败不阻塞收藏/calendar 发布；系统继续使用 PostgreSQL 中最后成功媒体状态，run 标记 `partial` 并在后续周期重试。
 
 ## 候选技术方案
 
@@ -21,13 +23,14 @@
 
 ## 待确认
 
-- 媒体 detail/metadata/image 刷新部分失败时，是允许使用最后成功媒体状态发布收藏/calendar snapshot 并将 run 标记 partial，还是阻塞整个公开发布。
+- 完整 Design phase 技术方案摘要的最终确认。
 
 ## 测试策略候选
 
 - 纯领域/协议单元测试继续使用 Node test runner。
 - PostgreSQL adapter 使用临时真实 PostgreSQL integration tests，不用 SQL mock 代替 transaction/advisory-lock 语义。
 - R2/飞书以端口 fake 做 failure injection，容器/GHCR 在 CI 做静态与运行时审计。
+- 媒体测试覆盖成功替换、内容相同 no-op、404 tombstone、瞬态失败保留旧图片、过期任务不得覆盖新状态，以及 partial run 仍发布主 snapshot。
 
 ## Spec Patch 候选
 
