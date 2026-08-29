@@ -984,6 +984,15 @@ test('adds run fences forward-only after the immutable initial schema', async ()
   assert.match(constraints, /CHECK \(\(observed_at IS NULL\) = \(observed_run_id IS NULL\)\)/)
 })
 
+test('keeps the real database secret probe on a fresh subject and proves the column scan completes', async () => {
+  const integrationSource = await readFile(new URL('./postgres.integration.test.ts', import.meta.url), 'utf8')
+
+  assert.match(integrationSource, /const SECRET_PROBE_SUBJECT_ID = 9_999_991/)
+  assert.match(integrationSource, /subject\(SECRET_PROBE_SUBJECT_ID\).*name: MARKER/s)
+  assert.match(integrationSource, /state\([^\n]+\[SECRET_PROBE_SUBJECT_ID\], \[\]\)/)
+  assert.match(integrationSource, /assert\.equal\(scannedColumns, columns\.rows\.length\)/)
+})
+
 function isSubjectOrCollectionWrite(call: QueryCall): boolean {
   return call.sql.startsWith('INSERT INTO subjects')
     || call.sql.startsWith('UPDATE subjects')

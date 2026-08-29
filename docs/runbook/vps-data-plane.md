@@ -24,7 +24,7 @@ docker run --rm -e POSTGRES_PASSWORD=test -p 54329:5432 postgres:17-alpine
 pnpm -F @airing-cal/vps-sync test:integration
 ```
 
-该 suite 会创建随机隔离 schema，真实执行 immutable `0001` → current migration、checksum/current-schema gate、session advisory lock、事务 rollback、calendar-only foreign key、canonical 删除/恢复与 unchanged-zero-write、media stale fence、publication claim/cleanup CAS，并扫描所有 text/JSON 列。未配置 `DATABASE_URL` 时命令必须以 `DATABASE_URL_REQUIRED_FOR_POSTGRES_INTEGRATION` 失败，不得 skip 或以 recording fake 冒充通过。CI 应使用带 health check 的 `postgres:17-alpine` service；测试结束后 suite 删除其随机 schema 并关闭 pool。本机未安装 Docker CLI 时，该真实 PostgreSQL 验证是环境前置条件。
+该 suite 会创建随机隔离 schema，真实执行 immutable `0001` → current migration、checksum/current-schema gate、session advisory lock、事务 rollback、calendar-only foreign key、canonical 删除/恢复与 unchanged-zero-write、media stale fence、publication claim/cleanup CAS，并扫描所有 text/JSON 列。secret probe 使用此前未出现的新 subject/hash 且不给 calendar 同 id projection，确保 marker 确实到达 persistence guard；全列扫描作为后续独立 subtest 执行并核对实际扫描列数。未配置 `DATABASE_URL` 时命令必须以 `DATABASE_URL_REQUIRED_FOR_POSTGRES_INTEGRATION` 失败，不得 skip 或以 recording fake 冒充通过。CI 应使用带 health check 的 `postgres:17-alpine` service；测试结束后 suite 删除其随机 schema 并关闭 pool。本机未安装 Docker CLI 时，该真实 PostgreSQL 验证是环境前置条件。
 
 ## 不可逆策略与回退
 

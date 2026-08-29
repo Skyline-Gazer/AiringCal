@@ -12,6 +12,7 @@ import {
 } from './repositories.ts'
 
 const MARKER = 'postgres-integration-secret-marker'
+const SECRET_PROBE_SUBJECT_ID = 9_999_991
 
 test('PostgreSQL integration exercises the real authority boundary', async (t) => {
   const databaseUrl = process.env.DATABASE_URL
@@ -257,18 +258,20 @@ test('PostgreSQL integration exercises the real authority boundary', async (t) =
       )
     })
 
-    await t.test('rejects markers at every JSON/text boundary and scans every stored text/json column', async () => {
-      await assert.rejects(() => authority.commitCompleteState({
-        ...state(runId(7), '2026-08-29T09:00:00.000Z', [1], [1]),
-        users: [{
-          id: userId(),
-          upstreamUserId: '42',
-          items: [{
-            subject: { ...subject(1), payload: { id: 1, name: MARKER } },
-            collection: collection(1),
-          }],
+    await t.test('rejects markers at every JSON/text boundary', async () => {
+      const secretProbe = state(runId(7), '2026-08-29T09:00:00.000Z', [SECRET_PROBE_SUBJECT_ID], [])
+      secretProbe.users = [{
+        id: userId(),
+        upstreamUserId: '42',
+        items: [{
+          subject: {
+            ...subject(SECRET_PROBE_SUBJECT_ID),
+            payload: { id: SECRET_PROBE_SUBJECT_ID, name: MARKER },
+          },
+          collection: collection(SECRET_PROBE_SUBJECT_ID),
         }],
-      }))
+      }]
+      await assert.rejects(() => authority.commitCompleteState(secretProbe))
       await assert.rejects(() => authority.applyMediaResult({
         subjectId: 1,
         detail: { name: MARKER },
@@ -299,7 +302,9 @@ test('PostgreSQL integration exercises the real authority boundary', async (t) =
         ...pending(runId(7), 2, 'd'),
         objectKey: `snapshots/${MARKER}`,
       }))
+    })
 
+    await t.test('scans every stored text/json column after the marker probes', async () => {
       const columns = await database!.query<{ table_name: string; column_name: string }>(`
         SELECT table_name, column_name
         FROM information_schema.columns
@@ -308,6 +313,7 @@ test('PostgreSQL integration exercises the real authority boundary', async (t) =
         ORDER BY table_name, ordinal_position
       `)
       assert.ok(columns.rows.length > 0)
+      let scannedColumns = 0
       for (const column of columns.rows) {
         assert.match(column.table_name, /^[a-z_]+$/)
         assert.match(column.column_name, /^[a-z_]+$/)
@@ -319,7 +325,9 @@ test('PostgreSQL integration exercises the real authority boundary', async (t) =
           [`%${MARKER}%`],
         )
         assert.equal(leaked.rows[0]?.leaked, false, `${column.table_name}.${column.column_name}`)
+        scannedColumns += 1
       }
+      assert.equal(scannedColumns, columns.rows.length)
     })
   } finally {
     if (database) await database.end()
