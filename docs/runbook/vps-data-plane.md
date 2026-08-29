@@ -6,7 +6,7 @@
 
 ## PostgreSQL authority 写入边界
 
-`PostgresAuthority` 是 VPS 运行时对 `users`、`subjects`、`collection_items`、`subject_media`、`calendar_entries`、`sync_runs` 与 `publications` 的唯一写入边界。构造 authority 时必须提供非空的 runtime secret 列表作为 persistence guard；调用方不得静默省略该列表。所有业务数据都通过参数化 SQL 和封闭的 normalized DTO 传入；access/refresh token、数据库 URL、webhook URL/secret、R2 credentials、原始 authorization header、raw error/response shape 或未脱敏上游响应不得进入任何 text/JSON 列。
+`PostgresAuthority` 是 VPS 运行时对 `users`、`subjects`、`collection_items`、`subject_media`、`calendar_entries`、`sync_runs` 与 `publications` 的唯一写入边界。构造 authority 时必须提供非空的 runtime secret 列表作为 persistence guard；调用方不得静默省略该列表。所有业务数据都通过参数化 SQL 和封闭的 normalized DTO 传入；repository 会在发起 query 前递归验证所有 JSON projection 的精确 nested keys、标量/枚举类型、有限数值和数组元素，而不依赖 TypeScript structural type。access/refresh token、数据库 URL、webhook URL/secret、R2 credentials、原始 authorization header、raw error/response shape 或未脱敏上游响应不得进入任何 text/JSON 列。
 
 完整 collection/calendar 观察在单个数据库事务中提交：先建立 collection 与 calendar-only 条目共同引用的规范化 subject，再复用 domain `planCollectionDiff` 只持久化 inserts、真实 updates、first-missing、confirmed-deleted 与 restored 集合，随后替换 calendar 并 checkpoint run。事务内不得发生上游、R2 或其他网络调用。对同一 `(user_id, subject_id)`，首次完整缺失只设置 `missing_since` 和追踪用 `missing_run_id`；只有 `observed_at > missing_since` 的后续完整观察才设置 `deleted_at`，run identity 不参与确认判断。同一 run 的更晚观察可以确认删除，不同 run 的相同或更旧观察不能确认；重新观察到条目会清除 missing/deleted 状态。subject/collection 内容未改变时不执行对应写入。
 

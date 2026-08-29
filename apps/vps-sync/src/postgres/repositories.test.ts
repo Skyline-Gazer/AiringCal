@@ -763,9 +763,7 @@ test('persists only the sanitized run error projection and parameterizes every b
       code: 'UPSTREAM_FAILURE',
       attemptCount: 3,
       stage: 'collection',
-      message: secret,
-      authorization: `Bearer ${secret}`,
-    } as never,
+    },
     components: { publication: 'not_attempted' },
   })
 
@@ -815,6 +813,116 @@ test('rejects raw response shapes across normalized state, media, and run DTOs',
     } as never),
     /FORBIDDEN_PERSISTENCE_SHAPE/,
   )
+})
+
+test('rejects opaque nested values and inexact shapes across complete-state JSON DTOs', async () => {
+  const invalidStates: CompleteStateInput[] = []
+
+  const images = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(images.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).images = {
+    common: null,
+    large: null,
+    opaque: { body: 'unsafe' },
+  }
+  invalidStates.push(images)
+
+  const rating = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(rating.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).rating = {
+    score: { opaque: 'unsafe' },
+    rank: 1,
+    total: 1,
+  }
+  invalidStates.push(rating)
+
+  const tags = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(tags.users[0]!.items[0]!.collection.payload as unknown as Record<string, unknown>).tags = [
+    'safe',
+    { opaque: 'unsafe' },
+  ]
+  invalidStates.push(tags)
+
+  const weekday = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(weekday.calendarEntries[0]!.payload.weekday as unknown as Record<string, unknown>).en = {
+    opaque: 'unsafe',
+  }
+  invalidStates.push(weekday)
+
+  for (const input of invalidStates) {
+    const pool = new RecordingPool()
+    await assert.rejects(
+      () => authority(pool).commitCompleteState(input),
+      /FORBIDDEN_PERSISTENCE_SHAPE/,
+    )
+    assert.equal(pool.database.calls.length, 0)
+  }
+})
+
+test('rejects opaque nested values and invalid scalars across media JSON DTOs', async () => {
+  const invalidMedia: MediaResultInput[] = [
+    mediaResult({ detail: { name: { opaque: 'unsafe' } } as never }),
+    mediaResult({
+      metadata: {
+        exists: true,
+        nsfw: false,
+        checked_at: Number.POSITIVE_INFINITY,
+        reason: 'subject_detail',
+      },
+    }),
+    mediaResult({
+      imageRefs: {
+        common: { hash: 'hash', uri: 'uri', r2_key: 'key', opaque: { body: 'unsafe' } },
+        large: null,
+      } as never,
+    }),
+    mediaResult({ status: { detail: { opaque: 'unsafe' } } as never }),
+  ]
+
+  for (const input of invalidMedia) {
+    const pool = new RecordingPool()
+    await assert.rejects(
+      () => authority(pool).applyMediaResult(input),
+      /FORBIDDEN_PERSISTENCE_SHAPE/,
+    )
+    assert.equal(pool.database.calls.length, 0)
+  }
+})
+
+test('rejects opaque nested values and invalid scalars across run JSON DTOs', async () => {
+  const invalidProjections = [
+    { counts: { users: { opaque: 'unsafe' } } },
+    { stageDurations: { collection: Number.NaN } },
+    { components: { publication: { opaque: 'unsafe' } } },
+    { sanitizedError: { category: { opaque: 'unsafe' }, code: 'E', attemptCount: 1, stage: 'collection' } },
+    {
+      sanitizedError: {
+        category: 'upstream',
+        code: 'E',
+        attemptCount: 1,
+        stage: 'collection',
+        opaque: { body: 'unsafe' },
+      },
+    },
+  ]
+
+  for (const projection of invalidProjections) {
+    const pool = new RecordingPool()
+    await assert.rejects(
+      () => authority(pool).finishRun({
+        id: RUN_1,
+        stage: 'finished',
+        status: 'failed',
+        heartbeatAt: '2026-08-28T02:00:00.000Z',
+        finishedAt: '2026-08-28T02:00:00.000Z',
+        counts: { users: 1 },
+        stageDurations: { collection: 100 },
+        sanitizedError: null,
+        components: { publication: 'failed' },
+        ...projection,
+      } as never),
+      /FORBIDDEN_PERSISTENCE_SHAPE/,
+    )
+    assert.equal(pool.database.calls.length, 0)
+  }
 })
 
 test('adds run fences forward-only after the immutable initial schema', async () => {
