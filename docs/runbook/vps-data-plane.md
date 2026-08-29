@@ -2,7 +2,7 @@
 
 ## PostgreSQL migration 前置条件
 
-`apps/vps-sync` 仅使用标准 TLS `DATABASE_URL` 连接 PostgreSQL。迁移运行器在开始业务同步前执行，并以独立 PostgreSQL session advisory lock 串行化；未获得该锁会失败退出，不能继续业务写入。
+`apps/vps-sync` 仅使用标准 TLS `DATABASE_URL` 连接 PostgreSQL。迁移运行器在开始业务同步前执行，并先取得独立 PostgreSQL session advisory lock，随后才在锁内 bootstrap/校验 `schema_migrations`、读取 history 和应用 migration tail；未获得该锁会失败退出，不能执行任何 bootstrap DDL 或继续业务写入。
 
 ## PostgreSQL authority 写入边界
 
@@ -24,7 +24,7 @@ docker run --rm -e POSTGRES_PASSWORD=test -p 54329:5432 postgres:17-alpine
 pnpm -F @airing-cal/vps-sync test:integration
 ```
 
-该 suite 会创建随机隔离 schema，真实执行 immutable `0001` → current migration、checksum/current-schema gate、session advisory lock、事务 rollback、calendar-only foreign key、canonical 删除/恢复与 unchanged-zero-write、media stale fence、publication claim/cleanup CAS，并扫描所有 text/JSON 列。secret probe 使用此前未出现的新 subject/hash 且不给 calendar 同 id projection，确保 marker 确实到达 persistence guard；全列扫描作为后续独立 subtest 执行并核对实际扫描列数。未配置 `DATABASE_URL` 时命令必须以 `DATABASE_URL_REQUIRED_FOR_POSTGRES_INTEGRATION` 失败，不得 skip 或以 recording fake 冒充通过。CI 应使用带 health check 的 `postgres:17-alpine` service；测试结束后 suite 删除其随机 schema 并关闭 pool。本机未安装 Docker CLI 时，该真实 PostgreSQL 验证是环境前置条件。
+该 suite 会创建随机隔离 schema，真实执行两个独立连接从完全空 schema 并发 cold-start migration、immutable `0001` → current upgrade、checksum/current-schema gate、session advisory lock、事务 rollback、calendar-only foreign key、canonical 删除/恢复与 unchanged-zero-write、media stale fence、publication claim/cleanup CAS，并扫描所有 text/JSON 列。secret probe 使用此前未出现的新 subject/hash 且不给 calendar 同 id projection，确保 marker 确实到达 persistence guard；全列扫描作为后续独立 subtest 执行并核对实际扫描列数。未配置 `DATABASE_URL` 时命令必须以 `DATABASE_URL_REQUIRED_FOR_POSTGRES_INTEGRATION` 失败，不得 skip 或以 recording fake 冒充通过。CI 应使用带 health check 的 `postgres:17-alpine` service；测试结束后 suite 删除其随机 schema 并关闭 pool。本机未安装 Docker CLI 时，该真实 PostgreSQL 验证是环境前置条件。
 
 ## 不可逆策略与回退
 

@@ -29,6 +29,48 @@ test('PostgreSQL integration exercises the real authority boundary', async (t) =
       max: 8,
     })
 
+    await t.test('serializes two migration connections from a completely empty schema', async () => {
+      const coldSchema = `vps_sync_cold_${randomUUID().replaceAll('-', '')}`
+      await admin.query(`CREATE SCHEMA "${coldSchema}"`)
+      const first = new Pool({
+        connectionString: databaseUrl,
+        options: `-c search_path=${coldSchema}`,
+        max: 1,
+      })
+      const second = new Pool({
+        connectionString: databaseUrl,
+        options: `-c search_path=${coldSchema}`,
+        max: 1,
+      })
+      try {
+        const before = await first.query<{ migration_table: string | null }>(
+          'SELECT to_regclass($1) AS migration_table',
+          ['schema_migrations'],
+        )
+        assert.equal(before.rows[0]?.migration_table, null)
+
+        const concurrent = await Promise.allSettled([
+          applyMigrations(first),
+          applyMigrations(second),
+        ])
+        assert.ok(concurrent.some((result) => result.status === 'fulfilled'))
+        for (const result of concurrent) {
+          if (result.status === 'rejected') assert.match(String(result.reason), /MIGRATION_LOCK_UNAVAILABLE/)
+        }
+        await assertCurrentSchema(first)
+        const applied = await first.query<{ name: string }>(
+          'SELECT name FROM schema_migrations ORDER BY name',
+        )
+        assert.deepEqual(applied.rows.map((row) => row.name), [
+          '0001_initial.sql',
+          '0002_authority_constraints.sql',
+        ])
+      } finally {
+        await Promise.all([first.end(), second.end()])
+        await admin.query(`DROP SCHEMA IF EXISTS "${coldSchema}" CASCADE`)
+      }
+    })
+
     await t.test('upgrades the immutable 0001 migration to the current schema', async () => {
       await assert.rejects(() => assertCurrentSchema(database!), /MIGRATION_SCHEMA_BEHIND/)
 
