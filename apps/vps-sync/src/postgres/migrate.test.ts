@@ -125,6 +125,17 @@ test('applies migrations in filename order and leaves a repeated run unchanged',
   assert.equal(pool.database.migrationSql.length, migrationSqlCount)
 })
 
+test('acquires the migration advisory lock before bootstrap DDL', async () => {
+  const pool = new FakePool()
+
+  await applyMigrations(asPool(pool))
+
+  const lockIndex = pool.database.statements.findIndex((sql) => sql.includes('pg_try_advisory_lock'))
+  const bootstrapIndex = pool.database.statements.findIndex((sql) => sql.includes('CREATE TABLE IF NOT EXISTS schema_migrations'))
+  assert.ok(lockIndex >= 0)
+  assert.ok(bootstrapIndex > lockIndex)
+})
+
 test('rejects a changed checksum for an applied migration', async () => {
   const pool = new FakePool()
   pool.database.migrations.set('0001_initial.sql', 'f'.repeat(64))

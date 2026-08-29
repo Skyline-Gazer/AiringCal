@@ -195,6 +195,8 @@ export type PublicationVerificationInput = {
   generation: number
   contentHash: string
   objectKey: string
+  runId: string
+  claimedAt: string
   verifiedAt: string
 }
 
@@ -262,13 +264,19 @@ const rawPersistenceFieldName = /^(?:raw[_-]?(?:error|response|body)|response(?:
 const subjectPayloadKeys = new Set([
   'id', 'type', 'name', 'name_cn', 'summary', 'nsfw', 'date', 'eps', 'total_episodes', 'images', 'rating',
 ])
+const subjectInputKeys = new Set(['id', 'subjectType', 'payload', 'contentHash', 'upstreamUpdatedAt'])
+const subjectImageKeys = new Set(['common', 'large'])
+const subjectRatingKeys = new Set(['score', 'rank', 'total'])
 const collectionPayloadKeys = new Set([
   'type', 'collection_type', 'rate', 'tags', 'comment', 'ep_status', 'vol_status', 'private',
 ])
+const collectionInputKeys = new Set(['payload', 'contentHash', 'upstreamUpdatedAt'])
 const calendarPayloadKeys = new Set(['weekday', 'subject_id'])
+const calendarWeekdayKeys = new Set(['id', 'en', 'cn', 'ja'])
 const mediaDetailKeys = new Set(['id', 'type', 'name', 'name_cn', 'summary', 'nsfw', 'date', 'eps', 'total_episodes'])
 const mediaMetadataKeys = new Set(['exists', 'nsfw', 'checked_at', 'expires_at', 'reason'])
 const mediaImageRefsKeys = new Set(['common', 'large'])
+const imageReferenceKeys = new Set(['hash', 'uri', 'r2_key'])
 const mediaStatusKeys = new Set(['detail', 'metadata', 'image'])
 const runCountKeys = new Set([
   'users', 'collections', 'inserted', 'updated', 'unchanged', 'missing', 'deleted', 'restored',
@@ -278,6 +286,26 @@ const runStageDurationKeys = new Set([
   'collection', 'calendar', 'completeState', 'media', 'publication', 'backup', 'notification',
 ])
 const runComponentKeys = new Set(['collection', 'calendar', 'media', 'publication', 'backup', 'notification'])
+const sanitizedErrorKeys = new Set(['category', 'code', 'attemptCount', 'stage'])
+const subjectPayloadRequiredKeys = new Set(['id', 'name'])
+const subjectInputRequiredKeys = new Set(subjectInputKeys)
+const subjectRatingRequiredKeys = new Set(subjectRatingKeys)
+const collectionInputRequiredKeys = new Set(collectionInputKeys)
+const calendarPayloadRequiredKeys = new Set(calendarPayloadKeys)
+const calendarWeekdayRequiredKeys = new Set(['id'])
+const mediaMetadataRequiredKeys = new Set(['exists', 'nsfw', 'checked_at', 'reason'])
+const mediaImageRefsRequiredKeys = new Set(mediaImageRefsKeys)
+const imageReferenceRequiredKeys = new Set(imageReferenceKeys)
+const sanitizedErrorRequiredKeys = new Set(sanitizedErrorKeys)
+const mediaComponentStatuses = new Set<MediaComponentStatus>([
+  'pending', 'success', 'failed', 'missing', 'not_found', 'not_modified',
+])
+const mediaMetadataReasons = new Set<MediaMetadata['reason']>([
+  'subject_detail', 'not_found', 'not_found_or_restricted', 'network_error', 'upstream_error',
+])
+const runComponentResults = new Set<RunComponentResult>([
+  'success', 'no_change', 'partial', 'failed', 'skipped', 'not_attempted',
+])
 
 export class PostgresAuthority {
   private readonly forbiddenValues: readonly string[]
@@ -510,13 +538,15 @@ export class PostgresAuthority {
   async verifyPublication(input: PublicationVerificationInput): Promise<PublicationState> {
     const result = await this.query<PublicationRow>(this.pool,
       `UPDATE publications SET verified_generation = $1, verified_content_hash = $2,
-        verified_object_key = $3, verified_at = $4, verified_run_id = pending_run_id,
+        verified_object_key = $3, verified_at = $6, verified_run_id = pending_run_id,
         pending_generation = NULL, pending_content_hash = NULL, pending_object_key = NULL,
         pending_run_id = NULL, pending_claimed_at = NULL, pending_created_at = NULL
        WHERE id = true AND pending_generation = $1 AND pending_content_hash = $2
-         AND pending_object_key = $3 AND pending_generation = verified_generation + 1
+         AND pending_object_key = $3 AND pending_run_id = $4
+         AND pending_claimed_at = $5 AND pending_claimed_at IS NOT NULL
+         AND pending_generation = verified_generation + 1
        RETURNING *`,
-      [input.generation, input.contentHash, input.objectKey, input.verifiedAt],
+      [input.generation, input.contentHash, input.objectKey, input.runId, input.claimedAt, input.verifiedAt],
     )
     if ((result.rowCount ?? 0) !== 1) throw new Error('PUBLICATION_GENERATION_CONFLICT')
     return parsePublicationRow(requiredRow(result.rows[0], 'PUBLICATION_STATE_MISSING'))
@@ -735,36 +765,266 @@ function toIsoTimestamp(value: number | null): string {
 }
 
 function assertCompleteStateInput(input: CompleteStateInput): void {
+  assertString(input.runId, 'runId')
   parseTimestamp(input.observedAt, 'observedAt')
-  for (const user of input.users) {
-    for (const item of user.items) {
-      assertOnlyKeys(item.subject.payload, subjectPayloadKeys, 'subject.payload')
-      assertOnlyKeys(item.collection.payload, collectionPayloadKeys, 'collection.payload')
+  assertArray(input.users, 'users')
+  for (const [userIndex, user] of input.users.entries()) {
+    const userPath = `users[${userIndex}]`
+    const userRecord = assertExactObject(user, new Set(['id', 'upstreamUserId', 'items']), new Set(['id', 'upstreamUserId', 'items']), userPath)
+    assertString(userRecord.id, `${userPath}.id`)
+    assertString(userRecord.upstreamUserId, `${userPath}.upstreamUserId`)
+    assertArray(userRecord.items, `${userPath}.items`)
+    for (const [itemIndex, item] of user.items.entries()) {
+      const itemPath = `${userPath}.items[${itemIndex}]`
+      const itemRecord = assertExactObject(item, new Set(['subject', 'collection']), new Set(['subject', 'collection']), itemPath)
+      assertSubjectInput(itemRecord.subject, `${itemPath}.subject`)
+      assertCollectionInput(itemRecord.collection, `${itemPath}.collection`)
     }
   }
-  for (const entry of input.calendarEntries) {
-    assertOnlyKeys(entry.subject.payload, subjectPayloadKeys, 'calendar.subject.payload')
-    assertOnlyKeys(entry.payload, calendarPayloadKeys, 'calendar.payload')
+  assertArray(input.calendarEntries, 'calendarEntries')
+  for (const [entryIndex, entry] of input.calendarEntries.entries()) {
+    const entryPath = `calendarEntries[${entryIndex}]`
+    const entryRecord = assertExactObject(
+      entry,
+      new Set(['weekdayId', 'subjectId', 'subject', 'payload']),
+      new Set(['weekdayId', 'subjectId', 'subject', 'payload']),
+      entryPath,
+    )
+    assertFiniteNumber(entryRecord.weekdayId, `${entryPath}.weekdayId`)
+    assertFiniteNumber(entryRecord.subjectId, `${entryPath}.subjectId`)
+    assertSubjectInput(entryRecord.subject, `${entryPath}.subject`)
+    assertCalendarPayload(entryRecord.payload, `${entryPath}.payload`)
   }
 }
 
 function assertMediaResultInput(input: MediaResultInput): void {
-  if (input.detail) assertOnlyKeys(input.detail, mediaDetailKeys, 'media.detail')
-  if (input.metadata) assertOnlyKeys(input.metadata, mediaMetadataKeys, 'media.metadata')
-  if (input.imageRefs) assertOnlyKeys(input.imageRefs, mediaImageRefsKeys, 'media.imageRefs')
-  assertOnlyKeys(input.status, mediaStatusKeys, 'media.status')
+  assertFiniteNumber(input.subjectId, 'media.subjectId')
+  if (input.detail !== null) assertMediaDetail(input.detail, 'media.detail')
+  if (input.metadata !== null) assertMediaMetadata(input.metadata, 'media.metadata')
+  if (input.imageRefs !== null) assertMediaImageRefs(input.imageRefs, 'media.imageRefs')
+  assertNullableString(input.detailHash, 'media.detailHash')
+  assertNullableString(input.metadataHash, 'media.metadataHash')
+  assertNullableString(input.imageHash, 'media.imageHash')
+  assertMediaStatus(input.status, 'media.status')
+  parseTimestamp(input.observedAt, 'media.observedAt')
+  assertString(input.runId, 'media.runId')
+  assertNullableTimestamp(input.nextRetryAt, 'media.nextRetryAt')
+  assertNullableTimestamp(input.deletedAt, 'media.deletedAt')
+  assertNullableTimestamp(input.lastSuccessAt, 'media.lastSuccessAt')
 }
 
 function assertRunFinishInput(input: RunFinishInput): void {
-  assertOnlyKeys(input.counts, runCountKeys, 'run.counts')
-  assertOnlyKeys(input.stageDurations, runStageDurationKeys, 'run.stageDurations')
-  assertOnlyKeys(input.components, runComponentKeys, 'run.components')
+  assertFiniteNumberMap(input.counts, runCountKeys, 'run.counts')
+  assertFiniteNumberMap(input.stageDurations, runStageDurationKeys, 'run.stageDurations')
+  if (input.sanitizedError !== null) assertSanitizedError(input.sanitizedError, 'run.sanitizedError')
+  const components = assertExactObject(input.components, runComponentKeys, new Set(), 'run.components')
+  for (const [key, value] of Object.entries(components)) {
+    assertEnum(value, runComponentResults, `run.components.${key}`)
+  }
 }
 
-function assertOnlyKeys(value: object, allowed: ReadonlySet<string>, path: string): void {
-  for (const key of Object.keys(value)) {
-    if (!allowed.has(key)) throw new Error(`FORBIDDEN_PERSISTENCE_SHAPE: ${path}.${key}`)
+function assertSubjectInput(value: unknown, path: string): void {
+  const subject = assertExactObject(value, subjectInputKeys, subjectInputRequiredKeys, path)
+  assertFiniteNumber(subject.id, `${path}.id`)
+  assertFiniteNumber(subject.subjectType, `${path}.subjectType`)
+  assertSubjectPayload(subject.payload, `${path}.payload`)
+  assertString(subject.contentHash, `${path}.contentHash`)
+  assertNullableTimestamp(subject.upstreamUpdatedAt, `${path}.upstreamUpdatedAt`)
+}
+
+function assertSubjectPayload(value: unknown, path: string): void {
+  const payload = assertExactObject(value, subjectPayloadKeys, subjectPayloadRequiredKeys, path)
+  assertFiniteNumber(payload.id, `${path}.id`)
+  assertOptionalFiniteNumber(payload, 'type', path)
+  assertString(payload.name, `${path}.name`)
+  assertOptionalString(payload, 'name_cn', path)
+  assertOptionalString(payload, 'summary', path)
+  assertOptionalBoolean(payload, 'nsfw', path)
+  assertOptionalString(payload, 'date', path)
+  assertOptionalFiniteNumber(payload, 'eps', path)
+  assertOptionalFiniteNumber(payload, 'total_episodes', path)
+  if (payload.images !== undefined) {
+    const images = assertExactObject(payload.images, subjectImageKeys, new Set(), `${path}.images`)
+    assertOptionalNullableString(images, 'common', `${path}.images`)
+    assertOptionalNullableString(images, 'large', `${path}.images`)
   }
+  if (payload.rating !== undefined) {
+    const rating = assertExactObject(
+      payload.rating,
+      subjectRatingKeys,
+      subjectRatingRequiredKeys,
+      `${path}.rating`,
+    )
+    assertFiniteNumber(rating.score, `${path}.rating.score`)
+    assertFiniteNumber(rating.rank, `${path}.rating.rank`)
+    assertFiniteNumber(rating.total, `${path}.rating.total`)
+  }
+}
+
+function assertCollectionInput(value: unknown, path: string): void {
+  const collection = assertExactObject(value, collectionInputKeys, collectionInputRequiredKeys, path)
+  assertCollectionPayload(collection.payload, `${path}.payload`)
+  assertString(collection.contentHash, `${path}.contentHash`)
+  assertNullableTimestamp(collection.upstreamUpdatedAt, `${path}.upstreamUpdatedAt`)
+}
+
+function assertCollectionPayload(value: unknown, path: string): void {
+  const payload = assertExactObject(value, collectionPayloadKeys, new Set(), path)
+  assertOptionalFiniteNumber(payload, 'type', path)
+  assertOptionalFiniteNumber(payload, 'collection_type', path)
+  assertOptionalNullableFiniteNumber(payload, 'rate', path)
+  if (payload.tags !== undefined) {
+    assertArray(payload.tags, `${path}.tags`)
+    payload.tags.forEach((tag, index) => assertString(tag, `${path}.tags[${index}]`))
+  }
+  assertOptionalString(payload, 'comment', path)
+  assertOptionalFiniteNumber(payload, 'ep_status', path)
+  assertOptionalFiniteNumber(payload, 'vol_status', path)
+  assertOptionalBoolean(payload, 'private', path)
+}
+
+function assertCalendarPayload(value: unknown, path: string): void {
+  const payload = assertExactObject(value, calendarPayloadKeys, calendarPayloadRequiredKeys, path)
+  const weekday = assertExactObject(
+    payload.weekday,
+    calendarWeekdayKeys,
+    calendarWeekdayRequiredKeys,
+    `${path}.weekday`,
+  )
+  assertFiniteNumber(weekday.id, `${path}.weekday.id`)
+  assertOptionalString(weekday, 'en', `${path}.weekday`)
+  assertOptionalString(weekday, 'cn', `${path}.weekday`)
+  assertOptionalString(weekday, 'ja', `${path}.weekday`)
+  assertFiniteNumber(payload.subject_id, `${path}.subject_id`)
+}
+
+function assertMediaDetail(value: unknown, path: string): void {
+  const detail = assertExactObject(value, mediaDetailKeys, new Set(), path)
+  assertOptionalFiniteNumber(detail, 'id', path)
+  assertOptionalFiniteNumber(detail, 'type', path)
+  assertOptionalString(detail, 'name', path)
+  assertOptionalString(detail, 'name_cn', path)
+  assertOptionalString(detail, 'summary', path)
+  assertOptionalBoolean(detail, 'nsfw', path)
+  assertOptionalString(detail, 'date', path)
+  assertOptionalFiniteNumber(detail, 'eps', path)
+  assertOptionalFiniteNumber(detail, 'total_episodes', path)
+}
+
+function assertMediaMetadata(value: unknown, path: string): void {
+  const metadata = assertExactObject(value, mediaMetadataKeys, mediaMetadataRequiredKeys, path)
+  if (metadata.exists !== null) assertBoolean(metadata.exists, `${path}.exists`)
+  assertBoolean(metadata.nsfw, `${path}.nsfw`)
+  assertFiniteNumber(metadata.checked_at, `${path}.checked_at`)
+  if (metadata.expires_at !== undefined && metadata.expires_at !== null) {
+    assertFiniteNumber(metadata.expires_at, `${path}.expires_at`)
+  }
+  assertEnum(metadata.reason, mediaMetadataReasons, `${path}.reason`)
+}
+
+function assertMediaImageRefs(value: unknown, path: string): void {
+  const refs = assertExactObject(value, mediaImageRefsKeys, mediaImageRefsRequiredKeys, path)
+  if (refs.common !== null) assertImageReference(refs.common, `${path}.common`)
+  if (refs.large !== null) assertImageReference(refs.large, `${path}.large`)
+}
+
+function assertImageReference(value: unknown, path: string): void {
+  const reference = assertExactObject(value, imageReferenceKeys, imageReferenceRequiredKeys, path)
+  assertString(reference.hash, `${path}.hash`)
+  assertString(reference.uri, `${path}.uri`)
+  assertString(reference.r2_key, `${path}.r2_key`)
+}
+
+function assertMediaStatus(value: unknown, path: string): void {
+  const status = assertExactObject(value, mediaStatusKeys, new Set(), path)
+  for (const [key, component] of Object.entries(status)) {
+    assertEnum(component, mediaComponentStatuses, `${path}.${key}`)
+  }
+}
+
+function assertSanitizedError(value: unknown, path: string): void {
+  const error = assertExactObject(value, sanitizedErrorKeys, sanitizedErrorRequiredKeys, path)
+  assertString(error.category, `${path}.category`)
+  assertString(error.code, `${path}.code`)
+  assertFiniteNumber(error.attemptCount, `${path}.attemptCount`)
+  assertString(error.stage, `${path}.stage`)
+}
+
+function assertFiniteNumberMap(value: unknown, allowed: ReadonlySet<string>, path: string): void {
+  const record = assertExactObject(value, allowed, new Set(), path)
+  for (const [key, item] of Object.entries(record)) assertFiniteNumber(item, `${path}.${key}`)
+}
+
+function assertExactObject(
+  value: unknown,
+  allowed: ReadonlySet<string>,
+  required: ReadonlySet<string>,
+  path: string,
+): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) invalidPersistenceShape(path)
+  const record = value as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (!allowed.has(key)) invalidPersistenceShape(`${path}.${key}`)
+  }
+  for (const key of required) {
+    if (!Object.hasOwn(record, key)) invalidPersistenceShape(`${path}.${key}`)
+  }
+  return record
+}
+
+function assertArray(value: unknown, path: string): asserts value is unknown[] {
+  if (!Array.isArray(value)) invalidPersistenceShape(path)
+}
+
+function assertFiniteNumber(value: unknown, path: string): void {
+  if (typeof value !== 'number' || !Number.isFinite(value)) invalidPersistenceShape(path)
+}
+
+function assertString(value: unknown, path: string): asserts value is string {
+  if (typeof value !== 'string') invalidPersistenceShape(path)
+}
+
+function assertNullableString(value: unknown, path: string): void {
+  if (value !== null) assertString(value, path)
+}
+
+function assertBoolean(value: unknown, path: string): void {
+  if (typeof value !== 'boolean') invalidPersistenceShape(path)
+}
+
+function assertOptionalFiniteNumber(record: Record<string, unknown>, key: string, path: string): void {
+  if (record[key] !== undefined) assertFiniteNumber(record[key], `${path}.${key}`)
+}
+
+function assertOptionalNullableFiniteNumber(record: Record<string, unknown>, key: string, path: string): void {
+  if (record[key] !== undefined && record[key] !== null) assertFiniteNumber(record[key], `${path}.${key}`)
+}
+
+function assertOptionalString(record: Record<string, unknown>, key: string, path: string): void {
+  if (record[key] !== undefined) assertString(record[key], `${path}.${key}`)
+}
+
+function assertOptionalNullableString(record: Record<string, unknown>, key: string, path: string): void {
+  if (record[key] !== undefined) assertNullableString(record[key], `${path}.${key}`)
+}
+
+function assertOptionalBoolean(record: Record<string, unknown>, key: string, path: string): void {
+  if (record[key] !== undefined) assertBoolean(record[key], `${path}.${key}`)
+}
+
+function assertNullableTimestamp(value: unknown, path: string): void {
+  if (value !== null) {
+    assertString(value, path)
+    parseTimestamp(value, path)
+  }
+}
+
+function assertEnum<T extends string>(value: unknown, allowed: ReadonlySet<T>, path: string): void {
+  if (typeof value !== 'string' || !allowed.has(value as T)) invalidPersistenceShape(path)
+}
+
+function invalidPersistenceShape(path: string): never {
+  throw new Error(`FORBIDDEN_PERSISTENCE_SHAPE: ${path}`)
 }
 
 function parsePublicationRow(row: PublicationRow): PublicationState {

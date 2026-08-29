@@ -259,12 +259,16 @@ class RecordingClient {
       const matches = publication.pendingGeneration === Number(values[0])
         && publication.pendingContentHash === String(values[1])
         && publication.pendingObjectKey === String(values[2])
+        && publication.pendingRunId === String(values[3])
+        && publication.pendingClaimedAt !== null
+        && publication.pendingClaimedAt === String(values[4])
+        && publication.pendingGeneration === publication.verifiedGeneration + 1
       if (!matches) return empty<Row>()
       Object.assign(publication, {
         verifiedGeneration: Number(values[0]),
         verifiedContentHash: String(values[1]),
         verifiedObjectKey: String(values[2]),
-        verifiedAt: String(values[3]),
+        verifiedAt: String(values[5]),
         verifiedRunId: publication.pendingRunId,
         pendingGeneration: null,
         pendingContentHash: null,
@@ -708,16 +712,57 @@ test('rejects a stale no-change cleanup caller after verified publication advanc
   )
 })
 
-test('verifies only the matching pending publication and advances exactly one generation', async () => {
+test('verifies only an exact claimed pending owner and safely replays that claim', async () => {
+  const unclaimedPool = new RecordingPool()
+  const unclaimedRepository = authority(unclaimedPool)
+  const candidate = pending()
+  const claimedAt = '2026-08-28T04:10:00.000Z'
+  await unclaimedRepository.savePendingPublication(candidate)
+
+  await assert.rejects(
+    () => unclaimedRepository.verifyPublication({
+      generation: candidate.generation,
+      contentHash: candidate.contentHash,
+      objectKey: candidate.objectKey,
+      runId: candidate.runId,
+      claimedAt,
+      verifiedAt: '2026-08-28T05:00:00.000Z',
+    }),
+    /PUBLICATION_GENERATION_CONFLICT/,
+  )
+
   const pool = new RecordingPool()
   const repository = authority(pool)
-  const candidate = pending()
   await repository.savePendingPublication(candidate)
-
-  const state = await repository.verifyPublication({
+  const claim = {
     generation: candidate.generation,
     contentHash: candidate.contentHash,
     objectKey: candidate.objectKey,
+    runId: candidate.runId,
+    claimedAt,
+  }
+  await repository.claimPendingPublication(claim)
+  assert.equal((await repository.claimPendingPublication(claim)).pendingClaimedAt, claimedAt)
+
+  await assert.rejects(
+    () => repository.verifyPublication({
+      ...claim,
+      runId: RUN_2,
+      verifiedAt: '2026-08-28T05:00:00.000Z',
+    }),
+    /PUBLICATION_GENERATION_CONFLICT/,
+  )
+  await assert.rejects(
+    () => repository.verifyPublication({
+      ...claim,
+      claimedAt: '2026-08-28T04:11:00.000Z',
+      verifiedAt: '2026-08-28T05:00:00.000Z',
+    }),
+    /PUBLICATION_GENERATION_CONFLICT/,
+  )
+
+  const state = await repository.verifyPublication({
+    ...claim,
     verifiedAt: '2026-08-28T05:00:00.000Z',
   })
   assert.equal(state.verifiedGeneration, 1)
@@ -729,6 +774,8 @@ test('verifies only the matching pending publication and advances exactly one ge
       generation: 2,
       contentHash: 'd'.repeat(64),
       objectKey: `public/snapshots/2-${'d'.repeat(64)}.json`,
+      runId: RUN_2,
+      claimedAt: '2026-08-28T05:10:00.000Z',
       verifiedAt: '2026-08-28T06:00:00.000Z',
     }),
     /PUBLICATION_GENERATION_CONFLICT/,
@@ -763,9 +810,7 @@ test('persists only the sanitized run error projection and parameterizes every b
       code: 'UPSTREAM_FAILURE',
       attemptCount: 3,
       stage: 'collection',
-      message: secret,
-      authorization: `Bearer ${secret}`,
-    } as never,
+    },
     components: { publication: 'not_attempted' },
   })
 
@@ -817,6 +862,116 @@ test('rejects raw response shapes across normalized state, media, and run DTOs',
   )
 })
 
+test('rejects opaque nested values and inexact shapes across complete-state JSON DTOs', async () => {
+  const invalidStates: CompleteStateInput[] = []
+
+  const images = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(images.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).images = {
+    common: null,
+    large: null,
+    opaque: { body: 'unsafe' },
+  }
+  invalidStates.push(images)
+
+  const rating = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(rating.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).rating = {
+    score: { opaque: 'unsafe' },
+    rank: 1,
+    total: 1,
+  }
+  invalidStates.push(rating)
+
+  const tags = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(tags.users[0]!.items[0]!.collection.payload as unknown as Record<string, unknown>).tags = [
+    'safe',
+    { opaque: 'unsafe' },
+  ]
+  invalidStates.push(tags)
+
+  const weekday = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(weekday.calendarEntries[0]!.payload.weekday as unknown as Record<string, unknown>).en = {
+    opaque: 'unsafe',
+  }
+  invalidStates.push(weekday)
+
+  for (const input of invalidStates) {
+    const pool = new RecordingPool()
+    await assert.rejects(
+      () => authority(pool).commitCompleteState(input),
+      /FORBIDDEN_PERSISTENCE_SHAPE/,
+    )
+    assert.equal(pool.database.calls.length, 0)
+  }
+})
+
+test('rejects opaque nested values and invalid scalars across media JSON DTOs', async () => {
+  const invalidMedia: MediaResultInput[] = [
+    mediaResult({ detail: { name: { opaque: 'unsafe' } } as never }),
+    mediaResult({
+      metadata: {
+        exists: true,
+        nsfw: false,
+        checked_at: Number.POSITIVE_INFINITY,
+        reason: 'subject_detail',
+      },
+    }),
+    mediaResult({
+      imageRefs: {
+        common: { hash: 'hash', uri: 'uri', r2_key: 'key', opaque: { body: 'unsafe' } },
+        large: null,
+      } as never,
+    }),
+    mediaResult({ status: { detail: { opaque: 'unsafe' } } as never }),
+  ]
+
+  for (const input of invalidMedia) {
+    const pool = new RecordingPool()
+    await assert.rejects(
+      () => authority(pool).applyMediaResult(input),
+      /FORBIDDEN_PERSISTENCE_SHAPE/,
+    )
+    assert.equal(pool.database.calls.length, 0)
+  }
+})
+
+test('rejects opaque nested values and invalid scalars across run JSON DTOs', async () => {
+  const invalidProjections = [
+    { counts: { users: { opaque: 'unsafe' } } },
+    { stageDurations: { collection: Number.NaN } },
+    { components: { publication: { opaque: 'unsafe' } } },
+    { sanitizedError: { category: { opaque: 'unsafe' }, code: 'E', attemptCount: 1, stage: 'collection' } },
+    {
+      sanitizedError: {
+        category: 'upstream',
+        code: 'E',
+        attemptCount: 1,
+        stage: 'collection',
+        opaque: { body: 'unsafe' },
+      },
+    },
+  ]
+
+  for (const projection of invalidProjections) {
+    const pool = new RecordingPool()
+    await assert.rejects(
+      () => authority(pool).finishRun({
+        id: RUN_1,
+        stage: 'finished',
+        status: 'failed',
+        heartbeatAt: '2026-08-28T02:00:00.000Z',
+        finishedAt: '2026-08-28T02:00:00.000Z',
+        counts: { users: 1 },
+        stageDurations: { collection: 100 },
+        sanitizedError: null,
+        components: { publication: 'failed' },
+        ...projection,
+      } as never),
+      /FORBIDDEN_PERSISTENCE_SHAPE/,
+    )
+    assert.equal(pool.database.calls.length, 0)
+  }
+})
+
 test('adds run fences forward-only after the immutable initial schema', async () => {
   const initial = await readFile(new URL('./migrations/0001_initial.sql', import.meta.url), 'utf8')
   const constraints = await readFile(new URL('./migrations/0002_authority_constraints.sql', import.meta.url), 'utf8')
@@ -827,6 +982,15 @@ test('adds run fences forward-only after the immutable initial schema', async ()
   assert.match(constraints, /CHECK \(\(missing_since IS NULL\) = \(missing_run_id IS NULL\)\)/)
   assert.match(constraints, /observed_run_id uuid REFERENCES sync_runs\(id\)/)
   assert.match(constraints, /CHECK \(\(observed_at IS NULL\) = \(observed_run_id IS NULL\)\)/)
+})
+
+test('keeps the real database secret probe on a fresh subject and proves the column scan completes', async () => {
+  const integrationSource = await readFile(new URL('./postgres.integration.test.ts', import.meta.url), 'utf8')
+
+  assert.match(integrationSource, /const SECRET_PROBE_SUBJECT_ID = 9_999_991/)
+  assert.match(integrationSource, /subject\(SECRET_PROBE_SUBJECT_ID\).*name: MARKER/s)
+  assert.match(integrationSource, /state\([^\n]+\[SECRET_PROBE_SUBJECT_ID\], \[\]\)/)
+  assert.match(integrationSource, /assert\.equal\(scannedColumns, columns\.rows\.length\)/)
 })
 
 function isSubjectOrCollectionWrite(call: QueryCall): boolean {

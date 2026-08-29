@@ -45,15 +45,14 @@ export async function withSessionLock<T>(
 export async function applyMigrations(pool: Pool): Promise<void> {
   const client = await pool.connect()
   try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-        name text PRIMARY KEY,
-        checksum text NOT NULL,
-        applied_at timestamptz NOT NULL DEFAULT now()
-      )
-    `)
-
     const lock = await withSessionLock(client, MIGRATION_LOCK_KEY, async () => {
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          name text PRIMARY KEY,
+          checksum text NOT NULL,
+          applied_at timestamptz NOT NULL DEFAULT now()
+        )
+      `)
       const [migrations, appliedResult] = await Promise.all([
         loadMigrations(),
         client.query<AppliedMigration>('SELECT name, checksum FROM schema_migrations ORDER BY name'),
