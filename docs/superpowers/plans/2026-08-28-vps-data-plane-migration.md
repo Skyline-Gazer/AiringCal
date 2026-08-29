@@ -68,12 +68,14 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 
 **Files:**
 - Create: `apps/vps-sync/src/postgres/repositories.ts`, `apps/vps-sync/src/postgres/repositories.test.ts`
-- Modify: `apps/vps-sync/src/postgres/migrations/0001_initial.sql`, `docs/runbook/vps-data-plane.md`
+- Create: `apps/vps-sync/src/postgres/migrations/0002_authority_constraints.sql`, `apps/vps-sync/src/postgres/postgres.integration.test.ts`, `apps/vps-sync/tsconfig.build.json`
+- Modify: `apps/vps-sync/package.json`, `apps/vps-sync/src/postgres/migrate.ts`, `apps/vps-sync/src/postgres/migrate.test.ts`, `docs/runbook/vps-data-plane.md`
+- Preserve byte-for-byte: `apps/vps-sync/src/postgres/migrations/0001_initial.sql` as committed by Task 1.1; all later schema changes are forward-only migrations
 
 **Interfaces:**
 - Produces: `PostgresAuthority` methods `beginRun`、`commitCompleteState`、`listDueMedia`、`applyMediaResult`、`getPublicationState`、`savePendingPublication`、`verifyPublication`、`finishRun`；rows use `users/subjects/collection_items/subject_media/calendar_entries/sync_runs/publications`.
 
-- [ ] **Step 1: RED tests** — 用真实临时 PG 验证完整 transaction rollback、两次完整 observation 才确认删除、恢复条目取消 missing、旧 `observed_at/run_id` media 写入被拒、pending replay/generation conflict、所有 text/json 列扫描不到测试 secrets。
+- [ ] **Step 1: RED tests** — 用真实临时 PG 验证从不可变 `0001` 升级到最新 schema、完整 transaction rollback、calendar-only subject 外键、两次完整 observation 才确认删除、恢复条目取消 missing、旧 `observed_at/run_id` media 写入被拒、pending replay/generation conflict、所有 text/json 列扫描不到测试 secrets；integration suite 必须在配置的 PostgreSQL 门禁中 fail-closed，不得用 SQL recording fake 代替。
   ```ts
   await authority.commitCompleteState(firstMissing)
   assert.equal(await authority.collectionExists('u', 1), true)
