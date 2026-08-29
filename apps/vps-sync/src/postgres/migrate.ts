@@ -20,6 +20,10 @@ type AppliedMigration = {
   checksum: string
 }
 
+type MigrationTableResult = {
+  migration_table: string | null
+}
+
 export async function withSessionLock<T>(
   client: PoolClient,
   key: bigint,
@@ -54,26 +58,42 @@ export async function applyMigrations(pool: Pool): Promise<void> {
         loadMigrations(),
         client.query<AppliedMigration>('SELECT name, checksum FROM schema_migrations ORDER BY name'),
       ])
-      const migrationsByName = new Map(migrations.map((migration) => [migration.name, migration]))
+      validateMigrationPrefix(migrations, appliedResult.rows)
 
-      for (const applied of appliedResult.rows) {
-        const migration = migrationsByName.get(applied.name)
-        if (!migration) {
-          throw new Error(`MIGRATION_SCHEMA_AHEAD: ${applied.name} is not supported by this application`)
-        }
-        if (migration.checksum !== applied.checksum) {
-          throw new Error(`MIGRATION_CHECKSUM_MISMATCH: ${migration.name}`)
-        }
-      }
-
-      const appliedNames = new Set(appliedResult.rows.map((migration) => migration.name))
-      for (const migration of migrations) {
-        if (appliedNames.has(migration.name)) continue
+      for (const migration of migrations.slice(appliedResult.rows.length)) {
         await applyMigration(client, migration)
       }
     })
 
     if (!lock.acquired) throw new Error('MIGRATION_LOCK_UNAVAILABLE')
+  } finally {
+    client.release()
+  }
+}
+
+export async function assertCurrentSchema(pool: Pool): Promise<void> {
+  const client = await pool.connect()
+  try {
+    const [migrations, tableResult] = await Promise.all([
+      loadMigrations(),
+      client.query<MigrationTableResult>(
+        'SELECT to_regclass($1) AS migration_table',
+        ['schema_migrations'],
+      ),
+    ])
+    if (tableResult.rows[0]?.migration_table === null) {
+      throw new Error(`MIGRATION_SCHEMA_BEHIND: expected ${migrations.length} migrations, found 0`)
+    }
+
+    const appliedResult = await client.query<AppliedMigration>(
+      'SELECT name, checksum FROM schema_migrations ORDER BY name',
+    )
+    validateMigrationPrefix(migrations, appliedResult.rows)
+    if (appliedResult.rows.length < migrations.length) {
+      throw new Error(
+        `MIGRATION_SCHEMA_BEHIND: expected ${migrations.length} migrations, found ${appliedResult.rows.length}`,
+      )
+    }
   } finally {
     client.release()
   }
@@ -96,8 +116,10 @@ async function loadMigrations(): Promise<Migration[]> {
 }
 
 async function applyMigration(client: PoolClient, migration: Migration): Promise<void> {
-  await client.query('BEGIN')
+  let began = false
   try {
+    await client.query('BEGIN')
+    began = true
     await client.query(migration.sql)
     await client.query(
       'INSERT INTO schema_migrations (name, checksum) VALUES ($1, $2)',
@@ -105,7 +127,32 @@ async function applyMigration(client: PoolClient, migration: Migration): Promise
     )
     await client.query('COMMIT')
   } catch (error) {
-    await client.query('ROLLBACK')
+    if (began) {
+      try {
+        await client.query('ROLLBACK')
+      } catch {
+        // Preserve the primary migration/commit failure; pool release closes any broken session.
+      }
+    }
     throw error
+  }
+}
+
+function validateMigrationPrefix(
+  migrations: readonly Migration[],
+  appliedMigrations: readonly AppliedMigration[],
+): void {
+  const knownNames = new Set(migrations.map((migration) => migration.name))
+  for (const [index, applied] of appliedMigrations.entries()) {
+    const expected = migrations[index]
+    if (expected === undefined || !knownNames.has(applied.name)) {
+      throw new Error(`MIGRATION_SCHEMA_AHEAD: ${applied.name} is not supported by this application`)
+    }
+    if (applied.name !== expected.name) {
+      throw new Error(`MIGRATION_HISTORY_GAP: expected ${expected.name} before ${applied.name}`)
+    }
+    if (expected.checksum !== applied.checksum) {
+      throw new Error(`MIGRATION_CHECKSUM_MISMATCH: ${expected.name}`)
+    }
   }
 }

@@ -16,6 +16,41 @@ CREATE TABLE subjects (
   deleted_at timestamptz
 );
 
+CREATE TABLE collection_items (
+  user_id uuid NOT NULL REFERENCES users(id),
+  subject_id bigint NOT NULL REFERENCES subjects(id),
+  payload jsonb NOT NULL,
+  content_hash text NOT NULL,
+  upstream_updated_at timestamptz,
+  missing_since timestamptz,
+  deleted_at timestamptz,
+  observed_at timestamptz NOT NULL,
+  PRIMARY KEY (user_id, subject_id)
+);
+
+CREATE TABLE subject_media (
+  subject_id bigint PRIMARY KEY REFERENCES subjects(id),
+  detail jsonb,
+  metadata jsonb,
+  image_refs jsonb,
+  detail_hash text,
+  metadata_hash text,
+  image_hash text,
+  status jsonb NOT NULL DEFAULT '{}'::jsonb,
+  observed_at timestamptz,
+  next_retry_at timestamptz,
+  deleted_at timestamptz,
+  last_success_at timestamptz
+);
+
+CREATE TABLE calendar_entries (
+  weekday_id integer NOT NULL,
+  subject_id bigint NOT NULL REFERENCES subjects(id),
+  payload jsonb NOT NULL,
+  observed_at timestamptz NOT NULL,
+  PRIMARY KEY (weekday_id, subject_id)
+);
+
 CREATE TABLE sync_runs (
   id uuid PRIMARY KEY,
   source text NOT NULL,
@@ -30,45 +65,6 @@ CREATE TABLE sync_runs (
   git_sha text NOT NULL,
   sanitized_error jsonb,
   components jsonb NOT NULL DEFAULT '{}'::jsonb
-);
-
-CREATE TABLE collection_items (
-  user_id uuid NOT NULL REFERENCES users(id),
-  subject_id bigint NOT NULL REFERENCES subjects(id),
-  payload jsonb NOT NULL,
-  content_hash text NOT NULL,
-  upstream_updated_at timestamptz,
-  missing_since timestamptz,
-  missing_run_id uuid REFERENCES sync_runs(id),
-  deleted_at timestamptz,
-  observed_at timestamptz NOT NULL,
-  CHECK ((missing_since IS NULL) = (missing_run_id IS NULL)),
-  PRIMARY KEY (user_id, subject_id)
-);
-
-CREATE TABLE subject_media (
-  subject_id bigint PRIMARY KEY REFERENCES subjects(id),
-  detail jsonb,
-  metadata jsonb,
-  image_refs jsonb,
-  detail_hash text,
-  metadata_hash text,
-  image_hash text,
-  status jsonb NOT NULL DEFAULT '{}'::jsonb,
-  observed_at timestamptz,
-  observed_run_id uuid REFERENCES sync_runs(id),
-  next_retry_at timestamptz,
-  deleted_at timestamptz,
-  last_success_at timestamptz,
-  CHECK ((observed_at IS NULL) = (observed_run_id IS NULL))
-);
-
-CREATE TABLE calendar_entries (
-  weekday_id integer NOT NULL,
-  subject_id bigint NOT NULL REFERENCES subjects(id),
-  payload jsonb NOT NULL,
-  observed_at timestamptz NOT NULL,
-  PRIMARY KEY (weekday_id, subject_id)
 );
 
 CREATE TABLE publications (

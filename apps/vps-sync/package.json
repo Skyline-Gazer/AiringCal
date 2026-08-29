@@ -4,12 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "rm -rf dist && tsc --outDir dist && rm dist/postgres/migrate.test.js && cp -R src/postgres/migrations dist/postgres/migrations",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && cp -R src/postgres/migrations dist/postgres/migrations",
     "build:check": "tsc --noEmit",
-    "test": "tsx --test",
+    "test": "tsx --test --test-skip-pattern=PostgreSQL",
+    "test:integration": "tsx --test src/postgres/postgres.integration.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@airing-cal/domain": "workspace:*",
     "pg": "^8.23.0"
   },
   "devDependencies": {
