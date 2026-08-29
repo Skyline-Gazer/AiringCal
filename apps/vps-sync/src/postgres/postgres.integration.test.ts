@@ -200,13 +200,38 @@ test('PostgreSQL integration exercises the real authority boundary', async (t) =
 
       const candidate = pending(runId(7), 1, 'a')
       await authority.savePendingPublication(candidate)
-      const claimed = await authority.claimPendingPublication({
+      const claim = {
         generation: 1,
         contentHash: candidate.contentHash,
         objectKey: candidate.objectKey,
         runId: candidate.runId,
         claimedAt: '2026-08-29T07:30:00.000Z',
-      })
+      }
+      await assert.rejects(
+        () => authority.verifyPublication({
+          ...claim,
+          verifiedAt: '2026-08-29T08:00:00.000Z',
+        }),
+        /PUBLICATION_GENERATION_CONFLICT/,
+      )
+      const claimed = await authority.claimPendingPublication(claim)
+      assert.equal((await authority.claimPendingPublication(claim)).pendingClaimedAt, claim.claimedAt)
+      await assert.rejects(
+        () => authority.verifyPublication({
+          ...claim,
+          runId: runId(6),
+          verifiedAt: '2026-08-29T08:00:00.000Z',
+        }),
+        /PUBLICATION_GENERATION_CONFLICT/,
+      )
+      await assert.rejects(
+        () => authority.verifyPublication({
+          ...claim,
+          claimedAt: '2026-08-29T07:31:00.000Z',
+          verifiedAt: '2026-08-29T08:00:00.000Z',
+        }),
+        /PUBLICATION_GENERATION_CONFLICT/,
+      )
       assert.equal(claimed.pendingClaimedAt, '2026-08-29T07:30:00.000Z')
       await assert.rejects(
         () => authority.savePendingPublication(pending(runId(6), 1, 'b')),
@@ -217,9 +242,7 @@ test('PostgreSQL integration exercises the real authority boundary', async (t) =
         verifiedContentHash: null,
       })).pendingGeneration, 1)
       await authority.verifyPublication({
-        generation: 1,
-        contentHash: candidate.contentHash,
-        objectKey: candidate.objectKey,
+        ...claim,
         verifiedAt: '2026-08-29T08:00:00.000Z',
       })
 

@@ -195,6 +195,8 @@ export type PublicationVerificationInput = {
   generation: number
   contentHash: string
   objectKey: string
+  runId: string
+  claimedAt: string
   verifiedAt: string
 }
 
@@ -536,13 +538,15 @@ export class PostgresAuthority {
   async verifyPublication(input: PublicationVerificationInput): Promise<PublicationState> {
     const result = await this.query<PublicationRow>(this.pool,
       `UPDATE publications SET verified_generation = $1, verified_content_hash = $2,
-        verified_object_key = $3, verified_at = $4, verified_run_id = pending_run_id,
+        verified_object_key = $3, verified_at = $6, verified_run_id = pending_run_id,
         pending_generation = NULL, pending_content_hash = NULL, pending_object_key = NULL,
         pending_run_id = NULL, pending_claimed_at = NULL, pending_created_at = NULL
        WHERE id = true AND pending_generation = $1 AND pending_content_hash = $2
-         AND pending_object_key = $3 AND pending_generation = verified_generation + 1
+         AND pending_object_key = $3 AND pending_run_id = $4
+         AND pending_claimed_at = $5 AND pending_claimed_at IS NOT NULL
+         AND pending_generation = verified_generation + 1
        RETURNING *`,
-      [input.generation, input.contentHash, input.objectKey, input.verifiedAt],
+      [input.generation, input.contentHash, input.objectKey, input.runId, input.claimedAt, input.verifiedAt],
     )
     if ((result.rowCount ?? 0) !== 1) throw new Error('PUBLICATION_GENERATION_CONFLICT')
     return parsePublicationRow(requiredRow(result.rows[0], 'PUBLICATION_STATE_MISSING'))

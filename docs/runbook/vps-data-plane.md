@@ -10,7 +10,7 @@
 
 完整 collection/calendar 观察在单个数据库事务中提交：先建立 collection 与 calendar-only 条目共同引用的规范化 subject，再复用 domain `planCollectionDiff` 只持久化 inserts、真实 updates、first-missing、confirmed-deleted 与 restored 集合，随后替换 calendar 并 checkpoint run。事务内不得发生上游、R2 或其他网络调用。对同一 `(user_id, subject_id)`，首次完整缺失只设置 `missing_since` 和追踪用 `missing_run_id`；只有 `observed_at > missing_since` 的后续完整观察才设置 `deleted_at`，run identity 不参与确认判断。同一 run 的更晚观察可以确认删除，不同 run 的相同或更旧观察不能确认；重新观察到条目会清除 missing/deleted 状态。subject/collection 内容未改变时不执行对应写入。
 
-`subject_media` 同时保存 `observed_at` 与 `observed_run_id` fence。较旧的 observation 不得覆盖 last-known-good detail、metadata 或 image references。publication 只有一个 verified state 和至多一个 pending state：`savePendingPublication` 只保存 unclaimed candidate，`claimPendingPublication` 以 generation/hash/key/run identity 做条件 claim，`clearUnclaimedPending` 只在 verified generation/hash 仍与 no-change caller 一致时清除 unclaimed pending。claimed pending 不可替换或被 no-change cleanup 清除；verified promotion 必须匹配 pending 的 generation、hash 与 object key，并且只能前进一步。
+`subject_media` 同时保存 `observed_at` 与 `observed_run_id` fence。较旧的 observation 不得覆盖 last-known-good detail、metadata 或 image references。publication 只有一个 verified state 和至多一个 pending state：`savePendingPublication` 只保存 unclaimed candidate，`claimPendingPublication` 以 generation/hash/key/run identity 做条件 claim，exact replay 必须复用相同的 persisted `claimed_at` identity；`clearUnclaimedPending` 只在 verified generation/hash 仍与 no-change caller 一致时清除 unclaimed pending。claimed pending 不可替换或被 no-change cleanup 清除；verified promotion 必须匹配 pending 的 generation、hash、object key、run 与 `claimed_at`，未 claim、wrong-run 或 wrong-claim caller 均不得 promotion，并且 generation 只能前进一步。
 
 迁移集成验证需要 PostgreSQL 17。Docker 可用的环境可以启动一次性实例：
 

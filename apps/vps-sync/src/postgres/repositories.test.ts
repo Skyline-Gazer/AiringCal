@@ -259,12 +259,16 @@ class RecordingClient {
       const matches = publication.pendingGeneration === Number(values[0])
         && publication.pendingContentHash === String(values[1])
         && publication.pendingObjectKey === String(values[2])
+        && publication.pendingRunId === String(values[3])
+        && publication.pendingClaimedAt !== null
+        && publication.pendingClaimedAt === String(values[4])
+        && publication.pendingGeneration === publication.verifiedGeneration + 1
       if (!matches) return empty<Row>()
       Object.assign(publication, {
         verifiedGeneration: Number(values[0]),
         verifiedContentHash: String(values[1]),
         verifiedObjectKey: String(values[2]),
-        verifiedAt: String(values[3]),
+        verifiedAt: String(values[5]),
         verifiedRunId: publication.pendingRunId,
         pendingGeneration: null,
         pendingContentHash: null,
@@ -708,16 +712,57 @@ test('rejects a stale no-change cleanup caller after verified publication advanc
   )
 })
 
-test('verifies only the matching pending publication and advances exactly one generation', async () => {
+test('verifies only an exact claimed pending owner and safely replays that claim', async () => {
+  const unclaimedPool = new RecordingPool()
+  const unclaimedRepository = authority(unclaimedPool)
+  const candidate = pending()
+  const claimedAt = '2026-08-28T04:10:00.000Z'
+  await unclaimedRepository.savePendingPublication(candidate)
+
+  await assert.rejects(
+    () => unclaimedRepository.verifyPublication({
+      generation: candidate.generation,
+      contentHash: candidate.contentHash,
+      objectKey: candidate.objectKey,
+      runId: candidate.runId,
+      claimedAt,
+      verifiedAt: '2026-08-28T05:00:00.000Z',
+    }),
+    /PUBLICATION_GENERATION_CONFLICT/,
+  )
+
   const pool = new RecordingPool()
   const repository = authority(pool)
-  const candidate = pending()
   await repository.savePendingPublication(candidate)
-
-  const state = await repository.verifyPublication({
+  const claim = {
     generation: candidate.generation,
     contentHash: candidate.contentHash,
     objectKey: candidate.objectKey,
+    runId: candidate.runId,
+    claimedAt,
+  }
+  await repository.claimPendingPublication(claim)
+  assert.equal((await repository.claimPendingPublication(claim)).pendingClaimedAt, claimedAt)
+
+  await assert.rejects(
+    () => repository.verifyPublication({
+      ...claim,
+      runId: RUN_2,
+      verifiedAt: '2026-08-28T05:00:00.000Z',
+    }),
+    /PUBLICATION_GENERATION_CONFLICT/,
+  )
+  await assert.rejects(
+    () => repository.verifyPublication({
+      ...claim,
+      claimedAt: '2026-08-28T04:11:00.000Z',
+      verifiedAt: '2026-08-28T05:00:00.000Z',
+    }),
+    /PUBLICATION_GENERATION_CONFLICT/,
+  )
+
+  const state = await repository.verifyPublication({
+    ...claim,
     verifiedAt: '2026-08-28T05:00:00.000Z',
   })
   assert.equal(state.verifiedGeneration, 1)
@@ -729,6 +774,8 @@ test('verifies only the matching pending publication and advances exactly one ge
       generation: 2,
       contentHash: 'd'.repeat(64),
       objectKey: `public/snapshots/2-${'d'.repeat(64)}.json`,
+      runId: RUN_2,
+      claimedAt: '2026-08-28T05:10:00.000Z',
       verifiedAt: '2026-08-28T06:00:00.000Z',
     }),
     /PUBLICATION_GENERATION_CONFLICT/,
