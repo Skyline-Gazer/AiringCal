@@ -68,12 +68,14 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 
 **Files:**
 - Create: `apps/vps-sync/src/postgres/repositories.ts`, `apps/vps-sync/src/postgres/repositories.test.ts`
-- Modify: `apps/vps-sync/src/postgres/migrations/0001_initial.sql`, `docs/runbook/vps-data-plane.md`
+- Create: `apps/vps-sync/src/postgres/migrations/0002_authority_constraints.sql`, `apps/vps-sync/src/postgres/postgres.integration.test.ts`, `apps/vps-sync/tsconfig.build.json`
+- Modify: `apps/vps-sync/package.json`, `apps/vps-sync/src/postgres/migrate.ts`, `apps/vps-sync/src/postgres/migrate.test.ts`, `docs/runbook/vps-data-plane.md`
+- Preserve byte-for-byte: `apps/vps-sync/src/postgres/migrations/0001_initial.sql` as committed by Task 1.1; all later schema changes are forward-only migrations
 
 **Interfaces:**
 - Produces: `PostgresAuthority` methods `beginRun`、`commitCompleteState`、`listDueMedia`、`applyMediaResult`、`getPublicationState`、`savePendingPublication`、`verifyPublication`、`finishRun`；rows use `users/subjects/collection_items/subject_media/calendar_entries/sync_runs/publications`.
 
-- [ ] **Step 1: RED tests** — 用真实临时 PG 验证完整 transaction rollback、两次完整 observation 才确认删除、恢复条目取消 missing、旧 `observed_at/run_id` media 写入被拒、pending replay/generation conflict、所有 text/json 列扫描不到测试 secrets。
+- [ ] **Step 1: RED tests** — 用真实临时 PG 验证从不可变 `0001` 升级到最新 schema、完整 transaction rollback、calendar-only subject 外键、两次完整 observation 才确认删除、恢复条目取消 missing、旧 `observed_at/run_id` media 写入被拒、pending replay/generation conflict、所有 text/json 列扫描不到测试 secrets；integration suite 必须在配置的 PostgreSQL 门禁中 fail-closed，不得用 SQL recording fake 代替。
   ```ts
   await authority.commitCompleteState(firstMissing)
   assert.equal(await authority.collectionExists('u', 1), true)
@@ -269,7 +271,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 - Modify: `README.md`
 
 **Interfaces:**
-- Push builds production after tests and publishes immutable full `${GITHUB_SHA}` plus non-authoritative discovery tag；records Node/Alpine/base digest/pnpm/git metadata；never SSH/deploys。CI 的 `setup-node` 大版本必须与构建时 `node:alpine` 实际解析到的 Node 大版本一致。当前仓库 CI 固定为 Node 24，但浮动 `node:alpine` 跟随 Node Current，两者可能不一致。实施时必须先通过官方 image metadata 或在具备 Docker 的环境中验证实际解析版本，再决定同步升级 `setup-node`，或者改用明确的 `node:<major>-alpine`；不得在计划中预设当前大版本或未经验证的命令输出格式。
+- Push builds production after tests and publishes immutable full `${GITHUB_SHA}` plus non-authoritative discovery tag；records Node/Alpine/base digest/pnpm/git metadata；never SSH/deploys。CI 的 `setup-node` 大版本必须与构建时 `node:alpine` 实际解析到的 Node 大版本一致。当前仓库 CI 固定为 Node 24，但浮动 `node:alpine` 跟随 Node Current，两者可能不一致。实施时必须先通过官方 image metadata 或在具备 Docker 的环境中验证实际解析版本，再同步升级 `setup-node` 与之对齐；生产构建必须继续使用浮动 `node:alpine`，不得改用 `node:<major>-alpine`，也不得在计划中预设当前大版本或未经验证的命令输出格式。
 
 - [ ] **Step 1: Actions contract 验证** — 读取官方 action README/metadata 与现有 workflows，确认 checkout/setup-buildx/login/metadata/build-push inputs、GHCR permissions、concurrency；所有 action pin 使用已验证 commit SHA。
 - [ ] **Step 2: RED tests** — workflow parser 断言 test/typecheck/build gates 先于 push、tag 为完整 SHA、无 VPS secrets/SSH、已有 SHA package 不覆盖。
