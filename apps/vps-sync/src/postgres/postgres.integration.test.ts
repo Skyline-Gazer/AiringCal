@@ -301,6 +301,22 @@ test('PostgreSQL integration exercises the real authority boundary', async (t) =
     })
 
     await t.test('rejects markers at every JSON/text boundary', async () => {
+      const textProbeRun = runId(8)
+      await assert.rejects(() => authority.beginRun({
+        id: textProbeRun,
+        source: 'scheduled',
+        mode: 'shadow',
+        stage: { opaque: MARKER },
+        status: 'running',
+        startedAt: '2026-08-29T09:00:00.000Z',
+        heartbeatAt: '2026-08-29T09:00:00.000Z',
+        gitSha: 'a'.repeat(40),
+      } as never))
+      assert.equal(
+        Number((await database!.query('SELECT count(*) AS count FROM sync_runs WHERE id = $1', [textProbeRun])).rows[0]?.count),
+        0,
+      )
+
       const secretProbe = state(runId(7), '2026-08-29T09:00:00.000Z', [SECRET_PROBE_SUBJECT_ID], [])
       secretProbe.users = [{
         id: userId(),
