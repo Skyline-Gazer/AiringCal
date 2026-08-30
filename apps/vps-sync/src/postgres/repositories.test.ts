@@ -822,6 +822,86 @@ test('persists only the sanitized run error projection and parameterizes every b
   }
 })
 
+test('rejects an opaque begin-run stage before issuing any query', async () => {
+  const pool = new RecordingPool()
+
+  await assert.rejects(
+    () => authority(pool).beginRun({
+      id: RUN_1,
+      source: 'scheduled',
+      mode: 'shadow',
+      stage: { opaque: 'unsafe' },
+      status: 'running',
+      startedAt: '2026-08-28T01:00:00.000Z',
+      heartbeatAt: '2026-08-28T01:00:00.000Z',
+      gitSha: 'a'.repeat(40),
+    } as never),
+    /FORBIDDEN_PERSISTENCE_SHAPE/,
+  )
+  assert.equal(pool.database.calls.length, 0)
+})
+
+test('rejects opaque finish-run stage and status before issuing any query', async () => {
+  const invalidRunFields = [
+    { stage: { opaque: 'unsafe' } },
+    { status: { opaque: 'unsafe' } },
+  ]
+
+  for (const invalidFields of invalidRunFields) {
+    const pool = new RecordingPool()
+    await assert.rejects(
+      () => authority(pool).finishRun({
+        id: RUN_1,
+        stage: 'finished',
+        status: 'failed',
+        heartbeatAt: '2026-08-28T02:00:00.000Z',
+        finishedAt: '2026-08-28T02:00:00.000Z',
+        counts: { users: 1 },
+        stageDurations: { collection: 100 },
+        sanitizedError: null,
+        components: { publication: 'failed' },
+        ...invalidFields,
+      } as never),
+      /FORBIDDEN_PERSISTENCE_SHAPE/,
+    )
+    assert.equal(pool.database.calls.length, 0)
+  }
+})
+
+test('rejects opaque publication text fields before issuing any query', async () => {
+  const calls = [
+    (repository: PostgresAuthority) => repository.savePendingPublication({
+      ...pending(),
+      objectKey: { opaque: 'unsafe' },
+    } as never),
+    (repository: PostgresAuthority) => repository.claimPendingPublication({
+      generation: 1,
+      contentHash: { opaque: 'unsafe' },
+      objectKey: `public/snapshots/1-${'a'.repeat(64)}.json`,
+      runId: RUN_1,
+      claimedAt: '2026-08-28T04:10:00.000Z',
+    } as never),
+    (repository: PostgresAuthority) => repository.clearUnclaimedPending({
+      verifiedGeneration: 0,
+      verifiedContentHash: { opaque: 'unsafe' },
+    } as never),
+    (repository: PostgresAuthority) => repository.verifyPublication({
+      generation: 1,
+      contentHash: 'a'.repeat(64),
+      objectKey: { opaque: 'unsafe' },
+      runId: RUN_1,
+      claimedAt: '2026-08-28T04:10:00.000Z',
+      verifiedAt: '2026-08-28T05:00:00.000Z',
+    } as never),
+  ]
+
+  for (const call of calls) {
+    const pool = new RecordingPool()
+    await assert.rejects(() => call(authority(pool)), /FORBIDDEN_PERSISTENCE_SHAPE/)
+    assert.equal(pool.database.calls.length, 0)
+  }
+})
+
 test('requires a non-empty persistence secret guard at construction', () => {
   const pool = new RecordingPool()
   assert.throws(
@@ -984,9 +1064,11 @@ test('adds run fences forward-only after the immutable initial schema', async ()
   assert.match(constraints, /CHECK \(\(observed_at IS NULL\) = \(observed_run_id IS NULL\)\)/)
 })
 
-test('keeps the real database secret probe on a fresh subject and proves the column scan completes', async () => {
+test('keeps the real database JSON/text probes and proves the column scan completes', async () => {
   const integrationSource = await readFile(new URL('./postgres.integration.test.ts', import.meta.url), 'utf8')
 
+  assert.match(integrationSource, /stage: \{ opaque: MARKER \}/)
+  assert.match(integrationSource, /SELECT count\(\*\) AS count FROM sync_runs WHERE id = \$1/)
   assert.match(integrationSource, /const SECRET_PROBE_SUBJECT_ID = 9_999_991/)
   assert.match(integrationSource, /subject\(SECRET_PROBE_SUBJECT_ID\).*name: MARKER/s)
   assert.match(integrationSource, /state\([^\n]+\[SECRET_PROBE_SUBJECT_ID\], \[\]\)/)
