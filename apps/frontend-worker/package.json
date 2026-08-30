@@ -14,7 +14,7 @@
   "dependencies": {
     "@airing-cal/widget": "workspace:*",
     "@airing-cal/worker-common": "workspace:*",
-    "hono": "^4.12.27"
+    "hono": "^4.12.34"
   },
   "devDependencies": {
     "@types/node": "^26.0.0"
