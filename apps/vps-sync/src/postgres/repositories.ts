@@ -183,6 +183,8 @@ export type MediaResultInput = {
   lastSuccessAt: string | null
 }
 
+export type MediaState = Omit<MediaResultInput, 'observedAt' | 'runId'> & { observedAt: string | null; runId: string | null }
+
 export type PendingPublicationInput = {
   generation: number
   contentHash: string
@@ -331,7 +333,7 @@ export class PostgresAuthority {
   async mediaCandidates(input: { now: string; limit: number }): Promise<MediaCandidate[]> {
     if (!Number.isFinite(Date.parse(input.now)) || !Number.isSafeInteger(input.limit) || input.limit < 1) throw new Error('INVALID_MEDIA_SELECTION')
     const result = await this.query<QueryResultRow & MediaCandidate>(this.pool,
-      `SELECT s.id AS "subjectId", CASE
+      `SELECT "subjectId", priority FROM (SELECT s.id AS "subjectId", CASE
          WHEN m.detail IS NULL OR s.last_observed_at > m.observed_at THEN 'new_or_changed'
          WHEN m.status->>'detail' = 'failed' OR m.status->>'image' = 'failed' THEN 'retry'
          WHEN EXISTS (SELECT 1 FROM collection_items c WHERE c.subject_id = s.id AND c.deleted_at IS NULL
@@ -339,8 +341,10 @@ export class PostgresAuthority {
            OR EXISTS (SELECT 1 FROM calendar_entries e WHERE e.subject_id = s.id) THEN 'hot'
          ELSE 'cold' END AS priority
        FROM subjects s LEFT JOIN subject_media m ON m.subject_id = s.id
-       WHERE s.deleted_at IS NULL AND (m.next_retry_at IS NULL OR m.next_retry_at <= $1)
-       ORDER BY CASE WHEN m.detail IS NULL THEN 0 ELSE 1 END, COALESCE(m.next_retry_at, s.first_observed_at), s.id LIMIT $2`,
+       WHERE s.deleted_at IS NULL AND (m.next_retry_at IS NULL OR m.next_retry_at <= $1)) candidates
+       WHERE priority <> 'cold' OR MOD("subjectId", 7) = EXTRACT(DOW FROM $1::timestamptz AT TIME ZONE 'UTC')
+       ORDER BY CASE priority WHEN 'new_or_changed' THEN 0 WHEN 'hot' THEN 1 WHEN 'cold' THEN 2 ELSE 3 END,
+         "subjectId" LIMIT $2`,
       [input.now, input.limit])
     return result.rows.map((row) => ({ subjectId: Number(row.subjectId), priority: row.priority }))
   }
@@ -352,7 +356,7 @@ export class PostgresAuthority {
     let broken = false
     try {
       const lock = await withSessionLock(client, BigInt(subjectId), async () => {
-        const rows = await this.query<QueryResultRow & MediaResultInput>(client,
+        const rows = await this.query<QueryResultRow & MediaState>(client,
           `SELECT subject_id AS "subjectId", detail, metadata, image_refs AS "imageRefs",
              detail_hash AS "detailHash", metadata_hash AS "metadataHash", image_hash AS "imageHash",
              status, observed_at AS "observedAt", observed_run_id AS "runId",
@@ -360,7 +364,7 @@ export class PostgresAuthority {
            FROM subject_media WHERE subject_id = $1`, [subjectId])
         const row = rows.rows[0]
         const current = row ? { ...row, subjectId: Number(row.subjectId),
-          observedAt: toIso(row.observedAt)!, nextRetryAt: toIso(row.nextRetryAt),
+          observedAt: toIso(row.observedAt), nextRetryAt: toIso(row.nextRetryAt),
           deletedAt: toIso(row.deletedAt), lastSuccessAt: toIso(row.lastSuccessAt) } : null
         let active = true
         try {
@@ -369,7 +373,7 @@ export class PostgresAuthority {
             if (input.subjectId !== subjectId) throw new Error('SUBJECT_SESSION_MISMATCH')
             assertMediaResultInput(input)
             if (current) {
-              const prior = Date.parse(current.observedAt)
+              const prior = current.observedAt === null ? Number.NEGATIVE_INFINITY : Date.parse(current.observedAt)
               const next = Date.parse(input.observedAt)
               if (prior > next || (prior === next && current.runId !== input.runId)) return false
               const unchanged = ['detail', 'metadata', 'imageRefs', 'detailHash', 'metadataHash', 'imageHash', 'lastSuccessAt'] as const

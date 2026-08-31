@@ -125,3 +125,10 @@ test('priority ordering is stable, duplicate IDs preserve strongest priority, co
   await refreshMedia(deps, context)
   assert.deepEqual(ids, [1, 7, 8, 2])
 })
+
+test('an unobserved media row can refresh without fabricating a prior fence', async () => {
+  const { deps, saves } = fixture()
+  deps.withSubject = async (_id, work) => work({ current: { ...stored(), observedAt: null, runId: null }, save: async (value) => { saves.push(value); return true } })
+  assert.equal((await refreshMedia(deps, context)).failed, 0)
+  assert.equal(saves.length, 1)
+})

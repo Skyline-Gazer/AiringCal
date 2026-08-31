@@ -1,11 +1,11 @@
-import type { MediaResultInput } from '../postgres/repositories.ts'
+import type { MediaResultInput, MediaState } from '../postgres/repositories.ts'
 import type { RunContext, MediaSummary } from '../contracts.ts'
 import { createHash } from 'node:crypto'
 import { imageRef, subjectMetaFromDetail, subjectMetaFromNotFound } from '@airing-cal/domain'
 
 export type MediaCandidate = { subjectId: number; priority: 'new_or_changed' | 'hot' | 'cold' | 'retry' }
 export type MediaSubject = NonNullable<MediaResultInput['detail']> & { id: number; name: string; images?: { common?: string; large?: string } }
-export type SubjectSession = { current: MediaResultInput | null; save(value: MediaResultInput): Promise<boolean> }
+export type SubjectSession = { current: MediaState | null; save(value: MediaResultInput): Promise<boolean> }
 export interface MediaDependencies {
   list(context: RunContext): Promise<MediaCandidate[]>
   withSubject<T>(subjectId: number, work: (session: SubjectSession) => Promise<T>): Promise<T | undefined>
@@ -45,7 +45,7 @@ export async function refreshMedia(deps: MediaDependencies, context: RunContext)
 async function refreshSubject(deps: MediaDependencies, context: RunContext, subjectId: number, session: SubjectSession): Promise<boolean | undefined> {
   const { current } = session
   const now = Date.parse(context.observedAt)
-  if (current && (Date.parse(current.observedAt) >= now
+  if (current && ((current.observedAt !== null && Date.parse(current.observedAt) >= now)
     || (current.nextRetryAt !== null && Date.parse(current.nextRetryAt) > now))) return undefined
   const result: MediaResultInput = {
     subjectId, runId: context.runId, observedAt: context.observedAt, detail: null, metadata: null,

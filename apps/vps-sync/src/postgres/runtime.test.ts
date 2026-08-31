@@ -61,6 +61,8 @@ test('candidate adapter exposes deterministic priority from authoritative state'
   assert.deepEqual(await authority.mediaCandidates({ now: '2026-08-31T00:00:00Z', limit: 200 }), [])
   assert.match(calls[0]!.sql, /new_or_changed/)
   assert.match(calls[0]!.sql, /next_retry_at/)
+  assert.match(calls[0]!.sql, /priority <> 'cold'/)
+  assert.match(calls[0]!.sql, /WHEN 'hot' THEN 1 WHEN 'cold' THEN 2/)
 })
 
 const media: MediaResultInput = { subjectId: 42, detail: { id: 42, name: 'x' }, metadata: null, imageRefs: null,
