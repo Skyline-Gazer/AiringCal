@@ -7,7 +7,8 @@
 - Stage: `implementing`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix round: 0/2.
 - PR12 verified MERGED at `c4b9709374bfaa58aa16ccda2026ed0896645299`. Branch `codex/vps-run-coordinator` starts from that merged dev baseline; existing isolated worktree reused. Baseline VPS test: 71 pass, 0 fail (ordinary unit suite, not real PostgreSQL evidence).
 - Scope: Task 2.2 only, injected orchestration/media ports and required PostgreSQL methods. Publication/backup/notification infrastructure stays in later tasks. No production calls, cutover, or phase advancement. Create this batch's GitHub PR and wait for user merge before Task 3.1.
-- Implementation/review evidence: pending; task checkboxes remain unchecked.
+- Initial implementation `45025ea` pushed; Draft PR13 created at https://github.com/Skyline-Gazer/AiringCal/pull/13. Local TDD evidence reported: run 9/9, media 10/10, PostgreSQL runtime fakes 5/5, repository regression 28/28, typecheck and emitted Node entry checks PASS. Self-review and independent review pending; task checkboxes remain unchecked.
+- Open decision: complete-fetch collection/calendar subject projection precedence has no existing cross-source rule. User confirmation requested for calendar-first with collection filling missing fields; do not implement an unapproved precedence. Existing coordinator accepts an injected normalized input port.
 
 ## Previous batch evidence
 
