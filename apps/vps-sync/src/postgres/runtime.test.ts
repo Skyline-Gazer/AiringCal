@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Pool } from 'pg'
 import { PostgresAuthority } from './repositories.ts'
+import type { MediaResultInput } from './repositories.ts'
 
 function fixture() {
   const calls: { sql: string; values: unknown[] }[] = []
@@ -60,4 +61,31 @@ test('candidate adapter exposes deterministic priority from authoritative state'
   assert.deepEqual(await authority.mediaCandidates({ now: '2026-08-31T00:00:00Z', limit: 200 }), [])
   assert.match(calls[0]!.sql, /new_or_changed/)
   assert.match(calls[0]!.sql, /next_retry_at/)
+})
+
+const media: MediaResultInput = { subjectId: 42, detail: { id: 42, name: 'x' }, metadata: null, imageRefs: null,
+  detailHash: 'hash', metadataHash: null, imageHash: null, status: { detail: 'success' }, observedAt: '2026-08-31T00:00:00Z',
+  runId: 'run', nextRetryAt: null, deletedAt: null, lastSuccessAt: null }
+
+test('all media saves acquire subject lock and identical normalized state performs no UPDATE', async () => {
+  const { authority, calls, client } = fixture()
+  const query = client.query
+  client.query = async (sql, values = []) => {
+    if (sql.includes('FROM subject_media')) { calls.push({ sql, values }); return { rows: [media], rowCount: 1 } as never }
+    return query(sql, values)
+  }
+  assert.equal(await authority.applyMediaResult({ ...media, observedAt: '2026-09-01T00:00:00Z', runId: 'other' }), false)
+  assert.match(calls[0]!.sql, /pg_try_advisory_lock/)
+  assert.ok(!calls.some(({ sql }) => /INSERT INTO subject_media|UPDATE subject_media/.test(sql)))
+})
+
+test('scoped save rejects stale input and mismatched subject before a database mutation', async () => {
+  const { authority, calls, client } = fixture()
+  const query = client.query
+  client.query = async (sql, values = []) => sql.includes('FROM subject_media') ? { rows: [media], rowCount: 1 } as never : query(sql, values)
+  await authority.withSubject(42, async ({ save }) => {
+    assert.equal(await save({ ...media, observedAt: '2026-08-01T00:00:00Z', detailHash: 'older' }), false)
+    await assert.rejects(() => save({ ...media, subjectId: 99 }), /MISMATCH/)
+  })
+  assert.ok(!calls.some(({ sql }) => sql.includes('INSERT INTO subject_media')))
 })

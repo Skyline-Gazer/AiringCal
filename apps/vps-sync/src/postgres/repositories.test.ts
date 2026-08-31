@@ -90,6 +90,8 @@ class RecordingClient {
       if (normalized.includes(needle)) throw error
     }
 
+    if (normalized.includes('pg_try_advisory_lock')) return { rows: [{ acquired: true } as unknown as Row], rowCount: 1 }
+
     if (normalized.startsWith('SELECT id, content_hash, deleted_at FROM subjects')) {
       const ids = new Set((values[0] as readonly string[]).map(Number))
       return {

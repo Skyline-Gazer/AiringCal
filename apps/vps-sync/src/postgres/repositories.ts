@@ -1,6 +1,7 @@
 import { planCollectionDiff, type NormalizedCollection } from '@airing-cal/domain'
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg'
 import { withSessionLock } from './migrate.ts'
+import { isDeepStrictEqual } from 'node:util'
 import type { SubjectSession, MediaCandidate } from '../media/refresh.ts'
 import {
   assertCompleteStateInput,
@@ -366,6 +367,16 @@ export class PostgresAuthority {
           return await work({ current, save: async (input) => {
             if (!active) throw new Error('SUBJECT_SESSION_CLOSED')
             if (input.subjectId !== subjectId) throw new Error('SUBJECT_SESSION_MISMATCH')
+            assertMediaResultInput(input)
+            if (current) {
+              const prior = Date.parse(current.observedAt)
+              const next = Date.parse(input.observedAt)
+              if (prior > next || (prior === next && current.runId !== input.runId)) return false
+              const unchanged = ['detail', 'metadata', 'imageRefs', 'detailHash', 'metadataHash', 'imageHash', 'lastSuccessAt'] as const
+              if (unchanged.every((key) => isDeepStrictEqual(input[key] ?? current[key], current[key]))
+                && isDeepStrictEqual(input.status, current.status)
+                && input.nextRetryAt === current.nextRetryAt && input.deletedAt === current.deletedAt) return false
+            }
             return this.saveMediaResult(client, input)
           } })
         } finally { active = false }
@@ -480,7 +491,9 @@ export class PostgresAuthority {
   }
 
   async applyMediaResult(input: MediaResultInput): Promise<boolean> {
-    return this.saveMediaResult(this.pool, input)
+    assertMediaResultInput(input)
+    assertSafePersistence([input], this.forbiddenValues)
+    return (await this.withSubject(input.subjectId, ({ save }) => save(input))) ?? false
   }
 
   private async saveMediaResult(executor: QueryExecutor, input: MediaResultInput): Promise<boolean> {
