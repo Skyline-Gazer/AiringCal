@@ -141,60 +141,62 @@ test('withRetry uses a valid HTTP-date Retry-After and falls back for invalid te
 })
 
 test('withRetry normalizes retry delay failures without starting another operation', async () => {
-  const cases = [
-    {
-      name: 'a rejected sleep',
-      policy: { sleep: async () => { throw new Error('synthetic-sleep-marker') } },
-      expectedAttempt: 1,
-    },
-    {
-      name: 'a synchronous sleep throw on the second delay',
-      policy: {
-        sleep: (() => {
-          let calls = 0
-          return () => {
-            calls++
-            if (calls === 2) throw new Error('synthetic-sync-sleep-marker')
-            return Promise.resolve()
-          }
-        })(),
+  for (const stage of ['collections', 'calendar'] as const) {
+    const cases = [
+      {
+        name: 'a rejected sleep',
+        policy: { sleep: async () => { throw new Error('synthetic-sleep-marker') } },
+        expectedAttempt: 1,
       },
-      expectedAttempt: 2,
-    },
-    {
-      name: 'a synchronous clock throw',
-      policy: { now: () => { throw new Error('synthetic-now-marker') } },
-      expectedAttempt: 1,
-    },
-    {
-      name: 'a synchronous random throw',
-      policy: { random: () => { throw new Error('synthetic-random-marker') } },
-      expectedAttempt: 1,
-    },
-  ]
-
-  for (const { name, policy, expectedAttempt } of cases) {
-    let attempts = 0
-    await assert.rejects(
-      () => withRetry(
-        async () => {
-          attempts++
-          throw new BgmNetworkError('operation failure must not escape')
+      {
+        name: 'a synchronous sleep throw on the second delay',
+        policy: {
+          sleep: (() => {
+            let calls = 0
+            return () => {
+              calls++
+              if (calls === 2) throw new Error('synthetic-sync-sleep-marker')
+              return Promise.resolve()
+            }
+          })(),
         },
-        { stage: 'calendar', ...policy },
-      ),
-      (error: unknown) => {
-        assert.ok(error instanceof UpstreamFetchError)
-        assert.deepEqual(
-          { category: error.category, code: error.code, stage: error.stage, attempt: error.attempt },
-          { category: 'contract', code: 'RETRY_DELAY_FAILED', stage: 'calendar', attempt: expectedAttempt },
-        )
-        assert.doesNotMatch(error.message, /synthetic|operation failure/i)
-        assert.equal('cause' in error, false)
-        return true
+        expectedAttempt: 2,
       },
-      name,
-    )
-    assert.equal(attempts, expectedAttempt, name)
+      {
+        name: 'a synchronous clock throw',
+        policy: { now: () => { throw new Error('synthetic-now-marker') } },
+        expectedAttempt: 1,
+      },
+      {
+        name: 'a synchronous random throw',
+        policy: { random: () => { throw new Error('synthetic-random-marker') } },
+        expectedAttempt: 1,
+      },
+    ]
+
+    for (const { name, policy, expectedAttempt } of cases) {
+      let attempts = 0
+      await assert.rejects(
+        () => withRetry(
+          async () => {
+            attempts++
+            throw new BgmNetworkError('operation failure must not escape')
+          },
+          { stage, ...policy },
+        ),
+        (error: unknown) => {
+          assert.ok(error instanceof UpstreamFetchError)
+          assert.deepEqual(
+            { category: error.category, code: error.code, stage: error.stage, attempt: error.attempt },
+            { category: 'contract', code: 'RETRY_DELAY_FAILED', stage, attempt: expectedAttempt },
+          )
+          assert.doesNotMatch(error.message, /synthetic|operation failure/i)
+          assert.equal('cause' in error, false)
+          return true
+        },
+        `${stage}: ${name}`,
+      )
+      assert.equal(attempts, expectedAttempt, `${stage}: ${name}`)
+    }
   }
 })
