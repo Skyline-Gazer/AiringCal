@@ -109,6 +109,8 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 
 验收证据：针对性测试 27/27，bgm-api 23/23，旧 Worker 完整性边界 20/20；VPS emitted build、plain Node 双入口加载及 UpstreamFetchError 构造器一致性、全仓 test/typecheck/build:check、OpenSpec strict 和 diff check 通过。第一轮独立复审 APPROVED（0 CRITICAL / IMPORTANT / MINOR）。未执行真实上游请求或新增数据库验证；这批不包含 Task 2.2、R2 发布或容器验收。创建本批 PR 后必须等待用户合并。
 
+PR #12 await 审查补充：`fcc9c77` 修复 retry-delay 计算/等待异常原样逸出的边界；`9ee4fbf` 补齐 collections/calendar 双阶段测试。先观察新增测试因原始 sleep 异常失败，再通过聚焦 upstream 测试 27/27、VPS typecheck/build 和 emitted Node 复现检查；独立复审 spec/quality 均通过，无待修发现。正常 operation 的认证/限流分类与 attempt 不变，delay 失败脱敏为 `contract:RETRY_DELAY_FAILED` 并终止。仅修复本批 PR，不代表其已合并或允许进入 Task 2.2。
+
 ### Task 2.2: 一次性 coordinator、run outcomes 与媒体生命周期
 
 **Files:**

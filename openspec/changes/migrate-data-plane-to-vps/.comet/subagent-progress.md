@@ -1,5 +1,7 @@
 # Subagent Progress
 
+- PR12 follow-up: `done` — user-reported unhandled await review; central retry delay boundary fixed and pushed at `fcc9c77` (base `933a62b`). RED: injected sleep error escaped raw; GREEN: focused upstream 27/27, VPS typecheck/emitted build and independent emitted Node reproduction PASS. Files: retry.ts, retry.test.ts, runbook. Initial review accepted implementation but requested both-stage coverage; `9ee4fbf` adds collections/calendar coverage (27/27 PASS), pushed. Combined spec/quality re-review APPROVED (0 CRITICAL / IMPORTANT / MINOR); follow-up round 2/2. PR12 confirmed OPEN; wait for user merge, no Task 2.2 or phase advancement.
+
 - Previous task: `Task 1.1: PostgreSQL package、migration 与 advisory locks` — implementation complete at `a55b17718387c83067c4e1f7a34bd4d6d049d10f`; dependency/types plus real Node `pg` migration/session-lock validation are complete. Separate `psql --help` and Docker/CI container checks remain pending and are not claimed as executed.
 - Plan task: `Task 1.2: 规范化 PostgreSQL repositories` — complete
 - OpenSpec task: `1.2 Implement provider-neutral repositories for collection, calendar, media, sync-run, and publication state with transaction, deletion-safety, replay, and secret-persistence tests` — complete
