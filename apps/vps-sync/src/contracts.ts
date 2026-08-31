@@ -17,7 +17,7 @@ export interface RunDependencies {
   authority: {
     beginRun(input: RunStartInput): Promise<void>
     heartbeat(id: string, stage: string, at: string): Promise<void>
-    commitCompleteState(input: CompleteStateInput): Promise<void>
+    commitCompleteState(input: CompleteStateInput): Promise<RunFinishInput['counts'] | void>
     finishRun(input: RunFinishInput): Promise<void>
   }
   /** Returns only a validated, complete collection/calendar projection. */

@@ -46,6 +46,8 @@ VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection
 
 ## 单轮协调器与媒体接口
 
+权威事务返回已提交的 inserted、updated、unchanged、missing、deleted、restored 计数；协调器只在 COMMIT 成功后合并这些计数，不将计划条目数标成已完成写入。
+
 媒体直接写入 `applyMediaResult` 与锁内写入均受同一 subject advisory lock 保护。锁内读取后会在 SQL mutation 前拒绝旧围栏；合并 last-known-good 后内容、hash、状态与重试/tombstone 时间均相同的记录不执行 UPDATE。锁生命周期之外保留的 save closure 不能继续写入。
 
 `runOnce` 是端口注入的单轮协调器，接受 `shadow|live` 与 `scheduled|manual`。调用方提供已验证完整的 `CompleteStateInput`，协调器在完整抓取返回后才调用权威事务。它按媒体、发布、备份顺序运行；发布端口只有返回 `published` 或 `no_change` 才允许备份，媒体降级不阻止发布或备份。终态先写入 PostgreSQL 再调用通知端口，随后独立保存通知结果。锁竞争产生 persisted/notified `skipped`，不抓取上游或写 R2。`success/no_change/skipped` 映射退出码 0，`partial/failed` 映射 1。这些模块提供编排接口，不是可部署的 CLI 或发布/备份/飞书实现。

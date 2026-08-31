@@ -73,7 +73,7 @@ type MediaStatus = Readonly<{
   image?: MediaComponentStatus
 }>
 
-type RunCounts = Readonly<Partial<Record<
+export type RunCounts = Readonly<Partial<Record<
   | 'users'
   | 'collections'
   | 'inserted'
@@ -386,9 +386,10 @@ export class PostgresAuthority {
     finally { client.release(broken) }
   }
 
-  async commitCompleteState(input: CompleteStateInput): Promise<void> {
+  async commitCompleteState(input: CompleteStateInput): Promise<RunCounts> {
     assertCompleteStateInput(input)
-    await this.transaction(async (client) => {
+    return this.transaction(async (client) => {
+      const counts = { inserted: 0, updated: 0, unchanged: 0, missing: 0, deleted: 0, restored: 0 }
       for (const user of input.users) {
         await this.query(client,
           `INSERT INTO users (id, upstream_user_id, created_at, updated_at)
@@ -435,6 +436,9 @@ export class PostgresAuthority {
           complete: true,
           observedAt,
         })
+        counts.inserted += plan.inserts.length; counts.updated += plan.updates.length
+        counts.unchanged += plan.unchanged; counts.missing += plan.firstMissing.length
+        counts.deleted += plan.confirmedDeleted.length; counts.restored += plan.restored.length
         for (const row of plan.inserts) {
           const item = requiredCollectionInput(user.items, row.subject_id)
           await this.insertCollection(client, user.id, item, input.observedAt)
@@ -473,6 +477,7 @@ export class PostgresAuthority {
         'UPDATE sync_runs SET stage = $2, heartbeat_at = $3 WHERE id = $1',
         [input.runId, 'complete_state_committed', input.observedAt],
       )
+      return counts
     })
   }
 

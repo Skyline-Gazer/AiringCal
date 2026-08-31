@@ -1083,3 +1083,13 @@ function isSubjectOrCollectionWrite(call: QueryCall): boolean {
     || call.sql.startsWith('INSERT INTO collection_items')
     || call.sql.startsWith('UPDATE collection_items')
 }
+
+test('complete-state returns committed diff counts including a subsequent unchanged observation', async () => {
+  const pool = new RecordingPool()
+  const repository = authority(pool)
+  const first = await repository.commitCompleteState(completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1]))
+  assert.equal(first.inserted, 1)
+  const next = await repository.commitCompleteState(completeState(RUN_1, '2026-08-29T01:00:00.000Z', [1]))
+  assert.equal(next.inserted, 0)
+  assert.equal(next.unchanged, 1)
+})

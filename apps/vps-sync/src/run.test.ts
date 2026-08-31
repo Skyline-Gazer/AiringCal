@@ -104,3 +104,12 @@ test('continues heartbeat during long stages and drains timer before releasing r
   await Promise.resolve()
   assert.equal(events.length, count)
 })
+
+test('records completed authority diff counts rather than selected work as completed', async () => {
+  const { deps } = fixture()
+  deps.authority.commitCompleteState = async () => ({ inserted: 1, updated: 2, unchanged: 3, deleted: 0, missing: 1, restored: 0 })
+  const result = await runOnce(deps, request)
+  assert.equal(result.counts.inserted, 1)
+  assert.equal(result.counts.updated, 2)
+  assert.equal(result.counts.unchanged, 3)
+})

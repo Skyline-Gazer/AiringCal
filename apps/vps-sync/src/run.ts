@@ -63,7 +63,8 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
       components.collection = components.calendar = 'success'
       counts.users = input.users.length
       counts.collections = input.users.reduce((sum, user) => sum + user.items.length, 0)
-      await stage('completeState', () => deps.authority.commitCompleteState({ ...input, runId: deps.runId }))
+      const committed = await stage('completeState', () => deps.authority.commitCompleteState({ ...input, runId: deps.runId }))
+      Object.assign(counts, committed)
       try {
         const media = await stage('media', () => deps.media(context))
         counts.mediaSelected = media.selected; counts.mediaSucceeded = media.succeeded; counts.mediaFailed = media.failed
