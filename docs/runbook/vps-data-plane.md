@@ -28,6 +28,19 @@ pnpm -F @airing-cal/vps-sync test:integration
 
 参考：<https://www.postgresql.org/docs/18/release-18.html>、<https://www.postgresql.org/docs/18/app-pgdump.html>、<https://neon.com/docs/connect/connection-pooling>。
 
+## 上游完整抓取与重试
+
+VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection page 与 calendar 请求只由外层重试一次策略控制，最多总计 3 次请求。所有已配置用户的每一页和 calendar 都通过完整性边界后，才会产生可提交的完整观察；分页 total、offset、limit、页长度、重复 subject 或运行时 payload 结构异常都会 fail closed。
+
+| 上游结果 | 处理 |
+| --- | --- |
+| 401 / 403 | 认证终态，不重试。 |
+| collection 或 calendar 404 | 完整抓取终态，不把它当作空数据。 |
+| 429、5xx、超时、网络错误 | 对当前请求最多尝试 3 次；有效 `Retry-After` 受最大延迟限制，否则使用有界指数退避和 jitter。 |
+| JSON 或 schema 不合法、分页漂移或重复项 | contract 终态，不重试也不提交部分输入。 |
+
+上游错误只在后续运行结果中使用稳定的 category、code、stage 和 attempt；不得持久化或通知原始 URL、token、响应 body 或底层错误消息。完整观察时间沿用现有同步语义，使用 Unix 秒。
+
 ## 不可逆策略与回退
 
 SQL migrations 仅可向前应用。已发布的 `0001_initial.sql` 固定为 Task 1.1 commit `a55b17718387c83067c4e1f7a34bd4d6d049d10f` 的逐字节内容（SHA-256 `cd06c6a655aee9762095de384407e584a2340ad9b7a5a17b027adb966337486f`）；run observation fences 从 `0002_authority_constraints.sql` 起追加，禁止重写 `0001`。`schema_migrations` 保存 migration 文件名、SHA-256 checksum 和应用时间；任何已应用 migration 的 checksum 改变都会以 `MIGRATION_CHECKSUM_MISMATCH` 终止，非有序前缀历史以 `MIGRATION_HISTORY_GAP` 终止，数据库出现当前镜像不认识的 migration 时以 `MIGRATION_SCHEMA_AHEAD` 终止。migration 命令只从合法前缀应用尾部；业务启动必须调用 `assertCurrentSchema`，schema behind 或 ahead 均不得继续业务工作。

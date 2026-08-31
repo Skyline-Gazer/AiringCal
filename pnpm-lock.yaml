@@ -97,6 +97,9 @@ importers:
 
   apps/vps-sync:
     dependencies:
+      '@airing-cal/bgm-api':
+        specifier: workspace:*
+        version: link:../../packages/bgm-api
       '@airing-cal/domain':
         specifier: workspace:*
         version: link:../../packages/domain

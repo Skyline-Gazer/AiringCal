@@ -10,3 +10,5 @@ export type {
   TokenStatus,
 } from './bgm-client.ts'
 export { fetchAllCollections } from './utils.ts'
+export { assembleFullFetch } from './full-fetch-boundary.ts'
+export type { CollectionFetchGroup, CollectionFetchPage, CompleteFullFetch } from './full-fetch-boundary.ts'

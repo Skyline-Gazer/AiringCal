@@ -6,10 +6,17 @@ export type TokenStatus =
   | { status: 'invalid' }
   | { status: 'probe_failed' }
 
+export interface BgmHttpErrorMetadata {
+  retryAfter?: string
+}
+
 export class BgmHttpError extends Error {
-  constructor(public status: number, message: string) {
+  readonly retryAfter?: string
+
+  constructor(public status: number, message: string, metadata: BgmHttpErrorMetadata = {}) {
     super(message)
     this.name = 'BgmHttpError'
+    this.retryAfter = metadata.retryAfter
   }
 }
 
@@ -103,7 +110,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 export class BgmClient {
   private readonly requestTimeoutMs: number
-  private readonly maxGetRetries: number
+  readonly maxGetRetries: number
   private readonly retryBaseDelayMs: number
   private readonly maxRetryAfterMs: number
 
@@ -170,7 +177,9 @@ export class BgmClient {
       }
       if (!res.ok) {
         const body = await res.text().catch(() => '')
-        throw new BgmHttpError(res.status, `bgm.tv 返回错误 (${res.status}): ${body.slice(0, 300)}`)
+        throw new BgmHttpError(res.status, `bgm.tv 返回错误 (${res.status}): ${body.slice(0, 300)}`, {
+          retryAfter: res.headers.get('retry-after') ?? undefined,
+        })
       }
       if (res.status === 204) return undefined
       const body = await res.text()
