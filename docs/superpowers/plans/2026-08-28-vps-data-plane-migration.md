@@ -53,7 +53,8 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `applyMigrations(pool: Pool): Promise<void>`；`withSessionLock<T>(client: PoolClient, key: bigint, work: () => Promise<T>): Promise<{ acquired: boolean; value?: T }>`；不可变 `schema_migrations(name text primary key, checksum text, applied_at timestamptz)`。
 
-- [x] **Step 1: 验证依赖与 PostgreSQL API** — 执行 `pnpm view pg version`、检查 `node_modules/pg` types，并在临时 PostgreSQL 上执行 `psql --help` 与 `SELECT pg_try_advisory_lock(1);`；把确认的版本和签名记录在实现注释/PR notes。集成测试环境（需先具备 Docker）：本地用 `docker run --rm -e POSTGRES_PASSWORD=test -p 54329:5432 postgres:17-alpine` 启动 disposable 实例，CI 用 `services: postgres:17-alpine` 加 health check；`DATABASE_URL` 指向该实例，测试结束销毁。启动命令写进 `docs/runbook/vps-data-plane.md`。本地无 Docker 时这些集成测试标记为环境前置，不在本机强制执行。
+- [ ] **Step 1: 验证依赖与 PostgreSQL API** — 执行 `pnpm view pg version`、检查 `node_modules/pg` types，并在临时 PostgreSQL 上执行 `psql --help` 与 `SELECT pg_try_advisory_lock(1);`；把确认的版本和签名记录在实现注释/PR notes。集成测试环境（需先具备 Docker）：本地用 `docker run --rm -e POSTGRES_PASSWORD=test -p 54329:5432 postgres:17-alpine` 启动 disposable 实例，CI 用 `services: postgres:17-alpine` 加 health check；`DATABASE_URL` 指向该实例，测试结束销毁。启动命令写进 `docs/runbook/vps-data-plane.md`。本地无 Docker 时这些集成测试标记为环境前置，不在本机强制执行。
+  - 状态：本地依赖/类型签名检查、实现与本地单元测试已完成；临时 PostgreSQL 17 上的 API/锁验证及 `test:integration` 成功证据仍待补齐。环境延期不等于验证通过，Step 1 保持未勾选。
 - [x] **Step 2: 写 RED 测试** — 测试按文件名顺序应用 migration、重复执行 no-op、checksum 改变时报 `MIGRATION_CHECKSUM_MISMATCH`、两个连接仅一个获得相同 session lock。
   ```ts
   await applyMigrations(pool)
@@ -75,7 +76,8 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `PostgresAuthority` methods `beginRun`、`commitCompleteState`、`listDueMedia`、`applyMediaResult`、`getPublicationState`、`savePendingPublication`、`verifyPublication`、`finishRun`；rows use `users/subjects/collection_items/subject_media/calendar_entries/sync_runs/publications`.
 
-- [x] **Step 1: RED tests** — 用真实临时 PG 验证从不可变 `0001` 升级到最新 schema、完整 transaction rollback、calendar-only subject 外键、两次完整 observation 才确认删除、恢复条目取消 missing、旧 `observed_at/run_id` media 写入被拒、pending replay/generation conflict、所有 text/json 列扫描不到测试 secrets；integration suite 必须在配置的 PostgreSQL 门禁中 fail-closed，不得用 SQL recording fake 代替。
+- [ ] **Step 1: RED tests** — 用真实临时 PG 验证从不可变 `0001` 升级到最新 schema、完整 transaction rollback、calendar-only subject 外键、两次完整 observation 才确认删除、恢复条目取消 missing、旧 `observed_at/run_id` media 写入被拒、pending replay/generation conflict、所有 text/json 列扫描不到测试 secrets；integration suite 必须在配置的 PostgreSQL 门禁中 fail-closed，不得用 SQL recording fake 代替。
+  - 状态：repositories 实现、本地单元测试及 integration suite 编写已完成；真实 PostgreSQL 17 执行验证仍待完成。配置临时实例的 `DATABASE_URL` 后，须成功运行 `pnpm -F @airing-cal/vps-sync test:integration` 并记录证据，才能勾选本项及 OpenSpec task 1.2。普通 `test` 跳过 PostgreSQL 测试，不能替代该门禁。
   ```ts
   await authority.commitCompleteState(firstMissing)
   assert.equal(await authority.collectionExists('u', 1), true)
