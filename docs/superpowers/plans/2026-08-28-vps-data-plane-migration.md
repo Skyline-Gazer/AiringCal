@@ -53,8 +53,9 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `applyMigrations(pool: Pool): Promise<void>`；`withSessionLock<T>(client: PoolClient, key: bigint, work: () => Promise<T>): Promise<{ acquired: boolean; value?: T }>`；不可变 `schema_migrations(name text primary key, checksum text, applied_at timestamptz)`。
 
-- [ ] **Step 1: 验证依赖与 PostgreSQL API** — 执行 `pnpm view pg version`、检查 `node_modules/pg` types，并在临时 PostgreSQL 上执行 `psql --help` 与 `SELECT pg_try_advisory_lock(1);`；把确认的版本和签名记录在实现注释/PR notes。集成测试环境（需先具备 Docker）：本地用 `docker run --rm -e POSTGRES_PASSWORD=test -p 54329:5432 postgres:17-alpine` 启动 disposable 实例，CI 用 `services: postgres:17-alpine` 加 health check；`DATABASE_URL` 指向该实例，测试结束销毁。启动命令写进 `docs/runbook/vps-data-plane.md`。本地无 Docker 时这些集成测试标记为环境前置，不在本机强制执行。
-  - 状态：本地依赖/类型签名检查、实现与本地单元测试已完成；临时 PostgreSQL 17 上的 API/锁验证及 `test:integration` 成功证据仍待补齐。环境延期不等于验证通过，Step 1 保持未勾选。
+- [ ] **Step 1: 验证依赖与 PostgreSQL API** — 已拆分为 Node `pg` 运行时门禁与独立的 CLI/container 前置检查，避免将未执行的 `psql` 或 Docker 检查写成通过。
+  - [x] **Node `pg` dependency/types and real-server API/lock validation** — 已检查 `pg` 类型签名；2026-08-31 的 PostgreSQL 18.6 直连 TLS real-server integration 以两个 `pg` connections 验证 `pg_try_advisory_lock` 的 session 语义，并通过 migration 与 authority boundary 全套门禁。证据见 `docs/verification/2026-08-31-vps-sync-postgresql-18-integration.md`。`psql` 不参与已实现的 Node `pg` migration 路径，因此此前的 `psql` preflight 由实际 API 测试取代为该路径的验收证据。
+  - [ ] **CLI/container-specific preflight** — 未执行 `psql --help`，也未启动 Docker disposable instance 或 CI PostgreSQL service。若为容器/CLI 覆盖重新引入该环境，使用已核验存在的官方 `postgres:18-alpine` tag，并先验证 Docker/CI 配置及命令参数；这不是当前 Node `pg` 验收的替代项。
 - [x] **Step 2: 写 RED 测试** — 测试按文件名顺序应用 migration、重复执行 no-op、checksum 改变时报 `MIGRATION_CHECKSUM_MISMATCH`、两个连接仅一个获得相同 session lock。
   ```ts
   await applyMigrations(pool)
@@ -76,8 +77,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `PostgresAuthority` methods `beginRun`、`commitCompleteState`、`listDueMedia`、`applyMediaResult`、`getPublicationState`、`savePendingPublication`、`verifyPublication`、`finishRun`；rows use `users/subjects/collection_items/subject_media/calendar_entries/sync_runs/publications`.
 
-- [ ] **Step 1: RED tests** — 用真实临时 PG 验证从不可变 `0001` 升级到最新 schema、完整 transaction rollback、calendar-only subject 外键、两次完整 observation 才确认删除、恢复条目取消 missing、旧 `observed_at/run_id` media 写入被拒、pending replay/generation conflict、所有 text/json 列扫描不到测试 secrets；integration suite 必须在配置的 PostgreSQL 门禁中 fail-closed，不得用 SQL recording fake 代替。
-  - 状态：repositories 实现、本地单元测试及 integration suite 编写已完成；真实 PostgreSQL 17 执行验证仍待完成。配置临时实例的 `DATABASE_URL` 后，须成功运行 `pnpm -F @airing-cal/vps-sync test:integration` 并记录证据，才能勾选本项及 OpenSpec task 1.2。普通 `test` 跳过 PostgreSQL 测试，不能替代该门禁。
+- [x] **Step 1: RED tests** — 已在真实 PostgreSQL 18.6 直连 TLS server 验证不可变 `0001` 升级到最新 schema、完整 transaction rollback、calendar-only subject 外键、两次完整 observation 才确认删除、恢复条目取消 missing、旧 `observed_at/run_id` media 写入被拒、pending replay/generation conflict、所有 text/JSON 列 secret scan。`pnpm -F @airing-cal/vps-sync test:integration` 在 2026-08-31 退出 0（9 pass、0 fail、0 skipped、25,756.220958 ms）；证据见 `docs/verification/2026-08-31-vps-sync-postgresql-18-integration.md`。普通 `test` 跳过 PostgreSQL 测试，不能替代该门禁。
   ```ts
   await authority.commitCompleteState(firstMissing)
   assert.equal(await authority.collectionExists('u', 1), true)
@@ -187,7 +187,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `createBackup(deps, run): Promise<BackupResult>`；keys `backups/postgres/YYYY/MM/DD/<timestamp>-<git-sha>.dump|.json`；manifest 包含 schema_version/run_id/git_sha/created_at/object_key/size/sha256。
 
-- [ ] **Step 1: CLI 验证** — 对目标 Alpine PostgreSQL client 执行 `pg_dump --help`、`pg_restore --help`，确认 custom format、输出和 connection 参数；实现不得把 URL 放入 argv/log。
+- [ ] **Step 1: CLI 验证** — 目标为 PostgreSQL 18 client；仍须对实际目标环境执行 `pg_dump --help` 与 `pg_restore --help`，确认 custom format、输出和 connection 参数，并完成真实 backup/restore validation。实现不得把 URL 放入 argv/log；本次 PostgreSQL authority integration 未覆盖这些 CLI 或 restore 事项。
 - [ ] **Step 2: RED tests** — fake command runner 验证 dump→hash/size→dump upload→manifest upload；snapshot published/no_change 后 backup；command/upload 失败使 run partial 且不撤销 publication。
 - [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- backup.test.ts run.test.ts` 预期 FAIL。
 - [ ] **Step 4: GREEN/REFACTOR** — bounded `/tmp/airing-cal`、finally cleanup、canonical backup manifest；tests/typecheck PASS。

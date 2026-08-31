@@ -2,7 +2,9 @@
 
 ## PostgreSQL migration 前置条件
 
-`apps/vps-sync` 仅使用标准 TLS `DATABASE_URL` 连接 PostgreSQL。迁移运行器在开始业务同步前执行，并先取得独立 PostgreSQL session advisory lock，随后才在锁内 bootstrap/校验 `schema_migrations`、读取 history 和应用 migration tail；未获得该锁会失败退出，不能执行任何 bootstrap DDL 或继续业务写入。
+`apps/vps-sync` 仅使用标准 TLS `DATABASE_URL` 连接 PostgreSQL，且不使用供应商 SDK 或控制面 API。当前支持的 server baseline 是 PostgreSQL 18；运行环境必须保持在受维护的 `18.x` patch release。不得自动升级到未来 major，升级前必须完成显式兼容性评审和新的 real-server integration。PostgreSQL 17 compatibility 未验证，也不属于本次已批准 baseline 的验收门禁。
+
+迁移运行器在开始业务同步前执行，并先取得独立 PostgreSQL session advisory lock，随后才在锁内 bootstrap/校验 `schema_migrations`、读取 history 和应用 migration tail；未获得该锁会失败退出，不能执行任何 bootstrap DDL 或继续业务写入。`DATABASE_URL` 必须是 direct/session-preserving connection，不能使用 transaction pooling：advisory lock 属于数据库 session，事务池会在事务间切换 server connection。该要求同样适用于后续 migrations 以及计划中的 `pg_dump`/`pg_restore` 工作。
 
 ## PostgreSQL authority 写入边界
 
@@ -12,19 +14,19 @@
 
 `subject_media` 同时保存 `observed_at` 与 `observed_run_id` fence。较旧的 observation 不得覆盖 last-known-good detail、metadata 或 image references。publication 只有一个 verified state 和至多一个 pending state：`savePendingPublication` 只保存 unclaimed candidate，`claimPendingPublication` 以 generation/hash/key/run identity 做条件 claim，exact replay 必须复用相同的 persisted `claimed_at` identity；`clearUnclaimedPending` 只在 verified generation/hash 仍与 no-change caller 一致时清除 unclaimed pending。claimed pending 不可替换或被 no-change cleanup 清除；verified promotion 必须匹配 pending 的 generation、hash、object key、run 与 `claimed_at`，未 claim、wrong-run 或 wrong-claim caller 均不得 promotion，并且 generation 只能前进一步。
 
-迁移集成验证需要 PostgreSQL 17。Docker 可用的环境可以启动一次性实例：
-
-```sh
-docker run --rm -e POSTGRES_PASSWORD=test -p 54329:5432 postgres:17-alpine
-```
-
-随后将 `DATABASE_URL` 指向该实例并运行 fail-closed 门禁：
+迁移集成验证采用 PostgreSQL 18 direct TLS server，并运行 fail-closed Node `pg` 门禁：
 
 ```sh
 pnpm -F @airing-cal/vps-sync test:integration
 ```
 
-该 suite 会创建随机隔离 schema，真实执行两个独立连接从完全空 schema 并发 cold-start migration、immutable `0001` → current upgrade、checksum/current-schema gate、session advisory lock、事务 rollback、calendar-only foreign key、canonical 删除/恢复与 unchanged-zero-write、media stale fence、publication claim/cleanup CAS，并扫描所有 text/JSON 列。secret probe 使用此前未出现的新 subject/hash 且不给 calendar 同 id projection，确保 marker 确实到达 persistence guard；全列扫描作为后续独立 subtest 执行并核对实际扫描列数。未配置 `DATABASE_URL` 时命令必须以 `DATABASE_URL_REQUIRED_FOR_POSTGRES_INTEGRATION` 失败，不得 skip 或以 recording fake 冒充通过。CI 应使用带 health check 的 `postgres:17-alpine` service；测试结束后 suite 删除其随机 schema 并关闭 pool。本机未安装 Docker CLI 时，该真实 PostgreSQL 验证是环境前置条件。
+该 suite 会创建随机隔离 schema，真实执行两个独立连接从完全空 schema 并发 cold-start migration、immutable `0001` → current upgrade、checksum/current-schema gate、session advisory lock、事务 rollback、calendar-only foreign key、canonical 删除/恢复与 unchanged-zero-write、media stale fence、publication claim/cleanup CAS，并扫描所有 text/JSON 列。secret probe 使用此前未出现的新 subject/hash 且不给 calendar 同 id projection，确保 marker 确实到达 persistence guard；全列扫描作为后续独立 subtest 执行并核对实际扫描列数。未配置 `DATABASE_URL` 时命令必须以 `DATABASE_URL_REQUIRED_FOR_POSTGRES_INTEGRATION` 失败，不得 skip 或以 recording fake 冒充通过。测试结束后 suite 删除随机 schema 并关闭 pool。
+
+已执行证据：2026-08-31 在 PostgreSQL 18.6 direct TLS server 上，该命令退出 0（9 pass、0 fail、0 skipped、25,756.220958 ms）。开始/结束查询均确认 `new_remaining_test_schemas=[]`；suite 仅创建并删除随机 schema。完整范围、commit identity 和环境边界见 [PostgreSQL 18 integration evidence](../verification/2026-08-31-vps-sync-postgresql-18-integration.md)。文档不记录或示例化任何实际连接 URL、hostname、username 或 secret。
+
+`psql` 不参与实现的 Node `pg` migration/lock 路径，因此此前 `psql` preflight 已由上述 real Node `pg` API test 对该路径的验收证据取代。Docker disposable instance、CI service 配置和 `psql --help` 均未执行，仍是单独的 container/CLI 前置检查；已核验官方 `postgres:18-alpine` tag 存在，但尚未将其用于本项目容器验证。计划的 PostgreSQL 18 `pg_dump`/`pg_restore` client、CLI `--help` contract validation，以及真实 backup/restore drill 均保持 pending。
+
+参考：<https://www.postgresql.org/docs/18/release-18.html>、<https://www.postgresql.org/docs/18/app-pgdump.html>、<https://neon.com/docs/connect/connection-pooling>。
 
 ## 不可逆策略与回退
 
