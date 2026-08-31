@@ -80,7 +80,11 @@ export async function withRetry<T>(operation: (attempt: number) => Promise<T>, p
     } catch (error) {
       const result = classify(error)
       if (!result.retry || attempt === maxAttempts) throw new UpstreamFetchError(result.category, result.code, policy.stage, attempt)
-      await sleep(retryAfterDelay(result.retryAfter, now(), maxDelayMs) ?? fallbackDelay(attempt, baseDelayMs, maxDelayMs, random))
+      try {
+        await sleep(retryAfterDelay(result.retryAfter, now(), maxDelayMs) ?? fallbackDelay(attempt, baseDelayMs, maxDelayMs, random))
+      } catch {
+        throw new UpstreamFetchError('contract', 'RETRY_DELAY_FAILED', policy.stage, attempt)
+      }
     }
   }
   throw new UpstreamFetchError('contract', 'UNREACHABLE_RETRY', policy.stage, maxAttempts)

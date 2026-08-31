@@ -40,6 +40,7 @@ VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection
 | collection 或 calendar 404 | 完整抓取终态，不把它当作空数据。 |
 | 429、5xx、超时、网络错误 | 对当前请求最多尝试 3 次；有效 `Retry-After` 受最大延迟限制，否则使用有界指数退避和 jitter。 |
 | JSON 或 schema 不合法、分页漂移或重复项 | contract 终态，不重试也不提交部分输入。 |
+| retry delay 计算或等待失败 | 以 `contract:RETRY_DELAY_FAILED` 终态结束当前请求，不开始下一次上游请求。 |
 
 上游错误只在后续运行结果中使用稳定的 category、code、stage 和 attempt；不得持久化或通知原始 URL、token、响应 body 或底层错误消息。完整观察时间沿用现有同步语义，使用 Unix 秒。
 
