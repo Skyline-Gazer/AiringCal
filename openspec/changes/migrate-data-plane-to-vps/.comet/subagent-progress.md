@@ -3,10 +3,11 @@
 - Previous task: `Task 1.1: PostgreSQL package、migration 与 advisory locks` — implementation complete at `a55b17718387c83067c4e1f7a34bd4d6d049d10f`; dependency/types plus real Node `pg` migration/session-lock validation are complete. Separate `psql --help` and Docker/CI container checks remain pending and are not claimed as executed.
 - Plan task: `Task 1.2: 规范化 PostgreSQL repositories` — complete
 - OpenSpec task: `1.2 Implement provider-neutral repositories for collection, calendar, media, sync-run, and publication state with transaction, deletion-safety, replay, and secret-persistence tests` — complete
-- Stage: `implementing` — Task 2.1: 完整上游抓取与有界 retry
+- Stage: `done` — Task 2.1: 完整上游抓取与有界 retry; PR delivery/merge gate pending
 - Current OpenSpec task: `2.1 Reuse the verified bgm.tv client/domain logic to implement complete collection/calendar input, bounded retry, primary failure protection, and normalized diff tests`
 - Current batch: branch `codex/vps-complete-upstream-fetch`, base `9aa46f4d0c2f47495df7ada28ae1a2d674a05047`; PR11 confirmed MERGED. Scope is Task 2.1 only; create its PR and stop for user merge before Task 2.2 or any phase gate.
-- Current review/fix round: `0`; implementation and RED/GREEN evidence pending. Existing Task 1.1 CLI/container checks remain pending; Node PostgreSQL authority dependency is verified on PG18.6 and is not being reimplemented.
+- Active fix round: `1/2`; fix `d3baec3` pushed for 3 IMPORTANT and 1 MINOR findings plus missing acceptance tests. Two upstream entrypoints now bundle with shared ESM chunks; plain Node imports both and confirms identical UpstreamFetchError. GREEN: focused 27/27, VPS emitted build, full test/typecheck/build:check, strict OpenSpec and diff check. Independent re-review APPROVED (0 CRITICAL / IMPORTANT / MINOR); Task 2.1 checked off. Review records: `.superpowers/sdd/task-2.1-review.md`, `.superpowers/sdd/task-2.1-rereview.md` (local ignored artifacts); durable evidence summary is in the implementation plan.
+- Initial implementation: `60245eab771536c9870a791bc09f53879c5403da`. RED: missing upstream modules/shared export and Retry-After assertion; policy/client/contract regressions observed before fixes. Initial GREEN: upstream 16/16, bgm-api 23/23, shared boundary 20/20. The initial tsc success did not prove executable output; plain Node import failed and was fixed/tested in `d3baec3` as recorded above. Report: `.superpowers/sdd/task-2.1-report.md` (local ignored evidence). Existing Task 1.1 CLI/container checks remain pending; Node PostgreSQL authority dependency is verified on PG18.6 and is not being reimplemented.
 - Review mode: `thorough`
 - Review/fix round: `3` (explicitly authorized by user)
 - Implementer commit: `cc70000` for Task 1.2
