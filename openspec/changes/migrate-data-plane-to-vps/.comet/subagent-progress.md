@@ -4,11 +4,12 @@
 
 - Plan task: `Task 2.2: 一次性 coordinator、run outcomes 与媒体生命周期`.
 - OpenSpec task: `2.2 Implement the one-shot run coordinator, heartbeat/terminal outcomes, no-change behavior, media refresh lifecycle, and concurrent-run exclusion with RED-to-GREEN tests`.
-- Stage: `implementing`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix round: 0/2.
+- Stage: `final-fix`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix round: 1/2.
 - PR12 verified MERGED at `c4b9709374bfaa58aa16ccda2026ed0896645299`. Branch `codex/vps-run-coordinator` starts from that merged dev baseline; existing isolated worktree reused. Baseline VPS test: 71 pass, 0 fail (ordinary unit suite, not real PostgreSQL evidence).
 - Scope: Task 2.2 only, injected orchestration/media ports and required PostgreSQL methods. Publication/backup/notification infrastructure stays in later tasks. No production calls, cutover, or phase advancement. Create this batch's GitHub PR and wait for user merge before Task 3.1.
 - Initial implementation `45025ea` pushed; Draft PR13 created at https://github.com/Skyline-Gazer/AiringCal/pull/13. Local TDD evidence reported: run 9/9, media 10/10, PostgreSQL runtime fakes 5/5, repository regression 28/28, typecheck and emitted Node entry checks PASS. Self-review and independent review pending; task checkboxes remain unchecked.
 - Open decision: complete-fetch collection/calendar subject projection precedence has no existing cross-source rule. User confirmation requested for calendar-first with collection filling missing fields; do not implement an unapproved precedence. Existing coordinator accepts an injected normalized input port.
+- Implementation head `d9a2bec`: VPS ordinary tests 103/103, typecheck/build/emitted Node PASS; no real PostgreSQL or external calls. Independent review: 0 Critical, 3 Important — success-refresh TTL blocks confirmed changes; heartbeat failure discards committed side-effect results; cleanup mutates status after persistence/notification. A fresh TDD fix agent handles these together; projection remains pending and Task 2.2 remains unchecked. Report: `.superpowers/sdd/task-2.2-report.md` (local ignored); review package: `.superpowers/sdd/review-c4b9709..d9a2bec.diff`.
 
 ## Previous batch evidence
 
