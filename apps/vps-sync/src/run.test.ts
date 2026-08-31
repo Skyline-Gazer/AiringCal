@@ -135,3 +135,19 @@ test('unlock and close failure never leak raw text or skip remaining resource cl
   assert.doesNotMatch(JSON.stringify(result), /secret connection|secret pool/)
   assert.deepEqual(events.slice(-2), ['unlock', 'close'])
 })
+
+test('media and publication use the completed input observation rather than process start time', async () => {
+  const { deps } = fixture()
+  const fetch = deps.fetchComplete
+  const observedAt = '2026-08-31T00:05:00.000Z'
+  deps.fetchComplete = async (context) => ({ ...await fetch(context), observedAt })
+  deps.media = async (context) => {
+    assert.equal(context.observedAt, observedAt)
+    return { selected: 0, succeeded: 0, failed: 0 }
+  }
+  deps.publish = async (context) => {
+    assert.equal(context.observedAt, observedAt)
+    return { status: 'no_change', generation: 1, contentHash: 'a'.repeat(64) }
+  }
+  assert.equal((await runOnce(deps, request)).status, 'no_change')
+})

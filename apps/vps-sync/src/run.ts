@@ -62,6 +62,7 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
     begun = true
     if (locked) try {
       const input = await stage('collection', () => deps.fetchComplete(context))
+      context.observedAt = input.observedAt
       components.collection = components.calendar = 'success'
       counts.users = input.users.length
       counts.collections = input.users.reduce((sum, user) => sum + user.items.length, 0)
