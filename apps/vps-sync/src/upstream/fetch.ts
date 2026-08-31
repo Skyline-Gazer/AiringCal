@@ -39,8 +39,8 @@ function isSubjectType(value: unknown): value is number {
 
 function isSlimSubject(value: unknown): boolean {
   if (!isRecord(value)) return false
-  const { id, type, name, name_cn: nameCn, short_summary: shortSummary, tags, score, eps, volumes, collection_total: collectionTotal, rank, images } = value
-  if (!isSafeInteger(id) || id < 1 || !isSubjectType(type) || typeof name !== 'string' || typeof nameCn !== 'string' || typeof shortSummary !== 'string' || !Array.isArray(tags) || !tags.every((tag) => isRecord(tag) && typeof tag.name === 'string' && isSafeInteger(tag.count)) || typeof score !== 'number' || !Number.isFinite(score) || !isSafeInteger(eps) || !isSafeInteger(volumes) || !isSafeInteger(collectionTotal) || !isSafeInteger(rank) || !isRecord(images)) return false
+  const { id, type, name, name_cn: nameCn, short_summary: shortSummary, date, tags, score, eps, volumes, collection_total: collectionTotal, rank, images } = value
+  if (!isSafeInteger(id) || id < 1 || !isSubjectType(type) || typeof name !== 'string' || typeof nameCn !== 'string' || typeof shortSummary !== 'string' || (date !== undefined && typeof date !== 'string') || !Array.isArray(tags) || !tags.every((tag) => isRecord(tag) && typeof tag.name === 'string' && isSafeInteger(tag.count)) || typeof score !== 'number' || !Number.isFinite(score) || !isSafeInteger(eps) || !isSafeInteger(volumes) || !isSafeInteger(collectionTotal) || !isSafeInteger(rank) || !isRecord(images)) return false
   return ['large', 'common', 'medium', 'small', 'grid'].every((size) => typeof images[size] === 'string')
 }
 
@@ -84,7 +84,7 @@ export function createUpstreamBgmClient(token?: string): BgmClient {
 
 export async function fetchCompleteInput(config: CompleteFetchConfig, client: BgmClient, clock: () => number): Promise<CompleteFullFetch> {
   const pageLimit = config.pageLimit ?? 50
-  if (!validConfig(config) || !Number.isSafeInteger(pageLimit) || pageLimit < 1 || !Number.isFinite(clock()) || clock() < 0 || (client instanceof BgmClient && client.maxGetRetries !== 0)) throw contract('config')
+  if (!validConfig(config) || !Number.isSafeInteger(pageLimit) || pageLimit < 1 || pageLimit > 50 || !Number.isFinite(clock()) || clock() < 0 || (client instanceof BgmClient && client.maxGetRetries !== 0)) throw contract('config')
   const groups: CollectionFetchGroup[] = []
   for (const user of config.users) {
     const firstRaw = await withRetry(() => client.getCollections(user.username, 0, pageLimit), { ...config.retry, stage: 'collections' })

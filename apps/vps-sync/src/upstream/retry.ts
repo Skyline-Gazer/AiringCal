@@ -43,6 +43,7 @@ function classify(error: unknown): Classification {
     return { category: 'upstream', code: 'UPSTREAM_HTTP', retry: false }
   }
   if (error instanceof BgmTimeoutError) return { category: 'timeout', code: 'UPSTREAM_TIMEOUT', retry: true }
+  if (error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError')) return { category: 'timeout', code: 'UPSTREAM_TIMEOUT', retry: true }
   if (error instanceof BgmNetworkError || error instanceof TypeError) return { category: 'network', code: 'UPSTREAM_NETWORK', retry: true }
   return { category: 'contract', code: 'UPSTREAM_CONTRACT', retry: false }
 }

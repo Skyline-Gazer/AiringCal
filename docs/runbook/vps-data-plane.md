@@ -32,6 +32,8 @@ pnpm -F @airing-cal/vps-sync test:integration
 
 VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection page 与 calendar 请求只由外层重试一次策略控制，最多总计 3 次请求。所有已配置用户的每一页和 calendar 都通过完整性边界后，才会产生可提交的完整观察；分页 total、offset、limit、页长度、重复 subject 或运行时 payload 结构异常都会 fail closed。
 
+`pnpm -F @airing-cal/vps-sync build` 保留 `dist` 中原有的 PostgreSQL entry locations 与 migration SQL copy，并把 `dist/upstream/fetch.js` 及其 workspace runtime dependencies 打包为 Node ESM。该 emitted adapter 可由 plain Node 直接 import，不依赖仓库 TypeScript source 或开发 loader。
+
 | 上游结果 | 处理 |
 | --- | --- |
 | 401 / 403 | 认证终态，不重试。 |

@@ -116,3 +116,26 @@ test('withRetry ignores negative, fractional, and exponent Retry-After values', 
     assert.deepEqual(delays, [100, 200])
   }
 })
+
+test('withRetry uses a valid HTTP-date Retry-After and falls back for invalid text', async () => {
+  const retryAfterCases = [
+    { retryAfter: new Date(5_000).toUTCString(), expectedDelays: [5_000, 5_000] },
+    { retryAfter: 'not-a-date', expectedDelays: [100, 200] },
+  ]
+  for (const { retryAfter, expectedDelays } of retryAfterCases) {
+    let attempts = 0
+    const delays: number[] = []
+    await assert.rejects(
+      () => withRetry(
+        async () => {
+          attempts++
+          throw new BgmHttpError(429, 'raw retry header must not escape', { retryAfter })
+        },
+        { stage: 'calendar', baseDelayMs: 100, maxDelayMs: 10_000, random: () => 0.5, now: () => 0, sleep: async (delay) => { delays.push(delay) } },
+      ),
+      UpstreamFetchError,
+    )
+    assert.equal(attempts, 3)
+    assert.deepEqual(delays, expectedDelays)
+  }
+})
