@@ -1,5 +1,16 @@
 # Subagent Progress
 
+## Active batch: Task 2.2
+
+- Plan task: `Task 2.2: 一次性 coordinator、run outcomes 与媒体生命周期`.
+- OpenSpec task: `2.2 Implement the one-shot run coordinator, heartbeat/terminal outcomes, no-change behavior, media refresh lifecycle, and concurrent-run exclusion with RED-to-GREEN tests`.
+- Stage: `implementing`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix round: 0/2.
+- PR12 verified MERGED at `c4b9709374bfaa58aa16ccda2026ed0896645299`. Branch `codex/vps-run-coordinator` starts from that merged dev baseline; existing isolated worktree reused. Baseline VPS test: 71 pass, 0 fail (ordinary unit suite, not real PostgreSQL evidence).
+- Scope: Task 2.2 only, injected orchestration/media ports and required PostgreSQL methods. Publication/backup/notification infrastructure stays in later tasks. No production calls, cutover, or phase advancement. Create this batch's GitHub PR and wait for user merge before Task 3.1.
+- Implementation/review evidence: pending; task checkboxes remain unchecked.
+
+## Previous batch evidence
+
 - PR12 follow-up: `done` — user-reported unhandled await review; central retry delay boundary fixed and pushed at `fcc9c77` (base `933a62b`). RED: injected sleep error escaped raw; GREEN: focused upstream 27/27, VPS typecheck/emitted build and independent emitted Node reproduction PASS. Files: retry.ts, retry.test.ts, runbook. Initial review accepted implementation but requested both-stage coverage; `9ee4fbf` adds collections/calendar coverage (27/27 PASS), pushed. Combined spec/quality re-review APPROVED (0 CRITICAL / IMPORTANT / MINOR); follow-up round 2/2. PR12 confirmed OPEN; wait for user merge, no Task 2.2 or phase advancement.
 
 - Previous task: `Task 1.1: PostgreSQL package、migration 与 advisory locks` — implementation complete at `a55b17718387c83067c4e1f7a34bd4d6d049d10f`; dependency/types plus real Node `pg` migration/session-lock validation are complete. Separate `psql --help` and Docker/CI container checks remain pending and are not claimed as executed.
