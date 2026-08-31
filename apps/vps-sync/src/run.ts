@@ -55,9 +55,11 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
       : { category: 'runtime', code: 'STAGE_FAILED', attemptCount: 1, stage: result.stage }
   }
   let locked = false
+  let begun = false
   try {
     locked = await deps.lock.acquire()
     await deps.authority.beginRun({ ...request, id: deps.runId, gitSha: deps.gitSha, stage: 'lock', status: locked ? 'running' : 'skipped', startedAt, heartbeatAt: startedAt })
+    begun = true
     if (locked) try {
       const input = await stage('collection', () => deps.fetchComplete(context))
       components.collection = components.calendar = 'success'
@@ -92,7 +94,21 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
     result.stage = 'finished'; result.heartbeatAt = at()
     await persist()
     return result
+  } catch (error) {
+    failure(error)
+    result.status = components.publication === 'success' || components.publication === 'no_change' ? 'partial' : 'failed'
+    result.finishedAt = result.heartbeatAt = at()
+    result.components = components; result.counts = counts; result.stageDurations = durations
+    if (begun) { try { await persist() } catch { /* A database outage cannot persist its own terminal state. */ } }
+    try { await deps.notify(structuredClone(result)); components.notification = 'success' }
+    catch { components.notification = 'failed' }
+    return result
   } finally {
-    try { if (locked) await deps.lock.release() } finally { await deps.close() }
+    const cleanupFailure = () => {
+      result.sanitizedError ??= { category: 'runtime', code: 'CLEANUP_FAILED', attemptCount: 1, stage: 'cleanup' }
+      result.status = components.publication === 'success' || components.publication === 'no_change' ? 'partial' : 'failed'
+    }
+    try { if (locked) await deps.lock.release() } catch { cleanupFailure() }
+    finally { try { await deps.close() } catch { cleanupFailure() } }
   }
 }

@@ -46,6 +46,8 @@ VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection
 
 ## 单轮协调器与媒体接口
 
+初始化/锁/清理异常也只返回脱敏结果，清理一个资源失败仍会尝试其余清理。若数据库不可用或连接池关闭失败，持久化终态可能无法更新；调用方必须记录返回的终态并采用对应非零退出码，不能仅依赖数据库中的最后记录判断进程是否健康。
+
 权威事务返回已提交的 inserted、updated、unchanged、missing、deleted、restored 计数；协调器只在 COMMIT 成功后合并这些计数，不将计划条目数标成已完成写入。
 
 媒体直接写入 `applyMediaResult` 与锁内写入均受同一 subject advisory lock 保护。锁内读取后会在 SQL mutation 前拒绝旧围栏；合并 last-known-good 后内容、hash、状态与重试/tombstone 时间均相同的记录不执行 UPDATE。锁生命周期之外保留的 save closure 不能继续写入。

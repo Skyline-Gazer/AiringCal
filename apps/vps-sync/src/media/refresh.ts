@@ -19,9 +19,13 @@ const hash = (value: string | Uint8Array) => createHash('sha256').update(value).
 
 export async function refreshMedia(deps: MediaDependencies, context: RunContext): Promise<MediaSummary> {
   const now = Date.parse(context.observedAt)
-  const candidates = [...new Map((await deps.list(context))
+  const merged = new Map<number, MediaCandidate>()
+  for (const candidate of await deps.list(context)) {
+    const prior = merged.get(candidate.subjectId)
+    if (!prior || priorities[candidate.priority] < priorities[prior.priority]) merged.set(candidate.subjectId, candidate)
+  }
+  const candidates = [...merged.values()]
     .sort((a, b) => priorities[a.priority] - priorities[b.priority] || a.subjectId - b.subjectId)
-    .map((candidate) => [candidate.subjectId, candidate])).values()]
     .filter((candidate) => candidate.priority !== 'cold' || candidate.subjectId % 7 === new Date(now).getUTCDay())
   const summary = { selected: candidates.length, succeeded: 0, failed: 0 }
   let cursor = 0

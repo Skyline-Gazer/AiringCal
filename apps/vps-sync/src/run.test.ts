@@ -113,3 +113,25 @@ test('records completed authority diff counts rather than selected work as compl
   assert.equal(result.counts.updated, 2)
   assert.equal(result.counts.unchanged, 3)
 })
+
+test('lock/initial persistence failures expose sanitized terminal result and always close', async () => {
+  for (const failAt of ['lock', 'begin'] as const) {
+    const { deps, events } = fixture()
+    if (failAt === 'lock') deps.lock.acquire = async () => { throw new Error('postgres://secret') }
+    else deps.authority.beginRun = async () => { throw new Error('postgres://secret') }
+    const result = await runOnce(deps, request)
+    assert.equal(result.status, 'failed')
+    assert.doesNotMatch(JSON.stringify(result), /postgres:\/\/secret/)
+    assert.equal(events.at(-1), 'close')
+  }
+})
+
+test('unlock and close failure never leak raw text or skip remaining resource cleanup', async () => {
+  const { deps, events } = fixture()
+  deps.lock.release = async () => { events.push('unlock'); throw new Error('secret connection') }
+  deps.close = async () => { events.push('close'); throw new Error('secret pool') }
+  const result = await runOnce(deps, request)
+  assert.equal(result.status, 'partial')
+  assert.doesNotMatch(JSON.stringify(result), /secret connection|secret pool/)
+  assert.deepEqual(events.slice(-2), ['unlock', 'close'])
+})

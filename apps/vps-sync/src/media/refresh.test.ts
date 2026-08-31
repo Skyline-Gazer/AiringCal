@@ -120,8 +120,8 @@ test('two sizes with identical content PUT the content object once', async () =>
 test('priority ordering is stable, duplicate IDs preserve strongest priority, cold uses weekday shard', async () => {
   const { deps } = fixture()
   const ids: number[] = []
-  deps.list = async () => [{ subjectId: 2, priority: 'retry' }, { subjectId: 1, priority: 'new_or_changed' }, { subjectId: 1, priority: 'retry' }, { subjectId: 3, priority: 'cold' }, { subjectId: 8, priority: 'cold' }]
+  deps.list = async () => [{ subjectId: 2, priority: 'retry' }, { subjectId: 1, priority: 'new_or_changed' }, { subjectId: 1, priority: 'retry' }, { subjectId: 3, priority: 'cold' }, { subjectId: 8, priority: 'cold' }, { subjectId: 7, priority: 'new_or_changed' }, { subjectId: 7, priority: 'cold' }]
   deps.withSubject = async (id) => { ids.push(id); return undefined }
   await refreshMedia(deps, context)
-  assert.deepEqual(ids, [1, 8, 2])
+  assert.deepEqual(ids, [1, 7, 8, 2])
 })
