@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { transformCalendar } from '@airing-cal/domain'
+import { assembleFullFetch as assembleSharedFullFetch } from '@airing-cal/bgm-api'
 import { assembleFullFetch } from './full-fetch-boundary.ts'
 
 const entry = {
@@ -43,6 +44,10 @@ test('assembleFullFetch marks input complete only with every collection page and
   assert.deepEqual(result.collections, [{ user_id: 'alice', collection: entry }])
   assert.deepEqual(result.calendar, calendar)
   assert.equal(result.observedAt, 123)
+})
+
+test('sync-worker compatibility boundary re-exports the shared complete-fetch implementation', () => {
+  assert.equal(assembleFullFetch, assembleSharedFullFetch)
 })
 
 test('assembleFullFetch rejects a missing collection page instead of exposing partial deletion input', () => {

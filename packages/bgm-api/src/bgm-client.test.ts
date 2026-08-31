@@ -100,6 +100,26 @@ test('GET retries 429 and 5xx responses at most twice', async () => {
   }
 })
 
+test('BgmHttpError exposes Retry-After metadata without changing its constructor call shape', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response(JSON.stringify({ title: 'slow down' }), {
+    status: 429,
+    headers: { 'Retry-After': '7' },
+  })
+  try {
+    await assert.rejects(
+      () => new BgmClient(undefined, { maxGetRetries: 0 }).getCalendar(),
+      (error: unknown) => {
+        assert.ok(error instanceof BgmHttpError)
+        assert.equal(error.retryAfter, '7')
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('GET retries timeout and network failures', async () => {
   for (const failure of [new DOMException('timed out', 'TimeoutError'), new TypeError('network down')]) {
     const originalFetch = globalThis.fetch

@@ -93,17 +93,23 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 
 **Files:**
 - Create: `apps/vps-sync/src/upstream/retry.ts`, `apps/vps-sync/src/upstream/retry.test.ts`, `apps/vps-sync/src/upstream/fetch.ts`, `apps/vps-sync/src/upstream/fetch.test.ts`
-- Modify: `apps/vps-sync/package.json`, `docs/runbook/vps-data-plane.md`
+- Create: `apps/vps-sync/src/build-output.test.ts`, `packages/bgm-api/src/full-fetch-boundary.ts`
+- Modify: `apps/vps-sync/package.json`, `pnpm-lock.yaml`, `docs/runbook/vps-data-plane.md`, `packages/bgm-api/src/index.ts`, `packages/bgm-api/src/bgm-client.ts`, `packages/bgm-api/src/bgm-client.test.ts`, `apps/sync-worker/src/full-fetch-boundary.ts`, `apps/sync-worker/src/full-fetch-boundary.test.ts`
+- Shared adaptation: pure completeness validation moved to bgm-api with the legacy Worker path retained as a compatibility re-export; HTTP errors expose optional Retry-After metadata. VPS build bundles both upstream entrypoints into Node ESM with shared chunks, preserving error class identity and existing PostgreSQL migration paths.
 
 **Interfaces:**
 - Consumes: `BgmClient`、`assembleFullFetch(...)`；`BgmClient` 必须以 `maxGetRetries: 0` 构造以关闭内置 retry，retry 只在 `withRetry` 单层发生。
 - Produces: `fetchCompleteInput(config, client, clock): Promise<CompleteFullFetch>`；`withRetry<T>(operation, policy): Promise<T>`；分类码 `auth|not_found|rate_limited|upstream|timeout|network|contract`。
 
-- [ ] **Step 1: API 验证** — 在 `docs/example/api/bgm-api.json` 搜索 collection/calendar/detail 端点、method、Bearer mode、limit/offset 与 response schema；再读 `packages/bgm-api/src/bgm-client.ts` 的真实方法签名。
-- [ ] **Step 2: RED tests** — 覆盖 401/403 一次即失败，429/5xx/timeout/network 最多三次且合法 `Retry-After` 有上限，invalid JSON/schema 终止；primary user/任一分页/calendar 不完整时不返回 `CompleteFullFetch`；断言 429 只触发外层 `withRetry` 的三次尝试，而非 client 内置 retry 与外层叠加。
-- [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- retry.test.ts fetch.test.ts` 预期 FAIL。
-- [ ] **Step 4: GREEN/REFACTOR** — 复用 client 和 `assembleFullFetch`，注入 sleep/random 使 jitter 可测，错误只携带 stable code/stage/attempt；局部与 package tests/typecheck PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步 retry 表；commit `feat(vps-sync): fetch complete upstream state` 后 push。
+- [x] **Step 1: API 验证** — 在 `docs/example/api/bgm-api.json` 搜索 collection/calendar/detail 端点、method、Bearer mode、limit/offset 与 response schema；再读 `packages/bgm-api/src/bgm-client.ts` 的真实方法签名。
+- [x] **Step 2: RED tests** — 覆盖 401/403 一次即失败，429/5xx/timeout/network 最多三次且合法 `Retry-After` 有上限，invalid JSON/schema 终止；primary user/任一分页/calendar 不完整时不返回 `CompleteFullFetch`；断言 429 只触发外层 `withRetry` 的三次尝试，而非 client 内置 retry 与外层叠加。
+- [x] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- src/upstream/retry.test.ts src/upstream/fetch.test.ts` 已观察到缺失模块失败；审查修复另观察到普通 Node 产物加载、正文超时分类、可选 date 校验与 pageLimit 上限的回归失败。
+- [x] **Step 4: GREEN/REFACTOR** — 复用 client 和 `assembleFullFetch`，注入 sleep/random 使 jitter 可测，错误只携带 stable code/stage/attempt；局部与 package tests/typecheck PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步 retry 表；实现 `60245ea` 和审查修复 `d3baec3` 已提交并推送。
+
+验收证据：针对性测试 27/27，bgm-api 23/23，旧 Worker 完整性边界 20/20；VPS emitted build、plain Node 双入口加载及 UpstreamFetchError 构造器一致性、全仓 test/typecheck/build:check、OpenSpec strict 和 diff check 通过。第一轮独立复审 APPROVED（0 CRITICAL / IMPORTANT / MINOR）。未执行真实上游请求或新增数据库验证；这批不包含 Task 2.2、R2 发布或容器验收。创建本批 PR 后必须等待用户合并。
+
+PR #12 await 审查补充：`fcc9c77` 修复 retry-delay 计算/等待异常原样逸出的边界；`9ee4fbf` 补齐 collections/calendar 双阶段测试。先观察新增测试因原始 sleep 异常失败，再通过聚焦 upstream 测试 27/27、VPS typecheck/build 和 emitted Node 复现检查；独立复审 spec/quality 均通过，无待修发现。正常 operation 的认证/限流分类与 attempt 不变，delay 失败脱敏为 `contract:RETRY_DELAY_FAILED` 并终止。仅修复本批 PR，不代表其已合并或允许进入 Task 2.2。
 
 ### Task 2.2: 一次性 coordinator、run outcomes 与媒体生命周期
 
