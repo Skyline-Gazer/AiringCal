@@ -1,9 +1,9 @@
 ## 1. PostgreSQL Authority
 
 - [ ] 1.1 Verify PostgreSQL client/migration APIs, add the VPS application package, and implement versioned schema migrations plus advisory-lock tests using TDD
-  - Implementation/local verification complete; temporary PostgreSQL 17 API/advisory-lock validation and successful real integration evidence remain pending. Environment deferral does not satisfy this checkbox.
-- [ ] 1.2 Implement provider-neutral repositories for collection, calendar, media, sync-run, and publication state with transaction, deletion-safety, replay, and secret-persistence tests
-  - Implementation, local unit tests, and integration suite authoring complete; real PostgreSQL 17 integration verification pending. Keep unchecked until `pnpm -F @airing-cal/vps-sync test:integration` succeeds against the configured temporary PostgreSQL 17 database and evidence is recorded. Ordinary `test` skips PostgreSQL tests and is not substitute evidence.
+  - Node `pg` dependency/types and PostgreSQL 18 direct-TLS real-server migration/advisory-lock validation are complete. `psql --help` and Docker/CI container-specific checks remain pending and are intentionally not asserted as complete.
+- [x] 1.2 Implement provider-neutral repositories for collection, calendar, media, sync-run, and publication state with transaction, deletion-safety, replay, and secret-persistence tests
+  - `pnpm -F @airing-cal/vps-sync test:integration` passed on 2026-08-31 against PostgreSQL 18.6 direct TLS server (9 pass, 0 fail, 0 skipped); the evidence records all eight subtests, schema cleanup, commit identity, and unexecuted checks. Ordinary `test` skips PostgreSQL tests and is not substitute evidence.
 
 ## 2. VPS Synchronization Runtime
 

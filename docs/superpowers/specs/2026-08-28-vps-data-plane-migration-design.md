@@ -92,6 +92,14 @@ Migrations are numbered, forward-only SQL files with immutable checksums. The ru
 
 Rollback deploys an older compatible image; it does not reverse or delete applied migrations.
 
+### 4.4 Supported PostgreSQL baseline and connection mode
+
+The supported server baseline is PostgreSQL 18. Production and integration environments must stay on a maintained `18.x` patch release. A later PostgreSQL major is not adopted automatically: it requires an explicit compatibility review and a fresh real-server integration run before becoming supported. PostgreSQL 17 compatibility is unverified and is not an acceptance gate for this approved baseline.
+
+`DATABASE_URL` remains the sole, provider-neutral TLS connection contract; the application does not use a provider SDK or control-plane API. The migration runner and runtime session advisory locks require a direct, session-preserving connection. A transaction-pooled endpoint is not acceptable because it can change the server session between transactions and therefore cannot preserve session-level advisory locks. The same direct connection requirement applies to future migration and backup work.
+
+The existing real-server evidence is recorded in [the PostgreSQL 18 integration evidence](../../verification/2026-08-31-vps-sync-postgresql-18-integration.md). It validates the implemented Node `pg` path, not a `psql` or container path.
+
 ## 5. Complete fetch and retry policy
 
 The existing bgm.tv API client and `docs/example/api/bgm-api.json` remain the endpoint/schema authority. Implementation must re-verify every endpoint, method, parameter, and authentication mode before adapting the client to the Node runtime.
@@ -191,7 +199,7 @@ The public URL and response shapes remain unchanged. Public request handlers hav
 
 ## 9. Backup and retention
 
-Backup runs after snapshot publication or a verified no-change result. The production image contains the minimum PostgreSQL client required for custom-format `pg_dump`/`pg_restore` compatibility.
+Backup runs after snapshot publication or a verified no-change result. The planned production image will contain a PostgreSQL 18 client for custom-format `pg_dump`/`pg_restore` compatibility. CLI contract validation and a real backup/restore drill remain pending; this design does not represent those future commands as implemented or verified.
 
 This condition is evaluated at the backup step, before the terminal run status is persisted; it is not conditioned on the final run status. A backup whose own upload or manifest step fails has still been attempted, and that failure contributes to a terminal `partial`.
 
@@ -200,6 +208,12 @@ The task streams a dump through a bounded temporary directory, computes SHA-256 
 Retention selection is pure and testable: keep the newest 30 daily restore points and the chronologically last successful backup for every earlier calendar month. Cleanup lists an explicit backup prefix, validates each key against the backup-key grammar, and deletes only the computed set. Listing or parsing uncertainty disables deletion for that run.
 
 `restore-verify` requires a separate target `DATABASE_URL`, proves the target is empty and not equal to production, restores one selected dump, runs schema/row-count/public-snapshot checks, and never publishes or sends user-facing data.
+
+### 9.1 PostgreSQL references
+
+- PostgreSQL 18 release and supported-version reference: <https://www.postgresql.org/docs/18/release-18.html>
+- PostgreSQL 18 `pg_dump` reference for the pending backup implementation: <https://www.postgresql.org/docs/18/app-pgdump.html>
+- Neon pooling guidance explains why transaction pooling cannot carry session advisory locks and recommends direct connections for migrations and `pg_dump`: <https://neon.com/docs/connect/connection-pooling>
 
 ## 10. Feishu notification and observability
 
