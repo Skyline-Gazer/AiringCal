@@ -341,7 +341,10 @@ export class PostgresAuthority {
            OR EXISTS (SELECT 1 FROM calendar_entries e WHERE e.subject_id = s.id) THEN 'hot'
          ELSE 'cold' END AS priority
        FROM subjects s LEFT JOIN subject_media m ON m.subject_id = s.id
-       WHERE s.deleted_at IS NULL AND (m.next_retry_at IS NULL OR m.next_retry_at <= $1)) candidates
+       WHERE s.deleted_at IS NULL AND (m.next_retry_at IS NULL OR m.next_retry_at <= $1
+         OR (s.last_observed_at > m.observed_at AND m.deleted_at IS NULL
+           AND m.status->>'detail' = 'success' AND m.status->>'metadata' = 'success'
+           AND m.status->>'image' IN ('success', 'missing')))) candidates
        WHERE priority <> 'cold' OR MOD("subjectId", 7) = EXTRACT(DOW FROM $1::timestamptz AT TIME ZONE 'UTC')
        ORDER BY CASE priority WHEN 'new_or_changed' THEN 0 WHEN 'hot' THEN 1 WHEN 'cold' THEN 2 ELSE 3 END,
          "subjectId" LIMIT $2`,

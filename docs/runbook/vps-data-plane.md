@@ -60,7 +60,7 @@ VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection
 
 每阶段开始和长阶段每 30 秒更新 heartbeat；阶段完成会取消并等待在途心跳，最终释放业务锁与调用资源清理端口。上游可信错误保留 category/code/stage/attempt，未知异常只记录稳定 `runtime/STAGE_FAILED`，不复制异常消息。
 
-`refreshMedia` 使用最多 4 个并行 subject，按新条目/变化、hot、cold、retry 排序，cold 按 subject ID 的星期分片选择。PostgreSQL `withSubject` 在同一 session 持锁读取围栏、执行图片上传和保存引用；过期、同观察时间重放和未到 retry 时间的记录不抓取。成功刷新采用原有 6–8 天确定性分散，失败一小时后可重试，明确 404 设置一天 tombstone 并保留成功数据。
+`refreshMedia` 使用最多 4 个并行 subject，按新条目/变化、hot、cold、retry 排序，cold 按 subject ID 的星期分片选择。PostgreSQL `withSubject` 在同一 session 持锁读取围栏、执行图片上传和保存引用；过期、同观察时间重放和未到失败 retry/tombstone 时间的记录不抓取。成功刷新采用原有 6–8 天确定性分散；authority 确认的变化可以提前刷新已成功的记录，健康未变化记录仍等待周期到期。候选 SQL 与锁内检查均保留失败一小时重试、明确 404 一天 tombstone 的边界，并保留成功数据。
 
 图片接收只允许受支持的 HTTPS bgm 图片主机、HTTP 200、JPEG/PNG/WebP/GIF/AVIF MIME，流式读取最多 8 MiB。SHA-256 相同且命名空间匹配时复用对象；shadow 只 PUT `shadow/images/`，live 只 PUT `images/`。新对象上传成功后才保存引用，各尺寸独立保留最后成功值。缺少图片来源不影响 detail/metadata 成功；下载、校验或上传失败不会清空旧图。
 

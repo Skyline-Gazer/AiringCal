@@ -63,6 +63,9 @@ test('candidate adapter exposes deterministic priority from authoritative state'
   assert.match(calls[0]!.sql, /next_retry_at/)
   assert.match(calls[0]!.sql, /priority <> 'cold'/)
   assert.match(calls[0]!.sql, /WHEN 'hot' THEN 1 WHEN 'cold' THEN 2/)
+  assert.match(calls[0]!.sql, /OR \(s\.last_observed_at > m\.observed_at AND m\.deleted_at IS NULL/)
+  assert.match(calls[0]!.sql, /m\.status->>'detail' = 'success' AND m\.status->>'metadata' = 'success'/)
+  assert.match(calls[0]!.sql, /m\.status->>'image' IN \('success', 'missing'\)/)
 })
 
 const media: MediaResultInput = { subjectId: 42, detail: { id: 42, name: 'x' }, metadata: null, imageRefs: null,

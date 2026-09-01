@@ -34,6 +34,31 @@ test('holds subject lock across R2 PUT and reference commit; shadow keys never t
   assert.deepEqual(events.slice(2), ['save', 'unlock'])
   assert.equal(saves[0]?.status.metadata, 'success')
 })
+test('confirmed change bypasses yesterday successful refresh cycle, while unchanged waits', async () => {
+  const yesterday = fixture()
+  await refreshMedia(yesterday.deps, { ...context, observedAt: '2026-08-30T00:00:00.000Z' })
+  for (const priority of ['new_or_changed', 'hot'] as const) {
+    const next = fixture(yesterday.saves[0])
+    next.deps.list = async () => [{ subjectId: 1, priority }]
+    await refreshMedia(next.deps, context)
+    assert.equal(next.saves.length, priority === 'new_or_changed' ? 1 : 0)
+  }
+})
+test('confirmed changes still respect future tombstone and transient retry boundaries', async () => {
+  for (const status of [
+    { detail: 'not_found', metadata: 'success', image: 'not_found' },
+    { detail: 'failed', metadata: 'failed', image: 'failed' },
+    { detail: 'success', metadata: 'success', image: 'failed' },
+  ] as const) {
+    const { deps, saves } = fixture(stored({ status, observedAt: '2026-08-30T23:30:00Z', nextRetryAt: '2026-08-31T00:30:00Z',
+      deletedAt: status.detail === 'not_found' ? '2026-08-30T23:30:00Z' : null }))
+    let fetched = false
+    deps.detail = async () => { fetched = true; return null }
+    await refreshMedia(deps, context)
+    assert.equal(fetched, false)
+    assert.equal(saves.length, 0)
+  }
+})
 test('transient image failure retains each last-known-good size while detail succeeds', async () => {
   const { deps, saves } = fixture(stored())
   deps.image = async () => new Response('unavailable', { status: 503 })

@@ -33,7 +33,7 @@ export async function refreshMedia(deps: MediaDependencies, context: RunContext)
     while (cursor < candidates.length) {
       const candidate = candidates[cursor++]!
       try {
-        const failed = await deps.withSubject(candidate.subjectId, (session) => refreshSubject(deps, context, candidate.subjectId, session))
+        const failed = await deps.withSubject(candidate.subjectId, (session) => refreshSubject(deps, context, candidate, session))
         if (failed) summary.failed++
         else if (failed === false) summary.succeeded++
       } catch { summary.failed++ }
@@ -42,11 +42,15 @@ export async function refreshMedia(deps: MediaDependencies, context: RunContext)
   return summary
 }
 
-async function refreshSubject(deps: MediaDependencies, context: RunContext, subjectId: number, session: SubjectSession): Promise<boolean | undefined> {
+async function refreshSubject(deps: MediaDependencies, context: RunContext, candidate: MediaCandidate, session: SubjectSession): Promise<boolean | undefined> {
+  const { subjectId } = candidate
   const { current } = session
   const now = Date.parse(context.observedAt)
+  const changedAfterSuccess = candidate.priority === 'new_or_changed' && current?.deletedAt === null
+    && current.status.detail === 'success' && current.status.metadata === 'success'
+    && (current.status.image === 'success' || current.status.image === 'missing')
   if (current && ((current.observedAt !== null && Date.parse(current.observedAt) >= now)
-    || (current.nextRetryAt !== null && Date.parse(current.nextRetryAt) > now))) return undefined
+    || (!changedAfterSuccess && current.nextRetryAt !== null && Date.parse(current.nextRetryAt) > now))) return undefined
   const result: MediaResultInput = {
     subjectId, runId: context.runId, observedAt: context.observedAt, detail: null, metadata: null,
     imageRefs: current?.imageRefs ? { ...current.imageRefs } : { common: null, large: null },
