@@ -49,8 +49,8 @@ The scheduled path is:
 3. Migrations run before the business lock is requested.
 4. The process attempts a PostgreSQL session advisory lock. Failure produces a persisted/skipped outcome without upstream or R2 writes.
 5. A `sync_runs` row is created and becomes the source of health/notification state.
-6. Complete collections and calendar input is fetched and validated.
-7. Authoritative collection/calendar state is committed in one database transaction.
+6. Complete collections and calendar input is fetched and validated, preserving whether optional calendar subject fields were actually present.
+7. The complete fetch is projected into `CompleteStateInput`: calendar fields are canonical when present, collection subjects only fill absent calendar fields, and configured-user order makes repeated cross-user subjects deterministic. The normalized projection is then committed in one authoritative database transaction.
 8. Due subject detail, metadata, and images are refreshed with bounded concurrency.
 9. The public snapshot is built from committed PostgreSQL state and published or classified no-change.
 10. A database backup is attempted only after snapshot publication succeeds or business content is verified unchanged. Runs that fail or skip before reaching either milestone do not trigger a backup. Media degradation does not suppress backup after a successful publication; backup failure independently contributes to a terminal partial result.
@@ -79,6 +79,8 @@ Access tokens, refresh tokens, database URLs, webhook URLs/secrets, R2 credentia
 ### 4.2 Transactions and deletion safety
 
 The collection/calendar transaction begins only after all configured users and all pages pass the existing complete-fetch boundary. A page count/offset/total inconsistency, duplicate subject, premature empty page, invalid calendar projection, or primary-account failure aborts before business writes.
+
+`CompleteFullFetch` retains optional calendar-field presence instead of replacing absence with empty/zero/false defaults. The coordinator projects one canonical subject per ID before calling the authority: a calendar-provided field always wins, collection data fills only fields absent from calendar, and collection-only/calendar-only subjects are both retained. Repeated collection subjects across configured users resolve in configured-user order and every configured user remains in the projection even with zero items, so an incomplete or unknown-user observation cannot be mistaken for authoritative deletion evidence.
 
 The transaction upserts normalized subjects and collection items, records first missing observations, confirms deletion only under the canonical two-successful-complete-observations rule, replaces the current calendar set, and checkpoints the run. No network or R2 call occurs while this transaction is open.
 

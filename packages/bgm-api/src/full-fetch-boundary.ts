@@ -48,22 +48,28 @@ function normalizeCalendarSubject(value: unknown): BgmCalendarItem['items'][numb
   if (value.nsfw !== undefined && typeof value.nsfw !== 'boolean') return null
   if (value.date !== undefined && typeof value.date !== 'string') return null
   if (value.air_date !== undefined && typeof value.air_date !== 'string') return null
-  const images = isRecord(value.images) ? value.images : {}
+  const images = isRecord(value.images) ? value.images : undefined
   const rating = isRecord(value.rating) && typeof value.rating.score === 'number'
     ? { score: value.rating.score, rank: isSafeNonNegativeInteger(value.rank) ? value.rank : isSafeNonNegativeInteger(value.rating.rank) ? value.rating.rank : 0, total: isSafeNonNegativeInteger(value.rating.total) ? value.rating.total : 0 }
     : undefined
   return {
     id: value.id,
     type: value.type as number,
-    name: typeof value.name === 'string' ? value.name : '',
-    name_cn: typeof value.name_cn === 'string' ? value.name_cn : '',
-    summary: typeof value.summary === 'string' ? value.summary : '',
-    nsfw: value.nsfw === true,
-    date: typeof value.date === 'string' ? value.date : typeof value.air_date === 'string' ? value.air_date : '',
-    eps: isSafeNonNegativeInteger(value.eps) ? value.eps : 0,
+    ...(typeof value.name === 'string' ? { name: value.name } : {}),
+    ...(typeof value.name_cn === 'string' ? { name_cn: value.name_cn } : {}),
+    ...(typeof value.summary === 'string' ? { summary: value.summary } : {}),
+    ...(typeof value.nsfw === 'boolean' ? { nsfw: value.nsfw } : {}),
+    ...(typeof value.date === 'string' ? { date: value.date } : typeof value.air_date === 'string' ? { date: value.air_date } : {}),
+    ...(isSafeNonNegativeInteger(value.eps) ? { eps: value.eps } : {}),
     ...(isSafeNonNegativeInteger(value.eps_count) ? { eps_count: value.eps_count } : {}),
     ...(isSafeNonNegativeInteger(value.total_episodes) ? { total_episodes: value.total_episodes } : {}),
-    images: { large: typeof images.large === 'string' ? images.large : '', common: typeof images.common === 'string' ? images.common : '', medium: typeof images.medium === 'string' ? images.medium : '', small: typeof images.small === 'string' ? images.small : '', grid: typeof images.grid === 'string' ? images.grid : '' },
+    ...(images ? { images: {
+      ...(typeof images.large === 'string' ? { large: images.large } : {}),
+      ...(typeof images.common === 'string' ? { common: images.common } : {}),
+      ...(typeof images.medium === 'string' ? { medium: images.medium } : {}),
+      ...(typeof images.small === 'string' ? { small: images.small } : {}),
+      ...(typeof images.grid === 'string' ? { grid: images.grid } : {}),
+    } } : {}),
     ...(rating ? { rating } : {}),
   } as BgmCalendarItem['items'][number]
 }

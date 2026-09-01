@@ -29,6 +29,7 @@ The deployed data path is optimized around Cloudflare Free Plan quotas rather th
 6. Feishu notification is a terminal side effect for every run. Notification failure is persisted but cannot change database/publication outcome. Messages contain only sanitized summaries.
 7. The Dockerfile uses official floating `node:alpine` inputs as explicitly requested, records resolved Node/Alpine/base digest metadata, and publishes immutable git-SHA GHCR outputs. The production target contains only runtime requirements; a manually triggered `-debug` target adds verified diagnostic packages.
 8. Deployment remains manual on the VPS: operators update Compose to a full GHCR SHA, pull, run a shadow sync, and then approve cutover. This keeps first-release credentials and rollback outside GitHub Actions.
+9. `CompleteFullFetch` preserves optional calendar-field presence and is normalized before the coordinator calls PostgreSQL authority. For the same subject, every field actually supplied by calendar is authoritative; collection subjects may fill only absent calendar fields. Collection-only and calendar-only subjects remain represented, repeated cross-user collection subjects resolve deterministically in configured-user order, and incomplete or unknown-user input fails before authority commit to preserve deletion safety.
 
 ## Risks / Trade-offs
 

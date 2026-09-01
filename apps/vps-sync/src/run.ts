@@ -2,6 +2,7 @@ import type { RunDependencies, RunRequest, RunResult, RunStatus } from './contra
 import { noOpTracing, runTracedOperationFailOpen, type TraceAttributes, type TraceSpanInput, type TracingPort } from './observability/tracing.ts'
 import type { RunFinishInput } from './postgres/repositories.ts'
 import { UpstreamFetchError } from './upstream/retry.ts'
+import { projectCompleteFullFetch } from './upstream/projection.ts'
 
 export function exitCode(status: RunStatus): number { return status === 'partial' || status === 'failed' ? 1 : 0 }
 
@@ -158,7 +159,8 @@ async function runOnceCoordinator(
     await deps.authority.beginRun({ ...request, id: deps.runId, gitSha: deps.gitSha, stage: 'lock', status: locked ? 'running' : 'skipped', startedAt, heartbeatAt: startedAt })
     begun = true
     if (locked) try {
-      const input = await stage('collection', () => deps.fetchComplete(context))
+      const fetched = await stage('collection', () => deps.fetchComplete(context))
+      const input = await projectCompleteFullFetch(fetched, deps.runId, deps.projectionUsers)
       context.observedAt = input.observedAt
       components.collection = components.calendar = 'success'
       counts.users = input.users.length

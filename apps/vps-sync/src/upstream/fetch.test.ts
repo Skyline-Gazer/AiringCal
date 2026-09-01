@@ -65,6 +65,8 @@ test('fetchCompleteInput fetches every page and calendar before returning a comp
   assert.equal(result.complete, true)
   assert.equal(result.observedAt, 123)
   assert.deepEqual(result.collections.map(({ collection }) => collection.subject_id), [1, 2])
+  assert.equal(Object.hasOwn(result.calendar[0]!.items[0]!, 'name'), false)
+  assert.equal(Object.hasOwn(result.calendar[0]!.items[0]!, 'eps'), false)
 })
 
 test('fetchCompleteInput fails closed when a pagination total drifts before requesting another page', async () => {

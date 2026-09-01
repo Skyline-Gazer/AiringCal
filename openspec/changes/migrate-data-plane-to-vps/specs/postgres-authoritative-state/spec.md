@@ -18,6 +18,10 @@
 - **WHEN** collection 已写入但 calendar 写入失败
 - **THEN** 整个权威状态事务回滚且上一版数据保持不变
 
+#### Scenario: collection 与 calendar 提供同一 subject
+- **WHEN** 完整抓取中 calendar 明确提供某字段且 collection subject 同字段冲突，同时 calendar 省略其他字段
+- **THEN** 规范化权威输入保留 calendar 冲突字段，并只用 collection 补齐 calendar 省略字段；collection-only、calendar-only 与跨用户重复 subject 均稳定保留
+
 ### Requirement: 删除必须以完整观测为前提
 系统 MUST 仅在目标账户全部分页和 calendar 成功获取后确认缺失记录；截断或空页异常不得转化为删除。
 
