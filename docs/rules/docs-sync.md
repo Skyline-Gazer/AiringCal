@@ -62,6 +62,40 @@
 - commit message 遵循 conventional commits（`feat:` / `fix:` / `refactor:` / `docs:` / `chore:`）
 - commit 之后立即 `git push`
 
+### Commit 上下文（AI Review 强制门禁）
+
+**除自动生成的 merge commit 外，每个人工或 agent 创建的 commit 都必须包含正文；只有标题、没有正文的 commit 不允许提交。** 正文必须让未参与开发的 reviewer 能独立判断业务规则、预期行为与验收证据，不能要求 reviewer 仅凭任务标题或代码 diff 猜测意图。
+
+正文至少使用以下结构；某项确实不适用时必须写明 `N/A` 及原因，不得直接省略：
+
+```text
+<type>(<scope>): <简洁标题>
+
+Business context:
+- 为什么需要本次变更，以及关联的 task / issue / review finding。
+
+Expected behavior:
+- 修改后的业务行为，以及明确不得改变的行为。
+
+Acceptance criteria:
+- reviewer 可以逐项核验的完成条件。
+
+Constraints and edge cases:
+- 需要考虑的边界、安全、兼容性和明确排除范围。
+
+Verification:
+- 实际执行的命令与结果。
+- 未执行的验证、原因及仍然存在的 gate。
+```
+
+附加约束：
+
+- `Verification` 只能记录真实执行结果；不得把普通单元测试描述成 integration、live service、容器或生产验证。
+- 测试未增加或未修改时，必须写 `no-tests: <reason>`，说明为什么行为不受影响；不得只写 `no-tests`。
+- 修复 code review finding 时，`Business context` 必须包含 finding 的文件/行为范围，`Acceptance criteria` 必须说明如何防止原问题回归。
+- 关联的 OpenSpec task、PR 描述或 review thread 同样必须包含业务要求、验收标准、预期行为、边界与约束；commit body 不能用“见任务标题”替代上下文。
+- 禁止在 commit title/body、PR 描述或 review 回复中写入 token、DSN、数据库连接串、webhook、R2 credential 或其他 secret。
+
 ## 二、文档随代码同步更新
 
 **任何修改了代码的 commit，如果涉及以下文档覆盖的范围，必须在同一 commit 或紧随其后的 `docs:` commit 中更新对应文档：**
