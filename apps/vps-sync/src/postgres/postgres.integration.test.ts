@@ -198,6 +198,12 @@ test('PostgreSQL integration exercises the real authority boundary', async (t) =
         }), true)
       }
 
+      await database!.query(
+        `INSERT INTO calendar_entries (weekday_id, subject_id, payload, observed_at)
+         VALUES ($1, $2, $3, $4)`,
+        [2, 8_200_008, { weekday: { id: 2 }, subject_id: 8_200_008 }, mediaObservedAt],
+      )
+
       const fixtureIds = new Set<number>(fixtures.map(({ subjectId }) => subjectId))
       const candidates = (await authority.mediaCandidates({ now, limit: 200 }))
         .filter(({ subjectId }) => fixtureIds.has(subjectId))
