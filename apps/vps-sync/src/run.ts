@@ -23,6 +23,7 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
   const counts: Record<string, number> = {}
   const durations: Record<string, number> = {}
   const components = { ...result.components }
+  let heartbeatFailed = false
   const persist = async () => {
     const { source: _source, mode: _mode, publication: _publication, ...row } = result
     await deps.authority.finishRun(row)
@@ -32,7 +33,6 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
     await deps.authority.heartbeat(deps.runId, name, at())
     const start = deps.now()
     let pending: Promise<void> | undefined
-    let heartbeatFailed = false
     const timer = setInterval(() => {
       if (!pending) pending = deps.authority.heartbeat(deps.runId, name, at())
         .catch(() => { heartbeatFailed = true })
@@ -41,7 +41,6 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
     try {
       const value = await operation()
       await pending
-      if (heartbeatFailed) throw new Error('HEARTBEAT_FAILED')
       return value
     } finally {
       clearInterval(timer)
@@ -53,6 +52,11 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
     result.sanitizedError ??= error instanceof UpstreamFetchError
       ? { category: error.category, code: error.code, attemptCount: error.attempt, stage: error.stage }
       : { category: 'runtime', code: 'STAGE_FAILED', attemptCount: 1, stage: result.stage }
+  }
+  const applyHeartbeatFailure = () => {
+    if (!heartbeatFailed) return
+    result.sanitizedError ??= { category: 'runtime', code: 'HEARTBEAT_FAILED', attemptCount: 1, stage: result.stage }
+    if (result.status === 'success' || result.status === 'no_change') result.status = 'partial'
   }
   let locked = false
   let begun = false
@@ -87,12 +91,14 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
       failure(error)
     }
     result.status = locked ? terminalStatus(components) : 'skipped'
+    applyHeartbeatFailure()
     result.counts = counts; result.stageDurations = durations; result.components = components
     result.finishedAt = result.heartbeatAt = at()
     await persist()
     try { await stage('notification', () => deps.notify(structuredClone(result))); components.notification = 'success' }
     catch { components.notification = 'failed' }
     result.stage = 'finished'; result.heartbeatAt = at()
+    applyHeartbeatFailure()
     await persist()
     return result
   } catch (error) {

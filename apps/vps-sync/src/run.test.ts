@@ -105,6 +105,29 @@ test('continues heartbeat during long stages and drains timer before releasing r
   assert.equal(events.length, count)
 })
 
+test('periodic heartbeat failure preserves committed authority counts and later side effects', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  const { deps, events, finished } = fixture()
+  let collectionHeartbeats = 0
+  deps.authority.heartbeat = async (_id, stage) => {
+    events.push(`heartbeat:${stage}`)
+    if (stage === 'collection' && ++collectionHeartbeats === 2) throw new Error('database heartbeat')
+  }
+  deps.fetchComplete = async () => {
+    t.mock.timers.tick(30000)
+    await Promise.resolve()
+    return { runId: 'run-1', observedAt: '2026-08-31T00:00:00Z', users: [], calendarEntries: [] }
+  }
+  deps.authority.commitCompleteState = async () => ({ inserted: 4, updated: 3, unchanged: 2, deleted: 1, missing: 0, restored: 0 })
+  const result = await runOnce(deps, request)
+  assert.equal(result.status, 'partial')
+  assert.equal(result.counts.inserted, 4)
+  assert.equal(result.counts.updated, 3)
+  assert.deepEqual(result.publication, { status: 'published', generation: 1, contentHash: 'a'.repeat(64) })
+  assert.ok(events.includes('backup'))
+  assert.equal((finished.at(-1) as { status: string }).status, 'partial')
+})
+
 test('records completed authority diff counts rather than selected work as completed', async () => {
   const { deps } = fixture()
   deps.authority.commitCompleteState = async () => ({ inserted: 1, updated: 2, unchanged: 3, deleted: 0, missing: 1, restored: 0 })
