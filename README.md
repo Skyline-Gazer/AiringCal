@@ -448,6 +448,10 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 
 ## CI 部署流程
 
+### CI 验证触发
+
+`.github/workflows/ci.yml` 只在推送到 `dev` 时触发 push 验证，并在所有 `pull_request` 事件上触发验证，不配置路径过滤。这样 PR 分支的后续 push 只由 PR 验证覆盖，合并到 `dev` 后仍会进行一次验证。CI 使用 `${{ github.workflow }}-${{ github.ref }}` 作为 workflow 级并发组并启用取消：同一 workflow 和 ref 的较新提交会取消旧的进行中验证，而不会取消其他 workflow 的运行。
+
 `.github/workflows/deploy.yml` 会按顺序执行：
 
 1. 在不接触 production secrets 的 `resolve_ref` job 中把 push SHA 或手动 ref 解析为完整 commit SHA，并验证它已是 `origin/dev` 的 ancestor
