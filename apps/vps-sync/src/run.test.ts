@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { runOnce, exitCode } from './run.ts'
 import type { RunDependencies } from './contracts.ts'
+import type { TraceAttributes, TracingPort } from './observability/tracing.ts'
 import { UpstreamFetchError } from './upstream/retry.ts'
 
 function fixture() {
@@ -226,4 +227,53 @@ test('media and publication use the completed input observation rather than proc
     return { status: 'no_change', generation: 1, contentHash: 'a'.repeat(64) }
   }
   assert.equal((await runOnce(deps, request)).status, 'no_change')
+})
+
+test('emits only manual root and coordinator-stage allow-listed tracing attributes', async () => {
+  const { deps } = fixture()
+  const spans: Array<{ name: string; attributes: TraceAttributes; complete: TraceAttributes }> = []
+  const tracing: TracingPort = {
+    span: async (input, operation) => {
+      const record = { name: input.name, attributes: { ...input.attributes }, complete: {} as TraceAttributes }
+      spans.push(record)
+      try { return await operation() }
+      finally { record.complete = { ...(input.completeAttributes?.() ?? {}) } }
+    },
+    flush: async () => undefined,
+  }
+  deps.tracing = tracing
+  deps.runId = 'run-subject-id-marker'
+  deps.fetchComplete = async () => {
+    throw new Error('dsn-marker https://username-marker.example.invalid/body-marker subject-id-marker raw-error-marker')
+  }
+
+  const result = await runOnce(deps, request)
+  assert.equal(result.status, 'failed')
+  assert.equal(spans[0]?.name, 'vps-sync.run')
+  assert.deepEqual(spans[0]?.attributes, { mode: 'shadow', source: 'manual', git_sha: 'a'.repeat(40) })
+  assert.deepEqual(spans.map((span) => span.name), ['vps-sync.run', 'vps-sync.stage', 'vps-sync.stage'])
+  assert.deepEqual(spans[1]?.attributes, { stage: 'collection' })
+  assert.deepEqual(spans[1]?.complete, { status: 'failed', duration_ms: 0 })
+  assert.deepEqual(spans[2]?.attributes, { stage: 'notification' })
+  assert.deepEqual(spans[2]?.complete, { status: 'success', duration_ms: 0 })
+  assert.deepEqual(spans[0]?.complete, { status: 'failed', 'count.users': 0, 'count.collections': 0, duration_ms: 0 })
+  const serialized = JSON.stringify(spans)
+  for (const marker of ['dsn-marker', 'https://', 'username-marker', 'body-marker', 'subject-id-marker', 'raw-error-marker']) {
+    assert.doesNotMatch(serialized, new RegExp(marker))
+  }
+})
+
+test('tracing span and flush failures do not change run execution or exit status', async () => {
+  const { deps, events } = fixture()
+  let spanCalls = 0
+  deps.tracing = {
+    span: async () => { spanCalls += 1; throw new Error('tracing unavailable') },
+    flush: async () => { throw new Error('flush unavailable') },
+  }
+
+  const result = await runOnce(deps, request)
+  assert.equal(result.status, 'success')
+  assert.equal(exitCode(result.status), 0)
+  assert.ok(events.includes('fetch') && events.includes('notify') && events.includes('close'))
+  assert.equal(spanCalls, 1)
 })

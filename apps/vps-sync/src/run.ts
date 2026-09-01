@@ -1,4 +1,5 @@
 import type { RunDependencies, RunRequest, RunResult, RunStatus } from './contracts.ts'
+import { noOpTracing, type TraceAttributes, type TraceSpanInput, type TracingPort } from './observability/tracing.ts'
 import type { RunFinishInput } from './postgres/repositories.ts'
 import { UpstreamFetchError } from './upstream/retry.ts'
 
@@ -11,7 +12,87 @@ export function terminalStatus(components: RunFinishInput['components']): RunSta
   return components.publication === 'no_change' ? 'no_change' : 'success'
 }
 
+const countAttributeNames = ['users', 'collections', 'inserted', 'updated', 'unchanged', 'deleted', 'missing', 'restored', 'mediaSelected', 'mediaSucceeded', 'mediaFailed'] as const
+
+function bounded(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.min(1_000_000_000, Math.max(0, Math.trunc(value))) : 0
+}
+
+function validGitSha(value: string): string | undefined {
+  return /^[a-f0-9]{40}$/.test(value) ? value : undefined
+}
+
+function terminalAttributes(result: RunResult | undefined, counts: Record<string, number>, durations: Record<string, number>): TraceAttributes {
+  const attributes: Record<string, string | number> = {
+    status: result?.status ?? 'failed',
+    'count.users': bounded(counts.users),
+    'count.collections': bounded(counts.collections),
+    duration_ms: bounded(Object.values(durations).reduce((total, duration) => total + bounded(duration), 0)),
+  }
+  for (const name of countAttributeNames) {
+    if (name !== 'users' && name !== 'collections' && counts[name] !== undefined) attributes[`count.${name}`] = bounded(counts[name])
+  }
+  return attributes
+}
+
+async function spanFailOpen<T>(tracing: TracingPort, input: TraceSpanInput, operation: () => Promise<T>, fallback: () => Promise<T> = operation): Promise<T> {
+  let operationStarted = false
+  try {
+    return await tracing.span(input, () => {
+      operationStarted = true
+      return operation()
+    })
+  } catch (error) {
+    if (operationStarted) throw error
+    return fallback()
+  }
+}
+
 export async function runOnce(deps: RunDependencies, request: RunRequest): Promise<RunResult> {
+  const tracing = deps.tracing ?? noOpTracing
+  let result: RunResult | undefined
+  let counts: Record<string, number> | undefined
+  let durations: Record<string, number> | undefined
+  const attributes: Record<string, string> = { mode: request.mode, source: request.source }
+  const gitSha = validGitSha(deps.gitSha)
+  if (gitSha) attributes.git_sha = gitSha
+  try {
+    result = await spanFailOpen(
+      tracing,
+      {
+        name: 'vps-sync.run',
+        attributes,
+        completeAttributes: () => terminalAttributes(result, counts ?? {}, durations ?? {}),
+      },
+      async () => {
+        const outcome = await runOnceCoordinator(deps, request, tracing, (nextCounts, nextDurations) => {
+          counts = nextCounts
+          durations = nextDurations
+        })
+        result = outcome
+        return outcome
+      },
+      async () => {
+        const outcome = await runOnceCoordinator(deps, request, noOpTracing, (nextCounts, nextDurations) => {
+          counts = nextCounts
+          durations = nextDurations
+        })
+        result = outcome
+        return outcome
+      },
+    )
+    return result
+  } finally {
+    try { await tracing.flush() } catch { /* Tracing must not change terminal state or exit status. */ }
+  }
+}
+
+async function runOnceCoordinator(
+  deps: RunDependencies,
+  request: RunRequest,
+  tracing: TracingPort,
+  observeTraceState: (counts: Record<string, number>, durations: Record<string, number>) => void,
+): Promise<RunResult> {
   const at = () => new Date(deps.now()).toISOString()
   const startedAt = at()
   const context = { ...request, runId: deps.runId, observedAt: startedAt }
@@ -22,6 +103,7 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
   }
   const counts: Record<string, number> = {}
   const durations: Record<string, number> = {}
+  observeTraceState(counts, durations)
   const components = { ...result.components }
   let heartbeatFailed = false
   const persist = async () => {
@@ -29,24 +111,38 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
     await deps.authority.finishRun(row)
   }
   const stage = async <T>(name: keyof RunFinishInput['stageDurations'], operation: () => Promise<T>): Promise<T> => {
-    result.stage = name
-    await deps.authority.heartbeat(deps.runId, name, at())
-    const start = deps.now()
-    let pending: Promise<void> | undefined
-    const timer = setInterval(() => {
-      if (!pending) pending = deps.authority.heartbeat(deps.runId, name, at())
-        .catch(() => { heartbeatFailed = true })
-        .finally(() => { pending = undefined })
-    }, 30000)
-    try {
-      const value = await operation()
-      await pending
-      return value
-    } finally {
-      clearInterval(timer)
-      await pending
-      durations[name] = Math.max(0, deps.now() - start)
-    }
+    let status: 'success' | 'failed' = 'success'
+    return spanFailOpen(
+      tracing,
+      {
+        name: 'vps-sync.stage',
+        attributes: { stage: name },
+        completeAttributes: () => ({ status, duration_ms: bounded(durations[name]) }),
+      },
+      async () => {
+        result.stage = name
+        await deps.authority.heartbeat(deps.runId, name, at())
+        const start = deps.now()
+        let pending: Promise<void> | undefined
+        const timer = setInterval(() => {
+          if (!pending) pending = deps.authority.heartbeat(deps.runId, name, at())
+            .catch(() => { heartbeatFailed = true })
+            .finally(() => { pending = undefined })
+        }, 30000)
+        try {
+          const value = await operation()
+          await pending
+          return value
+        } catch (error) {
+          status = 'failed'
+          throw error
+        } finally {
+          clearInterval(timer)
+          await pending
+          durations[name] = Math.max(0, deps.now() - start)
+        }
+      },
+    )
   }
   const failure = (error?: unknown) => {
     result.sanitizedError ??= error instanceof UpstreamFetchError

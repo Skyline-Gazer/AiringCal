@@ -1,4 +1,5 @@
 import type { CompleteStateInput, RunStartInput, RunFinishInput } from './postgres/repositories.ts'
+import type { TracingPort } from './observability/tracing.ts'
 
 export type RunRequest = Pick<RunStartInput, 'mode' | 'source'>
 export type RunStatus = RunFinishInput['status']
@@ -27,4 +28,6 @@ export interface RunDependencies {
   backup(context: RunContext, publication: Extract<PublicationResult, { generation: number }>): Promise<void>
   notify(result: RunResult): Promise<void>
   close(): Promise<void>
+  /** Optional observability boundary; omitted tracing remains a no-op. */
+  tracing?: TracingPort
 }
