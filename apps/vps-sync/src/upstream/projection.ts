@@ -44,9 +44,9 @@ function calendarSubject(subject: CalendarSubject, fallback?: SubjectPayload): S
   const calendarRating = subject.rating as Partial<NonNullable<SubjectPayload['rating']>> | undefined
   const fallbackRating = fallback?.rating
   const rating = calendarRating || fallbackRating ? {
-    score: calendarRating && Object.hasOwn(calendarRating, 'score') ? calendarRating.score! : fallbackRating?.score ?? 0,
-    rank: calendarRating && Object.hasOwn(calendarRating, 'rank') ? calendarRating.rank! : fallbackRating?.rank ?? 0,
-    total: calendarRating && Object.hasOwn(calendarRating, 'total') ? calendarRating.total! : fallbackRating?.total ?? 0,
+    ...(calendarRating && Object.hasOwn(calendarRating, 'score') ? { score: calendarRating.score } : fallbackRating && Object.hasOwn(fallbackRating, 'score') ? { score: fallbackRating.score } : {}),
+    ...(calendarRating && Object.hasOwn(calendarRating, 'rank') ? { rank: calendarRating.rank } : fallbackRating && Object.hasOwn(fallbackRating, 'rank') ? { rank: fallbackRating.rank } : {}),
+    ...(calendarRating && Object.hasOwn(calendarRating, 'total') ? { total: calendarRating.total } : fallbackRating && Object.hasOwn(fallbackRating, 'total') ? { total: fallbackRating.total } : {}),
   } : undefined
   const payload: SubjectPayload = {
     id: subject.id,

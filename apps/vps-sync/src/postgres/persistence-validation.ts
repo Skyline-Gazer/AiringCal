@@ -55,7 +55,7 @@ const runComponentKeys = new Set(['collection', 'calendar', 'media', 'publicatio
 const sanitizedErrorKeys = new Set(['category', 'code', 'attemptCount', 'stage'])
 const subjectPayloadRequiredKeys = new Set(['id', 'name'])
 const subjectInputRequiredKeys = new Set(subjectInputKeys)
-const subjectRatingRequiredKeys = new Set(subjectRatingKeys)
+const subjectRatingRequiredKeys = new Set<string>()
 const collectionInputRequiredKeys = new Set(collectionInputKeys)
 const calendarPayloadRequiredKeys = new Set(calendarPayloadKeys)
 const calendarWeekdayRequiredKeys = new Set(['id'])
@@ -227,9 +227,9 @@ function assertSubjectPayload(value: unknown, path: string): void {
   }
   if (payload.rating !== undefined) {
     const rating = assertExactObject(payload.rating, subjectRatingKeys, subjectRatingRequiredKeys, `${path}.rating`)
-    assertFiniteNumber(rating.score, `${path}.rating.score`)
-    assertFiniteNumber(rating.rank, `${path}.rating.rank`)
-    assertFiniteNumber(rating.total, `${path}.rating.total`)
+    assertOptionalFiniteNumber(rating, 'score', `${path}.rating`)
+    assertOptionalFiniteNumber(rating, 'rank', `${path}.rating`)
+    assertOptionalFiniteNumber(rating, 'total', `${path}.rating`)
   }
 }
 

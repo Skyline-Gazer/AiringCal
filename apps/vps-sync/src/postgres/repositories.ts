@@ -25,7 +25,7 @@ type SubjectPayload = Readonly<{
   eps?: number
   total_episodes?: number
   images?: Readonly<{ common?: string | null; large?: string | null }>
-  rating?: Readonly<{ score: number; rank: number; total: number }>
+  rating?: Readonly<{ score?: number; rank?: number; total?: number }>
 }>
 
 type CollectionPayload = Readonly<{
@@ -817,7 +817,9 @@ function toPlannerCollection(
       date: subject.date ?? '',
       tags: [...(collection.tags ?? [])],
       updated_at: item.collection.upstreamUpdatedAt ?? '',
-      ...(rating ? { rating } : {}),
+      ...(rating?.score !== undefined && rating.rank !== undefined && rating.total !== undefined
+        ? { rating: { score: rating.score, rank: rating.rank, total: rating.total } }
+        : {}),
     },
   }
 }

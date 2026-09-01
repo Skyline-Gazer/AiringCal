@@ -122,6 +122,44 @@ test('merges rating presence field by field and treats explicit zero as authorit
   assert.deepEqual(explicitZero.calendarEntries[0]!.subject.payload.rating, { score: 0, rank: 0, total: 0 })
 })
 
+test('preserves calendar-only partial rating presence without inventing zero fields', async () => {
+  const scoreOnly = await projectCompleteFullFetch(fullFetch(
+    [],
+    [{ id: 8, type: 2, rating: { score: 9 } }],
+    [userA.id],
+  ), 'run-calendar-score-only', [userA])
+  const rating = scoreOnly.calendarEntries[0]!.subject.payload.rating
+
+  assert.deepEqual(rating, { score: 9 })
+  assert.doesNotThrow(() => assertCompleteStateInput(scoreOnly))
+  assert.notEqual(
+    scoreOnly.calendarEntries[0]!.subject.contentHash,
+    canonicalProjectionHash({ ...scoreOnly.calendarEntries[0]!.subject.payload, rating: { score: 9, rank: 0, total: 0 } }),
+  )
+})
+
+test('preserves explicit zero in a calendar-only partial rating', async () => {
+  const explicitZero = await projectCompleteFullFetch(fullFetch(
+    [],
+    [{ id: 11, type: 2, rating: { score: 0 } }],
+    [userA.id],
+  ), 'run-calendar-explicit-zero', [userA])
+
+  assert.deepEqual(explicitZero.calendarEntries[0]!.subject.payload.rating, { score: 0 })
+  assert.doesNotThrow(() => assertCompleteStateInput(explicitZero))
+})
+
+test('merges independently absent rating fields without inventing fields absent from both sources', async () => {
+  const collectionRating = { rank: 70 } as unknown as NonNullable<BgmSlimSubject['rating']>
+  const projected = await projectCompleteFullFetch(fullFetch(
+    [collection(userA.id, 12, subject(12, { rating: collectionRating }))],
+    [{ id: 12, type: 2, rating: { score: 9 } }],
+  ), 'run-split-partial-rating', [userA])
+
+  assert.deepEqual(projected.calendarEntries[0]!.subject.payload.rating, { score: 9, rank: 70 })
+  assert.doesNotThrow(() => assertCompleteStateInput(projected))
+})
+
 test('canonical hashes use stable code-unit key ordering for insertion order and Unicode keys', async () => {
   const left = { 'ä': 1, Z: 2, a: 3, '😀': 4, nested: { total: 700, score: 7, rank: 70 } }
   const right = { nested: { rank: 70, score: 7, total: 700 }, '😀': 4, a: 3, Z: 2, 'ä': 1 }

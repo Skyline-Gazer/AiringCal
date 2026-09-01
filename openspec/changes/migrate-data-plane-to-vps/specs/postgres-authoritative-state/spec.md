@@ -29,6 +29,10 @@
 - **WHEN** 完整抓取携带已成功完成分页的用户 identity evidence
 - **THEN** coordinator 仅在 evidence 与配置用户为无重复、无未知且无缺失的精确同集时提交；真实空用户仍有 evidence，未观测用户不得被凭空投影为空收藏
 
+#### Scenario: 部分 rating 不得伪造零值
+- **WHEN** calendar 与 collection 分别提供 `rating.score`、`rank`、`total` 的任意子集
+- **THEN** coordinator 逐字段以 calendar presence 优先、collection 仅补缺失字段，双方均未提供的字段在 PostgreSQL authority JSON 与 content hash 中保持缺失，显式零仍保留为权威值
+
 #### Scenario: 未达到 total 时返回空页
 - **WHEN** 已读取数量小于 total 而上游返回空 data
 - **THEN** 本轮失败且数据库中既有收藏不得被删除
