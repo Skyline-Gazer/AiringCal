@@ -130,6 +130,31 @@ test('periodic heartbeat failure preserves committed authority counts and later 
   assert.equal((finished.at(-1) as { status: string }).status, 'partial')
 })
 
+test('notification heartbeat failure sends one final degraded correction and drains its timer', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] })
+  const { deps, events, finished, notified } = fixture()
+  let notificationHeartbeats = 0
+  deps.authority.heartbeat = async (_id, stage) => {
+    events.push(`heartbeat:${stage}`)
+    if (stage === 'notification' && ++notificationHeartbeats === 2) throw new Error('database heartbeat')
+  }
+  deps.notify = async (result) => {
+    events.push('notify')
+    notified.push(structuredClone(result))
+    t.mock.timers.tick(30000)
+    await Promise.resolve()
+  }
+  const result = await runOnce(deps, request)
+  assert.equal(result.status, 'partial')
+  assert.deepEqual(notified.map((value) => (value as { status: string }).status), ['success', 'partial'])
+  assert.equal((finished.at(-1) as { status: string }).status, 'partial')
+  assert.equal(events.filter((event) => event === 'notify').length, 2)
+  const count = events.length
+  t.mock.timers.tick(60000)
+  await Promise.resolve()
+  assert.equal(events.length, count)
+})
+
 test('records completed authority diff counts rather than selected work as completed', async () => {
   const { deps } = fixture()
   deps.authority.commitCompleteState = async () => ({ inserted: 1, updated: 2, unchanged: 3, deleted: 0, missing: 1, restored: 0 })

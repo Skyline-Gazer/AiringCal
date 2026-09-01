@@ -105,10 +105,21 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
     result.counts = counts; result.stageDurations = durations; result.components = components
     result.finishedAt = result.heartbeatAt = at()
     await persist()
-    try { await stage('notification', () => deps.notify(structuredClone(result))); components.notification = 'success' }
+    let notifiedStatus: RunStatus | undefined
+    try {
+      await stage('notification', () => {
+        notifiedStatus = result.status
+        return deps.notify(structuredClone(result))
+      })
+      components.notification = 'success'
+    }
     catch { components.notification = 'failed' }
     result.stage = 'finished'; result.heartbeatAt = at()
     applyHeartbeatFailure()
+    if (components.notification === 'success' && notifiedStatus !== result.status) {
+      try { await deps.notify(structuredClone(result)) }
+      catch { components.notification = 'failed' }
+    }
     await persist()
     return result
   } catch (error) {
