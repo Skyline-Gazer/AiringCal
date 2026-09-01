@@ -58,8 +58,17 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
     result.sanitizedError ??= { category: 'runtime', code: 'HEARTBEAT_FAILED', attemptCount: 1, stage: result.stage }
     if (result.status === 'success' || result.status === 'no_change') result.status = 'partial'
   }
+  const cleanupFailure = () => {
+    result.sanitizedError ??= { category: 'runtime', code: 'CLEANUP_FAILED', attemptCount: 1, stage: 'cleanup' }
+    result.status = components.publication === 'success' || components.publication === 'no_change' ? 'partial' : 'failed'
+  }
   let locked = false
   let begun = false
+  const releaseLock = async () => {
+    if (!locked) return
+    locked = false
+    try { await deps.lock.release() } catch { cleanupFailure() }
+  }
   try {
     locked = await deps.lock.acquire()
     await deps.authority.beginRun({ ...request, id: deps.runId, gitSha: deps.gitSha, stage: 'lock', status: locked ? 'running' : 'skipped', startedAt, heartbeatAt: startedAt })
@@ -92,6 +101,7 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
     }
     result.status = locked ? terminalStatus(components) : 'skipped'
     applyHeartbeatFailure()
+    await releaseLock()
     result.counts = counts; result.stageDurations = durations; result.components = components
     result.finishedAt = result.heartbeatAt = at()
     await persist()
@@ -111,11 +121,15 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
     catch { components.notification = 'failed' }
     return result
   } finally {
-    const cleanupFailure = () => {
-      result.sanitizedError ??= { category: 'runtime', code: 'CLEANUP_FAILED', attemptCount: 1, stage: 'cleanup' }
-      result.status = components.publication === 'success' || components.publication === 'no_change' ? 'partial' : 'failed'
+    await releaseLock()
+    try { await deps.close() } catch {
+      cleanupFailure()
+      result.finishedAt = result.heartbeatAt = at()
+      result.components = components; result.counts = counts; result.stageDurations = durations
+      if (begun) { try { await persist() } catch { /* A database outage cannot persist its own terminal state. */ } }
+      try { await deps.notify(structuredClone(result)); components.notification = 'success' }
+      catch { components.notification = 'failed' }
+      if (begun) { try { await persist() } catch { /* Pool close failure can make correction persistence unavailable. */ } }
     }
-    try { if (locked) await deps.lock.release() } catch { cleanupFailure() }
-    finally { try { await deps.close() } catch { cleanupFailure() } }
   }
 }

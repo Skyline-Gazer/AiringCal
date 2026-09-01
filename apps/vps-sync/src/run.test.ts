@@ -7,6 +7,7 @@ import { UpstreamFetchError } from './upstream/retry.ts'
 function fixture() {
   const events: string[] = []
   const finished: unknown[] = []
+  const notified: unknown[] = []
   const deps: RunDependencies = {
     runId: 'run-1', gitSha: 'a'.repeat(40), now: () => Date.parse('2026-08-31T00:00:00Z'),
     lock: { acquire: async () => { events.push('lock'); return true }, release: async () => { events.push('unlock') } },
@@ -20,10 +21,10 @@ function fixture() {
     media: async () => { events.push('media'); return { selected: 0, succeeded: 0, failed: 0 } },
     publish: async () => { events.push('publish'); return { status: 'published', generation: 1, contentHash: 'a'.repeat(64) } },
     backup: async () => { events.push('backup') },
-    notify: async () => { events.push('notify') },
+    notify: async (result) => { events.push('notify'); notified.push(structuredClone(result)) },
     close: async () => { events.push('close') },
   }
-  return { deps, events, finished }
+  return { deps, events, finished, notified }
 }
 const request = { mode: 'shadow', source: 'manual' } as const
 
@@ -31,7 +32,7 @@ test('coordinates complete input, heartbeat, publication, backup and persisted n
   const { deps, events } = fixture()
   const result = await runOnce(deps, request)
   assert.equal(result.status, 'success')
-  assert.deepEqual(events.filter((e) => !e.startsWith('heartbeat')), ['lock', 'begin', 'fetch', 'commit', 'media', 'publish', 'backup', 'finish', 'notify', 'finish', 'unlock', 'close'])
+  assert.deepEqual(events.filter((e) => !e.startsWith('heartbeat')), ['lock', 'begin', 'fetch', 'commit', 'media', 'publish', 'backup', 'unlock', 'finish', 'notify', 'finish', 'close'])
   assert.ok(events.includes('heartbeat:collection'))
   assert.ok(events.includes('heartbeat:media'))
 })
@@ -48,7 +49,8 @@ test('hard fetch failure preserves authority and returns only a stable sanitized
   assert.equal(result.status, 'failed')
   assert.ok(!events.includes('commit') && !events.includes('publish') && !events.includes('backup'))
   assert.doesNotMatch(JSON.stringify(result), /secret URL/)
-  assert.deepEqual(events.slice(-2), ['unlock', 'close'])
+  assert.ok(events.indexOf('unlock') < events.indexOf('finish'))
+  assert.equal(events.at(-1), 'close')
 })
 test('media failure remains partial but publication and backup are attempted', async () => {
   const { deps, events } = fixture()
@@ -149,14 +151,40 @@ test('lock/initial persistence failures expose sanitized terminal result and alw
   }
 })
 
-test('unlock and close failure never leak raw text or skip remaining resource cleanup', async () => {
-  const { deps, events } = fixture()
+test('unlock failure is reflected consistently in database, notification and return before close', async () => {
+  const { deps, events, finished, notified } = fixture()
   deps.lock.release = async () => { events.push('unlock'); throw new Error('secret connection') }
+  const result = await runOnce(deps, request)
+  assert.equal(result.status, 'partial')
+  assert.equal((finished.at(-1) as { status: string }).status, 'partial')
+  assert.equal((notified.at(-1) as { status: string }).status, 'partial')
+  assert.doesNotMatch(JSON.stringify(result), /secret connection/)
+  assert.equal(events.filter((event) => event === 'unlock').length, 1)
+  assert.ok(events.indexOf('unlock') < events.indexOf('finish'))
+  assert.equal(events.at(-1), 'close')
+})
+
+test('close failure makes a best-effort corrected persistence and notification without double unlock', async () => {
+  const { deps, events, finished, notified } = fixture()
   deps.close = async () => { events.push('close'); throw new Error('secret pool') }
   const result = await runOnce(deps, request)
   assert.equal(result.status, 'partial')
-  assert.doesNotMatch(JSON.stringify(result), /secret connection|secret pool/)
-  assert.deepEqual(events.slice(-2), ['unlock', 'close'])
+  assert.equal(events.filter((event) => event === 'unlock').length, 1)
+  assert.equal(events.filter((event) => event === 'close').length, 1)
+  assert.equal((finished.at(-1) as { status: string }).status, 'partial')
+  assert.equal((notified.at(-1) as { status: string }).status, 'partial')
+  assert.doesNotMatch(JSON.stringify(result), /secret pool/)
+})
+
+test('initialization plus close failure remains sanitized and releases an acquired lock once', async () => {
+  const { deps, events } = fixture()
+  deps.authority.beginRun = async () => { throw new Error('postgres://initial-secret') }
+  deps.close = async () => { events.push('close'); throw new Error('postgres://close-secret') }
+  const result = await runOnce(deps, request)
+  assert.equal(result.status, 'failed')
+  assert.equal(events.filter((event) => event === 'unlock').length, 1)
+  assert.equal(events.filter((event) => event === 'close').length, 1)
+  assert.doesNotMatch(JSON.stringify(result), /postgres:\/\//)
 })
 
 test('media and publication use the completed input observation rather than process start time', async () => {
