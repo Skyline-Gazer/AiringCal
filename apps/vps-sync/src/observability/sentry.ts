@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/node'
-import { noOpTracing, type TraceAttributes, type TraceSpanInput, type TracingPort } from './tracing.ts'
+import { memoizeOperation, noOpTracing, type TraceAttributes, type TraceSpanInput, type TracingPort } from './tracing.ts'
 
 export interface SentrySdk {
   initWithoutDefaultIntegrations(options: {
@@ -55,30 +55,18 @@ export function createSentryTracing(env: SentryEnvironment, sdk: SentrySdk = nod
   }
   return {
     async span<T>(input: TraceSpanInput, operation: () => Promise<T>): Promise<T> {
-      let operationStarted = false
-      let operationFailed = false
-      let operationFailure: unknown
-      let operationPromise: Promise<T> | undefined
+      const executeBusiness = memoizeOperation(operation)
       const execute = async (span: { setAttributes(attributes: TraceAttributes): unknown }): Promise<T> => {
-        operationStarted = true
-        operationPromise = operation()
         try {
-          return await operationPromise
-        } catch (error) {
-          operationFailed = true
-          operationFailure = error
-          throw error
+          return await executeBusiness()
         } finally {
           try { span.setAttributes(input.completeAttributes?.() ?? {}) } catch { /* Tracing must not change the run. */ }
         }
       }
       try {
         return await sdk.startSpan(spanOptions(input), execute)
-      } catch (error) {
-        if (!operationStarted) return operation()
-        if (operationFailed) throw operationFailure
-        if (operationPromise) return operationPromise
-        throw error
+      } catch {
+        return executeBusiness()
       }
     },
     flush: () => flushFailOpen(sdk),

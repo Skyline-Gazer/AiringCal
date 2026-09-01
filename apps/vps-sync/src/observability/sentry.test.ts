@@ -3,21 +3,23 @@ import test from 'node:test'
 import { createSentryTracing, type SentrySdk } from './sentry.ts'
 import type { TraceAttributes } from './tracing.ts'
 
-function sdkFixture(): { sdk: SentrySdk; initOptions: unknown[]; spanOptions: unknown[]; flushTimeouts: number[] } {
+function sdkFixture(): { sdk: SentrySdk; initOptions: unknown[]; spanOptions: unknown[]; spanCompletions: TraceAttributes[]; flushTimeouts: number[] } {
   const initOptions: unknown[] = []
   const spanOptions: unknown[] = []
+  const spanCompletions: TraceAttributes[] = []
   const flushTimeouts: number[] = []
   return {
     sdk: {
       initWithoutDefaultIntegrations: (options) => { initOptions.push(options) },
       startSpan: (options, operation) => {
         spanOptions.push(options)
-        return operation({ setAttributes: () => undefined })
+        return operation({ setAttributes: (attributes) => { spanCompletions.push(attributes) } })
       },
       flush: async (timeout) => { if (timeout !== undefined) flushTimeouts.push(timeout); return true },
     },
     initOptions,
     spanOptions,
+    spanCompletions,
     flushTimeouts,
   }
 }
@@ -103,8 +105,30 @@ test('a span failure after its callback preserves the completed business result'
   assert.equal(calls, 1)
 })
 
-test('adds only complete attributes and swallows bounded flush failures', async () => {
-  const { sdk, spanOptions, flushTimeouts } = sdkFixture()
+test('a span failure after its callback preserves the business rejection', async () => {
+  const businessFailure = new Error('business failure')
+  let calls = 0
+  const tracing = createSentryTracing({ SENTRY_DSN: 'https://dsn.example.invalid/1' }, {
+    initWithoutDefaultIntegrations: () => undefined,
+    startSpan: <T>(_options: { name: string; attributes: TraceAttributes }, operation: (span: { setAttributes(attributes: TraceAttributes): unknown }) => T) => {
+      void Promise.resolve(operation({ setAttributes: () => undefined })).catch(() => undefined)
+      return Promise.reject(new Error('span transport failure')) as T
+    },
+    flush: async () => true,
+  })
+
+  await assert.rejects(
+    () => tracing.span({ name: 'vps-sync.run', attributes: {} }, async () => {
+      calls += 1
+      throw businessFailure
+    }),
+    (error) => error === businessFailure,
+  )
+  assert.equal(calls, 1)
+})
+
+test('sets complete attributes on the span that completed and swallows bounded flush failures', async () => {
+  const { sdk, spanOptions, spanCompletions, flushTimeouts } = sdkFixture()
   sdk.flush = async (timeout) => { if (timeout !== undefined) flushTimeouts.push(timeout); throw new Error('transport unavailable') }
   const tracing = createSentryTracing({ SENTRY_DSN: 'https://dsn.example.invalid/1' }, sdk)
   await tracing.span({
@@ -115,16 +139,25 @@ test('adds only complete attributes and swallows bounded flush failures', async 
   await tracing.flush()
 
   assert.deepEqual(spanOptions, [{ name: 'vps-sync.run', attributes: { mode: 'shadow' } }])
+  assert.deepEqual(spanCompletions, [{ status: 'success', 'count.users': 1 }])
   assert.deepEqual(flushTimeouts, [2000])
 })
 
-test('does not wait for the timeout after an immediate flush', async () => {
+test('bounds a never-settling SDK flush at two seconds with controlled time', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
   const { sdk } = sdkFixture()
+  sdk.flush = async () => new Promise<boolean>(() => undefined)
   const tracing = createSentryTracing({ SENTRY_DSN: 'https://dsn.example.invalid/1' }, sdk)
-  const startedAt = performance.now()
-  await tracing.flush()
+  let settled = false
+  const flush = tracing.flush().then(() => { settled = true })
 
-  assert.ok(performance.now() - startedAt < 200)
+  await Promise.resolve()
+  t.mock.timers.tick(1_999)
+  await Promise.resolve()
+  assert.equal(settled, false)
+  t.mock.timers.tick(1)
+  await flush
+  assert.equal(settled, true)
 })
 
 test('clears the bounded flush timer after an immediate flush', async (t) => {

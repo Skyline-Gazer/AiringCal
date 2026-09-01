@@ -3,6 +3,7 @@ import test from 'node:test'
 import { runOnce, exitCode } from './run.ts'
 import type { RunDependencies } from './contracts.ts'
 import type { TraceAttributes, TracingPort } from './observability/tracing.ts'
+import { createSentryTracing, type SentrySdk } from './observability/sentry.ts'
 import { UpstreamFetchError } from './upstream/retry.ts'
 
 function fixture() {
@@ -156,6 +157,27 @@ test('notification heartbeat failure sends one final degraded correction and dra
   assert.equal(events.length, count)
 })
 
+test('an initial heartbeat failure marks its stage span and root span failed', async () => {
+  const { deps } = fixture()
+  const spans: Array<{ name: string; complete: TraceAttributes }> = []
+  deps.authority.heartbeat = async (_id, stage) => {
+    if (stage === 'collection') throw new Error('initial heartbeat failure')
+  }
+  deps.tracing = {
+    span: async (input, operation) => {
+      const record = { name: input.name, complete: {} as TraceAttributes }
+      spans.push(record)
+      try { return await operation() }
+      finally { record.complete = { ...(input.completeAttributes?.() ?? {}) } }
+    },
+    flush: async () => undefined,
+  }
+
+  const result = await runOnce(deps, request)
+  assert.equal(result.status, 'failed')
+  assert.deepEqual(spans.map((span) => span.complete.status), ['failed', 'failed', 'success'])
+})
+
 test('records completed authority diff counts rather than selected work as completed', async () => {
   const { deps } = fixture()
   deps.authority.commitCompleteState = async () => ({ inserted: 1, updated: 2, unchanged: 3, deleted: 0, missing: 1, restored: 0 })
@@ -276,4 +298,72 @@ test('tracing span and flush failures do not change run execution or exit status
   assert.equal(exitCode(result.status), 0)
   assert.ok(events.includes('fetch') && events.includes('notify') && events.includes('close'))
   assert.equal(spanCalls, 1)
+})
+
+test('root and stage tracing rejections after callbacks preserve one successful run', async () => {
+  const { deps, events } = fixture()
+  const calls: string[] = []
+  deps.tracing = {
+    span: async (input, operation) => {
+      calls.push(input.name)
+      await operation()
+      throw new Error(`tracing failed after ${input.name}`)
+    },
+    flush: async () => undefined,
+  }
+
+  const result = await runOnce(deps, request)
+  assert.equal(result.status, 'success')
+  assert.equal(events.filter((event) => event === 'fetch').length, 1)
+  assert.equal(events.filter((event) => event === 'notify').length, 1)
+  assert.equal(calls.filter((name) => name === 'vps-sync.run').length, 1)
+  assert.ok(calls.filter((name) => name === 'vps-sync.stage').length > 0)
+})
+
+test('Sentry ends each stage beneath the root before ending the root with terminal attributes', async () => {
+  const { deps } = fixture()
+  type SpanRecord = { name: string; parent?: string; attributes: TraceAttributes; complete: TraceAttributes }
+  const spans: SpanRecord[] = []
+  const ended: string[] = []
+  const active: SpanRecord[] = []
+  const sdk: SentrySdk = {
+    initWithoutDefaultIntegrations: () => undefined,
+    startSpan: <T>(options: { name: string; attributes: TraceAttributes }, operation: (span: { setAttributes(attributes: TraceAttributes): unknown }) => T): T => {
+      const record: SpanRecord = { name: options.name, parent: active.at(-1)?.name, attributes: options.attributes, complete: {} }
+      spans.push(record)
+      active.push(record)
+      const end = () => {
+        assert.equal(active.pop(), record)
+        ended.push(record.name)
+      }
+      try {
+        const value = operation({ setAttributes: (attributes) => { Object.assign(record.complete, attributes) } })
+        if (value instanceof Promise) return value.finally(end) as T
+        end()
+        return value
+      } catch (error) {
+        end()
+        throw error
+      }
+    },
+    flush: async () => true,
+  }
+  deps.tracing = createSentryTracing({ SENTRY_DSN: 'https://dsn.example.invalid/1' }, sdk)
+
+  const result = await runOnce(deps, request)
+  assert.equal(result.status, 'success')
+  assert.equal(spans[0]?.name, 'vps-sync.run')
+  assert.equal(spans[0]?.parent, undefined)
+  assert.ok(spans.slice(1).every((span) => span.name === 'vps-sync.stage' && span.parent === 'vps-sync.run'))
+  assert.equal(ended.at(-1), 'vps-sync.run')
+  assert.deepEqual(spans[0]?.complete, {
+    status: 'success',
+    'count.users': 1,
+    'count.collections': 0,
+    duration_ms: 0,
+    'count.mediaSelected': 0,
+    'count.mediaSucceeded': 0,
+    'count.mediaFailed': 0,
+  })
+  assert.ok(spans.slice(1).every((span) => span.complete.status === 'success' && span.complete.duration_ms === 0))
 })

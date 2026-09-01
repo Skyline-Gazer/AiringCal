@@ -1,5 +1,5 @@
 import type { RunDependencies, RunRequest, RunResult, RunStatus } from './contracts.ts'
-import { noOpTracing, type TraceAttributes, type TraceSpanInput, type TracingPort } from './observability/tracing.ts'
+import { memoizeOperation, noOpTracing, type TraceAttributes, type TraceSpanInput, type TracingPort } from './observability/tracing.ts'
 import type { RunFinishInput } from './postgres/repositories.ts'
 import { UpstreamFetchError } from './upstream/retry.ts'
 
@@ -36,15 +36,15 @@ function terminalAttributes(result: RunResult | undefined, counts: Record<string
 }
 
 async function spanFailOpen<T>(tracing: TracingPort, input: TraceSpanInput, operation: () => Promise<T>, fallback: () => Promise<T> = operation): Promise<T> {
-  let operationStarted = false
+  const executeBusiness = memoizeOperation(operation)
+  let callbackStarted = false
   try {
     return await tracing.span(input, () => {
-      operationStarted = true
-      return operation()
+      callbackStarted = true
+      return executeBusiness()
     })
-  } catch (error) {
-    if (operationStarted) throw error
-    return fallback()
+  } catch {
+    return callbackStarted ? executeBusiness() : fallback()
   }
 }
 
@@ -121,15 +121,16 @@ async function runOnceCoordinator(
       },
       async () => {
         result.stage = name
-        await deps.authority.heartbeat(deps.runId, name, at())
         const start = deps.now()
         let pending: Promise<void> | undefined
-        const timer = setInterval(() => {
-          if (!pending) pending = deps.authority.heartbeat(deps.runId, name, at())
-            .catch(() => { heartbeatFailed = true })
-            .finally(() => { pending = undefined })
-        }, 30000)
+        let timer: ReturnType<typeof setInterval> | undefined
         try {
+          await deps.authority.heartbeat(deps.runId, name, at())
+          timer = setInterval(() => {
+            if (!pending) pending = deps.authority.heartbeat(deps.runId, name, at())
+              .catch(() => { heartbeatFailed = true })
+              .finally(() => { pending = undefined })
+          }, 30000)
           const value = await operation()
           await pending
           return value
@@ -137,7 +138,7 @@ async function runOnceCoordinator(
           status = 'failed'
           throw error
         } finally {
-          clearInterval(timer)
+          if (timer !== undefined) clearInterval(timer)
           await pending
           durations[name] = Math.max(0, deps.now() - start)
         }

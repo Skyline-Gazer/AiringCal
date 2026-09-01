@@ -12,6 +12,11 @@ export interface TracingPort {
   flush(): Promise<void>
 }
 
+export function memoizeOperation<T>(operation: () => Promise<T>): () => Promise<T> {
+  let promise: Promise<T> | undefined
+  return () => promise ??= Promise.resolve().then(operation)
+}
+
 export const noOpTracing: TracingPort = {
   span: async (_input, operation) => operation(),
   flush: async () => undefined,
