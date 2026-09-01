@@ -12,7 +12,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 
 **Architecture:** 新增 `apps/vps-sync` 作为 Node composition root，以端口驱动的 sync core 组合 PostgreSQL、bgm.tv、S3-compatible R2、`pg_dump`/`pg_restore` 和飞书适配器；纯 snapshot/manifest/retry/retention 规则留在共享包。Read Worker 只验证 R2 manifest/snapshot 并执行 R2 → Cache API → legacy KV fallback，绝不访问 VPS 或 PostgreSQL。
 
-**Tech Stack:** TypeScript 6、Node.js `node:alpine`、pnpm workspace、`pg`、AWS SDK S3 client、PostgreSQL、Cloudflare R2/Workers Cache API、Docker Compose、GitHub Actions/GHCR、`tsx --test`。
+**Tech Stack:** TypeScript 6、Node.js `node:alpine`、pnpm workspace、`pg`、`@sentry/node`、AWS SDK S3 client、PostgreSQL、Cloudflare R2/Workers Cache API、Docker Compose、GitHub Actions/GHCR、`tsx --test`。
 
 ## Global Constraints
 
@@ -35,6 +35,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 - Create `apps/vps-sync/src/publication/` — S3 adapter 与 pending/verified 发布状态机。
 - Create `apps/vps-sync/src/backup/` — dump、manifest、retention 与 restore verification。
 - Create `apps/vps-sync/src/notification/` — 飞书消息、签名、投递与 redaction。
+- Create `apps/vps-sync/src/observability/` — SDK-neutral tracing port 的 Sentry Node adapter、配置解析与 bounded flush。
 - Create `apps/vps-sync/src/run.ts` / `cli.ts` — 一次性协调器与 `sync|migrate|backup|restore-verify` 命令。
 - Modify `packages/domain/src/public-snapshot.ts` — manifest contract、canonical bytes/hash 与精确验证。
 - Modify `apps/read-worker/src/r2-snapshot.ts` — manifest 驱动读取及最后验证 envelope fallback。
@@ -125,6 +126,24 @@ PR #12 await 审查补充：`fcc9c77` 修复 retry-delay 计算/等待异常原�
 - [ ] **Step 3: GREEN** — 端口注入 coordinator；图片校验 HTTP/MIME/大小后 SHA-256，先 R2 PUT 再 DB reference；refresh 使用固定并发上限和现有 deterministic staggering/priority。
 - [ ] **Step 4: REFACTOR/验证** — 将终态派生收敛为纯函数；局部 tests/typecheck PASS，并确认 process exit mapping：success/no_change/skipped=0，partial/failed 非零。
 - [ ] **Step 5: 文档、提交与推送** — 同步 lifecycle/outcome；commit `feat(vps-sync): coordinate one-shot synchronization` 后 push。
+
+### Task 2.3: 可选、fail-open 的 VPS Sentry tracing
+
+**Files:**
+- Create: `apps/vps-sync/src/observability/tracing.ts`, `apps/vps-sync/src/observability/tracing.test.ts`, `apps/vps-sync/src/observability/sentry.ts`, `apps/vps-sync/src/observability/sentry.test.ts`
+- Modify: `apps/vps-sync/src/contracts.ts`, `apps/vps-sync/src/run.ts`, `apps/vps-sync/src/run.test.ts`, `apps/vps-sync/package.json`, `pnpm-lock.yaml`, `README.md`, `docs/runbook/vps-data-plane.md`
+
+**Interfaces:**
+- Consumes: Task 2.2 的 `runOnce` 与既有 stage 边界；不得决定或改变 `CompleteFullFetch → CompleteStateInput` projection precedence。
+- Produces: SDK-neutral `TracingPort`，其 `span<T>(input: TraceSpanInput, operation: () => Promise<T>): Promise<T>` 保证 operation 恰好执行一次；`createSentryTracing(env, sdk)` 在无 DSN 或无效 sample rate 时返回 no-op；`flush(): Promise<void>` 为有界、fail-open 退出清理。
+
+- [x] **Step 1: 验证 SDK 与包管理 API** — 运行 `pnpm add --help` 后安装 npm `latest` 对应的稳定 `@sentry/node`；从安装后的本地 types/源码核对 `init`、`startSpan`、`flush`、`tracesSampleRate`、`sendDefaultPii`、integration 与 span attribute 签名。未在 types/官方文档确认的 key 不得写入配置。
+- [x] **Step 2: RED — no-op、配置和 SDK adapter tests** — 先写测试证明无 `SENTRY_DSN` 时不调用 SDK；sample rate 只接受 `[0,1]` 有限数并默认 `1`；初始化失败、`startSpan` 同步/异步失败和 bounded flush 失败均被吞掉且 operation 恰好执行一次。运行 `pnpm -F @airing-cal/vps-sync test -- observability`，预期因 tracing modules 不存在而 FAIL，并在报告中保存该失败摘要。
+- [x] **Step 3: RED — coordinator span 与脱敏 tests** — 以 recording `TracingPort` 断言一个 root span 包含 `mode/source/git_sha`，每个已执行 coordinator stage 产生子 span，终态只追加 `status/count/duration` 白名单；构造包含 DSN、URL、username、subject ID、raw error message 的输入后，序列化 attributes 不得出现 marker。运行 `pnpm -F @airing-cal/vps-sync test -- run.test.ts`，预期因 `RunDependencies.tracing` 与 span 调用不存在而 FAIL。
+- [x] **Step 4: GREEN + REFACTOR** — 实现 no-op-first tracing port 和 Sentry adapter；禁用自动 HTTP/database instrumentation 与 PII，且不调用 raw exception capture。`runOnce` 仅通过 injected port 包裹 root/stage，tracing 抛错时直接执行原 operation，业务 result/notification/exit code不变；短命进程退出前最多等待 2 秒 flush。运行 focused tests 直至 PASS，再运行 VPS 全套 `test`、`typecheck`、`build:check` 与 emitted Node import。
+- [x] **Step 5: 文档、审计、提交与推送** — README/runbook 只记录已经实现的 `SENTRY_DSN`、`SENTRY_TRACES_SAMPLE_RATE`、默认值、脱敏/fail-open 语义及 VPS-only scope，不展示实际 DSN；检查 production dependency 与构建入口包含 adapter。原子 commit `feat(vps-sync): add fail-open Sentry tracing` 后立即 push 当前 PR。
+
+验收证据：初始 RED 覆盖缺失 adapter 与 coordinator spans；两轮审查修复额外覆盖 heartbeat 终态、terminal attributes、root/stage nesting、2 秒 flush、callback early/never/late/repeated settlement 和业务错误优先级。最终独立复审 APPROVED（0 Critical / Important / Minor）；协调者 fresh 验证 VPS 130/130、typecheck、build:check、build、emitted adapter import、OpenSpec strict 与 diff check 全部通过。未连接真实 Sentry 服务。
 
 ### Task 3.1: Manifest V1、canonical hash 与 generation 规则
 

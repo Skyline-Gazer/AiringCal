@@ -1,0 +1,230 @@
+import type { RunDependencies, RunRequest, RunResult, RunStatus } from './contracts.ts'
+import { noOpTracing, runTracedOperationFailOpen, type TraceAttributes, type TraceSpanInput, type TracingPort } from './observability/tracing.ts'
+import type { RunFinishInput } from './postgres/repositories.ts'
+import { UpstreamFetchError } from './upstream/retry.ts'
+
+export function exitCode(status: RunStatus): number { return status === 'partial' || status === 'failed' ? 1 : 0 }
+
+export function terminalStatus(components: RunFinishInput['components']): RunStatus {
+  if (components.publication === 'skipped') return 'skipped'
+  if (components.publication !== 'success' && components.publication !== 'no_change') return 'failed'
+  if (components.media === 'partial' || components.media === 'failed' || components.backup === 'failed') return 'partial'
+  return components.publication === 'no_change' ? 'no_change' : 'success'
+}
+
+const countAttributeNames = ['users', 'collections', 'inserted', 'updated', 'unchanged', 'deleted', 'missing', 'restored', 'mediaSelected', 'mediaSucceeded', 'mediaFailed'] as const
+
+function bounded(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.min(1_000_000_000, Math.max(0, Math.trunc(value))) : 0
+}
+
+function validGitSha(value: string): string | undefined {
+  return /^[a-f0-9]{40}$/.test(value) ? value : undefined
+}
+
+function terminalAttributes(result: RunResult | undefined, counts: Record<string, number>, durations: Record<string, number>): TraceAttributes {
+  const attributes: Record<string, string | number> = {
+    status: result?.status ?? 'failed',
+    'count.users': bounded(counts.users),
+    'count.collections': bounded(counts.collections),
+    duration_ms: bounded(Object.values(durations).reduce((total, duration) => total + bounded(duration), 0)),
+  }
+  for (const name of countAttributeNames) {
+    if (name !== 'users' && name !== 'collections' && counts[name] !== undefined) attributes[`count.${name}`] = bounded(counts[name])
+  }
+  return attributes
+}
+
+async function spanFailOpen<T>(
+  tracing: TracingPort,
+  input: TraceSpanInput,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return runTracedOperationFailOpen(operation, (executeBusiness) => tracing.span(input, executeBusiness))
+}
+
+export async function runOnce(deps: RunDependencies, request: RunRequest): Promise<RunResult> {
+  const tracing = deps.tracing ?? noOpTracing
+  let result: RunResult | undefined
+  let counts: Record<string, number> | undefined
+  let durations: Record<string, number> | undefined
+  const attributes: Record<string, string> = { mode: request.mode, source: request.source }
+  const gitSha = validGitSha(deps.gitSha)
+  if (gitSha) attributes.git_sha = gitSha
+  try {
+    result = await spanFailOpen(
+      tracing,
+      {
+        name: 'vps-sync.run',
+        attributes,
+        completeAttributes: () => terminalAttributes(result, counts ?? {}, durations ?? {}),
+      },
+      async () => {
+        const outcome = await runOnceCoordinator(deps, request, tracing, (nextCounts, nextDurations) => {
+          counts = nextCounts
+          durations = nextDurations
+        })
+        result = outcome
+        return outcome
+      },
+    )
+    return result
+  } finally {
+    try { await tracing.flush() } catch { /* Tracing must not change terminal state or exit status. */ }
+  }
+}
+
+async function runOnceCoordinator(
+  deps: RunDependencies,
+  request: RunRequest,
+  tracing: TracingPort,
+  observeTraceState: (counts: Record<string, number>, durations: Record<string, number>) => void,
+): Promise<RunResult> {
+  const at = () => new Date(deps.now()).toISOString()
+  const startedAt = at()
+  const context = { ...request, runId: deps.runId, observedAt: startedAt }
+  const result: RunResult = {
+    ...request, id: deps.runId, stage: 'lock', status: 'failed', heartbeatAt: startedAt,
+    finishedAt: startedAt, counts: {}, stageDurations: {}, sanitizedError: null,
+    components: { collection: 'not_attempted', calendar: 'not_attempted', media: 'not_attempted', publication: 'not_attempted', backup: 'not_attempted', notification: 'not_attempted' },
+  }
+  const counts: Record<string, number> = {}
+  const durations: Record<string, number> = {}
+  observeTraceState(counts, durations)
+  const components = { ...result.components }
+  let heartbeatFailed = false
+  const persist = async () => {
+    const { source: _source, mode: _mode, publication: _publication, ...row } = result
+    await deps.authority.finishRun(row)
+  }
+  const stage = async <T>(name: keyof RunFinishInput['stageDurations'], operation: () => Promise<T>): Promise<T> => {
+    let status: 'success' | 'failed' = 'success'
+    return spanFailOpen(
+      tracing,
+      {
+        name: 'vps-sync.stage',
+        attributes: { stage: name },
+        completeAttributes: () => ({ status, duration_ms: bounded(durations[name]) }),
+      },
+      async () => {
+        result.stage = name
+        const start = deps.now()
+        let pending: Promise<void> | undefined
+        let timer: ReturnType<typeof setInterval> | undefined
+        try {
+          await deps.authority.heartbeat(deps.runId, name, at())
+          timer = setInterval(() => {
+            if (!pending) pending = deps.authority.heartbeat(deps.runId, name, at())
+              .catch(() => { heartbeatFailed = true })
+              .finally(() => { pending = undefined })
+          }, 30000)
+          const value = await operation()
+          await pending
+          return value
+        } catch (error) {
+          status = 'failed'
+          throw error
+        } finally {
+          if (timer !== undefined) clearInterval(timer)
+          await pending
+          durations[name] = Math.max(0, deps.now() - start)
+        }
+      },
+    )
+  }
+  const failure = (error?: unknown) => {
+    result.sanitizedError ??= error instanceof UpstreamFetchError
+      ? { category: error.category, code: error.code, attemptCount: error.attempt, stage: error.stage }
+      : { category: 'runtime', code: 'STAGE_FAILED', attemptCount: 1, stage: result.stage }
+  }
+  const applyHeartbeatFailure = () => {
+    if (!heartbeatFailed) return
+    result.sanitizedError ??= { category: 'runtime', code: 'HEARTBEAT_FAILED', attemptCount: 1, stage: result.stage }
+    if (result.status === 'success' || result.status === 'no_change') result.status = 'partial'
+  }
+  const cleanupFailure = () => {
+    result.sanitizedError ??= { category: 'runtime', code: 'CLEANUP_FAILED', attemptCount: 1, stage: 'cleanup' }
+    result.status = components.publication === 'success' || components.publication === 'no_change' ? 'partial' : 'failed'
+  }
+  let locked = false
+  let begun = false
+  const releaseLock = async () => {
+    if (!locked) return
+    locked = false
+    try { await deps.lock.release() } catch { cleanupFailure() }
+  }
+  try {
+    locked = await deps.lock.acquire()
+    await deps.authority.beginRun({ ...request, id: deps.runId, gitSha: deps.gitSha, stage: 'lock', status: locked ? 'running' : 'skipped', startedAt, heartbeatAt: startedAt })
+    begun = true
+    if (locked) try {
+      const input = await stage('collection', () => deps.fetchComplete(context))
+      context.observedAt = input.observedAt
+      components.collection = components.calendar = 'success'
+      counts.users = input.users.length
+      counts.collections = input.users.reduce((sum, user) => sum + user.items.length, 0)
+      const committed = await stage('completeState', () => deps.authority.commitCompleteState({ ...input, runId: deps.runId }))
+      Object.assign(counts, committed)
+      try {
+        const media = await stage('media', () => deps.media(context))
+        counts.mediaSelected = media.selected; counts.mediaSucceeded = media.succeeded; counts.mediaFailed = media.failed
+        components.media = media.failed ? 'partial' : 'success'
+      } catch (error) { components.media = 'failed'; failure(error) }
+      result.publication = await stage('publication', () => deps.publish(context))
+      components.publication = result.publication.status === 'published' ? 'success' : result.publication.status
+      if (result.publication.status === 'published' || result.publication.status === 'no_change') {
+        const publication = result.publication
+        try { await stage('backup', () => deps.backup(context, publication)); components.backup = 'success' }
+        catch (error) { components.backup = 'failed'; failure(error) }
+      }
+    } catch (error) {
+      const component = error instanceof UpstreamFetchError && error.stage === 'calendar' ? 'calendar'
+        : result.stage === 'completeState' ? 'collection' : result.stage as keyof typeof components
+      if (component in components) components[component] = 'failed'
+      failure(error)
+    }
+    result.status = locked ? terminalStatus(components) : 'skipped'
+    applyHeartbeatFailure()
+    await releaseLock()
+    result.counts = counts; result.stageDurations = durations; result.components = components
+    result.finishedAt = result.heartbeatAt = at()
+    await persist()
+    let notifiedStatus: RunStatus | undefined
+    try {
+      await stage('notification', () => {
+        notifiedStatus = result.status
+        return deps.notify(structuredClone(result))
+      })
+      components.notification = 'success'
+    }
+    catch { components.notification = 'failed' }
+    result.stage = 'finished'; result.heartbeatAt = at()
+    applyHeartbeatFailure()
+    if (components.notification === 'success' && notifiedStatus !== result.status) {
+      try { await deps.notify(structuredClone(result)) }
+      catch { components.notification = 'failed' }
+    }
+    await persist()
+    return result
+  } catch (error) {
+    failure(error)
+    result.status = components.publication === 'success' || components.publication === 'no_change' ? 'partial' : 'failed'
+    result.finishedAt = result.heartbeatAt = at()
+    result.components = components; result.counts = counts; result.stageDurations = durations
+    if (begun) { try { await persist() } catch { /* A database outage cannot persist its own terminal state. */ } }
+    try { await deps.notify(structuredClone(result)); components.notification = 'success' }
+    catch { components.notification = 'failed' }
+    return result
+  } finally {
+    await releaseLock()
+    try { await deps.close() } catch {
+      cleanupFailure()
+      result.finishedAt = result.heartbeatAt = at()
+      result.components = components; result.counts = counts; result.stageDurations = durations
+      if (begun) { try { await persist() } catch { /* A database outage cannot persist its own terminal state. */ } }
+      try { await deps.notify(structuredClone(result)); components.notification = 'success' }
+      catch { components.notification = 'failed' }
+      if (begun) { try { await persist() } catch { /* Pool close failure can make correction persistence unavailable. */ } }
+    }
+  }
+}

@@ -146,6 +146,73 @@ test('PostgreSQL integration exercises the real authority boundary', async (t) =
 
     const authority = new PostgresAuthority(database, { forbiddenValues: [MARKER] })
 
+    await t.test('selects changed media only when its future retry has complete successful state', async () => {
+      const now = '2026-09-01T12:00:00.000Z'
+      const mediaObservedAt = '2026-09-01T10:00:00.000Z'
+      const changedObservedAt = '2026-09-01T11:00:00.000Z'
+      const futureRetryAt = '2026-09-02T12:00:00.000Z'
+      const candidateRun = runId(9)
+      const fixtures = [
+        { subjectId: 8_200_001, lastObservedAt: changedObservedAt, status: { detail: 'success', metadata: 'success', image: 'success' }, deletedAt: null, subjectDeletedAt: null },
+        { subjectId: 8_200_002, lastObservedAt: changedObservedAt, status: { detail: 'success', metadata: 'success', image: 'missing' }, deletedAt: null, subjectDeletedAt: null },
+        { subjectId: 8_200_003, lastObservedAt: changedObservedAt, status: { detail: 'success', metadata: 'success', image: 'success' }, deletedAt: now, subjectDeletedAt: null },
+        { subjectId: 8_200_004, lastObservedAt: changedObservedAt, status: { detail: 'failed', metadata: 'success', image: 'success' }, deletedAt: null, subjectDeletedAt: null },
+        { subjectId: 8_200_005, lastObservedAt: changedObservedAt, status: { detail: 'success', metadata: 'failed', image: 'success' }, deletedAt: null, subjectDeletedAt: null },
+        { subjectId: 8_200_006, lastObservedAt: changedObservedAt, status: { detail: 'success', metadata: 'success', image: 'failed' }, deletedAt: null, subjectDeletedAt: null },
+        { subjectId: 8_200_007, lastObservedAt: changedObservedAt, status: { detail: 'success', metadata: 'success', image: 'not_found' }, deletedAt: null, subjectDeletedAt: null },
+        { subjectId: 8_200_008, lastObservedAt: mediaObservedAt, status: { detail: 'success', metadata: 'success', image: 'success' }, deletedAt: null, subjectDeletedAt: null },
+        { subjectId: 8_200_009, lastObservedAt: changedObservedAt, status: { detail: 'success', metadata: 'success', image: 'success' }, deletedAt: null, subjectDeletedAt: now },
+      ] as const
+      await beginRun(authority, candidateRun, now)
+      for (const fixture of fixtures) {
+        await database!.query(
+          `INSERT INTO subjects (
+             id, subject_type, payload, content_hash, upstream_updated_at,
+             first_observed_at, last_observed_at, deleted_at
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            fixture.subjectId,
+            2,
+            { id: fixture.subjectId, name: `media-candidate-${fixture.subjectId}` },
+            `media-candidate-subject-${fixture.subjectId}`,
+            null,
+            mediaObservedAt,
+            fixture.lastObservedAt,
+            fixture.subjectDeletedAt ?? null,
+          ],
+        )
+        assert.equal(await authority.applyMediaResult({
+          subjectId: fixture.subjectId,
+          detail: { name: `media-candidate-${fixture.subjectId}` },
+          metadata: null,
+          imageRefs: null,
+          detailHash: `media-candidate-detail-${fixture.subjectId}`,
+          metadataHash: null,
+          imageHash: null,
+          status: fixture.status,
+          observedAt: mediaObservedAt,
+          runId: candidateRun,
+          nextRetryAt: futureRetryAt,
+          deletedAt: fixture.deletedAt,
+          lastSuccessAt: mediaObservedAt,
+        }), true)
+      }
+
+      await database!.query(
+        `INSERT INTO calendar_entries (weekday_id, subject_id, payload, observed_at)
+         VALUES ($1, $2, $3, $4)`,
+        [2, 8_200_008, { weekday: { id: 2 }, subject_id: 8_200_008 }, mediaObservedAt],
+      )
+
+      const fixtureIds = new Set<number>(fixtures.map(({ subjectId }) => subjectId))
+      const candidates = (await authority.mediaCandidates({ now, limit: 200 }))
+        .filter(({ subjectId }) => fixtureIds.has(subjectId))
+      assert.deepEqual(candidates, [
+        { subjectId: 8_200_001, priority: 'new_or_changed' },
+        { subjectId: 8_200_002, priority: 'new_or_changed' },
+      ])
+    })
+
     await t.test('commits calendar-only subjects and rolls back a failed complete state', async () => {
       const calendarRun = runId(1)
       await beginRun(authority, calendarRun, '2026-08-29T00:00:00.000Z')

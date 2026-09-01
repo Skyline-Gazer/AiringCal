@@ -44,6 +44,34 @@ VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection
 
 上游错误只在后续运行结果中使用稳定的 category、code、stage 和 attempt；不得持久化或通知原始 URL、token、响应 body 或底层错误消息。完整观察时间沿用现有同步语义，使用 Unix 秒。
 
+## 单轮协调器与媒体接口
+
+媒体围栏、发布和备份使用完整输入的观察时间，而非进程启动时间，避免长分页抓取造成观察代次错位。
+
+候选查询先按稳定优先级排序并筛除非本日 cold 分片，再应用数量上限；没有已观察围栏的媒体行仍可进入首次刷新。
+
+初始化/锁/清理异常也只返回脱敏结果，清理一个资源失败仍会尝试其余清理。业务锁在连接池仍可用时先释放，因此 unlock 失败会进入同一份终态持久化、通知和返回结果；锁只尝试释放一次。若数据库初始化时已不可用，则无法保证持久化终态；连接池关闭失败时会尽力补写并重新通知修正后的终态，但连接池可能已经不可用。调用方必须记录返回的终态并采用对应非零退出码，不能仅依赖数据库中的最后记录判断进程是否健康。
+
+权威事务返回已提交的 inserted、updated、unchanged、missing、deleted、restored 计数；协调器只在 COMMIT 成功后合并这些计数，不将计划条目数标成已完成写入。
+
+媒体直接写入 `applyMediaResult` 与锁内写入均受同一 subject advisory lock 保护。锁内读取后会在 SQL mutation 前拒绝旧围栏；合并 last-known-good 后内容、hash、状态与重试/tombstone 时间均相同的记录不执行 UPDATE。锁生命周期之外保留的 save closure 不能继续写入。
+
+`runOnce` 是端口注入的单轮协调器，接受 `shadow|live` 与 `scheduled|manual`。调用方提供已验证完整的 `CompleteStateInput`，协调器在完整抓取返回后才调用权威事务。它按媒体、发布、备份顺序运行；发布端口只有返回 `published` 或 `no_change` 才允许备份，媒体降级不阻止发布或备份。终态先写入 PostgreSQL 再调用通知端口，随后独立保存通知结果。锁竞争产生 persisted/notified `skipped`，不抓取上游或写 R2。`success/no_change/skipped` 映射退出码 0，`partial/failed` 映射 1。这些模块提供编排接口，不是可部署的 CLI 或发布/备份/飞书实现。
+
+每阶段开始和长阶段每 30 秒更新 heartbeat；阶段完成会取消并等待在途心跳。并行 heartbeat 失败记录为脱敏降级终态，但不会丢弃已经完成的 authority 计数、发布里程碑或阻止对应备份。若 notification 阶段本身的 heartbeat 在首次通知期间失败，协调器会在 timer drain 后发送一次无 heartbeat 的最终降级修正通知，不递归重试。最终释放业务锁与调用资源清理端口。上游可信错误保留 category/code/stage/attempt，未知异常只记录稳定 `runtime/STAGE_FAILED`，不复制异常消息。
+
+## VPS 可选 Sentry tracing
+
+VPS coordinator 可注入 `createNodeSentryTracing(process.env)` 生成的 SDK-neutral `TracingPort`。只有设置 `SENTRY_DSN` 才会初始化 `@sentry/node`；未设置时为 no-op，不初始化也不发送。`SENTRY_TRACES_SAMPLE_RATE` 必须是有限的 `[0, 1]` 数值，未设置默认为 `1`，无效值同样返回 no-op。
+
+adapter 使用无默认 integrations 的 SDK 初始化并显式关闭 PII，因此不会自动产生 HTTP 或数据库 spans，也不会把 tracing header 传播到 bgm.tv、PostgreSQL、R2 或飞书。只会手工创建 root/stage spans，且只附带 mode、source、stage、终态 status、有限 count、duration 与合法 git SHA。它不 capture raw exception，也不附加 URL、body、username、subject/database ID 或任何 credential。
+
+tracing 初始化、span 及 flush 均 fail-open：operation 保证只运行一次；协调器会在短命进程完成前尽力 flush，最多等待 2 秒。任何 tracing/flush 异常不得修改 business result、持久化/通知终态或进程退出码。此配置和 adapter 仅属于 VPS Node 路径，Cloudflare Workers 不依赖该 SDK。
+
+`refreshMedia` 使用最多 4 个并行 subject，按新条目/变化、hot、cold、retry 排序，cold 按 subject ID 的星期分片选择。PostgreSQL `withSubject` 在同一 session 持锁读取围栏、执行图片上传和保存引用；过期、同观察时间重放和未到失败 retry/tombstone 时间的记录不抓取。成功刷新采用原有 6–8 天确定性分散；authority 确认的变化可以提前刷新已成功的记录，健康未变化记录仍等待周期到期。候选 SQL 与锁内检查均保留失败一小时重试、明确 404 一天 tombstone 的边界，并保留成功数据。
+
+图片接收只允许受支持的 HTTPS bgm 图片主机、HTTP 200、JPEG/PNG/WebP/GIF/AVIF MIME，流式读取最多 8 MiB。SHA-256 相同且命名空间匹配时复用对象；shadow 只 PUT `shadow/images/`，live 只 PUT `images/`。新对象上传成功后才保存引用，各尺寸独立保留最后成功值。缺少图片来源不影响 detail/metadata 成功；下载、校验或上传失败不会清空旧图。
+
 ## 不可逆策略与回退
 
 SQL migrations 仅可向前应用。已发布的 `0001_initial.sql` 固定为 Task 1.1 commit `a55b17718387c83067c4e1f7a34bd4d6d049d10f` 的逐字节内容（SHA-256 `cd06c6a655aee9762095de384407e584a2340ad9b7a5a17b027adb966337486f`）；run observation fences 从 `0002_authority_constraints.sql` 起追加，禁止重写 `0001`。`schema_migrations` 保存 migration 文件名、SHA-256 checksum 和应用时间；任何已应用 migration 的 checksum 改变都会以 `MIGRATION_CHECKSUM_MISMATCH` 终止，非有序前缀历史以 `MIGRATION_HISTORY_GAP` 终止，数据库出现当前镜像不认识的 migration 时以 `MIGRATION_SCHEMA_AHEAD` 终止。migration 命令只从合法前缀应用尾部；业务启动必须调用 `assertCurrentSchema`，schema behind 或 ahead 均不得继续业务工作。

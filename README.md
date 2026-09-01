@@ -24,6 +24,7 @@ AiringCal 是一个 Cloudflare Workers monorepo。它把公开访问、只读数
 | `@airing-cal/storage` | KV/D1/R2 adapter、迁移、typed state contract 和 key builder |
 | `@airing-cal/widget` | HTML shell、footer runtime status、widget JS/CSS assets |
 | `@airing-cal/worker-common` | public error、安全 header、敏感信息清理、部署/文档守护测试 |
+| `@airing-cal/vps-sync` | VPS Node 同步 coordinator、PostgreSQL 与上游适配器 |
 
 Widget 资产的唯一手写源是 `packages/widget/assets/theme/{bangumi.js,bangumi.css,cache.js}`，唯一运行时生成产物是 `packages/widget/src/generated-assets.ts`。修改主题源后运行：
 
@@ -32,6 +33,17 @@ pnpm -F @airing-cal/widget generate
 ```
 
 生成链测试会拒绝生成产物漂移，也会拒绝重新引入 `assets/public` 或 `assets/theme/v1` 副本。
+
+## VPS sync 可选 Sentry tracing
+
+`@airing-cal/vps-sync` 的 Node tracing adapter 只供 VPS 同步 coordinator 使用；Cloudflare Workers 不读取这些变量，也不依赖 `@sentry/node`。
+
+| 变量 | 已实现行为 |
+|------|------------|
+| `SENTRY_DSN` | 未设置时不初始化 Sentry，也不发送 tracing；设置后启用 VPS adapter。 |
+| `SENTRY_TRACES_SAMPLE_RATE` | 可选的有限 `[0, 1]` 数值；未设置默认 `1`，无效值会禁用 adapter。 |
+
+adapter 仅创建手工 root/stage spans，属性只包含 mode、source、stage、终态、有限计数、耗时和 git SHA。它禁用默认自动 integrations 和 PII；不会记录原始异常、URL、request/response body、用户名、subject/数据库标识或 credential。初始化、span 和最多 2 秒的 flush 失败均 fail-open，不改变同步、持久化、通知或退出码。
 
 ## 外部访问入口
 
@@ -435,6 +447,10 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 ```
 
 ## CI 部署流程
+
+### CI 验证触发
+
+`.github/workflows/ci.yml` 只在推送到 `dev` 时触发 push 验证，并在没有分支或路径过滤的情况下，按 GitHub 默认活动类型 `opened`、`synchronize`、`reopened` 触发 `pull_request` 验证。这样 PR 分支的后续 push 只由 PR 验证覆盖，合并到 `dev` 后仍会进行一次验证。CI 使用 `${{ github.workflow }}-${{ github.ref }}` 作为 workflow 级并发组并启用取消：同一 workflow 和 ref 的较新提交会取消旧的进行中验证，而不会取消其他 workflow 的运行。
 
 `.github/workflows/deploy.yml` 会按顺序执行：
 

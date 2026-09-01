@@ -1,5 +1,8 @@
 import { planCollectionDiff, type NormalizedCollection } from '@airing-cal/domain'
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg'
+import { withSessionLock } from './migrate.ts'
+import { isDeepStrictEqual } from 'node:util'
+import type { SubjectSession, MediaCandidate } from '../media/refresh.ts'
 import {
   assertCompleteStateInput,
   assertMediaResultInput,
@@ -70,7 +73,7 @@ type MediaStatus = Readonly<{
   image?: MediaComponentStatus
 }>
 
-type RunCounts = Readonly<Partial<Record<
+export type RunCounts = Readonly<Partial<Record<
   | 'users'
   | 'collections'
   | 'inserted'
@@ -179,6 +182,8 @@ export type MediaResultInput = {
   deletedAt: string | null
   lastSuccessAt: string | null
 }
+
+export type MediaState = Omit<MediaResultInput, 'observedAt' | 'runId'> & { observedAt: string | null; runId: string | null }
 
 export type PendingPublicationInput = {
   generation: number
@@ -291,9 +296,107 @@ export class PostgresAuthority {
     )
   }
 
-  async commitCompleteState(input: CompleteStateInput): Promise<void> {
+  async heartbeat(id: string, stage: string, at: string): Promise<void> {
+    assertRunStartInput({ id, stage, startedAt: at, heartbeatAt: at, source: 'manual', mode: 'shadow', status: 'running', gitSha: '' })
+    await this.query(this.pool,
+      "UPDATE sync_runs SET stage = $2, heartbeat_at = $3 WHERE id = $1 AND status = 'running'",
+      [id, stage, at],
+    )
+  }
+
+  businessLock(): { acquire(): Promise<boolean>; release(): Promise<void> } {
+    let client: PoolClient | undefined
+    const key = '-7021825048668725931'
+    return {
+      acquire: async () => {
+        if (client) throw new Error('BUSINESS_LOCK_ALREADY_ACQUIRED')
+        const connection = await this.pool.connect()
+        try {
+          const result = await connection.query<{ acquired: boolean }>('SELECT pg_try_advisory_lock($1) AS acquired', [key])
+          if (!result.rows[0]?.acquired) { connection.release(); return false }
+          client = connection
+          return true
+        } catch (error) { connection.release(true); throw error }
+      },
+      release: async () => {
+        const connection = client
+        client = undefined
+        if (!connection) return
+        let broken = false
+        try { await connection.query('SELECT pg_advisory_unlock($1)', [key]) }
+        catch (error) { broken = true; throw error }
+        finally { connection.release(broken) }
+      },
+    }
+  }
+
+  async mediaCandidates(input: { now: string; limit: number }): Promise<MediaCandidate[]> {
+    if (!Number.isFinite(Date.parse(input.now)) || !Number.isSafeInteger(input.limit) || input.limit < 1) throw new Error('INVALID_MEDIA_SELECTION')
+    const result = await this.query<QueryResultRow & MediaCandidate>(this.pool,
+      `SELECT "subjectId", priority FROM (SELECT s.id AS "subjectId", CASE
+         WHEN m.detail IS NULL OR s.last_observed_at > m.observed_at THEN 'new_or_changed'
+         WHEN m.status->>'detail' = 'failed' OR m.status->>'image' = 'failed' THEN 'retry'
+         WHEN EXISTS (SELECT 1 FROM collection_items c WHERE c.subject_id = s.id AND c.deleted_at IS NULL
+           AND COALESCE(c.payload->>'collection_type', c.payload->>'type', '0') <> '2')
+           OR EXISTS (SELECT 1 FROM calendar_entries e WHERE e.subject_id = s.id) THEN 'hot'
+         ELSE 'cold' END AS priority
+       FROM subjects s LEFT JOIN subject_media m ON m.subject_id = s.id
+       WHERE s.deleted_at IS NULL AND (m.next_retry_at IS NULL OR m.next_retry_at <= $1
+         OR (s.last_observed_at > m.observed_at AND m.deleted_at IS NULL
+           AND m.status->>'detail' = 'success' AND m.status->>'metadata' = 'success'
+           AND m.status->>'image' IN ('success', 'missing')))) candidates
+       WHERE priority <> 'cold' OR MOD("subjectId", 7) = EXTRACT(DOW FROM $1::timestamptz AT TIME ZONE 'UTC')
+       ORDER BY CASE priority WHEN 'new_or_changed' THEN 0 WHEN 'hot' THEN 1 WHEN 'cold' THEN 2 ELSE 3 END,
+         "subjectId" LIMIT $2`,
+      [input.now, input.limit])
+    return result.rows.map((row) => ({ subjectId: Number(row.subjectId), priority: row.priority }))
+  }
+
+  /** Holds one session across fenced reads, object PUTs and reference saves. */
+  async withSubject<T>(subjectId: number, work: (session: SubjectSession) => Promise<T>): Promise<T | undefined> {
+    if (!Number.isSafeInteger(subjectId) || subjectId < 1) throw new Error('INVALID_SUBJECT_ID')
+    const client = await this.pool.connect()
+    let broken = false
+    try {
+      const lock = await withSessionLock(client, BigInt(subjectId), async () => {
+        const rows = await this.query<QueryResultRow & MediaState>(client,
+          `SELECT subject_id AS "subjectId", detail, metadata, image_refs AS "imageRefs",
+             detail_hash AS "detailHash", metadata_hash AS "metadataHash", image_hash AS "imageHash",
+             status, observed_at AS "observedAt", observed_run_id AS "runId",
+             next_retry_at AS "nextRetryAt", deleted_at AS "deletedAt", last_success_at AS "lastSuccessAt"
+           FROM subject_media WHERE subject_id = $1`, [subjectId])
+        const row = rows.rows[0]
+        const current = row ? { ...row, subjectId: Number(row.subjectId),
+          observedAt: toIso(row.observedAt), nextRetryAt: toIso(row.nextRetryAt),
+          deletedAt: toIso(row.deletedAt), lastSuccessAt: toIso(row.lastSuccessAt) } : null
+        let active = true
+        try {
+          return await work({ current, save: async (input) => {
+            if (!active) throw new Error('SUBJECT_SESSION_CLOSED')
+            if (input.subjectId !== subjectId) throw new Error('SUBJECT_SESSION_MISMATCH')
+            assertMediaResultInput(input)
+            if (current) {
+              const prior = current.observedAt === null ? Number.NEGATIVE_INFINITY : Date.parse(current.observedAt)
+              const next = Date.parse(input.observedAt)
+              if (prior > next || (prior === next && current.runId !== input.runId)) return false
+              const unchanged = ['detail', 'metadata', 'imageRefs', 'detailHash', 'metadataHash', 'imageHash', 'lastSuccessAt'] as const
+              if (unchanged.every((key) => isDeepStrictEqual(input[key] ?? current[key], current[key]))
+                && isDeepStrictEqual(input.status, current.status)
+                && input.nextRetryAt === current.nextRetryAt && input.deletedAt === current.deletedAt) return false
+            }
+            return this.saveMediaResult(client, input)
+          } })
+        } finally { active = false }
+      })
+      return lock.value
+    } catch (error) { broken = true; throw error }
+    finally { client.release(broken) }
+  }
+
+  async commitCompleteState(input: CompleteStateInput): Promise<RunCounts> {
     assertCompleteStateInput(input)
-    await this.transaction(async (client) => {
+    return this.transaction(async (client) => {
+      const counts = { inserted: 0, updated: 0, unchanged: 0, missing: 0, deleted: 0, restored: 0 }
       for (const user of input.users) {
         await this.query(client,
           `INSERT INTO users (id, upstream_user_id, created_at, updated_at)
@@ -340,6 +443,9 @@ export class PostgresAuthority {
           complete: true,
           observedAt,
         })
+        counts.inserted += plan.inserts.length; counts.updated += plan.updates.length
+        counts.unchanged += plan.unchanged; counts.missing += plan.firstMissing.length
+        counts.deleted += plan.confirmedDeleted.length; counts.restored += plan.restored.length
         for (const row of plan.inserts) {
           const item = requiredCollectionInput(user.items, row.subject_id)
           await this.insertCollection(client, user.id, item, input.observedAt)
@@ -378,6 +484,7 @@ export class PostgresAuthority {
         'UPDATE sync_runs SET stage = $2, heartbeat_at = $3 WHERE id = $1',
         [input.runId, 'complete_state_committed', input.observedAt],
       )
+      return counts
     })
   }
 
@@ -397,7 +504,13 @@ export class PostgresAuthority {
 
   async applyMediaResult(input: MediaResultInput): Promise<boolean> {
     assertMediaResultInput(input)
-    const result = await this.query<{ subject_id: string | number }>(this.pool,
+    assertSafePersistence([input], this.forbiddenValues)
+    return (await this.withSubject(input.subjectId, ({ save }) => save(input))) ?? false
+  }
+
+  private async saveMediaResult(executor: QueryExecutor, input: MediaResultInput): Promise<boolean> {
+    assertMediaResultInput(input)
+    const result = await this.query<{ subject_id: string | number }>(executor,
       `INSERT INTO subject_media (
         subject_id, detail, metadata, image_refs, detail_hash, metadata_hash, image_hash,
         status, observed_at, observed_run_id, next_retry_at, deleted_at, last_success_at

@@ -178,9 +178,18 @@ test('deploy workflow resolves existing resources without waiting for business s
   }
 })
 
-test('CI validates every code push while bootstrap is manual', () => {
+test('CI validates pull requests and dev pushes without retaining stale runs', () => {
   const ci = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8')
-  assert.match(ci, /push:/)
+  const filteredPullRequestFixture = `on:
+  pull_request:
+    branches: [dev]
+`
+  const unfilteredTriggerBlock = /^on:\n  push:\n    branches: \[dev\]\n  pull_request:\n\nconcurrency:/m
+  assert.doesNotMatch(filteredPullRequestFixture, unfilteredTriggerBlock, 'filtered pull request triggers must not satisfy the unfiltered trigger check')
+  assert.match(ci, /push:\s*\n\s+branches:\s*\[dev\]/, 'CI should run on pushes to dev only')
+  assert.match(ci, unfilteredTriggerBlock, 'CI should use default pull request activities without branch or path filters')
+  assert.match(ci, /concurrency:\s*\n\s+group:\s*\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\s*\n\s+cancel-in-progress:\s*true/, 'CI should cancel stale runs only within this workflow and ref')
+  assert.match(ci, /pnpm install --frozen-lockfile/)
   assert.match(ci, /pnpm typecheck/)
   assert.match(ci, /pnpm test/)
   assert.match(ci, /pnpm build:check/)

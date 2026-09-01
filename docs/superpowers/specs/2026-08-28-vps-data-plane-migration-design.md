@@ -223,7 +223,11 @@ Webhook signing is supported when a secret is configured and omitted otherwise, 
 
 Notification is attempted after persisting the business terminal result. Failure updates `notification_failed` separately and never changes publication or backup state. The next successful notification includes a compact note about the previous undelivered terminal result.
 
-Structured logs use the same sanitized event model and write to stdout/stderr for Docker/host collection. No additional monitoring service is required for v1.
+Structured logs use the same sanitized event model and write to stdout/stderr for Docker/host collection.
+
+The VPS sync application additionally supports optional Sentry tracing through `@sentry/node`. Sentry is disabled when `SENTRY_DSN` is absent. When enabled, the one-shot run and its existing coordinator stages emit manually named spans with only allow-listed operational attributes: mode, source, stage, terminal status, bounded counts, durations, and git SHA. Raw exceptions, URLs, request or response bodies, usernames, subject IDs, database identifiers, tokens, webhook values, and R2 credentials are never attached. Automatic HTTP/database instrumentation and PII collection remain disabled so trace propagation cannot leak into bgm.tv, PostgreSQL, R2, or Feishu calls.
+
+Tracing is an injected, SDK-neutral port at the coordinator boundary. The Node adapter initializes the SDK with an explicitly parsed `SENTRY_TRACES_SAMPLE_RATE` (default `1` for this low-frequency daily job), wraps the root run and individual stage operations, and attempts one bounded flush before the process exits. Missing or invalid tracing configuration, initialization failure, span failure, and flush failure all fail open: the business operation still runs exactly once, and its persisted result, notification result, and exit code are unchanged. Cloudflare Workers are outside this tracing scope.
 
 ## 11. Container and delivery
 
