@@ -1,5 +1,5 @@
 import type { RunDependencies, RunRequest, RunResult, RunStatus } from './contracts.ts'
-import { memoizeOperation, noOpTracing, type TraceAttributes, type TraceSpanInput, type TracingPort } from './observability/tracing.ts'
+import { noOpTracing, runTracedOperationFailOpen, type TraceAttributes, type TraceSpanInput, type TracingPort } from './observability/tracing.ts'
 import type { RunFinishInput } from './postgres/repositories.ts'
 import { UpstreamFetchError } from './upstream/retry.ts'
 
@@ -35,17 +35,12 @@ function terminalAttributes(result: RunResult | undefined, counts: Record<string
   return attributes
 }
 
-async function spanFailOpen<T>(tracing: TracingPort, input: TraceSpanInput, operation: () => Promise<T>, fallback: () => Promise<T> = operation): Promise<T> {
-  const executeBusiness = memoizeOperation(operation)
-  let callbackStarted = false
-  try {
-    return await tracing.span(input, () => {
-      callbackStarted = true
-      return executeBusiness()
-    })
-  } catch {
-    return callbackStarted ? executeBusiness() : fallback()
-  }
+async function spanFailOpen<T>(
+  tracing: TracingPort,
+  input: TraceSpanInput,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return runTracedOperationFailOpen(operation, (executeBusiness) => tracing.span(input, executeBusiness))
 }
 
 export async function runOnce(deps: RunDependencies, request: RunRequest): Promise<RunResult> {
@@ -66,14 +61,6 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
       },
       async () => {
         const outcome = await runOnceCoordinator(deps, request, tracing, (nextCounts, nextDurations) => {
-          counts = nextCounts
-          durations = nextDurations
-        })
-        result = outcome
-        return outcome
-      },
-      async () => {
-        const outcome = await runOnceCoordinator(deps, request, noOpTracing, (nextCounts, nextDurations) => {
           counts = nextCounts
           durations = nextDurations
         })

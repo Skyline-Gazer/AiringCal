@@ -127,6 +127,66 @@ test('a span failure after its callback preserves the business rejection', async
   assert.equal(calls, 1)
 })
 
+test('SDK settlement before its callback still returns the one canonical business result to caller and late callbacks', async () => {
+  const callbacks: Array<(span: { setAttributes(attributes: TraceAttributes): unknown }) => unknown> = []
+  let calls = 0
+  const tracing = createSentryTracing({ SENTRY_DSN: 'https://dsn.example.invalid/1' }, {
+    initWithoutDefaultIntegrations: () => undefined,
+    startSpan: <T>(_options: { name: string; attributes: TraceAttributes }, operation: (span: { setAttributes(attributes: TraceAttributes): unknown }) => T) => {
+      callbacks.push(operation)
+      return undefined as T
+    },
+    flush: async () => true,
+  })
+
+  assert.equal(await tracing.span({ name: 'vps-sync.run', attributes: {} }, async () => ++calls), 1)
+  assert.equal(await callbacks[0]!({ setAttributes: () => undefined }), 1)
+  assert.equal(calls, 1)
+})
+
+test('SDK settlement before its callback preserves a business rejection for caller and late callbacks', async () => {
+  const callbacks: Array<(span: { setAttributes(attributes: TraceAttributes): unknown }) => unknown> = []
+  const businessFailure = new Error('business failure')
+  let calls = 0
+  const tracing = createSentryTracing({ SENTRY_DSN: 'https://dsn.example.invalid/1' }, {
+    initWithoutDefaultIntegrations: () => undefined,
+    startSpan: <T>(_options: { name: string; attributes: TraceAttributes }, operation: (span: { setAttributes(attributes: TraceAttributes): unknown }) => T) => {
+      callbacks.push(operation)
+      return Promise.reject(new Error('span transport failure')) as T
+    },
+    flush: async () => true,
+  })
+
+  await assert.rejects(
+    () => tracing.span({ name: 'vps-sync.run', attributes: {} }, async () => {
+      calls += 1
+      throw businessFailure
+    }),
+    (error) => error === businessFailure,
+  )
+  await assert.rejects(
+    async () => callbacks[0]!({ setAttributes: () => undefined }),
+    (error) => error === businessFailure,
+  )
+  assert.equal(calls, 1)
+})
+
+test('a never-settling SDK that never invokes its callback cannot block the business operation', async () => {
+  let calls = 0
+  const tracing = createSentryTracing({ SENTRY_DSN: 'https://dsn.example.invalid/1' }, {
+    initWithoutDefaultIntegrations: () => undefined,
+    startSpan: <T>() => new Promise<never>(() => undefined) as T,
+    flush: async () => true,
+  })
+
+  const result = await Promise.race([
+    tracing.span({ name: 'vps-sync.run', attributes: {} }, async () => ++calls),
+    new Promise<number>((resolve) => setImmediate(() => resolve(-1))),
+  ])
+  assert.equal(result, 1)
+  assert.equal(calls, 1)
+})
+
 test('sets complete attributes on the span that completed and swallows bounded flush failures', async () => {
   const { sdk, spanOptions, spanCompletions, flushTimeouts } = sdkFixture()
   sdk.flush = async (timeout) => { if (timeout !== undefined) flushTimeouts.push(timeout); throw new Error('transport unavailable') }

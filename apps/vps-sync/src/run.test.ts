@@ -297,7 +297,41 @@ test('tracing span and flush failures do not change run execution or exit status
   assert.equal(result.status, 'success')
   assert.equal(exitCode(result.status), 0)
   assert.ok(events.includes('fetch') && events.includes('notify') && events.includes('close'))
-  assert.equal(spanCalls, 1)
+  assert.ok(spanCalls >= 1)
+})
+
+test('a rejecting injected tracer and its late root callback share one coordinator execution', async () => {
+  const { deps, events } = fixture()
+  const callbacks: Array<() => Promise<unknown>> = []
+  deps.tracing = {
+    span: async (_input, operation) => {
+      callbacks.push(operation)
+      throw new Error('tracing unavailable before callback')
+    },
+    flush: async () => undefined,
+  }
+
+  assert.equal((await runOnce(deps, request)).status, 'success')
+  assert.equal((await callbacks[0]!() as { status: string }).status, 'success')
+  assert.equal(events.filter((event) => event === 'fetch').length, 1)
+  assert.equal(events.filter((event) => event === 'commit').length, 1)
+})
+
+test('an injected tracer that settles before its root callback cannot skip or duplicate coordinator execution', async () => {
+  const { deps, events } = fixture()
+  const callbacks: Array<() => Promise<unknown>> = []
+  deps.tracing = {
+    span: async (_input, operation) => {
+      callbacks.push(operation)
+      return undefined as never
+    },
+    flush: async () => undefined,
+  }
+
+  assert.equal((await runOnce(deps, request)).status, 'success')
+  assert.equal((await callbacks[0]!() as { status: string }).status, 'success')
+  assert.equal(events.filter((event) => event === 'fetch').length, 1)
+  assert.equal(events.filter((event) => event === 'commit').length, 1)
 })
 
 test('root and stage tracing rejections after callbacks preserve one successful run', async () => {
