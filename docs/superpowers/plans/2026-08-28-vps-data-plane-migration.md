@@ -127,7 +127,7 @@ PR #12 await 审查补充：`fcc9c77` 修复 retry-delay 计算/等待异常原�
 - [ ] **Step 4: REFACTOR/验证** — 将终态派生收敛为纯函数；局部 tests/typecheck PASS，并确认 process exit mapping：success/no_change/skipped=0，partial/failed 非零。
 - [ ] **Step 5: 文档、提交与推送** — 同步 lifecycle/outcome；commit `feat(vps-sync): coordinate one-shot synchronization` 后 push。
 
-Task 2.2 projection 收口：`CompleteFullFetch` 保留 calendar 可选字段的 presence，`projectCompleteFullFetch` 在 authority commit 前生成严格 `CompleteStateInput`。同一 subject 以 calendar 实际提供字段优先，collection 只补 calendar 缺失字段；collection-only、calendar-only 与跨多个配置用户的重复 subject 均稳定合并。未知用户或非完整抓取在 commit 前 fail closed，所有配置用户（包括空收藏）仍进入投影以维持删除保护。focused RED 先因缺少 projection module 失败，并单独观察到 calendar 缺失字段被默认值覆盖的断言失败；GREEN 覆盖投影边界与 coordinator 提交，Task 2.2 checkbox 仍保留未勾选等待完整双审查。
+Task 2.2 projection 收口：`CompleteFullFetch` 保留 calendar 可选字段（包括 nested rating）的 presence，并携带每个完整分页用户的 identity evidence；`projectCompleteFullFetch` 在 authority commit 前要求 evidence 与配置用户为精确无重复同集，再生成严格 `CompleteStateInput`，绝不凭空制造未观测空用户。同一 subject 以 calendar 实际提供字段逐字段优先，collection 只补 calendar 缺失字段；collection-only、calendar-only 与跨多个配置用户的重复 subject 均稳定合并。projection canonical hash 使用明确 UTF-16 code-unit key ordering，并继续拒绝 undefined/non-finite。review fix RED 分别观察到缺少空用户 evidence、score-only rating 丢失 collection rank/total，以及 `localeCompare` 被调用；GREEN 覆盖共享 producer、VPS consumer 和 legacy Worker boundary，Task 2.2 checkbox 仍保留未勾选等待完整双审查。
 
 ### Task 2.3: 可选、fail-open 的 VPS Sentry tracing
 

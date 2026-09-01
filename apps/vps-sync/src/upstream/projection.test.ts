@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { BgmSlimSubject, CompleteFullFetch } from '@airing-cal/bgm-api'
-import { projectCompleteFullFetch } from './projection.ts'
+import { canonicalProjectionHash, projectCompleteFullFetch } from './projection.ts'
 import { assertCompleteStateInput } from '../postgres/persistence-validation.ts'
 
 const userA = { id: '11111111-1111-4111-8111-111111111111', upstreamUserId: '42' }
@@ -22,8 +22,13 @@ const subject = (id: number, values: Partial<BgmSlimSubject> = {}): BgmSlimSubje
   rating: { score: 7, rank: 70, total: 700 }, ...values,
 })
 
-const fullFetch = (collections: CompleteFullFetch['collections'], items: Record<string, unknown>[]): CompleteFullFetch => ({
+const fullFetch = (
+  collections: CompleteFullFetch['collections'],
+  items: Record<string, unknown>[],
+  observedUsers = [...new Set(collections.map(({ user_id }) => user_id))],
+): CompleteFullFetch => ({
   collections,
+  observedUsers,
   calendar: [{ weekday: { id: 1, en: 'Mon', cn: '星期一', ja: '月曜日' }, items }] as CompleteFullFetch['calendar'],
   observedAt: 1_788_134_400,
   complete: true,
@@ -75,7 +80,75 @@ test('rejects incomplete input and unknown users to preserve deletion protection
     /INCOMPLETE_FULL_FETCH/,
   )
   await assert.rejects(
-    () => projectCompleteFullFetch(fullFetch([collection(userB.id, 5, subject(5))], []), 'run-4', [userA]),
+    () => projectCompleteFullFetch(fullFetch([collection(userB.id, 5, subject(5))], [], [userA.id]), 'run-4', [userA]),
     /UNKNOWN_PROJECTION_USER/,
+  )
+})
+
+test('requires exact observed-user evidence and preserves a genuinely observed empty user', async () => {
+  const projected = await projectCompleteFullFetch(fullFetch([], [], [userA.id]), 'run-empty', [userA])
+  assert.deepEqual(projected.users, [{ ...userA, items: [] }])
+
+  const withoutEvidence = { ...fullFetch([], [], [userA.id]) } as Partial<CompleteFullFetch>
+  delete withoutEvidence.observedUsers
+  await assert.rejects(
+    () => projectCompleteFullFetch(withoutEvidence as CompleteFullFetch, 'run-missing-evidence', [userA]),
+    /MISSING_OBSERVED_USER_EVIDENCE/,
+  )
+
+  for (const [observedUsers, pattern] of [
+    [[], /MISSING_OBSERVED_PROJECTION_USER/],
+    [[userA.id, userA.id], /DUPLICATE_OBSERVED_PROJECTION_USER/],
+    [[userA.id, userB.id], /UNKNOWN_OBSERVED_PROJECTION_USER/],
+  ] as const) {
+    await assert.rejects(
+      () => projectCompleteFullFetch(fullFetch([], [], [...observedUsers]), 'run-invalid-evidence', [userA]),
+      pattern,
+    )
+  }
+})
+
+test('merges rating presence field by field and treats explicit zero as authoritative', async () => {
+  const scoreOnly = await projectCompleteFullFetch(fullFetch(
+    [collection(userA.id, 6, subject(6))],
+    [{ id: 6, type: 2, rating: { score: 9 } }],
+  ), 'run-score-only', [userA])
+  assert.deepEqual(scoreOnly.calendarEntries[0]!.subject.payload.rating, { score: 9, rank: 70, total: 700 })
+
+  const explicitZero = await projectCompleteFullFetch(fullFetch(
+    [collection(userA.id, 7, subject(7))],
+    [{ id: 7, type: 2, rating: { score: 0, rank: 0, total: 0 } }],
+  ), 'run-zero', [userA])
+  assert.deepEqual(explicitZero.calendarEntries[0]!.subject.payload.rating, { score: 0, rank: 0, total: 0 })
+})
+
+test('canonical hashes use stable code-unit key ordering for insertion order and Unicode keys', async () => {
+  const left = { 'ä': 1, Z: 2, a: 3, '😀': 4, nested: { total: 700, score: 7, rank: 70 } }
+  const right = { nested: { rank: 70, score: 7, total: 700 }, '😀': 4, a: 3, Z: 2, 'ä': 1 }
+
+  const originalLocaleCompare = String.prototype.localeCompare
+  String.prototype.localeCompare = function forbiddenLocaleCompare(): never {
+    throw new Error('canonical ordering must not depend on host locale')
+  }
+  try {
+    assert.equal(canonicalProjectionHash(left), canonicalProjectionHash(right))
+  } finally {
+    String.prototype.localeCompare = originalLocaleCompare
+  }
+})
+
+test('canonical hashes continue to reject undefined and non-finite values', async () => {
+  const invalidUndefined = collection(userA.id, 9, subject(9))
+  invalidUndefined.collection.tags = [undefined as unknown as string]
+  await assert.rejects(
+    () => projectCompleteFullFetch(fullFetch([invalidUndefined], []), 'run-undefined', [userA]),
+    /canonicalize undefined/i,
+  )
+
+  const invalidNumber = collection(userA.id, 10, subject(10))
+  invalidNumber.collection.rate = Number.NaN
+  await assert.rejects(
+    () => projectCompleteFullFetch(fullFetch([invalidNumber], []), 'run-non-finite', [userA]),
+    /non-finite number/i,
   )
 })

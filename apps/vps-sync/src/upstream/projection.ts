@@ -10,14 +10,16 @@ export interface ProjectionUser {
 type SubjectPayload = SubjectInput['payload']
 type CalendarSubject = BgmCalendarItem['items'][number]
 
-function hash(value: unknown): string {
+export function canonicalProjectionHash(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex')
 }
 
 function canonical(value: unknown): unknown {
+  if (value === undefined) throw new TypeError('Cannot canonicalize undefined')
+  if (typeof value === 'number' && !Number.isFinite(value)) throw new TypeError('Cannot canonicalize non-finite number')
   if (Array.isArray(value)) return value.map(canonical)
   if (typeof value !== 'object' || value === null) return value
-  return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, nested]) => [key, canonical(nested)]))
+  return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0).map(([key, nested]) => [key, canonical(nested)]))
 }
 
 function collectionSubject(entry: BgmCollection): SubjectPayload {
@@ -39,6 +41,13 @@ function collectionSubject(entry: BgmCollection): SubjectPayload {
 
 function calendarSubject(subject: CalendarSubject, fallback?: SubjectPayload): SubjectPayload {
   const images = subject.images as CalendarSubject['images'] | undefined
+  const calendarRating = subject.rating as Partial<NonNullable<SubjectPayload['rating']>> | undefined
+  const fallbackRating = fallback?.rating
+  const rating = calendarRating || fallbackRating ? {
+    score: calendarRating && Object.hasOwn(calendarRating, 'score') ? calendarRating.score! : fallbackRating?.score ?? 0,
+    rank: calendarRating && Object.hasOwn(calendarRating, 'rank') ? calendarRating.rank! : fallbackRating?.rank ?? 0,
+    total: calendarRating && Object.hasOwn(calendarRating, 'total') ? calendarRating.total! : fallbackRating?.total ?? 0,
+  } : undefined
   const payload: SubjectPayload = {
     id: subject.id,
     type: Object.hasOwn(subject, 'type') ? subject.type : fallback?.type,
@@ -53,13 +62,13 @@ function calendarSubject(subject: CalendarSubject, fallback?: SubjectPayload): S
       ...(images && Object.hasOwn(images, 'common') ? { common: images.common } : fallback?.images?.common !== undefined ? { common: fallback.images.common } : {}),
       ...(images && Object.hasOwn(images, 'large') ? { large: images.large } : fallback?.images?.large !== undefined ? { large: fallback.images.large } : {}),
     } } : {}),
-    ...(Object.hasOwn(subject, 'rating') ? { rating: subject.rating } : fallback?.rating ? { rating: fallback.rating } : {}),
+    ...(rating ? { rating } : {}),
   }
   return payload
 }
 
 function normalizedSubject(payload: SubjectPayload, upstreamUpdatedAt: string | null): SubjectInput {
-  return { id: payload.id, subjectType: payload.type ?? 0, payload, contentHash: hash(payload), upstreamUpdatedAt }
+  return { id: payload.id, subjectType: payload.type ?? 0, payload, contentHash: canonicalProjectionHash(payload), upstreamUpdatedAt }
 }
 
 export async function projectCompleteFullFetch(
@@ -70,6 +79,18 @@ export async function projectCompleteFullFetch(
   if (input.complete !== true) throw new Error('INCOMPLETE_FULL_FETCH')
   const userMap = new Map(configuredUsers.map((user) => [user.id, user]))
   if (userMap.size !== configuredUsers.length) throw new Error('DUPLICATE_PROJECTION_USER')
+  if (!Array.isArray(input.observedUsers) || input.observedUsers.some((userId) => typeof userId !== 'string' || userId.length === 0)) {
+    throw new Error('MISSING_OBSERVED_USER_EVIDENCE')
+  }
+  const observedUsers = new Set<string>()
+  for (const userId of input.observedUsers) {
+    if (observedUsers.has(userId)) throw new Error(`DUPLICATE_OBSERVED_PROJECTION_USER: ${userId}`)
+    if (!userMap.has(userId)) throw new Error(`UNKNOWN_OBSERVED_PROJECTION_USER: ${userId}`)
+    observedUsers.add(userId)
+  }
+  for (const user of configuredUsers) {
+    if (!observedUsers.has(user.id)) throw new Error(`MISSING_OBSERVED_PROJECTION_USER: ${user.id}`)
+  }
   const entriesByUser = new Map(configuredUsers.map((user) => [user.id, [] as BgmCollection[]]))
   for (const entry of input.collections) {
     const entries = entriesByUser.get(entry.user_id)
@@ -97,7 +118,7 @@ export async function projectCompleteFullFetch(
       subject: canonicalSubjects.get(entry.subject_id)!,
       collection: {
         payload: { type: entry.type, collection_type: entry.type, rate: entry.rate, tags: entry.tags, comment: entry.comment, ep_status: entry.ep_status, vol_status: entry.vol_status, private: entry.private },
-        contentHash: hash({ type: entry.type, rate: entry.rate, tags: entry.tags, comment: entry.comment, ep_status: entry.ep_status, vol_status: entry.vol_status, private: entry.private }),
+        contentHash: canonicalProjectionHash({ type: entry.type, rate: entry.rate, tags: entry.tags, comment: entry.comment, ep_status: entry.ep_status, vol_status: entry.vol_status, private: entry.private }),
         upstreamUpdatedAt: entry.updated_at,
       },
     })),

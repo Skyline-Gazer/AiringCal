@@ -14,6 +14,7 @@ export interface CollectionFetchGroup {
 
 export interface CompleteFullFetch {
   collections: Array<{ user_id: string; collection: BgmCollection }>
+  observedUsers: string[]
   calendar: BgmCalendarItem[]
   observedAt: number
   complete: true
@@ -50,7 +51,11 @@ function normalizeCalendarSubject(value: unknown): BgmCalendarItem['items'][numb
   if (value.air_date !== undefined && typeof value.air_date !== 'string') return null
   const images = isRecord(value.images) ? value.images : undefined
   const rating = isRecord(value.rating) && typeof value.rating.score === 'number'
-    ? { score: value.rating.score, rank: isSafeNonNegativeInteger(value.rank) ? value.rank : isSafeNonNegativeInteger(value.rating.rank) ? value.rating.rank : 0, total: isSafeNonNegativeInteger(value.rating.total) ? value.rating.total : 0 }
+    ? {
+        score: value.rating.score,
+        ...(isSafeNonNegativeInteger(value.rank) ? { rank: value.rank } : isSafeNonNegativeInteger(value.rating.rank) ? { rank: value.rating.rank } : {}),
+        ...(isSafeNonNegativeInteger(value.rating.total) ? { total: value.rating.total } : {}),
+      }
     : undefined
   return {
     id: value.id,
@@ -116,5 +121,5 @@ export function assembleFullFetch(groups: CollectionFetchGroup[], calendar: unkn
     }
     if (subjectIds.size !== declaredTotal) throw new Error('Incomplete collection fetch')
   }
-  return { collections, calendar: normalizedCalendar, observedAt, complete: true }
+  return { collections, observedUsers: [...userIds], calendar: normalizedCalendar, observedAt, complete: true }
 }

@@ -21,7 +21,7 @@ function fixture() {
       commitCompleteState: async (input) => { events.push('commit'); committed.push(structuredClone(input)) },
       finishRun: async (result) => { events.push('finish'); finished.push(structuredClone(result)) },
     },
-    fetchComplete: async () => { events.push('fetch'); return { observedAt: 1_788_134_400, collections: [], calendar: [], complete: true } },
+    fetchComplete: async () => { events.push('fetch'); return { observedAt: 1_788_134_400, collections: [], observedUsers: ['11111111-1111-1111-1111-111111111111'], calendar: [], complete: true } },
     media: async () => { events.push('media'); return { selected: 0, succeeded: 0, failed: 0 } },
     publish: async () => { events.push('publish'); return { status: 'published', generation: 1, contentHash: 'a'.repeat(64) } },
     backup: async () => { events.push('backup') },
@@ -106,7 +106,7 @@ test('continues heartbeat during long stages and drains timer before releasing r
   deps.fetchComplete = async () => {
     t.mock.timers.tick(30000)
     await Promise.resolve()
-    return { observedAt: 1_788_134_400, collections: [], calendar: [], complete: true }
+    return { observedAt: 1_788_134_400, collections: [], observedUsers: ['11111111-1111-1111-1111-111111111111'], calendar: [], complete: true }
   }
   await runOnce(deps, request)
   assert.ok(events.filter((event) => event === 'heartbeat:collection').length >= 2)
@@ -127,7 +127,7 @@ test('periodic heartbeat failure preserves committed authority counts and later 
   deps.fetchComplete = async () => {
     t.mock.timers.tick(30000)
     await Promise.resolve()
-    return { observedAt: 1_788_134_400, collections: [], calendar: [], complete: true }
+    return { observedAt: 1_788_134_400, collections: [], observedUsers: ['11111111-1111-1111-1111-111111111111'], calendar: [], complete: true }
   }
   deps.authority.commitCompleteState = async () => ({ inserted: 4, updated: 3, unchanged: 2, deleted: 1, missing: 0, restored: 0 })
   const result = await runOnce(deps, request)

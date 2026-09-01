@@ -177,6 +177,7 @@ function collection(subjectId = 1, userId = 'alice', rate = 7) {
 function completeInput(entries = [collection()]): CompleteFullFetch {
   return {
     collections: entries.map(({ user_id, collection }) => ({ user_id, collection })),
+    observedUsers: [...new Set(entries.map(({ user_id }) => user_id))],
     calendar: [],
     observedAt,
     complete: true,

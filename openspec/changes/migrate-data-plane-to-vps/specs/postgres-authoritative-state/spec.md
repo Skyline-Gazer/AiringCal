@@ -25,6 +25,10 @@
 ### Requirement: 删除必须以完整观测为前提
 系统 MUST 仅在目标账户全部分页和 calendar 成功获取后确认缺失记录；截断或空页异常不得转化为删除。
 
+#### Scenario: 完整空收藏与漏抓用户可区分
+- **WHEN** 完整抓取携带已成功完成分页的用户 identity evidence
+- **THEN** coordinator 仅在 evidence 与配置用户为无重复、无未知且无缺失的精确同集时提交；真实空用户仍有 evidence，未观测用户不得被凭空投影为空收藏
+
 #### Scenario: 未达到 total 时返回空页
 - **WHEN** 已读取数量小于 total 而上游返回空 data
 - **THEN** 本轮失败且数据库中既有收藏不得被删除
