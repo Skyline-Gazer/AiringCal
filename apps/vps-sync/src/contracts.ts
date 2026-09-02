@@ -1,5 +1,7 @@
 import type { CompleteStateInput, RunStartInput, RunFinishInput } from './postgres/repositories.ts'
 import type { TracingPort } from './observability/tracing.ts'
+import type { CompleteFullFetch } from '@airing-cal/bgm-api'
+import type { ProjectionUser } from './upstream/projection.ts'
 
 export type RunRequest = Pick<RunStartInput, 'mode' | 'source'>
 export type RunStatus = RunFinishInput['status']
@@ -13,6 +15,7 @@ export type RunContext = RunRequest & { runId: string; observedAt: string }
 export interface RunDependencies {
   runId: string
   gitSha: string
+  projectionUsers: readonly ProjectionUser[]
   now(): number
   lock: { acquire(): Promise<boolean>; release(): Promise<void> }
   authority: {
@@ -21,8 +24,8 @@ export interface RunDependencies {
     commitCompleteState(input: CompleteStateInput): Promise<RunFinishInput['counts'] | void>
     finishRun(input: RunFinishInput): Promise<void>
   }
-  /** Returns only a validated, complete collection/calendar projection. */
-  fetchComplete(context: RunContext): Promise<CompleteStateInput>
+  /** Returns only a validated, complete upstream collection/calendar observation. */
+  fetchComplete(context: RunContext): Promise<CompleteFullFetch>
   media(context: RunContext): Promise<MediaSummary>
   publish(context: RunContext): Promise<PublicationResult>
   backup(context: RunContext, publication: Extract<PublicationResult, { generation: number }>): Promise<void>

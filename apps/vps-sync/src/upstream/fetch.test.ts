@@ -63,8 +63,25 @@ test('fetchCompleteInput fetches every page and calendar before returning a comp
 
   assert.deepEqual(calls, ['collections:0:1', 'collections:1:1', 'calendar'])
   assert.equal(result.complete, true)
+  assert.deepEqual(result.observedUsers, ['primary'])
   assert.equal(result.observedAt, 123)
   assert.deepEqual(result.collections.map(({ collection }) => collection.subject_id), [1, 2])
+  assert.equal(Object.hasOwn(result.calendar[0]!.items[0]!, 'name'), false)
+  assert.equal(Object.hasOwn(result.calendar[0]!.items[0]!, 'eps'), false)
+})
+
+test('fetchCompleteInput emits observation evidence for every fully paged configured user including empty users', async () => {
+  const users = [{ userId: 'empty', username: 'empty-user' }, { userId: 'filled', username: 'filled-user' }]
+  const client = {
+    getCollections: async (username: string) => username === 'empty-user'
+      ? { total: 0, offset: 0, limit: 1, data: [] }
+      : { total: 1, offset: 0, limit: 1, data: [entry(9)] },
+    getCalendar: async () => calendar,
+  } as unknown as BgmClient
+
+  const result = await fetchCompleteInput({ ...config, users, primaryUserId: 'empty' }, client, () => 1_000)
+
+  assert.deepEqual(result.observedUsers, ['empty', 'filled'])
 })
 
 test('fetchCompleteInput fails closed when a pagination total drifts before requesting another page', async () => {

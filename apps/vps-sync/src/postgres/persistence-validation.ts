@@ -53,9 +53,9 @@ const runStageDurationKeys = new Set([
 ])
 const runComponentKeys = new Set(['collection', 'calendar', 'media', 'publication', 'backup', 'notification'])
 const sanitizedErrorKeys = new Set(['category', 'code', 'attemptCount', 'stage'])
-const subjectPayloadRequiredKeys = new Set(['id', 'name'])
+const subjectPayloadRequiredKeys = new Set(['id'])
 const subjectInputRequiredKeys = new Set(subjectInputKeys)
-const subjectRatingRequiredKeys = new Set(subjectRatingKeys)
+const subjectRatingRequiredKeys = new Set<string>()
 const collectionInputRequiredKeys = new Set(collectionInputKeys)
 const calendarPayloadRequiredKeys = new Set(calendarPayloadKeys)
 const calendarWeekdayRequiredKeys = new Set(['id'])
@@ -213,7 +213,7 @@ function assertSubjectPayload(value: unknown, path: string): void {
   const payload = assertExactObject(value, subjectPayloadKeys, subjectPayloadRequiredKeys, path)
   assertFiniteNumber(payload.id, `${path}.id`)
   assertOptionalFiniteNumber(payload, 'type', path)
-  assertString(payload.name, `${path}.name`)
+  assertOptionalString(payload, 'name', path)
   assertOptionalString(payload, 'name_cn', path)
   assertOptionalString(payload, 'summary', path)
   assertOptionalBoolean(payload, 'nsfw', path)
@@ -224,12 +224,16 @@ function assertSubjectPayload(value: unknown, path: string): void {
     const images = assertExactObject(payload.images, subjectImageKeys, new Set(), `${path}.images`)
     assertOptionalNullableString(images, 'common', `${path}.images`)
     assertOptionalNullableString(images, 'large', `${path}.images`)
+  } else if (Object.hasOwn(payload, 'images')) {
+    invalidPersistenceShape(`${path}.images`)
   }
   if (payload.rating !== undefined) {
     const rating = assertExactObject(payload.rating, subjectRatingKeys, subjectRatingRequiredKeys, `${path}.rating`)
-    assertFiniteNumber(rating.score, `${path}.rating.score`)
-    assertFiniteNumber(rating.rank, `${path}.rating.rank`)
-    assertFiniteNumber(rating.total, `${path}.rating.total`)
+    assertOptionalFiniteNumber(rating, 'score', `${path}.rating`)
+    assertOptionalFiniteNumber(rating, 'rank', `${path}.rating`)
+    assertOptionalFiniteNumber(rating, 'total', `${path}.rating`)
+  } else if (Object.hasOwn(payload, 'rating')) {
+    invalidPersistenceShape(`${path}.rating`)
   }
 }
 
@@ -246,8 +250,10 @@ function assertCollectionPayload(value: unknown, path: string): void {
   assertOptionalFiniteNumber(payload, 'collection_type', path)
   assertOptionalNullableFiniteNumber(payload, 'rate', path)
   if (payload.tags !== undefined) {
-    assertArray(payload.tags, `${path}.tags`)
-    payload.tags.forEach((tag, index) => assertString(tag, `${path}.tags[${index}]`))
+    assertArray(payload.tags, path + '.tags')
+    ;(payload.tags as unknown[]).forEach((tag, index) => assertString(tag, `${path}.tags[${index}]`))
+  } else if (Object.hasOwn(payload, 'tags')) {
+    invalidPersistenceShape(path + '.tags')
   }
   assertOptionalString(payload, 'comment', path)
   assertOptionalFiniteNumber(payload, 'ep_status', path)
@@ -285,6 +291,8 @@ function assertMediaMetadata(value: unknown, path: string): void {
   assertFiniteNumber(metadata.checked_at, `${path}.checked_at`)
   if (metadata.expires_at !== undefined && metadata.expires_at !== null) {
     assertFiniteNumber(metadata.expires_at, `${path}.expires_at`)
+  } else if (Object.hasOwn(metadata, 'expires_at') && metadata.expires_at === undefined) {
+    invalidPersistenceShape(`${path}.expires_at`)
   }
   assertEnum(metadata.reason, mediaMetadataReasons, `${path}.reason`)
 }
@@ -362,23 +370,27 @@ function assertBoolean(value: unknown, path: string): void {
 }
 
 function assertOptionalFiniteNumber(record: Record<string, unknown>, key: string, path: string): void {
-  if (record[key] !== undefined) assertFiniteNumber(record[key], `${path}.${key}`)
+  if (Object.hasOwn(record, key)) assertFiniteNumber(record[key], `${path}.${key}`)
 }
 
 function assertOptionalNullableFiniteNumber(record: Record<string, unknown>, key: string, path: string): void {
-  if (record[key] !== undefined && record[key] !== null) assertFiniteNumber(record[key], `${path}.${key}`)
+  if (Object.hasOwn(record, key)) assertNullableFiniteNumber(record[key], `${path}.${key}`)
 }
 
 function assertOptionalString(record: Record<string, unknown>, key: string, path: string): void {
-  if (record[key] !== undefined) assertString(record[key], `${path}.${key}`)
+  if (Object.hasOwn(record, key)) assertString(record[key], `${path}.${key}`)
 }
 
 function assertOptionalNullableString(record: Record<string, unknown>, key: string, path: string): void {
-  if (record[key] !== undefined) assertNullableString(record[key], `${path}.${key}`)
+  if (Object.hasOwn(record, key)) assertNullableString(record[key], `${path}.${key}`)
 }
 
 function assertOptionalBoolean(record: Record<string, unknown>, key: string, path: string): void {
-  if (record[key] !== undefined) assertBoolean(record[key], `${path}.${key}`)
+  if (Object.hasOwn(record, key)) assertBoolean(record[key], `${path}.${key}`)
+}
+
+function assertNullableFiniteNumber(value: unknown, path: string): void {
+  if (value !== null) assertFiniteNumber(value, path)
 }
 
 function assertNullableTimestamp(value: unknown, path: string): void {

@@ -10,33 +10,40 @@ function fixture() {
   const events: string[] = []
   const finished: unknown[] = []
   const notified: unknown[] = []
+  const committed: unknown[] = []
   const deps: RunDependencies = {
     runId: 'run-1', gitSha: 'a'.repeat(40), now: () => Date.parse('2026-08-31T00:00:00Z'),
+    projectionUsers: [{ id: '11111111-1111-1111-1111-111111111111', upstreamUserId: '42' }],
     lock: { acquire: async () => { events.push('lock'); return true }, release: async () => { events.push('unlock') } },
     authority: {
       beginRun: async () => { events.push('begin') },
       heartbeat: async (_id, stage) => { events.push(`heartbeat:${stage}`) },
-      commitCompleteState: async () => { events.push('commit') },
+      commitCompleteState: async (input) => { events.push('commit'); committed.push(structuredClone(input)) },
       finishRun: async (result) => { events.push('finish'); finished.push(structuredClone(result)) },
     },
-    fetchComplete: async () => { events.push('fetch'); return { runId: 'run-1', observedAt: '2026-08-31T00:00:00Z', users: [{ id: '11111111-1111-1111-1111-111111111111', upstreamUserId: '42', items: [] }], calendarEntries: [] } },
+    fetchComplete: async () => { events.push('fetch'); return { observedAt: 1_788_134_400, collections: [], observedUsers: ['11111111-1111-1111-1111-111111111111'], calendar: [], complete: true } },
     media: async () => { events.push('media'); return { selected: 0, succeeded: 0, failed: 0 } },
     publish: async () => { events.push('publish'); return { status: 'published', generation: 1, contentHash: 'a'.repeat(64) } },
     backup: async () => { events.push('backup') },
     notify: async (result) => { events.push('notify'); notified.push(structuredClone(result)) },
     close: async () => { events.push('close') },
   }
-  return { deps, events, finished, notified }
+  return { deps, events, finished, notified, committed }
 }
 const request = { mode: 'shadow', source: 'manual' } as const
 
 test('coordinates complete input, heartbeat, publication, backup and persisted notification in order', async () => {
-  const { deps, events } = fixture()
+  const { deps, events, committed } = fixture()
   const result = await runOnce(deps, request)
   assert.equal(result.status, 'success')
   assert.deepEqual(events.filter((e) => !e.startsWith('heartbeat')), ['lock', 'begin', 'fetch', 'commit', 'media', 'publish', 'backup', 'unlock', 'finish', 'notify', 'finish', 'close'])
   assert.ok(events.includes('heartbeat:collection'))
   assert.ok(events.includes('heartbeat:media'))
+  assert.deepEqual(committed, [{
+    runId: 'run-1', observedAt: '2026-08-31T00:00:00.000Z',
+    users: [{ id: '11111111-1111-1111-1111-111111111111', upstreamUserId: '42', items: [] }],
+    calendarEntries: [],
+  }])
 })
 test('lock miss persists and notifies skipped without upstream or object writes', async () => {
   const { deps, events } = fixture()
@@ -99,7 +106,7 @@ test('continues heartbeat during long stages and drains timer before releasing r
   deps.fetchComplete = async () => {
     t.mock.timers.tick(30000)
     await Promise.resolve()
-    return { runId: 'run-1', observedAt: '2026-08-31T00:00:00Z', users: [], calendarEntries: [] }
+    return { observedAt: 1_788_134_400, collections: [], observedUsers: ['11111111-1111-1111-1111-111111111111'], calendar: [], complete: true }
   }
   await runOnce(deps, request)
   assert.ok(events.filter((event) => event === 'heartbeat:collection').length >= 2)
@@ -120,7 +127,7 @@ test('periodic heartbeat failure preserves committed authority counts and later 
   deps.fetchComplete = async () => {
     t.mock.timers.tick(30000)
     await Promise.resolve()
-    return { runId: 'run-1', observedAt: '2026-08-31T00:00:00Z', users: [], calendarEntries: [] }
+    return { observedAt: 1_788_134_400, collections: [], observedUsers: ['11111111-1111-1111-1111-111111111111'], calendar: [], complete: true }
   }
   deps.authority.commitCompleteState = async () => ({ inserted: 4, updated: 3, unchanged: 2, deleted: 1, missing: 0, restored: 0 })
   const result = await runOnce(deps, request)
@@ -239,7 +246,7 @@ test('media and publication use the completed input observation rather than proc
   const { deps } = fixture()
   const fetch = deps.fetchComplete
   const observedAt = '2026-08-31T00:05:00.000Z'
-  deps.fetchComplete = async (context) => ({ ...await fetch(context), observedAt })
+  deps.fetchComplete = async (context) => ({ ...await fetch(context), observedAt: Date.parse(observedAt) / 1_000 })
   deps.media = async (context) => {
     assert.equal(context.observedAt, observedAt)
     return { selected: 0, succeeded: 0, failed: 0 }

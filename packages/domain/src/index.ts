@@ -465,10 +465,13 @@ export function transformCalendar(calendar: BgmCalendarDayLike[], imageMap?: Sub
     weekday: day.weekday,
     items: day.items.map((subject) => {
       const episodeCount = calendarEpisodeCount(subject)
-      const rating = subject.rating
+      const ratingRank = typeof subject.rank === 'number' ? subject.rank : subject.rating?.rank
+      const rating = typeof subject.rating?.score === 'number'
+        && typeof ratingRank === 'number'
+        && typeof subject.rating.total === 'number'
         ? {
             score: subject.rating.score,
-            rank: typeof subject.rank === 'number' ? subject.rank : subject.rating.rank ?? 0,
+            rank: ratingRank,
             total: subject.rating.total,
           }
         : undefined

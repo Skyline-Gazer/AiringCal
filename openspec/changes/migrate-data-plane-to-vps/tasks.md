@@ -9,7 +9,7 @@
 
 - [x] 2.1 Reuse the verified bgm.tv client/domain logic to implement complete collection/calendar input, bounded retry, primary failure protection, and normalized diff tests
   - Implemented in `60245ea`, corrected in `d3baec3`; focused tests 27/27, shared-client/boundary regressions and full repository checks passed. Plain Node imports both bundled upstream entries with shared error identity. Independent fix re-review approved with no outstanding findings. No live upstream or database requests in this batch; Task 2.2 and phase advancement wait for this batch's PR merge.
-- [ ] 2.2 Implement the one-shot run coordinator, heartbeat/terminal outcomes, no-change behavior, media refresh lifecycle, and concurrent-run exclusion with RED-to-GREEN tests
+- [x] 2.2 Implement the one-shot run coordinator, heartbeat/terminal outcomes, no-change behavior, media refresh lifecycle, and concurrent-run exclusion with RED-to-GREEN tests
 - [x] 2.3 Implement optional fail-open Sentry tracing for the VPS run and coordinator stages with disabled-by-default, redaction, exactly-once, and bounded-flush RED-to-GREEN tests
   - Implemented in `5c2ec6d`, corrected in `630d3de` and `ccdbda8`; final independent review approved with no findings. Coordinator fresh verification passed VPS 130/130, typecheck, build:check, build, emitted adapter import, OpenSpec strict and diff check. No live Sentry request was made.
 

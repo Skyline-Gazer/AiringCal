@@ -49,8 +49,8 @@ The scheduled path is:
 3. Migrations run before the business lock is requested.
 4. The process attempts a PostgreSQL session advisory lock. Failure produces a persisted/skipped outcome without upstream or R2 writes.
 5. A `sync_runs` row is created and becomes the source of health/notification state.
-6. Complete collections and calendar input is fetched and validated.
-7. Authoritative collection/calendar state is committed in one database transaction.
+6. Complete collections and calendar input is fetched and validated, preserving whether optional calendar subject fields were actually present.
+7. The complete fetch is projected into `CompleteStateInput`: calendar fields are canonical when present, collection subjects only fill absent calendar fields, and configured-user order makes repeated cross-user subjects deterministic. The normalized projection is then committed in one authoritative database transaction.
 8. Due subject detail, metadata, and images are refreshed with bounded concurrency.
 9. The public snapshot is built from committed PostgreSQL state and published or classified no-change.
 10. A database backup is attempted only after snapshot publication succeeds or business content is verified unchanged. Runs that fail or skip before reaching either milestone do not trigger a backup. Media degradation does not suppress backup after a successful publication; backup failure independently contributes to a terminal partial result.
@@ -79,6 +79,8 @@ Access tokens, refresh tokens, database URLs, webhook URLs/secrets, R2 credentia
 ### 4.2 Transactions and deletion safety
 
 The collection/calendar transaction begins only after all configured users and all pages pass the existing complete-fetch boundary. A page count/offset/total inconsistency, duplicate subject, premature empty page, invalid calendar projection, or primary-account failure aborts before business writes.
+
+`CompleteFullFetch` retains optional calendar-field presence instead of replacing absence with empty/zero/false defaults, including `name` and independent `rating.score`/`rank`/`total` presence. It also carries the ordered identity of every user whose pagination completed, including genuinely empty users. The coordinator requires those observed identities and configured users to be the exact same duplicate-free set before projecting one canonical subject per ID; it never invents an unobserved empty user. A calendar-provided field wins independently at each nested rating/image field, collection data fills only fields absent from calendar, and fields absent from both sources remain absent in PostgreSQL authority JSON and its hash. In particular, a missing `name` is not collapsed into an explicitly supplied empty string; the legacy public collection adapter adds its required empty-string default only while constructing that old shape. Collection-only/calendar-only subjects are both retained. Repeated collection subjects across configured users resolve in configured-user order. Projection hashes recursively use locale-independent UTF-16 code-unit key ordering and reject `undefined` or non-finite numbers. The unchanged legacy public collection shape receives a rating only when all three authority rating fields are present; partial authority ratings are omitted there rather than completed with invented zeroes.
 
 The transaction upserts normalized subjects and collection items, records first missing observations, confirms deletion only under the canonical two-successful-complete-observations rule, replaces the current calendar set, and checkpoints the run. No network or R2 call occurs while this transaction is open.
 

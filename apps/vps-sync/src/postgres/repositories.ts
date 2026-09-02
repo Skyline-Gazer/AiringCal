@@ -17,7 +17,7 @@ import {
 type SubjectPayload = Readonly<{
   id: number
   type?: number
-  name: string
+  name?: string
   name_cn?: string
   summary?: string
   nsfw?: boolean
@@ -25,7 +25,7 @@ type SubjectPayload = Readonly<{
   eps?: number
   total_episodes?: number
   images?: Readonly<{ common?: string | null; large?: string | null }>
-  rating?: Readonly<{ score: number; rank: number; total: number }>
+  rating?: Readonly<{ score?: number; rank?: number; total?: number }>
 }>
 
 type CollectionPayload = Readonly<{
@@ -801,7 +801,7 @@ function toPlannerCollection(
     },
     public_item: {
       subject_id: item.subject.id,
-      name: subject.name,
+      name: subject.name ?? '',
       name_cn: subject.name_cn ?? '',
       summary: subject.summary ?? '',
       images: { common: null, large: null },
@@ -817,7 +817,9 @@ function toPlannerCollection(
       date: subject.date ?? '',
       tags: [...(collection.tags ?? [])],
       updated_at: item.collection.upstreamUpdatedAt ?? '',
-      ...(rating ? { rating } : {}),
+      ...(rating?.score !== undefined && rating.rank !== undefined && rating.total !== undefined
+        ? { rating: { score: rating.score, rank: rating.rank, total: rating.total } }
+        : {}),
     },
   }
 }

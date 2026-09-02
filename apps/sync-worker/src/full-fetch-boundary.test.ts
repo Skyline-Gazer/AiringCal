@@ -41,6 +41,7 @@ test('assembleFullFetch marks input complete only with every collection page and
   )
 
   assert.equal(result.complete, true)
+  assert.deepEqual(result.observedUsers, ['alice'])
   assert.deepEqual(result.collections, [{ user_id: 'alice', collection: entry }])
   assert.deepEqual(result.calendar, calendar)
   assert.equal(result.observedAt, 123)
@@ -137,6 +138,17 @@ test('assembleFullFetch retains user identity for the same subject across users'
   ], [], 123)
 
   assert.deepEqual(result.collections.map(({ user_id }) => user_id), ['alice', 'bob'])
+  assert.deepEqual(result.observedUsers, ['alice', 'bob'])
+})
+
+test('assembleFullFetch records a complete empty user as observed deletion evidence', () => {
+  const result = assembleFullFetch(
+    [{ user_id: 'empty', pages: [{ offset: 0, total: 0, data: [] }], pageLimit: 50 }],
+    [],
+    123,
+  )
+  assert.deepEqual(result.collections, [])
+  assert.deepEqual(result.observedUsers, ['empty'])
 })
 
 test('assembleFullFetch rejects duplicate user groups', () => {
@@ -146,7 +158,7 @@ test('assembleFullFetch rejects duplicate user groups', () => {
   ], [], 123), /duplicate collection user/i)
 })
 
-test('assembleFullFetch accepts the OpenAPI-compatible minimal calendar item', () => {
+test('assembleFullFetch preserves optional-field absence on the OpenAPI-compatible minimal calendar item', () => {
   const minimal = [{
     weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
     items: [{ id: 1, type: 2 }],
@@ -157,13 +169,7 @@ test('assembleFullFetch accepts the OpenAPI-compatible minimal calendar item', (
     123,
   )
 
-  assert.equal(result.calendar[0]?.items[0]?.name, '')
-  assert.equal(result.calendar[0]?.items[0]?.name_cn, '')
-  assert.equal(result.calendar[0]?.items[0]?.summary, '')
-  assert.equal(result.calendar[0]?.items[0]?.eps, 0)
-  assert.deepEqual(result.calendar[0]?.items[0]?.images, {
-    large: '', common: '', medium: '', small: '', grid: '',
-  })
+  assert.deepEqual(result.calendar[0]?.items[0], { id: 1, type: 2 })
 })
 
 test('assembleFullFetch allowlists checked-in legacy subjects and maps root rank', () => {
@@ -198,17 +204,33 @@ test('assembleFullFetch allowlists checked-in legacy subjects and maps root rank
     name: 'A',
     name_cn: 'A CN',
     summary: 'summary',
-    nsfw: false,
     date: '2026-01-01',
     eps: 12,
     eps_count: 13,
-    images: { large: '', common: 'common', medium: '', small: '', grid: '' },
+    images: { common: 'common' },
     rating: { score: 7.6, rank: 573, total: 2289 },
   })
   assert.equal(transformCalendar(result.calendar)[0]?.items[0]?.rating?.rank, 573)
 })
 
-test('assembleFullFetch removes optional rating without a score', () => {
+test('assembleFullFetch preserves nested rating presence including explicit zero', () => {
+  const result = assembleFullFetch(
+    [{ user_id: 'alice', pages: [{ offset: 0, total: 0, data: [] }], pageLimit: 50 }],
+    [{
+      weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+      items: [
+        { id: 12, type: 2, rating: { score: 9 } },
+        { id: 13, type: 2, rating: { score: 0, rank: 0, total: 0 } },
+      ],
+    }],
+    123,
+  )
+
+  assert.deepEqual(result.calendar[0]!.items[0]!.rating, { score: 9 })
+  assert.deepEqual(result.calendar[0]!.items[1]!.rating, { score: 0, rank: 0, total: 0 })
+})
+
+test('assembleFullFetch preserves total-only rating while legacy transform omits the partial shape', () => {
   const result = assembleFullFetch(
     [{ user_id: 'alice', pages: [{ offset: 0, total: 0, data: [] }], pageLimit: 50 }],
     [{
@@ -218,7 +240,7 @@ test('assembleFullFetch removes optional rating without a score', () => {
     123,
   )
 
-  assert.equal('rating' in result.calendar[0]!.items[0]!, false)
+  assert.deepEqual(result.calendar[0]!.items[0]!.rating, { total: 1 })
   assert.equal(transformCalendar(result.calendar)[0]?.items[0]?.rating, undefined)
 })
 

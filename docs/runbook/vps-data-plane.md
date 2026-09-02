@@ -56,7 +56,7 @@ VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection
 
 媒体直接写入 `applyMediaResult` 与锁内写入均受同一 subject advisory lock 保护。锁内读取后会在 SQL mutation 前拒绝旧围栏；合并 last-known-good 后内容、hash、状态与重试/tombstone 时间均相同的记录不执行 UPDATE。锁生命周期之外保留的 save closure 不能继续写入。
 
-`runOnce` 是端口注入的单轮协调器，接受 `shadow|live` 与 `scheduled|manual`。调用方提供已验证完整的 `CompleteStateInput`，协调器在完整抓取返回后才调用权威事务。它按媒体、发布、备份顺序运行；发布端口只有返回 `published` 或 `no_change` 才允许备份，媒体降级不阻止发布或备份。终态先写入 PostgreSQL 再调用通知端口，随后独立保存通知结果。锁竞争产生 persisted/notified `skipped`，不抓取上游或写 R2。`success/no_change/skipped` 映射退出码 0，`partial/failed` 映射 1。这些模块提供编排接口，不是可部署的 CLI 或发布/备份/飞书实现。
+`runOnce` 是端口注入的单轮协调器，接受 `shadow|live` 与 `scheduled|manual`。抓取端口返回已验证完整并保留 calendar 可选字段 presence 的 `CompleteFullFetch`；协调器先投影成严格 `CompleteStateInput` 再调用权威事务。同一 subject 的 calendar 实际提供字段优先，collection 只能补 calendar 缺失字段；双方都未提供 `name` 时，PostgreSQL authority JSON/hash 保持该字段缺失，own-property 显式空字符串则保留，旧 public collection shape 仅在 consumer 转换时补 `name: ''`。collection-only、calendar-only 与跨用户重复 subject 均保留，重复 collection subject 按配置用户顺序稳定选择。非完整抓取或未知用户在提交前拒绝，空收藏的配置用户仍写入投影以维持删除保护。协调器随后按媒体、发布、备份顺序运行；发布端口只有返回 `published` 或 `no_change` 才允许备份，媒体降级不阻止发布或备份。终态先写入 PostgreSQL 再调用通知端口，随后独立保存通知结果。锁竞争产生 persisted/notified `skipped`，不抓取上游或写 R2。`success/no_change/skipped` 映射退出码 0，`partial/failed` 映射 1。这些模块提供编排接口，不是可部署的 CLI 或发布/备份/飞书实现。
 
 每阶段开始和长阶段每 30 秒更新 heartbeat；阶段完成会取消并等待在途心跳。并行 heartbeat 失败记录为脱敏降级终态，但不会丢弃已经完成的 authority 计数、发布里程碑或阻止对应备份。若 notification 阶段本身的 heartbeat 在首次通知期间失败，协调器会在 timer drain 后发送一次无 heartbeat 的最终降级修正通知，不递归重试。最终释放业务锁与调用资源清理端口。上游可信错误保留 category/code/stage/attempt，未知异常只记录稳定 `runtime/STAGE_FAILED`，不复制异常消息。
 
