@@ -17,7 +17,7 @@ import {
 type SubjectPayload = Readonly<{
   id: number
   type?: number
-  name: string
+  name?: string
   name_cn?: string
   summary?: string
   nsfw?: boolean
@@ -801,7 +801,7 @@ function toPlannerCollection(
     },
     public_item: {
       subject_id: item.subject.id,
-      name: subject.name,
+      name: subject.name ?? '',
       name_cn: subject.name_cn ?? '',
       summary: subject.summary ?? '',
       images: { common: null, large: null },

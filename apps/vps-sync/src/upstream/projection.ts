@@ -27,7 +27,7 @@ function collectionSubject(entry: BgmCollection): SubjectPayload {
   return {
     id: entry.subject_id,
     type: subject?.type ?? entry.subject_type,
-    name: subject?.name ?? '',
+    ...(subject && Object.hasOwn(subject, 'name') ? { name: subject.name } : {}),
     ...(subject && Object.hasOwn(subject, 'name_cn') ? { name_cn: subject.name_cn } : {}),
     ...(subject && Object.hasOwn(subject, 'summary') ? { summary: subject.summary } : {}),
     ...(subject && Object.hasOwn(subject, 'nsfw') ? { nsfw: subject.nsfw } : {}),
@@ -51,7 +51,7 @@ function calendarSubject(subject: CalendarSubject, fallback?: SubjectPayload): S
   const payload: SubjectPayload = {
     id: subject.id,
     type: Object.hasOwn(subject, 'type') ? subject.type : fallback?.type,
-    name: Object.hasOwn(subject, 'name') ? subject.name : fallback?.name ?? '',
+    ...(Object.hasOwn(subject, 'name') ? { name: subject.name } : fallback && Object.hasOwn(fallback, 'name') ? { name: fallback.name } : {}),
     ...(Object.hasOwn(subject, 'name_cn') ? { name_cn: subject.name_cn } : fallback?.name_cn !== undefined ? { name_cn: fallback.name_cn } : {}),
     ...(Object.hasOwn(subject, 'summary') ? { summary: subject.summary } : fallback?.summary !== undefined ? { summary: fallback.summary } : {}),
     ...(Object.hasOwn(subject, 'nsfw') ? { nsfw: subject.nsfw } : fallback?.nsfw !== undefined ? { nsfw: fallback.nsfw } : {}),

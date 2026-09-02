@@ -63,6 +63,66 @@ test('projects collection-only and calendar-only subjects', async () => {
   assert.equal(projected.calendarEntries[0]!.subject.payload.name, 'calendar-only')
 })
 
+test('shared producer preserves a missing calendar-only subject name in authority payload and hash', async () => {
+  const input = assembleFullFetch(
+    [{ user_id: userA.id, pages: [{ offset: 0, total: 0, data: [] }], pageLimit: 50 }],
+    [{
+      weekday: { id: 1, en: 'Mon', cn: '星期一', ja: '月曜日' },
+      items: [{ id: 30, type: 2 }],
+    }],
+    1_788_134_400,
+  )
+
+  const projected = await projectCompleteFullFetch(input, 'run-calendar-name-missing', [userA])
+  const authoritySubject = projected.calendarEntries[0]!.subject
+
+  assert.deepEqual(authoritySubject.payload, { id: 30, type: 2 })
+  assert.equal(authoritySubject.contentHash, canonicalProjectionHash({ id: 30, type: 2 }))
+  assert.doesNotThrow(() => assertCompleteStateInput(projected))
+})
+
+test('shared producer preserves a missing collection-only subject name without an embedded subject', async () => {
+  const input = assembleFullFetch(
+    [{
+      user_id: userA.id,
+      pages: [{ offset: 0, total: 1, data: [collection(userA.id, 31).collection] }],
+      pageLimit: 50,
+    }],
+    [],
+    1_788_134_400,
+  )
+
+  const projected = await projectCompleteFullFetch(input, 'run-collection-name-missing', [userA])
+  const authoritySubject = projected.users[0]!.items[0]!.subject
+
+  assert.deepEqual(authoritySubject.payload, { id: 31, type: 2 })
+  assert.equal(authoritySubject.contentHash, canonicalProjectionHash({ id: 31, type: 2 }))
+  assert.doesNotThrow(() => assertCompleteStateInput(projected))
+})
+
+test('authority payload and hash distinguish a missing name from an explicitly empty name', async () => {
+  const input = assembleFullFetch(
+    [{ user_id: userA.id, pages: [{ offset: 0, total: 0, data: [] }], pageLimit: 50 }],
+    [{
+      weekday: { id: 1, en: 'Mon', cn: '星期一', ja: '月曜日' },
+      items: [{ id: 32, type: 2 }, { id: 33, type: 2, name: '' }],
+    }],
+    1_788_134_400,
+  )
+
+  const projected = await projectCompleteFullFetch(input, 'run-name-presence', [userA])
+  const [missing, explicitEmpty] = projected.calendarEntries.map(({ subject }) => subject)
+
+  assert.equal(Object.hasOwn(missing!.payload, 'name'), false)
+  assert.equal(Object.hasOwn(explicitEmpty!.payload, 'name'), true)
+  assert.equal(explicitEmpty!.payload.name, '')
+  assert.notEqual(
+    canonicalProjectionHash({ id: 32, type: 2 }),
+    canonicalProjectionHash({ id: 32, type: 2, name: '' }),
+  )
+  assert.doesNotThrow(() => assertCompleteStateInput(projected))
+})
+
 test('stably merges one subject repeated across multiple users', async () => {
   const input = fullFetch([
     collection(userB.id, 4, subject(4, { name: 'second-user' })),
