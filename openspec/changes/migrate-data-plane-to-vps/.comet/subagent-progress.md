@@ -7,6 +7,13 @@
 - **Next work: OpenSpec Task 3.1** "Define PublicSnapshotManifestV1 and canonical snapshot hashing, key validation, generation allocation, and identical-content no-op tests" (delta spec `r2-snapshot-publication`; plan `Task 3.1: Manifest V1、canonical hash 与 generation 规则`). Task 1.1 remains unchecked only for its separately tracked `psql`/Docker/CI container checks and is not a gate.
 - **Handoff**: see `docs/job-transfer/002-vps-data-plane-migration.md` on branch `codex/vps-handoff-002` (based on `origin/dev` `6c522f0`). 001 rules in §2 / §6-§8 remain in force.
 
+## Active batch: Task 3.1 (2026-09-02)
+
+- **Plan task**: `Task 3.1: Manifest V1、canonical hash 与 generation 规则`.
+- **OpenSpec task**: `3.1 Define PublicSnapshotManifestV1 and canonical snapshot hashing, key validation, generation allocation, and identical-content no-op tests`.
+- **Stage**: `implementing`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix round: 0.
+- **Dispatch baseline**: `dcb64fc93d867875f85fbcfb0263db3f9ef9c171` on `codex/vps-task-3-1`; Task 2.2 is already merged in base `6c522f0`. No Task 3.1 implementation commit exists yet. The implementer must create RED evidence before any production code, then report the exact RED/GREEN commands, changed files, and commit hash.
+
 ## Active batch: Task 2.2 (historical)
 
 - Plan task: `Task 2.2: 一次性 coordinator、run outcomes 与媒体生命周期`.
