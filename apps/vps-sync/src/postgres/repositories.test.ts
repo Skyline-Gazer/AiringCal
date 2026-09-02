@@ -1054,6 +1054,77 @@ test('rejects opaque nested values and invalid scalars across run JSON DTOs', as
   }
 })
 
+test('rejects explicit own-property undefined across optional complete-state fields before issuing any query', async () => {
+  const invalidStates: CompleteStateInput[] = []
+
+  const explicitNameUndefined = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(explicitNameUndefined.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).name = undefined
+  invalidStates.push(explicitNameUndefined)
+
+  const explicitRatingUndefined = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(explicitRatingUndefined.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).rating = undefined
+  invalidStates.push(explicitRatingUndefined)
+
+  const explicitRatingScoreUndefined = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(explicitRatingScoreUndefined.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).rating = {
+    score: undefined,
+    rank: 1,
+  }
+  invalidStates.push(explicitRatingScoreUndefined)
+
+  const explicitRatingRankUndefined = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(explicitRatingRankUndefined.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).rating = {
+    rank: undefined,
+    total: 1,
+  }
+  invalidStates.push(explicitRatingRankUndefined)
+
+  const explicitRatingTotalUndefined = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(explicitRatingTotalUndefined.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).rating = {
+    total: undefined,
+  }
+  invalidStates.push(explicitRatingTotalUndefined)
+
+  const explicitImagesUndefined = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(explicitImagesUndefined.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).images = undefined
+  invalidStates.push(explicitImagesUndefined)
+
+  const explicitImageFieldUndefined = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(explicitImageFieldUndefined.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).images = {
+    common: undefined,
+    large: null,
+  }
+  invalidStates.push(explicitImageFieldUndefined)
+
+  for (const input of invalidStates) {
+    const pool = new RecordingPool()
+    await assert.rejects(
+      () => authority(pool).commitCompleteState(input),
+      /FORBIDDEN_PERSISTENCE_SHAPE/,
+    )
+    assert.equal(pool.database.calls.length, 0)
+  }
+})
+
+test('keeps valid optional-field presence and absence accepted', async () => {
+  const validStates: CompleteStateInput[] = []
+
+  const missingOptionals = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(missingOptionals.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).name = ''
+  ;(missingOptionals.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).type = 0
+  ;(missingOptionals.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).rating = { score: 0 }
+  ;(missingOptionals.users[0]!.items[0]!.subject.payload as unknown as Record<string, unknown>).images = {
+    common: null,
+  }
+  validStates.push(missingOptionals)
+
+  for (const input of validStates) {
+    const pool = new RecordingPool()
+    await authority(pool).commitCompleteState(input)
+    assert.ok(pool.database.calls.length > 0)
+  }
+})
+
 test('adds run fences forward-only after the immutable initial schema', async () => {
   const initial = await readFile(new URL('./migrations/0001_initial.sql', import.meta.url), 'utf8')
   const constraints = await readFile(new URL('./migrations/0002_authority_constraints.sql', import.meta.url), 'utf8')
