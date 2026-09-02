@@ -50,11 +50,17 @@ function normalizeCalendarSubject(value: unknown): BgmCalendarItem['items'][numb
   if (value.date !== undefined && typeof value.date !== 'string') return null
   if (value.air_date !== undefined && typeof value.air_date !== 'string') return null
   const images = isRecord(value.images) ? value.images : undefined
-  const rating = isRecord(value.rating) && typeof value.rating.score === 'number'
+  const ratingValue = isRecord(value.rating) ? value.rating : undefined
+  const rating = ratingValue && (
+    typeof ratingValue.score === 'number'
+    || isSafeNonNegativeInteger(value.rank)
+    || isSafeNonNegativeInteger(ratingValue.rank)
+    || isSafeNonNegativeInteger(ratingValue.total)
+  )
     ? {
-        score: value.rating.score,
-        ...(isSafeNonNegativeInteger(value.rank) ? { rank: value.rank } : isSafeNonNegativeInteger(value.rating.rank) ? { rank: value.rating.rank } : {}),
-        ...(isSafeNonNegativeInteger(value.rating.total) ? { total: value.rating.total } : {}),
+        ...(typeof ratingValue.score === 'number' ? { score: ratingValue.score } : {}),
+        ...(isSafeNonNegativeInteger(value.rank) ? { rank: value.rank } : isSafeNonNegativeInteger(ratingValue.rank) ? { rank: ratingValue.rank } : {}),
+        ...(isSafeNonNegativeInteger(ratingValue.total) ? { total: ratingValue.total } : {}),
       }
     : undefined
   return {

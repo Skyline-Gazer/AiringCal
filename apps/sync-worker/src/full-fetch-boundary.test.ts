@@ -230,7 +230,7 @@ test('assembleFullFetch preserves nested rating presence including explicit zero
   assert.deepEqual(result.calendar[0]!.items[1]!.rating, { score: 0, rank: 0, total: 0 })
 })
 
-test('assembleFullFetch removes optional rating without a score', () => {
+test('assembleFullFetch preserves total-only rating while legacy transform omits the partial shape', () => {
   const result = assembleFullFetch(
     [{ user_id: 'alice', pages: [{ offset: 0, total: 0, data: [] }], pageLimit: 50 }],
     [{
@@ -240,7 +240,7 @@ test('assembleFullFetch removes optional rating without a score', () => {
     123,
   )
 
-  assert.equal('rating' in result.calendar[0]!.items[0]!, false)
+  assert.deepEqual(result.calendar[0]!.items[0]!.rating, { total: 1 })
   assert.equal(transformCalendar(result.calendar)[0]?.items[0]?.rating, undefined)
 })
 

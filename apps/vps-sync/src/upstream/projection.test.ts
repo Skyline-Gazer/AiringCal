@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { BgmSlimSubject, CompleteFullFetch } from '@airing-cal/bgm-api'
+import { assembleFullFetch, type BgmSlimSubject, type CompleteFullFetch } from '@airing-cal/bgm-api'
 import { canonicalProjectionHash, projectCompleteFullFetch } from './projection.ts'
 import { assertCompleteStateInput } from '../postgres/persistence-validation.ts'
 
@@ -120,6 +120,32 @@ test('merges rating presence field by field and treats explicit zero as authorit
     [{ id: 7, type: 2, rating: { score: 0, rank: 0, total: 0 } }],
   ), 'run-zero', [userA])
   assert.deepEqual(explicitZero.calendarEntries[0]!.subject.payload.rating, { score: 0, rank: 0, total: 0 })
+})
+
+test('shared full-fetch producer preserves every legal partial rating through VPS projection and hashing', async () => {
+  const input = assembleFullFetch(
+    [{ user_id: userA.id, pages: [{ offset: 0, total: 0, data: [] }], pageLimit: 50 }],
+    [{
+      weekday: { id: 1, en: 'Mon', cn: '星期一', ja: '月曜日' },
+      items: [
+        { id: 20, type: 2, rating: { rank: 0 } },
+        { id: 21, type: 2, rating: { total: 0 } },
+        { id: 22, type: 2, rating: { score: 0, rank: 0 } },
+      ],
+    }],
+    1_788_134_400,
+  )
+
+  const projected = await projectCompleteFullFetch(input, 'run-shared-partial-ratings', [userA])
+
+  assert.deepEqual(projected.calendarEntries.map(({ subject }) => subject.payload.rating), [
+    { rank: 0 },
+    { total: 0 },
+    { score: 0, rank: 0 },
+  ])
+  for (const entry of projected.calendarEntries) {
+    assert.equal(entry.subject.contentHash, canonicalProjectionHash(entry.subject.payload))
+  }
 })
 
 test('preserves calendar-only partial rating presence without inventing zero fields', async () => {
