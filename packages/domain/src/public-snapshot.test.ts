@@ -210,6 +210,7 @@ test('snapshot parser deeply rejects malformed nested fields, counters and envel
     { ...snapshot, generation: 1.5 },
     { ...snapshot, published_at: -1 },
     { ...snapshot, published_at: 1.5 },
+    { ...snapshot, published_at: 8_640_000_000_001 },
     { ...snapshot, content_hash: 'A'.repeat(64) },
     { ...snapshot, content_hash: 'a'.repeat(63) },
     { ...snapshot, collections: { ...snapshot.collections, want: [{}] } },
@@ -256,6 +257,10 @@ test('buildPublicSnapshot rejects invalid generation and publication timestamps'
   }
   await assert.rejects(buildPublicSnapshot(input, -1), /Invalid snapshot generation/)
   await assert.rejects(buildPublicSnapshot({ ...input, published_at: 1.5 }, 1), /Invalid snapshot published_at/)
+  await assert.rejects(
+    buildPublicSnapshot({ ...input, published_at: 8_640_000_000_001 }, 1),
+    /Invalid snapshot published_at/,
+  )
 })
 
 test('buildPublicSnapshot rejects typed inputs that violate the shared public snapshot semantics', async () => {
