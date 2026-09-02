@@ -68,6 +68,25 @@ adapter 使用无默认 integrations 的 SDK 初始化并显式关闭 PII，因�
 
 tracing 初始化、span 及 flush 均 fail-open：operation 保证只运行一次；协调器会在短命进程完成前尽力 flush，最多等待 2 秒。任何 tracing/flush 异常不得修改 business result、持久化/通知终态或进程退出码。此配置和 adapter 仅属于 VPS Node 路径，Cloudflare Workers 不依赖该 SDK。
 
+## Public snapshot manifest V1
+
+Domain 包现已提供 `PublicSnapshotManifestV1` 的严格构建与解析。不可变 snapshot key 固定为 `snapshots/v1/<generation>-<content_sha256>.json`；generation 为非负安全整数，hash 为 64 位小写 SHA-256。manifest 只接受以下字段，禁止缺失或额外字段：
+
+```json
+{
+  "schema_version": 1,
+  "generation": 7,
+  "snapshot_key": "snapshots/v1/7/<64-character-lowercase-sha256>.json",
+  "content_sha256": "<64-character-lowercase-sha256>",
+  "published_at": "2024-07-26T13:20:00.000Z",
+  "source_observed_at": "2024-07-26T13:20:01.000Z",
+  "item_count": 42,
+  "git_sha": "<40-character-lowercase-git-sha>"
+}
+```
+
+`published_at` 由公开 snapshot 的 Unix 秒 `published_at` 转换为同一瞬间的 UTC ISO-8601；`source_observed_at` 同样必须是规范 UTC ISO-8601。`item_count` 来自 snapshot summary 的 `_total`。`canonicalSnapshotBytes` 保留公开 response envelope 的 canonical UTF-8 表示，而 business `content_hash` 继续排除 generation、发布时间和其他运行时噪声；因此同一业务内容在不同 wall-clock 时间仍会得到相同 hash。
+
 `refreshMedia` 使用最多 4 个并行 subject，按新条目/变化、hot、cold、retry 排序，cold 按 subject ID 的星期分片选择。PostgreSQL `withSubject` 在同一 session 持锁读取围栏、执行图片上传和保存引用；过期、同观察时间重放和未到失败 retry/tombstone 时间的记录不抓取。成功刷新采用原有 6–8 天确定性分散；authority 确认的变化可以提前刷新已成功的记录，健康未变化记录仍等待周期到期。候选 SQL 与锁内检查均保留失败一小时重试、明确 404 一天 tombstone 的边界，并保留成功数据。
 
 图片接收只允许受支持的 HTTPS bgm 图片主机、HTTP 200、JPEG/PNG/WebP/GIF/AVIF MIME，流式读取最多 8 MiB。SHA-256 相同且命名空间匹配时复用对象；shadow 只 PUT `shadow/images/`，live 只 PUT `images/`。新对象上传成功后才保存引用，各尺寸独立保留最后成功值。缺少图片来源不影响 detail/metadata 成功；下载、校验或上传失败不会清空旧图。

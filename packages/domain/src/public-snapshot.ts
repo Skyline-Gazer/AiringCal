@@ -1,4 +1,5 @@
 import {
+  canonicalJson,
   sha256Canonical,
   type PublicCalendarDayV1,
   type PublicCalendarSubjectV1,
@@ -277,4 +278,12 @@ export async function parsePublicSnapshotV1(value: unknown): Promise<PublicSnaps
 
 export function snapshotObjectKey(snapshot: PublicSnapshotV1): string {
   return `snapshots/v1/${snapshot.generation}-${snapshot.content_hash}.json`
+}
+
+/**
+ * Returns the canonical UTF-8 representation stored in immutable snapshot objects.
+ * The public envelope remains present; only content_hash excludes runtime fields.
+ */
+export function canonicalSnapshotBytes(snapshot: PublicSnapshotV1): Uint8Array {
+  return new TextEncoder().encode(canonicalJson(snapshot))
 }

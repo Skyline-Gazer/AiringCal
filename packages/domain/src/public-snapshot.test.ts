@@ -5,9 +5,10 @@ import type {
   PublicCollectionItemV1,
   PublicSnapshotV1,
 } from '@airing-cal/storage'
-import { sha256Canonical } from '@airing-cal/storage'
+import { canonicalJson, sha256Canonical } from '@airing-cal/storage'
 import {
   buildPublicSnapshot,
+  canonicalSnapshotBytes,
   parsePublicSnapshotV1,
   snapshotObjectKey,
 } from './public-snapshot.ts'
@@ -168,6 +169,19 @@ test('snapshot content hash excludes generation, content_hash and published_at e
   assert.equal(first.content_hash, second.content_hash)
   assert.equal(first.published_at, 100)
   assert.equal(second.published_at, 999)
+})
+
+test('canonical snapshot bytes retain the public envelope while business content hash ignores wall-clock publication time', async () => {
+  const input = { collections: [collectionItem(1, 1)], calendar, published_at: 100 }
+  const first = await buildPublicSnapshot(input, 1)
+  const second = await buildPublicSnapshot({ ...input, published_at: 200 }, 1)
+
+  assert.equal(first.content_hash, second.content_hash)
+  assert.notDeepEqual(canonicalSnapshotBytes(first), canonicalSnapshotBytes(second))
+  assert.deepEqual(
+    canonicalSnapshotBytes(first),
+    new TextEncoder().encode(canonicalJson(first)),
+  )
 })
 
 test('snapshot parser round-trips the known schema and rejects unknown schema precisely', async () => {
