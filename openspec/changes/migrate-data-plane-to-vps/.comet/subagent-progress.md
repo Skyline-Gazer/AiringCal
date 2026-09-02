@@ -22,9 +22,10 @@
 
 - **Plan task**: `Task 3.2: S3-compatible R2 原子发布与 replay`.
 - **OpenSpec task**: `3.2 Implement snapshot upload, readback verification, replay-safe pending publication, final manifest switching, and failure-injection tests`.
-- **Stage**: `quality-review`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix round: 0.
+- **Stage**: `quality-review`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix round: 1.
 - **Dispatch baseline**: `582402c5891aea67985a1fe67f69239242658bba` on `codex/vps-task-3-1`. Task 3.1 has passed its five plan-step checkoffs and its OpenSpec checkoff, including final independent review approval. No Task 3.2 implementation commit exists yet. The implementer must verify all AWS SDK/S3 interfaces locally before writing adapters, create RED evidence before production code, and report exact RED/GREEN commands, changed files, commit hash, and push result.
 - **Implementation**: `ae3a4ce56c39b250a51bf7b9239bfbedcb554804` (`feat(vps-sync): publish immutable R2 snapshots`) is pushed and visible. Local AWS SDK types verified endpoint/path style/credentials/commands/conditional PUT/byte body APIs. RED: missing `publish.ts`; GREEN: focused 4/4, VPS 154/154, typecheck, build:check, and diff check passed. The manifest PUT then readback boundary is externally indeterminate on readback failure; implementation keeps the database pending record for replay instead of claiming an impossible S3 rollback. Awaiting independent thorough review.
+- **Independent review**: CHANGES_REQUESTED (1 Critical / 3 Important / 1 Minor). Shadow incorrectly shares verified state and immutable object namespace with live; a shadow success can suppress a later live manifest. Pending replay is tied to run ID and cannot recover an existing immutable object after a prior partial attempt; conditional 412/409 handling is incomplete, and tests do not model these failures. Fresh TDD repair must isolate shadow keys/state, resume a pending candidate without changing its generation across a new run ID, validate preexisting immutable objects before continuing, make the documented conflict behavior explicit, and cover the reviewed failure cases before re-review.
 
 ## Active batch: Task 2.2 (historical)
 
