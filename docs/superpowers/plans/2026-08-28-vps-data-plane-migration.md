@@ -121,13 +121,13 @@ PR #12 await 审查补充：`fcc9c77` 修复 retry-delay 计算/等待异常原�
 **Interfaces:**
 - Produces: `runOnce(deps, request: { mode:'shadow'|'live'; source:'scheduled'|'manual' }): Promise<RunResult>`；status `success|no_change|partial|failed|skipped`；media result components `detail|metadata|image` with last-known-good semantics。
 
-- [ ] **Step 1: RED tests** — 断言 stage 顺序、heartbeat、lock miss 为 skipped 且无上游/R2 写；hard fetch 失败无 authority commit；媒体瞬态失败保留旧引用并发布 partial；404 设置 bounded tombstone；相同图片 bytes 不 PUT；旧 fence 结果不落库。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- refresh.test.ts run.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — 端口注入 coordinator；图片校验 HTTP/MIME/大小后 SHA-256，先 R2 PUT 再 DB reference；refresh 使用固定并发上限和现有 deterministic staggering/priority。
-- [ ] **Step 4: REFACTOR/验证** — 将终态派生收敛为纯函数；局部 tests/typecheck PASS，并确认 process exit mapping：success/no_change/skipped=0，partial/failed 非零。
-- [ ] **Step 5: 文档、提交与推送** — 同步 lifecycle/outcome；commit `feat(vps-sync): coordinate one-shot synchronization` 后 push。
+- [x] **Step 1: RED tests** — 断言 stage 顺序、heartbeat、lock miss 为 skipped 且无上游/R2 写；hard fetch 失败无 authority commit；媒体瞬态失败保留旧引用并发布 partial；404 设置 bounded tombstone；相同图片 bytes 不 PUT；旧 fence 结果不落库。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- refresh.test.ts run.test.ts` 预期 FAIL。
+- [x] **Step 3: GREEN** — 端口注入 coordinator；图片校验 HTTP/MIME/大小后 SHA-256，先 R2 PUT 再 DB reference；refresh 使用固定并发上限和现有 deterministic staggering/priority。
+- [x] **Step 4: REFACTOR/验证** — 将终态派生收敛为纯函数；局部 tests/typecheck PASS，并确认 process exit mapping：success/no_change/skipped=0，partial/failed 非零。
+- [x] **Step 5: 文档、提交与推送** — 同步 lifecycle/outcome；commit `feat(vps-sync): coordinate one-shot synchronization` 后 push。
 
-Task 2.2 projection 收口：`CompleteFullFetch` 保留 calendar 可选字段（包括 `name` 与 nested rating）的 presence，并携带每个完整分页用户的 identity evidence；`projectCompleteFullFetch` 在 authority commit 前要求 evidence 与配置用户为精确无重复同集，再生成严格 `CompleteStateInput`，绝不凭空制造未观测空用户。同一 subject 以 calendar 实际提供字段逐字段优先，collection 只补 calendar 缺失字段，双方均缺失的 `name` 与 rating 字段在 authority JSON/hash 中保持缺失，显式空字符串与显式零仍有 authority；legacy public consumer 只在其旧 shape 边界补 `name: ''`；collection-only、calendar-only 与跨多个配置用户的重复 subject 均稳定合并。未改变 legacy public rating shape：只有三个字段真实齐全时才向该 consumer 暴露 rating，partial authority rating 不补零。projection canonical hash 使用明确 UTF-16 code-unit key ordering，并继续拒绝 undefined/non-finite。review fix RED 分别观察到缺少空用户 evidence、score-only rating 丢失 collection rank/total、calendar-only/双方 partial rating 被伪造零，以及 `localeCompare` 被调用；GREEN 覆盖共享 producer、VPS authority validator/consumer 和 legacy Worker boundary，Task 2.2 checkbox 仍保留未勾选等待完整双审查。
+Task 2.2 projection 收口：`CompleteFullFetch` 保留 calendar 可选字段（包括 `name` 与 nested rating）的 presence，并携带每个完整分页用户的 identity evidence；`projectCompleteFullFetch` 在 authority commit 前要求 evidence 与配置用户为精确无重复同集，再生成严格 `CompleteStateInput`，绝不凭空制造未观测空用户。同一 subject 以 calendar 实际提供字段逐字段优先，collection 只补 calendar 缺失字段，双方均缺失的 `name` 与 rating 字段在 authority JSON/hash 中保持缺失，显式空字符串与显式零仍有 authority；legacy public consumer 只在其旧 shape 边界补 `name: ''`；collection-only、calendar-only 与跨多个配置用户的重复 subject 均稳定合并。未改变 legacy public rating shape：只有三个字段真实齐全时才向该 consumer 暴露 rating，partial authority rating 不补零。projection canonical hash 使用明确 UTF-16 code-unit key ordering，并继续拒绝 undefined/non-finite。authority persistence validators 对所有可选字段（name、rating 及 rating.score/rank/total、images 及嵌套字段、collection tags、media expires_at）在 SQL 前 fail-closed 拒绝显式 own-property `undefined`，防止序列化/hash 分歧；合法缺失、显式空字符串、显式零、partial rating 与 partial images 仍通过。review fix RED 分别观察到缺少空用户 evidence、score-only rating 丢失 collection rank/total、calendar-only/双方 partial rating 被伪造零、`localeCompare` 被调用，以及显式 `undefined` 被持久化校验放行；最终独立复审 APPROVED（0 CRITICAL / 0 IMPORTANT / 0 MINOR），Task 2.2 已勾选。
 
 ### Task 2.3: 可选、fail-open 的 VPS Sentry tracing
 
