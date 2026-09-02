@@ -11,8 +11,9 @@
 
 - **Plan task**: `Task 3.1: Manifest V1、canonical hash 与 generation 规则`.
 - **OpenSpec task**: `3.1 Define PublicSnapshotManifestV1 and canonical snapshot hashing, key validation, generation allocation, and identical-content no-op tests`.
-- **Stage**: `implementing`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix round: 0.
-- **Dispatch baseline**: `dcb64fc93d867875f85fbcfb0263db3f9ef9c171` on `codex/vps-task-3-1`; Task 2.2 is already merged in base `6c522f0`. No Task 3.1 implementation commit exists yet. The implementer must create RED evidence before any production code, then report the exact RED/GREEN commands, changed files, and commit hash.
+- **Stage**: `quality-review`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix round: 0.
+- **Dispatch baseline**: `dcb64fc93d867875f85fbcfb0263db3f9ef9c171` on `codex/vps-task-3-1`; Task 2.2 is already merged in base `6c522f0`.
+- **Implementation**: `5ffb01ec2406071a64b43df7e6db702bab65706a` (`feat(domain): define public snapshot manifest`) is pushed and visible. RED was observed with `pnpm -F @airing-cal/domain exec tsx --test src/public-manifest.test.ts src/public-snapshot.test.ts` before the new module/export existed; GREEN: focused 16/16, `pnpm -F @airing-cal/domain typecheck`, and full domain 73/73 passed; `git diff --check` passed. Scope: public manifest/parser, canonical bytes, public snapshot exports/tests, and VPS runbook example. Awaiting independent thorough review.
 
 ## Active batch: Task 2.2 (historical)
 
