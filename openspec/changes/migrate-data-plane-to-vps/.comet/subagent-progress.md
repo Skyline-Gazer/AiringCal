@@ -18,6 +18,13 @@
 - **Repair**: `e0938f1a8ab4f3d6ccd5ac0612d3532abf155e09` (`fix(domain): validate snapshot publication time`) is pushed. `published_at` is now constrained consistently at builder/parser boundaries to nonnegative ISO-convertible Unix seconds through `8_640_000_000_000`; a RED test at `8_640_000_000_001` failed before the repair. GREEN: focused 16/16, domain typecheck, full domain 73/73, and diff check passed. Awaiting fresh final review.
 - **Final review**: APPROVED (0 Critical / 0 Important / 0 Minor). It confirmed strict manifest parser/key/hash/git SHA/item-count/UTC behavior, canonical-byte and business-hash boundaries, exports/response-shape compatibility, correct Task 3.2 ownership of persistent generation/no-op allocation, and the Date-safe timestamp repair. Task 3.1 is ready for plan/OpenSpec checkoff.
 
+## Active batch: Task 3.2 (2026-09-02)
+
+- **Plan task**: `Task 3.2: S3-compatible R2 原子发布与 replay`.
+- **OpenSpec task**: `3.2 Implement snapshot upload, readback verification, replay-safe pending publication, final manifest switching, and failure-injection tests`.
+- **Stage**: `implementing`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix round: 0.
+- **Dispatch baseline**: `582402c5891aea67985a1fe67f69239242658bba` on `codex/vps-task-3-1`. Task 3.1 has passed its five plan-step checkoffs and its OpenSpec checkoff, including final independent review approval. No Task 3.2 implementation commit exists yet. The implementer must verify all AWS SDK/S3 interfaces locally before writing adapters, create RED evidence before production code, and report exact RED/GREEN commands, changed files, commit hash, and push result.
+
 ## Active batch: Task 2.2 (historical)
 
 - Plan task: `Task 2.2: 一次性 coordinator、run outcomes 与媒体生命周期`.
