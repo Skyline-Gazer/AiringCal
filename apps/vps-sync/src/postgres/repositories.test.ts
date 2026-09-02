@@ -1125,6 +1125,84 @@ test('keeps valid optional-field presence and absence accepted', async () => {
   }
 })
 
+test('rejects explicit own-property undefined collection tags and media expires_at before issuing any query', async () => {
+  const tagsUndefined = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(tagsUndefined.users[0]!.items[0]!.collection.payload as unknown as Record<string, unknown>).tags = undefined
+
+  const mediaUndefined = mediaResult({
+    metadata: {
+      exists: true,
+      nsfw: false,
+      checked_at: 1,
+      expires_at: undefined,
+      reason: 'subject_detail',
+    } as never,
+  })
+
+  {
+    const pool = new RecordingPool()
+    await assert.rejects(
+      () => authority(pool).commitCompleteState(tagsUndefined),
+      /FORBIDDEN_PERSISTENCE_SHAPE/,
+    )
+    assert.equal(pool.database.calls.length, 0)
+  }
+
+  {
+    const pool = new RecordingPool()
+    await assert.rejects(
+      () => authority(pool).applyMediaResult(mediaUndefined),
+      /FORBIDDEN_PERSISTENCE_SHAPE/,
+    )
+    assert.equal(pool.database.calls.length, 0)
+  }
+})
+
+test('keeps valid collection tags and media expires_at accepted', async () => {
+  const tagsAbsent = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  const tagsStrings = completeState(RUN_1, '2026-08-28T01:00:00.000Z', [1])
+  ;(tagsStrings.users[0]!.items[0]!.collection.payload as unknown as Record<string, unknown>).tags = ['safe']
+
+  for (const input of [tagsAbsent, tagsStrings]) {
+    const pool = new RecordingPool()
+    await authority(pool).commitCompleteState(input)
+    assert.ok(pool.database.calls.length > 0)
+  }
+
+  const mediaFinite = mediaResult({
+    metadata: {
+      exists: true,
+      nsfw: false,
+      checked_at: 1,
+      expires_at: 1234567890,
+      reason: 'subject_detail',
+    } as never,
+  })
+  const mediaNullExpires = mediaResult({
+    metadata: {
+      exists: true,
+      nsfw: false,
+      checked_at: 1,
+      expires_at: null,
+      reason: 'subject_detail',
+    } as never,
+  })
+  const mediaAbsentExpires = mediaResult({
+    metadata: {
+      exists: true,
+      nsfw: false,
+      checked_at: 1,
+      reason: 'subject_detail',
+    } as never,
+  })
+
+  for (const input of [mediaFinite, mediaNullExpires, mediaAbsentExpires]) {
+    const pool = new RecordingPool()
+    await authority(pool).applyMediaResult(input)
+    assert.ok(pool.database.calls.length > 0)
+  }
+})
+
 test('adds run fences forward-only after the immutable initial schema', async () => {
   const initial = await readFile(new URL('./migrations/0001_initial.sql', import.meta.url), 'utf8')
   const constraints = await readFile(new URL('./migrations/0002_authority_constraints.sql', import.meta.url), 'utf8')
