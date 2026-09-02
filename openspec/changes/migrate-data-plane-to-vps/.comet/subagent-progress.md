@@ -1,6 +1,13 @@
 # Subagent Progress
 
-## Active batch: Task 2.2
+## Current state (handoff 002, 2026-09-02)
+
+- **Task 2.2 COMPLETE and MERGED**: PR14 (Skyline-Gazer/AiringCal#14, base `dev` ← head `codex/vps-coordinator-projection`) merged at `6c522f09e1eaa5caa66f9c3576e27bcc20684d29` on 2026-09-02. Final independent thorough review APPROVED with 0 CRITICAL / 0 IMPORTANT / 0 MINOR after five user-authorized repair rounds (last fix `9b0886b`, test-only completion `c75823d`, checkoff `32570c8`). OpenSpec tasks.md 2.2 checked; plan Task 2.2 Steps 1-5 checked. Comet `task-checkoff` reported `TASK_CHECKOFF: PASS`.
+- **kody-ai review comment on PR14** (`repositories.ts:804`, legacy `public_item.name ?? ''`) handled as a false positive: reply `3912287314` in thread `3911355238` documented that `toPlannerCollection`'s `public_item` feeds only `planCollectionDiff` (`.row` is what persists; `public_item` has no SQL/storage side) and that real name-missing behavior is covered by projection tests plus Design Doc §83 / runbook §59. No code change made.
+- **Next work: OpenSpec Task 3.1** "Define PublicSnapshotManifestV1 and canonical snapshot hashing, key validation, generation allocation, and identical-content no-op tests" (delta spec `r2-snapshot-publication`; plan `Task 3.1: Manifest V1、canonical hash 与 generation 规则`). Task 1.1 remains unchecked only for its separately tracked `psql`/Docker/CI container checks and is not a gate.
+- **Handoff**: see `docs/job-transfer/002-vps-data-plane-migration.md` on branch `codex/vps-handoff-002` (based on `origin/dev` `6c522f0`). 001 rules in §2 / §6-§8 remain in force.
+
+## Active batch: Task 2.2 (historical)
 
 - Plan task: `Task 2.2: 一次性 coordinator、run outcomes 与媒体生命周期`.
 - OpenSpec task: `2.2 Implement the one-shot run coordinator, heartbeat/terminal outcomes, no-change behavior, media refresh lifecycle, and concurrent-run exclusion with RED-to-GREEN tests`.
