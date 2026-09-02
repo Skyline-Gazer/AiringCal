@@ -156,11 +156,11 @@ Task 2.2 projection 收口：`CompleteFullFetch` 保留 calendar 可选字段（
 **Interfaces:**
 - Produces: `PublicSnapshotManifestV1` 精确字段；`buildManifest(snapshot, metadata)`；`parsePublicSnapshotManifestV1(value)`；`snapshotKey(generation, hash)`；`canonicalSnapshotBytes(snapshot)`。
 
-- [ ] **Step 1: RED tests** — 精确 keys、ISO UTC、item_count、full git SHA、key/generation/hash 一致；runtime timestamps 不改变 business `content_hash`；相同 content no-op；verified N 的新内容只分配 N+1。新增：`PublicSnapshotV1.published_at` 保持 Unix-second integer 不变；`buildManifest` 的 ISO `published_at` 与该 integer 表示同一时刻；同一 business payload 在不同 wall-clock 时间产生相同 `content_hash`。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/domain test -- public-manifest.test.ts public-snapshot.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — 基于现有 `sha256Canonical`/`buildPublicSnapshot` 实现 exact parser 与 key grammar，保持 `PublicSnapshotV1` response shape。
-- [ ] **Step 4: REFACTOR/验证** — domain tests/typecheck PASS；确认导出名与后续 tasks 完全一致。
-- [ ] **Step 5: 文档、提交与推送** — 在 runbook 写 manifest 示例；commit `feat(domain): define public snapshot manifest` 后 push。
+- [x] **Step 1: RED tests** — 精确 keys、ISO UTC、item_count、full git SHA、key/generation/hash 一致；runtime timestamps 不改变 business `content_hash`；相同 content no-op；verified N 的新内容只分配 N+1。新增：`PublicSnapshotV1.published_at` 保持 Unix-second integer 不变；`buildManifest` 的 ISO `published_at` 与该 integer 表示同一时刻；同一 business payload 在不同 wall-clock 时间产生相同 `content_hash`。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/domain exec tsx --test src/public-manifest.test.ts src/public-snapshot.test.ts` 预期 FAIL。
+- [x] **Step 3: GREEN** — 基于现有 `sha256Canonical`/`buildPublicSnapshot` 实现 exact parser 与 key grammar，保持 `PublicSnapshotV1` response shape。
+- [x] **Step 4: REFACTOR/验证** — domain tests/typecheck PASS；确认导出名与后续 tasks 完全一致。
+- [x] **Step 5: 文档、提交与推送** — 在 runbook 写 manifest 示例；commit `feat(domain): define public snapshot manifest` 后 push。
 
 ### Task 3.2: S3-compatible R2 原子发布与 replay
 
