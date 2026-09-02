@@ -11,10 +11,11 @@
 
 - **Plan task**: `Task 3.1: Manifest V1、canonical hash 与 generation 规则`.
 - **OpenSpec task**: `3.1 Define PublicSnapshotManifestV1 and canonical snapshot hashing, key validation, generation allocation, and identical-content no-op tests`.
-- **Stage**: `quality-review`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix round: 1.
+- **Stage**: `final-review`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix round: 1.
 - **Dispatch baseline**: `dcb64fc93d867875f85fbcfb0263db3f9ef9c171` on `codex/vps-task-3-1`; Task 2.2 is already merged in base `6c522f0`.
 - **Implementation**: `5ffb01ec2406071a64b43df7e6db702bab65706a` (`feat(domain): define public snapshot manifest`) is pushed and visible. RED was observed with `pnpm -F @airing-cal/domain exec tsx --test src/public-manifest.test.ts src/public-snapshot.test.ts` before the new module/export existed; GREEN: focused 16/16, `pnpm -F @airing-cal/domain typecheck`, and full domain 73/73 passed; `git diff --check` passed. Scope: public manifest/parser, canonical bytes, public snapshot exports/tests, and VPS runbook example. Awaiting independent thorough review.
 - **Independent review**: CHANGES_REQUESTED (0 Critical / 1 Important / 0 Minor). `PublicSnapshotV1.published_at` accepts any nonnegative safe integer but `buildManifest` can throw an uncontrolled `RangeError` when the converted milliseconds are outside Date's ISO range. A fresh TDD repair agent must choose and enforce a single explicit timestamp boundary at the appropriate contract boundary, add RED/GREEN regression coverage, preserve existing valid behavior, commit/push, then receive a fresh review.
+- **Repair**: `e0938f1a8ab4f3d6ccd5ac0612d3532abf155e09` (`fix(domain): validate snapshot publication time`) is pushed. `published_at` is now constrained consistently at builder/parser boundaries to nonnegative ISO-convertible Unix seconds through `8_640_000_000_000`; a RED test at `8_640_000_000_001` failed before the repair. GREEN: focused 16/16, domain typecheck, full domain 73/73, and diff check passed. Awaiting fresh final review.
 
 ## Active batch: Task 2.2 (historical)
 
