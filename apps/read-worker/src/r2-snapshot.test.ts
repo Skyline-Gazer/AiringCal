@@ -67,6 +67,12 @@ class ThrowingR2 extends FakeR2 {
   }
 }
 
+class ThrowingCache extends FakeCache {
+  override async put(_request: Request, _response: Response): Promise<void> {
+    throw new Error('Cache put failed')
+  }
+}
+
 test('loads an immutable snapshot named by public/manifest.json', async () => {
   const { manifest, snapshot } = await fixture()
   const r2 = new FakeR2()
@@ -139,6 +145,18 @@ test('warms the old cache after a legacy pointer R2 snapshot is verified', async
   assert.deepEqual(await readSnapshotSource(r2, kv, cache), { mode: 'r2', snapshot })
   const cached = await cache.match(new Request(`https://cache.local/r2-snapshot/${snapshot.content_hash}`))
   assert.deepEqual(await cached?.json(), snapshot)
+})
+
+test('serves a verified legacy pointer R2 snapshot when cache warming fails', async () => {
+  const { snapshot } = await fixture()
+  const kv = new FakeKv()
+  const pointerValue = { ...pointer(), content_hash: snapshot.content_hash, r2_key: `snapshots/v1/9-${snapshot.content_hash}.json` }
+  kv.values.set('public:read-mode', { mode: 'r2' })
+  kv.values.set('public:current', pointerValue)
+  const r2 = new FakeR2()
+  r2.objects.set(pointerValue.r2_key, JSON.stringify(snapshot))
+
+  assert.deepEqual(await readSnapshotSource(r2, kv, new ThrowingCache()), { mode: 'r2', snapshot })
 })
 
 test('falls back to the previously verified cache when manifest R2 get fails', async () => {

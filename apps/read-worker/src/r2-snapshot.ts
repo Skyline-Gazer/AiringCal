@@ -26,7 +26,7 @@ export type SnapshotSource =
   | { mode: 'legacy' }
   | { mode: 'r2'; snapshot: PublicSnapshotV1 }
 
-/** Kept for migration health's legacy pointer reporting; public reads use manifests. */
+/** Kept for migration health and the legacy-pointer cache fallback; primary reads use manifests. */
 export function validatePointer(value: unknown): PublicSnapshotPointerV1 | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
   const candidate = value as Record<string, unknown>
