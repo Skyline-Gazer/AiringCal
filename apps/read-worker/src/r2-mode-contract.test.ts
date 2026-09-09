@@ -137,29 +137,33 @@ test('R2 calendar keeps the legacy image_status and rating contract', async () =
 test('R2 collections fall back to the legacy manifest when the snapshot object is missing', async () => {
   const kv = new MockKV()
   const snapshot = await fixtureSnapshot()
-  kv.values.set('public:read-mode', { mode: 'r2', switched_at: 1_234 })
-  kv.values.set('public:current', {
-    schema_version: 1,
-    generation: snapshot.generation,
-    content_hash: snapshot.content_hash,
-    r2_key: `snapshots/v1/${snapshot.generation}-${snapshot.content_hash}.json`,
-    published_at: snapshot.published_at,
+  const manifest = buildManifest(snapshot, {
+    source_observed_at: '2026-07-27T00:00:00.000Z',
+    git_sha: 'a'.repeat(40),
   })
-  kv.values.set('snapshot:collections:watching', [{
+  const legacyCollections = [{
     subject_id: 23080,
     name: 'Legacy A',
     name_cn: '旧 A',
     images: { common: null, large: null },
-  }])
-  kv.values.set('snapshot:summary', { watching: 1, _total: 1 })
+  }]
+  const legacySummary = { watching: 1, _total: 1 }
+  kv.values.set('snapshot:collections:watching', legacyCollections)
+  kv.values.set('snapshot:summary', legacySummary)
+  const r2 = new FakeR2()
+  r2.objects.set('public/manifest.json', JSON.stringify(manifest))
 
   const response = await worker.fetch(new Request('https://read.local/collections?type=watching'), {
     AIRING_CAL_KV: kv,
-    AIRING_CAL_DATA_R2: new FakeR2(),
+    AIRING_CAL_DATA_R2: r2,
   } as any)
-  const body = await response.json() as any
 
   assert.equal(response.status, 200)
-  assert.equal(body.data[0].name, 'Legacy A')
-  assert.equal(body.total, 1)
+  assert.deepEqual(await response.json(), {
+    data: legacyCollections,
+    total: 1,
+    page: 1,
+    limit: 24,
+    types: legacySummary,
+  })
 })
