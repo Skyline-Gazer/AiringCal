@@ -100,7 +100,7 @@ Domain 包现已提供 `PublicSnapshotManifestV1` 的严格构建与解析。不
 
 `published_at` 由公开 snapshot 的 Unix 秒 `published_at` 转换为同一瞬间的 UTC ISO-8601；`source_observed_at` 同样必须是规范 UTC ISO-8601。`item_count` 来自 snapshot summary 的 `_total`。`canonicalSnapshotBytes` 保留公开 response envelope 的 canonical UTF-8 表示，而 business `content_hash` 继续排除 generation、发布时间和其他运行时噪声；因此同一业务内容在不同 wall-clock 时间仍会得到相同 hash。
 
-Read Worker 的主读取路径只从 data R2 的精确 key `public/manifest.json` 读取公开 snapshot。它严格校验 manifest 的 keys、schema、时间、git SHA、generation、snapshot key、hash 与 item count，再读取 manifest 指向的不可变对象并复用 `PublicSnapshotV1` parser 校验 payload。任一 manifest 或 snapshot 校验失败时，先按旧 KV pointer 校验 Cache API 中最后一个已验证 snapshot；cache 无效或未命中时才回退到完整 legacy KV snapshot。公开 URL、查询参数和响应 shape 不变。Task 4.2 才实现 manifest+snapshot cache envelope、generation rollback 与 health 范围的变更。
+Read Worker 的主读取路径只从 data R2 的精确 key `public/manifest.json` 读取公开 snapshot。它严格校验 manifest 的 keys、schema、时间、git SHA、generation、snapshot key、hash 与 item count，再读取 manifest 指向的不可变对象并复用 `PublicSnapshotV1` parser 校验 payload。任一主 R2 manifest 或 snapshot 失败时，先按旧 KV pointer 回读并校验该 pointer 指向的 R2 snapshot；成功时 best-effort 回暖 Cache API。该 R2 snapshot 不可用时，再读取同一 pointer 的 Cache API 已验证副本；cache 无效或未命中时才回退到完整 legacy KV snapshot。公开 URL、查询参数和响应 shape 不变。Task 4.2 才实现 manifest+snapshot cache envelope、generation rollback 与 health 范围的变更。
 
 `refreshMedia` 使用最多 4 个并行 subject，按新条目/变化、hot、cold、retry 排序，cold 按 subject ID 的星期分片选择。PostgreSQL `withSubject` 在同一 session 持锁读取围栏、执行图片上传和保存引用；过期、同观察时间重放和未到失败 retry/tombstone 时间的记录不抓取。成功刷新采用原有 6–8 天确定性分散；authority 确认的变化可以提前刷新已成功的记录，健康未变化记录仍等待周期到期。候选 SQL 与锁内检查均保留失败一小时重试、明确 404 一天 tombstone 的边界，并保留成功数据。
 
