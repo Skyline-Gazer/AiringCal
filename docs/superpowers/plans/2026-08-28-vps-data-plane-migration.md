@@ -171,11 +171,11 @@ Task 2.2 projection 收口：`CompleteFullFetch` 保留 calendar 可选字段（
 **Interfaces:**
 - Produces: `publishSnapshot(ports, candidate, mode): Promise<'published'|'no_change'|'pending'>`；live key `public/manifest.json`，shadow key `shadow/manifest.json`；S3 port `put/get/list/delete`。
 
-- [ ] **Step 1: SDK 验证** — 读取本地 AWS SDK types/官方文档确认 endpoint、path style、Put/Get/List/Delete command 与 response body；禁止写入未经验证的 option。
-- [ ] **Step 2: RED failure-injection tests** — snapshot PUT→GET/parse/hash→manifest PUT→GET/validate→DB verify 的严格顺序；每个 R2 边界失败保留旧 manifest/pending；重跑相同 pending 不跳 generation；shadow 永不写 live key。
-- [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- publish.test.ts` 预期 FAIL。
-- [ ] **Step 4: GREEN/REFACTOR** — canonical bytes、conditional conflict 处理和 readback verification；局部 tests/typecheck PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步 key/state machine；commit `feat(vps-sync): publish immutable R2 snapshots` 后 push。
+- [x] **Step 1: SDK 验证** — 读取本地 AWS SDK types/官方文档确认 endpoint、path style、Put/Get/List/Delete command 与 response body；禁止写入未经验证的 option。
+- [x] **Step 2: RED failure-injection tests** — snapshot PUT→GET/parse/hash→manifest PUT→GET/validate→DB verify 的严格顺序；每个 R2 边界失败保留旧 manifest/pending；重跑相同 pending 不跳 generation；shadow 永不写 live key。
+- [x] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- publish.test.ts` 预期 FAIL。
+- [x] **Step 4: GREEN/REFACTOR** — canonical bytes、conditional conflict 处理和 readback verification；局部 tests/typecheck PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步 key/state machine；commit `feat(vps-sync): publish immutable R2 snapshots` 后 push。
 
 ### Task 4.1: Read Worker manifest/snapshot 验证切入
 
