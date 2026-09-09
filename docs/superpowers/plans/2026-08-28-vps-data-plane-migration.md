@@ -214,7 +214,7 @@ Task 2.2 projection 收口：`CompleteFullFetch` 保留 calendar 可选字段（
 **Interfaces:**
 - Produces: `createBackup(deps, run): Promise<BackupResult>`；keys `backups/postgres/YYYY/MM/DD/<timestamp>-<git-sha>.dump|.json`；manifest 包含 schema_version/run_id/git_sha/created_at/object_key/size/sha256。
 
-- [ ] **Step 1: CLI 验证** — 目标为 PostgreSQL 18 client；仍须对实际目标环境执行 `pg_dump --help` 与 `pg_restore --help`，确认 custom format、输出和 connection 参数，并完成真实 backup/restore validation。实现不得把 URL 放入 argv/log；本次 PostgreSQL authority integration 未覆盖这些 CLI 或 restore 事项。
+- [x] **Step 1: CLI 验证** — PostgreSQL 18.6 `pg_dump --help` 与 `pg_restore --help` 已确认 custom format、输出和 connection 参数；在仅监听 loopback 的可销毁本地集群完成 custom dump → 空库 `pg_restore -e` → 表计数验证，并停止集群和清除精确临时目录。实现不把 URL 放入 argv/log；此项不包含真实 R2 上传或生产环境演练。
 - [ ] **Step 2: RED tests** — fake command runner 验证 dump→hash/size→dump upload→manifest upload；snapshot published/no_change 后 backup；command/upload 失败使 run partial 且不撤销 publication。
 - [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- backup.test.ts run.test.ts` 预期 FAIL。
 - [ ] **Step 4: GREEN/REFACTOR** — bounded `/tmp/airing-cal`、finally cleanup、canonical backup manifest；tests/typecheck PASS。
