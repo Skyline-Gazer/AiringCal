@@ -37,7 +37,7 @@ pnpm -F @airing-cal/vps-sync test:integration
 
 已执行证据：2026-08-31 在 PostgreSQL 18.6 direct TLS server 上，该命令退出 0（9 pass、0 fail、0 skipped、25,756.220958 ms）。开始/结束查询均确认 `new_remaining_test_schemas=[]`；suite 仅创建并删除随机 schema。完整范围、commit identity 和环境边界见 [PostgreSQL 18 integration evidence](../verification/2026-08-31-vps-sync-postgresql-18-integration.md)。文档不记录或示例化任何实际连接 URL、hostname、username 或 secret。
 
-`psql` 不参与实现的 Node `pg` migration/lock 路径，因此此前 `psql` preflight 已由上述 real Node `pg` API test 对该路径的验收证据取代。Docker disposable instance、CI service 配置和 `psql --help` 均未执行，仍是单独的 container/CLI 前置检查；已核验官方 `postgres:18-alpine` tag 存在，但尚未将其用于本项目容器验证。当前主机同样没有 `pg_dump`/`pg_restore`，因此其 PostgreSQL 18 CLI `--help` contract validation 与真实 backup/restore drill 仍保持 pending。
+`psql` 不参与实现的 Node `pg` migration/lock 路径，因此此前 `psql` preflight 已由上述 real Node `pg` API test 对该路径的验收证据取代。Docker disposable instance、CI service 配置和 `psql --help` 均未执行，仍是单独的 container/CLI 前置检查；已核验官方 `postgres:18-alpine` tag 存在，但尚未将其用于本项目容器验证。2026-09-09 已在本机 Homebrew keg-only `libpq` 18.6 的绝对路径运行 `pg_dump --help`、`pg_restore --help`：前者确认 `--format=c|d|t|p`、`--file` 和 database/host/port/username 连接选项，后者确认 custom archive 输入及 database/host/port/username 连接选项；实现使用的 `PGHOST`、`PGPORT`、`PGUSER`、`PGPASSWORD`、`PGDATABASE` 与 `PGSSLMODE` 隔离环境变量也已有自动测试。此仅为本机 CLI contract evidence，不代表已对真实 direct PostgreSQL target 执行 dump，亦不代表已完成 restore drill；两项仍 pending。
 
 参考：<https://www.postgresql.org/docs/18/release-18.html>、<https://www.postgresql.org/docs/18/app-pgdump.html>、<https://neon.com/docs/connect/connection-pooling>。
 
