@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createBackup } from './backup.ts'
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createBackup, createProductionBackup } from './backup.ts'
 
 test('creates a custom dump then uploads dump before its canonical manifest', async () => {
   const events: string[] = []
@@ -53,6 +56,18 @@ test('rejects backup URLs with unsupported connection parameters', async () => {
   await assert.rejects(() => backup({ runId: 'run-3' }), { message: 'BACKUP_DATABASE_URL_INVALID' })
 })
 
+test('rejects duplicate or empty sslmode connection parameters', async () => {
+  for (const suffix of ['sslmode=require&sslmode=require', 'sslmode=']) {
+    const backup = createBackup({
+      databaseUrl: `postgres://user:secret@db.example/airing?${suffix}`, gitSha: 'e'.repeat(40), now: () => 0,
+      command: async () => { throw new Error('must not run') },
+      files: { makeDirectory: async () => '/tmp/airing-cal/backup-5', read: async () => new Uint8Array(), remove: async () => undefined },
+      s3: { put: async () => undefined },
+    })
+    await assert.rejects(() => backup({ runId: 'run-5' }), { message: 'BACKUP_DATABASE_URL_INVALID' })
+  }
+})
+
 test('does not copy host PostgreSQL connection defaults into pg_dump', async () => {
   const previous = process.env.PGOPTIONS
   process.env.PGOPTIONS = '--host-override'
@@ -70,6 +85,40 @@ test('does not copy host PostgreSQL connection defaults into pg_dump', async () 
   } finally {
     if (previous === undefined) delete process.env.PGOPTIONS
     else process.env.PGOPTIONS = previous
+  }
+})
+
+test('production pg_dump clears inherited PG variables', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'airing-cal-backup-test-'))
+  const command = join(directory, 'pg_dump')
+  const captured = join(directory, 'environment.json')
+  const oldPath = process.env.PATH
+  const previous = Object.fromEntries(['PGHOST', 'PGPORT', 'PGUSER', 'PGPASSWORD', 'PGDATABASE', 'PGOPTIONS', 'PGSSLMODE', 'PGSERVICE', 'PGAIRING_TEST'].map((key) => [key, process.env[key]]))
+  try {
+    await writeFile(command, `#!/usr/bin/env node\nimport { writeFileSync } from 'node:fs'\nwriteFileSync(process.env.CAPTURE_FILE, JSON.stringify(process.env))\nwriteFileSync(process.argv.find((arg) => arg.startsWith('--file=')).slice(7), 'dump')\n`)
+    await chmod(command, 0o755)
+    process.env.PATH = `${directory}:${oldPath}`
+    process.env.CAPTURE_FILE = captured
+    for (const key of Object.keys(previous)) process.env[key] = `inherited-${key}`
+
+    const backup = createProductionBackup({
+      databaseUrl: 'postgres://user:secret@db.example:5433/airing?sslmode=require', gitSha: 'f'.repeat(40), now: () => 0,
+      s3: { put: async () => undefined },
+    })
+    await backup({ runId: 'run-6' })
+    const environment = JSON.parse(await readFile(captured, 'utf8')) as Record<string, string>
+    assert.deepEqual(Object.fromEntries(Object.entries(environment).filter(([key]) => key.startsWith('PG'))), {
+      PGHOST: 'db.example', PGPORT: '5433', PGUSER: 'user', PGPASSWORD: 'secret', PGDATABASE: 'airing', PGSSLMODE: 'require',
+    })
+  } finally {
+    if (oldPath === undefined) delete process.env.PATH
+    else process.env.PATH = oldPath
+    delete process.env.CAPTURE_FILE
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    await rm(directory, { recursive: true, force: true })
   }
 })
 
