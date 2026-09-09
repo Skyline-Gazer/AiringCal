@@ -1,5 +1,20 @@
 # Subagent Progress
 
+## Task 4.1 final checkoff (2026-09-09)
+
+- **Plan/OpenSpec task**: `Task 4.1: Read Worker manifest/snapshot 验证切入` / `4.1 Add R2 manifest/snapshot validation to the Read Worker while preserving public response shapes and parameter contracts`.
+- **Stage**: `done`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix rounds: 2.
+- **Implementation history**: `d1d70e6` introduced strict `public/manifest.json` reads and immutable snapshot validation. Review coverage/fixes `9e940af`, `9b62377`, `30e9d44`, `ed45e69`, `eed66ca`, `35622bb`, and `1cb6713` restored the pre-existing legacy-pointer R2/Cache API compatibility path, cache warming, its failure behavior, and accurate runbook wording.
+- **TDD evidence**: RED covered manifest/snapshot errors, missing immutable snapshot, cache hit/miss, cache warming, and cache-warm failure; GREEN `pnpm -F @airing-cal/read-worker test` 54/54, typecheck, build:check, and `git diff --check` passed.
+- **Final reviews**: initial thorough reviews found and closed cache fallback, cache warming, test, comment, and runbook-order findings. Final `1cb6713` closeout review APPROVED (0 Critical / 0 Important / 0 Minor): primary `public/manifest.json` R2 → legacy pointer R2 → same-pointer verified Cache API → full legacy KV; no Task 4.2 manifest+snapshot envelope, generation rollback, or health expansion was implemented.
+
+## Task 4.1 review coverage (2026-09-09)
+
+- Scope is test-only: `apps/read-worker/src/r2-snapshot.test.ts` and `apps/read-worker/src/read-worker.test.ts`; no production code changed and Task 4.2/cache/VPS DB remain out of scope.
+- RED mutation evidence: removing `readSnapshotSource`'s outer fallback made manifest `get()` failure fail; removing the null-snapshot fallback made snapshot `get()` failure fail. Both were reverted before GREEN. Commands: `pnpm -F @airing-cal/read-worker test -- src/r2-snapshot.test.ts` (each mutation exits 1 with the expected legacy-fallback assertion).
+- GREEN: focused `r2-snapshot.test.ts read-worker.test.ts` is 34/34. New coverage asserts complete legacy fallback for manifest/snapshot R2 `get()` exceptions and deep legacy/R2 equality for non-empty paginated collections, summary, image refs/status, NSFW, and calendar fixtures.
+- Verification: `pnpm -F @airing-cal/read-worker typecheck` and `build:check` pass. Full `pnpm -F @airing-cal/read-worker test` is 47/49: pre-existing `r2-mode-contract.test.ts` has no `public/manifest.json` fixture but expects R2, so it correctly reaches legacy and fails. This task is explicitly forbidden from modifying that file; no production behavior is changed to make stale tests pass.
+
 ## Current state (handoff 002, 2026-09-02)
 
 - **Task 2.2 COMPLETE and MERGED**: PR14 (Skyline-Gazer/AiringCal#14, base `dev` ← head `codex/vps-coordinator-projection`) merged at `6c522f09e1eaa5caa66f9c3576e27bcc20684d29` on 2026-09-02. Final independent thorough review APPROVED with 0 CRITICAL / 0 IMPORTANT / 0 MINOR after five user-authorized repair rounds (last fix `9b0886b`, test-only completion `c75823d`, checkoff `32570c8`). OpenSpec tasks.md 2.2 checked; plan Task 2.2 Steps 1-5 checked. Comet `task-checkoff` reported `TASK_CHECKOFF: PASS`.

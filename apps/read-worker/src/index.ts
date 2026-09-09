@@ -58,8 +58,8 @@ function defaultSnapshotCache(): ReadSnapshotCache {
 
 function snapshotSourceFor(env: ReadEnv) {
   return readSnapshotSource(
-    env.AIRING_CAL_KV as ReadSnapshotKv,
     env.AIRING_CAL_DATA_R2 as unknown as ReadSnapshotDataR2,
+    env.AIRING_CAL_KV as ReadSnapshotKv,
     defaultSnapshotCache(),
   )
 }

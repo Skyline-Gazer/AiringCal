@@ -171,11 +171,11 @@ Task 2.2 projection 收口：`CompleteFullFetch` 保留 calendar 可选字段（
 **Interfaces:**
 - Produces: `publishSnapshot(ports, candidate, mode): Promise<'published'|'no_change'|'pending'>`；live key `public/manifest.json`，shadow key `shadow/manifest.json`；S3 port `put/get/list/delete`。
 
-- [ ] **Step 1: SDK 验证** — 读取本地 AWS SDK types/官方文档确认 endpoint、path style、Put/Get/List/Delete command 与 response body；禁止写入未经验证的 option。
-- [ ] **Step 2: RED failure-injection tests** — snapshot PUT→GET/parse/hash→manifest PUT→GET/validate→DB verify 的严格顺序；每个 R2 边界失败保留旧 manifest/pending；重跑相同 pending 不跳 generation；shadow 永不写 live key。
-- [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- publish.test.ts` 预期 FAIL。
-- [ ] **Step 4: GREEN/REFACTOR** — canonical bytes、conditional conflict 处理和 readback verification；局部 tests/typecheck PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步 key/state machine；commit `feat(vps-sync): publish immutable R2 snapshots` 后 push。
+- [x] **Step 1: SDK 验证** — 读取本地 AWS SDK types/官方文档确认 endpoint、path style、Put/Get/List/Delete command 与 response body；禁止写入未经验证的 option。
+- [x] **Step 2: RED failure-injection tests** — snapshot PUT→GET/parse/hash→manifest PUT→GET/validate→DB verify 的严格顺序；每个 R2 边界失败保留旧 manifest/pending；重跑相同 pending 不跳 generation；shadow 永不写 live key。
+- [x] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- publish.test.ts` 预期 FAIL。
+- [x] **Step 4: GREEN/REFACTOR** — canonical bytes、conditional conflict 处理和 readback verification；局部 tests/typecheck PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步 key/state machine；commit `feat(vps-sync): publish immutable R2 snapshots` 后 push。
 
 ### Task 4.1: Read Worker manifest/snapshot 验证切入
 
@@ -185,11 +185,11 @@ Task 2.2 projection 收口：`CompleteFullFetch` 保留 calendar 可选字段（
 **Interfaces:**
 - Replaces legacy pointer parsing with `PublicSnapshotManifestV1` at exact R2 key `public/manifest.json`；public routes/query/response remain unchanged。
 
-- [ ] **Step 1: RED tests** — valid manifest loads immutable object；未知 schema、extra/missing key、bad timestamp/git SHA/item count/key/hash/truncated JSON 均拒绝；现有 endpoint fixtures 深等于切换前 response。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/read-worker test -- r2-snapshot.test.ts read-worker.test.ts` 预期新 manifest cases FAIL。
-- [ ] **Step 3: GREEN** — 从 R2 binding 读 manifest，复用 domain parsers；不得引入 DB driver/VPS URL/env。
-- [ ] **Step 4: REFACTOR/验证** — read-worker test/typecheck/build:check PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步读路径；commit `feat(read-worker): validate R2 publication manifest` 后 push。
+- [x] **Step 1: RED tests** — valid manifest loads immutable object；未知 schema、extra/missing key、bad timestamp/git SHA/item count/key/hash/truncated JSON 均拒绝；现有 endpoint fixtures 深等于切换前 response。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/read-worker test -- r2-snapshot.test.ts read-worker.test.ts` 预期新 manifest cases FAIL。
+- [x] **Step 3: GREEN** — 从 R2 binding 读 manifest，复用 domain parsers；不得引入 DB driver/VPS URL/env。
+- [x] **Step 4: REFACTOR/验证** — read-worker test/typecheck/build:check PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步读路径；commit `feat(read-worker): validate R2 publication manifest` 后 push。
 
 ### Task 4.2: R2 → Cache API → legacy KV fallback
 

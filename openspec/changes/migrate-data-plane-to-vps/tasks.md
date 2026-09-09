@@ -16,11 +16,11 @@
 ## 3. Immutable R2 Publication
 
 - [x] 3.1 Define PublicSnapshotManifestV1 and canonical snapshot hashing, key validation, generation allocation, and identical-content no-op tests
-- [ ] 3.2 Implement snapshot upload, readback verification, replay-safe pending publication, final manifest switching, and failure-injection tests
+- [x] 3.2 Implement snapshot upload, readback verification, replay-safe pending publication, final manifest switching, and failure-injection tests
 
 ## 4. Cloudflare Read Cutover
 
-- [ ] 4.1 Add R2 manifest/snapshot validation to the Read Worker while preserving public response shapes and parameter contracts
+- [x] 4.1 Add R2 manifest/snapshot validation to the Read Worker while preserving public response shapes and parameter contracts
 - [ ] 4.2 Implement fallback order R2 to last verified Cache API to migration-period legacy KV, including corrupt, missing, rollback-generation, and VPS-offline tests
 
 ## 5. Backup and Restore
