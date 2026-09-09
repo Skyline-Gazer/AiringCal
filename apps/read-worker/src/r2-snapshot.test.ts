@@ -24,6 +24,17 @@ class FakeR2 implements ReadSnapshotDataR2 {
   }
 }
 
+class ThrowingR2 extends FakeR2 {
+  constructor(private readonly failingKey: string) {
+    super()
+  }
+
+  override async get(key: string): Promise<{ key: string; text(): Promise<string> } | null> {
+    if (key === this.failingKey) throw new Error(`R2 get failed for ${key}`)
+    return await super.get(key)
+  }
+}
+
 test('loads an immutable snapshot named by public/manifest.json', async () => {
   const { manifest, snapshot } = await fixture()
   const r2 = new FakeR2()
@@ -69,4 +80,16 @@ test('rejects a snapshot that disagrees with its validated manifest', async () =
   const r2 = new FakeR2()
   r2.objects.set(manifest.snapshot_key, JSON.stringify({ ...snapshot, published_at: 1_001 }))
   assert.equal(await loadVerifiedSnapshot(r2, manifest), null)
+})
+
+test('falls back to the complete legacy source when manifest R2 get throws', async () => {
+  assert.deepEqual(await readSnapshotSource(new ThrowingR2('public/manifest.json')), { mode: 'legacy' })
+})
+
+test('falls back to the complete legacy source when snapshot R2 get throws', async () => {
+  const { manifest } = await fixture()
+  const r2 = new ThrowingR2(manifest.snapshot_key)
+  r2.objects.set('public/manifest.json', JSON.stringify(manifest))
+
+  assert.deepEqual(await readSnapshotSource(r2), { mode: 'legacy' })
 })

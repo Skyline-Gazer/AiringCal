@@ -128,6 +128,64 @@ test('read-worker keeps collection and calendar response fixtures unchanged for 
   }
 })
 
+test('read-worker keeps non-empty paginated collections, summary, images, NSFW, and calendar fixtures unchanged for a manifest snapshot', async () => {
+  const legacy = new MockKV()
+  const snapshot = await buildPublicSnapshot({
+    collections: [{
+      subject_id: 23080,
+      name: 'Subject',
+      name_cn: '条目',
+      summary: 'Summary',
+      images: { common: { hash: 'a'.repeat(64), uri: `/image/${'a'.repeat(64)}`, r2_key: `images/${'a'.repeat(64)}/original` }, large: null },
+      image_status: { common: 'cached', large: 'failed' },
+      eps: 12,
+      total_episodes: 12,
+      ep_status: 2,
+      vol_status: 0,
+      type: 2,
+      collection_type: 3,
+      rate: 8,
+      nsfw: true,
+      date: '2026-07-27',
+      tags: ['daily'],
+      updated_at: '2026-07-27T00:00:00Z',
+      rating: { score: 8.1, rank: 12, total: 340 },
+    }, {
+      subject_id: 23081,
+      name: 'Subject two', name_cn: '条目二', summary: 'Second',
+      images: { common: null, large: null }, image_status: { common: 'pending_next_cron', large: 'pending_next_cron' },
+      eps: 1, total_episodes: 1, ep_status: 0, vol_status: 0, type: 2, collection_type: 3, rate: 0, nsfw: false,
+      date: '2026-07-28', tags: [], updated_at: '2026-07-28T00:00:00Z',
+    }],
+    calendar: [{
+      weekday: { en: 'Mon', cn: '星期一', ja: '月', id: 1 },
+      items: [{
+        subject_id: 23080, id: 23080, type: 2, name: 'Subject', name_cn: '条目', summary: 'Calendar summary',
+        images: { common: null, large: null }, image_status: { common: 'pending_next_cron', large: 'failed' }, nsfw: true,
+        date: '2026-07-27', eps: 12, total_episodes: 12, rating: { score: 8.1, rank: 12, total: 340 },
+      }],
+    }],
+    published_at: 1_000,
+  }, 9)
+  legacy.values.set('snapshot:collections:watching', snapshot.collections.watching)
+  legacy.values.set('snapshot:summary', snapshot.summary)
+  legacy.values.set('snapshot:calendar', snapshot.calendar)
+  const manifest = buildManifest(snapshot, {
+    source_observed_at: '1970-01-01T00:16:41.000Z',
+    git_sha: 'a'.repeat(40),
+  })
+  const dataR2 = new MockDataR2()
+  dataR2.values.set('public/manifest.json', JSON.stringify(manifest))
+  dataR2.values.set(manifest.snapshot_key, JSON.stringify(snapshot))
+
+  for (const path of ['/collections?type=watching&page=2&limit=1', '/calendar']) {
+    const legacyResponse = await worker.fetch(new Request(`https://read.local${path}`), env(legacy) as any)
+    const r2Response = await worker.fetch(new Request(`https://read.local${path}`), env(new MockKV(), dataR2) as any)
+    assert.equal(r2Response.status, legacyResponse.status, path)
+    assert.deepEqual(await r2Response.json(), await legacyResponse.json(), path)
+  }
+})
+
 test('read-worker paginates collection snapshots by page and limit', async () => {
   const kv = new MockKV()
   kv.values.set('snapshot:collections:watching', Array.from({ length: 5 }, (_, index) => ({
