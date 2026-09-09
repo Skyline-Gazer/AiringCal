@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildPublicSnapshot } from '@airing-cal/domain'
+import { buildManifest, buildPublicSnapshot } from '@airing-cal/domain'
 import type { PublicCollectionItemV1, PublicSnapshotV1 } from '@airing-cal/storage'
 import worker from './index.ts'
 
@@ -88,16 +88,13 @@ async function fixtureSnapshot(): Promise<PublicSnapshotV1> {
 test('R2 collections keep the legacy image_status and rating contract', async () => {
   const kv = new MockKV()
   const snapshot = await fixtureSnapshot()
-  kv.values.set('public:read-mode', { mode: 'r2', switched_at: 1_234 })
-  kv.values.set('public:current', {
-    schema_version: 1,
-    generation: snapshot.generation,
-    content_hash: snapshot.content_hash,
-    r2_key: `snapshots/v1/${snapshot.generation}-${snapshot.content_hash}.json`,
-    published_at: snapshot.published_at,
+  const manifest = buildManifest(snapshot, {
+    source_observed_at: '2026-07-27T00:00:00.000Z',
+    git_sha: 'a'.repeat(40),
   })
   const r2 = new FakeR2()
-  r2.objects.set(`snapshots/v1/${snapshot.generation}-${snapshot.content_hash}.json`, JSON.stringify(snapshot))
+  r2.objects.set('public/manifest.json', JSON.stringify(manifest))
+  r2.objects.set(manifest.snapshot_key, JSON.stringify(snapshot))
 
   const response = await worker.fetch(new Request('https://read.local/collections?type=watching&page=1&limit=24'), {
     AIRING_CAL_KV: kv,
@@ -117,16 +114,13 @@ test('R2 collections keep the legacy image_status and rating contract', async ()
 test('R2 calendar keeps the legacy image_status and rating contract', async () => {
   const kv = new MockKV()
   const snapshot = await fixtureSnapshot()
-  kv.values.set('public:read-mode', { mode: 'r2', switched_at: 1_234 })
-  kv.values.set('public:current', {
-    schema_version: 1,
-    generation: snapshot.generation,
-    content_hash: snapshot.content_hash,
-    r2_key: `snapshots/v1/${snapshot.generation}-${snapshot.content_hash}.json`,
-    published_at: snapshot.published_at,
+  const manifest = buildManifest(snapshot, {
+    source_observed_at: '2026-07-27T00:00:00.000Z',
+    git_sha: 'a'.repeat(40),
   })
   const r2 = new FakeR2()
-  r2.objects.set(`snapshots/v1/${snapshot.generation}-${snapshot.content_hash}.json`, JSON.stringify(snapshot))
+  r2.objects.set('public/manifest.json', JSON.stringify(manifest))
+  r2.objects.set(manifest.snapshot_key, JSON.stringify(snapshot))
 
   const response = await worker.fetch(new Request('https://read.local/calendar'), {
     AIRING_CAL_KV: kv,
