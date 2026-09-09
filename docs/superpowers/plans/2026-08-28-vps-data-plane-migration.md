@@ -199,11 +199,11 @@ Task 2.2 projection 收口：`CompleteFullFetch` 保留 calendar 可选字段（
 **Interfaces:**
 - Produces Cache API envelope `{ manifest, snapshot }`；只缓存完整验证 pair；source health `r2|cache|legacy`。
 
-- [ ] **Step 1: RED tests** — R2 missing/corrupt/offline 用重新验证的 envelope；回退 generation 拒绝；无 envelope 才 legacy；禁止混用 R2 manifest 与 cache/legacy payload。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/read-worker test -- r2-snapshot.test.ts health.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — cache key 绑定 manifest generation/hash，保存 last-verified envelope，迁移期开启完整 legacy fallback。
-- [ ] **Step 4: REFACTOR/验证** — read-worker tests/typecheck/build:check PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步 health/fallback；commit `feat(read-worker): add verified snapshot fallback chain` 后 push。
+- [x] **Step 1: RED tests** — R2 missing/corrupt/offline 用重新验证的 envelope；回退 generation 拒绝；无 envelope 才 legacy；禁止混用 R2 manifest 与 cache/legacy payload。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/read-worker test -- r2-snapshot.test.ts health.test.ts` 预期 FAIL。
+- [x] **Step 3: GREEN** — cache key 绑定 manifest generation/hash，保存 last-verified envelope，迁移期开启完整 legacy fallback。
+- [x] **Step 4: REFACTOR/验证** — read-worker tests/typecheck/build:check PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步 health/fallback；commit `feat(read-worker): add verified snapshot fallback chain` 后 push。
 
 ### Task 5.1: custom-format backup、checksum manifest 与 partial outcome
 
