@@ -1,5 +1,13 @@
 # Subagent Progress
 
+## Task 4.1 final checkoff (2026-09-09)
+
+- **Plan/OpenSpec task**: `Task 4.1: Read Worker manifest/snapshot 验证切入` / `4.1 Add R2 manifest/snapshot validation to the Read Worker while preserving public response shapes and parameter contracts`.
+- **Stage**: `done`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix rounds: 2.
+- **Implementation history**: `d1d70e6` introduced strict `public/manifest.json` reads and immutable snapshot validation. Review coverage/fixes `9e940af`, `9b62377`, `30e9d44`, `ed45e69`, `eed66ca`, `35622bb`, and `1cb6713` restored the pre-existing legacy-pointer R2/Cache API compatibility path, cache warming, its failure behavior, and accurate runbook wording.
+- **TDD evidence**: RED covered manifest/snapshot errors, missing immutable snapshot, cache hit/miss, cache warming, and cache-warm failure; GREEN `pnpm -F @airing-cal/read-worker test` 54/54, typecheck, build:check, and `git diff --check` passed.
+- **Final reviews**: initial thorough reviews found and closed cache fallback, cache warming, test, comment, and runbook-order findings. Final `1cb6713` closeout review APPROVED (0 Critical / 0 Important / 0 Minor): primary `public/manifest.json` R2 → legacy pointer R2 → same-pointer verified Cache API → full legacy KV; no Task 4.2 manifest+snapshot envelope, generation rollback, or health expansion was implemented.
+
 ## Task 4.1 review coverage (2026-09-09)
 
 - Scope is test-only: `apps/read-worker/src/r2-snapshot.test.ts` and `apps/read-worker/src/read-worker.test.ts`; no production code changed and Task 4.2/cache/VPS DB remain out of scope.
