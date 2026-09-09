@@ -5,9 +5,10 @@ import type {
   PublicCollectionItemV1,
   PublicSnapshotV1,
 } from '@airing-cal/storage'
-import { sha256Canonical } from '@airing-cal/storage'
+import { canonicalJson, sha256Canonical } from '@airing-cal/storage'
 import {
   buildPublicSnapshot,
+  canonicalSnapshotBytes,
   parsePublicSnapshotV1,
   snapshotObjectKey,
 } from './public-snapshot.ts'
@@ -170,6 +171,19 @@ test('snapshot content hash excludes generation, content_hash and published_at e
   assert.equal(second.published_at, 999)
 })
 
+test('canonical snapshot bytes retain the public envelope while business content hash ignores wall-clock publication time', async () => {
+  const input = { collections: [collectionItem(1, 1)], calendar, published_at: 100 }
+  const first = await buildPublicSnapshot(input, 1)
+  const second = await buildPublicSnapshot({ ...input, published_at: 200 }, 1)
+
+  assert.equal(first.content_hash, second.content_hash)
+  assert.notDeepEqual(canonicalSnapshotBytes(first), canonicalSnapshotBytes(second))
+  assert.deepEqual(
+    canonicalSnapshotBytes(first),
+    new TextEncoder().encode(canonicalJson(first)),
+  )
+})
+
 test('snapshot parser round-trips the known schema and rejects unknown schema precisely', async () => {
   const snapshot = await buildPublicSnapshot({
     collections: [collectionItem(1, 1)],
@@ -196,6 +210,7 @@ test('snapshot parser deeply rejects malformed nested fields, counters and envel
     { ...snapshot, generation: 1.5 },
     { ...snapshot, published_at: -1 },
     { ...snapshot, published_at: 1.5 },
+    { ...snapshot, published_at: 8_640_000_000_001 },
     { ...snapshot, content_hash: 'A'.repeat(64) },
     { ...snapshot, content_hash: 'a'.repeat(63) },
     { ...snapshot, collections: { ...snapshot.collections, want: [{}] } },
@@ -242,6 +257,10 @@ test('buildPublicSnapshot rejects invalid generation and publication timestamps'
   }
   await assert.rejects(buildPublicSnapshot(input, -1), /Invalid snapshot generation/)
   await assert.rejects(buildPublicSnapshot({ ...input, published_at: 1.5 }, 1), /Invalid snapshot published_at/)
+  await assert.rejects(
+    buildPublicSnapshot({ ...input, published_at: 8_640_000_000_001 }, 1),
+    /Invalid snapshot published_at/,
+  )
 })
 
 test('buildPublicSnapshot rejects typed inputs that violate the shared public snapshot semantics', async () => {

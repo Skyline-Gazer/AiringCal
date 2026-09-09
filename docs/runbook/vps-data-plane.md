@@ -4,6 +4,19 @@
 
 `apps/vps-sync` 仅使用标准 TLS `DATABASE_URL` 连接 PostgreSQL，且不使用供应商 SDK 或控制面 API。当前支持的 server baseline 是 PostgreSQL 18；运行环境必须保持在受维护的 `18.x` patch release。不得自动升级到未来 major，升级前必须完成显式兼容性评审和新的 real-server integration。PostgreSQL 17 compatibility 未验证，也不属于本次已批准 baseline 的验收门禁。
 
+VPS 运行时组合入口只读取以下配置；它创建 Node `pg` authority 和 R2 的 S3-compatible port，再注入单次 `runOnce`。全部必填，不输出配置值，也不提供 scheduler 或其它运行模式。
+
+| 变量 | 用途 |
+| --- | --- |
+| `DATABASE_URL` | direct/session-preserving PostgreSQL TLS connection。 |
+| `R2_ENDPOINT` | R2 S3-compatible endpoint。 |
+| `R2_BUCKET` | 存放 immutable snapshot 的 bucket。 |
+| `R2_ACCESS_KEY_ID` | R2 S3 access key ID。 |
+| `R2_SECRET_ACCESS_KEY` | R2 S3 secret access key。 |
+| `R2_REGION` | R2 S3 signing region（通常为 `auto`）。 |
+
+发布上传或回读失败会保留 PostgreSQL 中可重放的 pending publication；组合层只将该结果交给 coordinator 的既有脱敏 `runtime/STAGE_FAILED` 终态路径，绝不把 R2 错误内容持久化或通知。
+
 迁移运行器在开始业务同步前执行，并先取得独立 PostgreSQL session advisory lock，随后才在锁内 bootstrap/校验 `schema_migrations`、读取 history 和应用 migration tail；未获得该锁会失败退出，不能执行任何 bootstrap DDL 或继续业务写入。`DATABASE_URL` 必须是 direct/session-preserving connection，不能使用 transaction pooling：advisory lock 属于数据库 session，事务池会在事务间切换 server connection。该要求同样适用于后续 migrations 以及计划中的 `pg_dump`/`pg_restore` 工作。
 
 ## PostgreSQL authority 写入边界
@@ -12,7 +25,7 @@
 
 完整 collection/calendar 观察在单个数据库事务中提交：先建立 collection 与 calendar-only 条目共同引用的规范化 subject，再复用 domain `planCollectionDiff` 只持久化 inserts、真实 updates、first-missing、confirmed-deleted 与 restored 集合，随后替换 calendar 并 checkpoint run。事务内不得发生上游、R2 或其他网络调用。对同一 `(user_id, subject_id)`，首次完整缺失只设置 `missing_since` 和追踪用 `missing_run_id`；只有 `observed_at > missing_since` 的后续完整观察才设置 `deleted_at`，run identity 不参与确认判断。同一 run 的更晚观察可以确认删除，不同 run 的相同或更旧观察不能确认；重新观察到条目会清除 missing/deleted 状态。subject/collection 内容未改变时不执行对应写入。
 
-`subject_media` 同时保存 `observed_at` 与 `observed_run_id` fence。较旧的 observation 不得覆盖 last-known-good detail、metadata 或 image references。publication 只有一个 verified state 和至多一个 pending state：`savePendingPublication` 只保存 unclaimed candidate，`claimPendingPublication` 以 generation/hash/key/run identity 做条件 claim，exact replay 必须复用相同的 persisted `claimed_at` identity；`clearUnclaimedPending` 只在 verified generation/hash 仍与 no-change caller 一致时清除 unclaimed pending。claimed pending 不可替换或被 no-change cleanup 清除；verified promotion 必须匹配 pending 的 generation、hash、object key、run 与 `claimed_at`，未 claim、wrong-run 或 wrong-claim caller 均不得 promotion，并且 generation 只能前进一步。
+`subject_media` 同时保存 `observed_at` 与 `observed_run_id` fence。较旧的 observation 不得覆盖 last-known-good detail、metadata 或 image references。publication 按 `live`/`shadow` 持久化隔离：每个 mode 各有一个 verified state 和至多一个 pending state，互不共享 generation、hash 或 object key。`savePendingPublication` 只保存 unclaimed candidate，`claimPendingPublication` 以 generation/hash/key/run identity 做条件 claim，exact replay 必须复用相同的 persisted `claimed_at` identity；`clearUnclaimedPending` 只在 verified generation/hash 仍与 no-change caller 一致时清除 unclaimed pending。claimed pending 不可替换或被 no-change cleanup 清除；verified promotion 必须匹配 pending 的 generation、hash、object key、run 与 `claimed_at`，未 claim、wrong-run 或 wrong-claim caller 均不得 promotion，并且 generation 只能前进一步。immutable object 的条件 PUT 若返回 412，仍必须完整回读并比较字节、解析 snapshot、校验 generation/hash/key；缺失、截断或不匹配时只保留可重放 pending，绝不写 manifest。
 
 迁移集成验证采用 PostgreSQL 18 direct TLS server，并运行 fail-closed Node `pg` 门禁：
 
@@ -67,6 +80,25 @@ VPS coordinator 可注入 `createNodeSentryTracing(process.env)` 生成的 SDK-n
 adapter 使用无默认 integrations 的 SDK 初始化并显式关闭 PII，因此不会自动产生 HTTP 或数据库 spans，也不会把 tracing header 传播到 bgm.tv、PostgreSQL、R2 或飞书。只会手工创建 root/stage spans，且只附带 mode、source、stage、终态 status、有限 count、duration 与合法 git SHA。它不 capture raw exception，也不附加 URL、body、username、subject/database ID 或任何 credential。
 
 tracing 初始化、span 及 flush 均 fail-open：operation 保证只运行一次；协调器会在短命进程完成前尽力 flush，最多等待 2 秒。任何 tracing/flush 异常不得修改 business result、持久化/通知终态或进程退出码。此配置和 adapter 仅属于 VPS Node 路径，Cloudflare Workers 不依赖该 SDK。
+
+## Public snapshot manifest V1
+
+Domain 包现已提供 `PublicSnapshotManifestV1` 的严格构建与解析。不可变 snapshot key 固定为 `snapshots/v1/<generation>-<content_sha256>.json`；generation 为非负安全整数，hash 为 64 位小写 SHA-256。manifest 只接受以下字段，禁止缺失或额外字段：
+
+```json
+{
+  "schema_version": 1,
+  "generation": 7,
+  "snapshot_key": "snapshots/v1/7/<64-character-lowercase-sha256>.json",
+  "content_sha256": "<64-character-lowercase-sha256>",
+  "published_at": "2024-07-26T13:20:00.000Z",
+  "source_observed_at": "2024-07-26T13:20:01.000Z",
+  "item_count": 42,
+  "git_sha": "<40-character-lowercase-git-sha>"
+}
+```
+
+`published_at` 由公开 snapshot 的 Unix 秒 `published_at` 转换为同一瞬间的 UTC ISO-8601；`source_observed_at` 同样必须是规范 UTC ISO-8601。`item_count` 来自 snapshot summary 的 `_total`。`canonicalSnapshotBytes` 保留公开 response envelope 的 canonical UTF-8 表示，而 business `content_hash` 继续排除 generation、发布时间和其他运行时噪声；因此同一业务内容在不同 wall-clock 时间仍会得到相同 hash。
 
 `refreshMedia` 使用最多 4 个并行 subject，按新条目/变化、hot、cold、retry 排序，cold 按 subject ID 的星期分片选择。PostgreSQL `withSubject` 在同一 session 持锁读取围栏、执行图片上传和保存引用；过期、同观察时间重放和未到失败 retry/tombstone 时间的记录不抓取。成功刷新采用原有 6–8 天确定性分散；authority 确认的变化可以提前刷新已成功的记录，健康未变化记录仍等待周期到期。候选 SQL 与锁内检查均保留失败一小时重试、明确 404 一天 tombstone 的边界，并保留成功数据。
 

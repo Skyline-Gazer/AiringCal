@@ -2,10 +2,20 @@ export const packageBoundary = '@airing-cal/domain'
 
 export {
   buildPublicSnapshot,
+  canonicalSnapshotBytes,
   parsePublicSnapshotV1,
   snapshotObjectKey,
 } from './public-snapshot.ts'
 export type { PublicSnapshotInput } from './public-snapshot.ts'
+export {
+  buildManifest,
+  parsePublicSnapshotManifestV1,
+  snapshotKey,
+} from './public-manifest.ts'
+export type {
+  PublicSnapshotManifestMetadata,
+  PublicSnapshotManifestV1,
+} from './public-manifest.ts'
 export { normalizeCollection, planCollectionDiff } from './collection-diff.ts'
 export type {
   CollectionDiffInput,

@@ -15,7 +15,7 @@
 
 ## 3. Immutable R2 Publication
 
-- [ ] 3.1 Define PublicSnapshotManifestV1 and canonical snapshot hashing, key validation, generation allocation, and identical-content no-op tests
+- [x] 3.1 Define PublicSnapshotManifestV1 and canonical snapshot hashing, key validation, generation allocation, and identical-content no-op tests
 - [ ] 3.2 Implement snapshot upload, readback verification, replay-safe pending publication, final manifest switching, and failure-injection tests
 
 ## 4. Cloudflare Read Cutover

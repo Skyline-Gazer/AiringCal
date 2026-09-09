@@ -115,6 +115,7 @@ test('applies migrations in filename order and leaves a repeated run unchanged',
   assert.deepEqual(applied.map((migration) => migration.name), [
     '0001_initial.sql',
     '0002_authority_constraints.sql',
+    '0003_publication_modes.sql',
   ])
   assert.match(applied[0]?.checksum ?? '', /^[a-f0-9]{64}$/)
   assert.equal(pool.database.migrationSql.length, 1)
@@ -164,6 +165,7 @@ test('accepts only an ordered applied prefix before applying the remaining migra
   assert.deepEqual([...pool.database.migrations.keys()], [
     '0001_initial.sql',
     '0002_authority_constraints.sql',
+    '0003_publication_modes.sql',
   ])
   await assertCurrentSchema(pool)
 })

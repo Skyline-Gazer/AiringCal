@@ -72,6 +72,23 @@ class RecordingDatabase {
     pendingClaimedAt: null,
     pendingCreatedAt: null,
   }
+  shadowPublication: StoredPublication = {
+    verifiedGeneration: 0,
+    verifiedContentHash: null,
+    verifiedObjectKey: null,
+    verifiedAt: null,
+    verifiedRunId: null,
+    pendingGeneration: null,
+    pendingContentHash: null,
+    pendingObjectKey: null,
+    pendingRunId: null,
+    pendingClaimedAt: null,
+    pendingCreatedAt: null,
+  }
+
+  publicationForMode(mode: 'live' | 'shadow'): StoredPublication {
+    return mode === 'live' ? this.publication : this.shadowPublication
+  }
 }
 
 class RecordingClient {
@@ -204,16 +221,17 @@ class RecordingClient {
     }
 
     if (normalized.includes('FROM publications') && normalized.includes('FOR UPDATE')) {
-      return { rows: [publicationRow(this.database.publication) as unknown as Row], rowCount: 1 }
+      return { rows: [publicationRow(this.database.publicationForMode(publicationMode(values))) as unknown as Row], rowCount: 1 }
     }
 
-    if (normalized === 'SELECT * FROM publications WHERE id = true') {
-      return { rows: [publicationRow(this.database.publication) as unknown as Row], rowCount: 1 }
+    if (normalized === 'SELECT * FROM publications WHERE mode = $1') {
+      return { rows: [publicationRow(this.database.publicationForMode(publicationMode(values))) as unknown as Row], rowCount: 1 }
     }
 
     if (normalized.startsWith('UPDATE publications SET pending_generation')
       && !normalized.startsWith('UPDATE publications SET pending_generation = NULL')) {
-      Object.assign(this.database.publication, {
+      const publication = this.database.publicationForMode(publicationMode(values))
+      Object.assign(publication, {
         pendingGeneration: Number(values[0]),
         pendingContentHash: String(values[1]),
         pendingObjectKey: String(values[2]),
@@ -221,11 +239,11 @@ class RecordingClient {
         pendingClaimedAt: values[4] === null ? null : String(values[4]),
         pendingCreatedAt: String(values[5]),
       })
-      return { rows: [publicationRow(this.database.publication) as unknown as Row], rowCount: 1 }
+      return { rows: [publicationRow(publication) as unknown as Row], rowCount: 1 }
     }
 
     if (normalized.startsWith('UPDATE publications SET pending_claimed_at')) {
-      const publication = this.database.publication
+      const publication = this.database.publicationForMode(publicationMode(values))
       const matches = publication.pendingGeneration === Number(values[0])
         && publication.pendingContentHash === String(values[1])
         && publication.pendingObjectKey === String(values[2])
@@ -238,7 +256,7 @@ class RecordingClient {
     }
 
     if (normalized.startsWith('UPDATE publications SET pending_generation = NULL')) {
-      const publication = this.database.publication
+      const publication = this.database.publicationForMode(publicationMode(values))
       const verifiedHash = values[1] === null ? null : String(values[1])
       const matches = publication.verifiedGeneration === Number(values[0])
         && publication.verifiedContentHash === verifiedHash
@@ -257,7 +275,7 @@ class RecordingClient {
     }
 
     if (normalized.startsWith('UPDATE publications SET verified_generation')) {
-      const publication = this.database.publication
+      const publication = this.database.publicationForMode(publicationMode(values))
       const matches = publication.pendingGeneration === Number(values[0])
         && publication.pendingContentHash === String(values[1])
         && publication.pendingObjectKey === String(values[2])
@@ -339,6 +357,10 @@ function publicationRow(value: StoredPublication): Record<string, unknown> {
     pending_claimed_at: value.pendingClaimedAt,
     pending_created_at: value.pendingCreatedAt,
   }
+}
+
+function publicationMode(values: readonly unknown[]): 'live' | 'shadow' {
+  return values.includes('shadow') ? 'shadow' : 'live'
 }
 
 const USER_ID = '10000000-0000-4000-8000-000000000001'
@@ -683,6 +705,9 @@ test('clears only an unclaimed pending publication for an unchanged verified gen
     verifiedContentHash: 'v'.repeat(64),
   })
   assert.equal(cleared.pendingGeneration, null)
+  const cleanup = pool.database.calls.find((call) => call.sql.startsWith('UPDATE publications SET pending_generation = NULL'))
+  assert.ok(cleanup?.sql.includes('WHERE mode = $3'))
+  assert.deepEqual(cleanup?.values, [1, 'v'.repeat(64), 'live'])
 
   await repository.savePendingPublication(pending({ generation: 2 }))
   await repository.claimPendingPublication({

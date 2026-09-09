@@ -1,6 +1,34 @@
 # Subagent Progress
 
-## Active batch: Task 2.2
+## Current state (handoff 002, 2026-09-02)
+
+- **Task 2.2 COMPLETE and MERGED**: PR14 (Skyline-Gazer/AiringCal#14, base `dev` ← head `codex/vps-coordinator-projection`) merged at `6c522f09e1eaa5caa66f9c3576e27bcc20684d29` on 2026-09-02. Final independent thorough review APPROVED with 0 CRITICAL / 0 IMPORTANT / 0 MINOR after five user-authorized repair rounds (last fix `9b0886b`, test-only completion `c75823d`, checkoff `32570c8`). OpenSpec tasks.md 2.2 checked; plan Task 2.2 Steps 1-5 checked. Comet `task-checkoff` reported `TASK_CHECKOFF: PASS`.
+- **kody-ai review comment on PR14** (`repositories.ts:804`, legacy `public_item.name ?? ''`) handled as a false positive: reply `3912287314` in thread `3911355238` documented that `toPlannerCollection`'s `public_item` feeds only `planCollectionDiff` (`.row` is what persists; `public_item` has no SQL/storage side) and that real name-missing behavior is covered by projection tests plus Design Doc §83 / runbook §59. No code change made.
+- **Next work: OpenSpec Task 3.1** "Define PublicSnapshotManifestV1 and canonical snapshot hashing, key validation, generation allocation, and identical-content no-op tests" (delta spec `r2-snapshot-publication`; plan `Task 3.1: Manifest V1、canonical hash 与 generation 规则`). Task 1.1 remains unchecked only for its separately tracked `psql`/Docker/CI container checks and is not a gate.
+- **Handoff**: see `docs/job-transfer/002-vps-data-plane-migration.md` on branch `codex/vps-handoff-002` (based on `origin/dev` `6c522f0`). 001 rules in §2 / §6-§8 remain in force.
+
+## Active batch: Task 3.1 (2026-09-02)
+
+- **Plan task**: `Task 3.1: Manifest V1、canonical hash 与 generation 规则`.
+- **OpenSpec task**: `3.1 Define PublicSnapshotManifestV1 and canonical snapshot hashing, key validation, generation allocation, and identical-content no-op tests`.
+- **Stage**: `done`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix round: 1.
+- **Dispatch baseline**: `dcb64fc93d867875f85fbcfb0263db3f9ef9c171` on `codex/vps-task-3-1`; Task 2.2 is already merged in base `6c522f0`.
+- **Implementation**: `5ffb01ec2406071a64b43df7e6db702bab65706a` (`feat(domain): define public snapshot manifest`) is pushed and visible. RED was observed with `pnpm -F @airing-cal/domain exec tsx --test src/public-manifest.test.ts src/public-snapshot.test.ts` before the new module/export existed; GREEN: focused 16/16, `pnpm -F @airing-cal/domain typecheck`, and full domain 73/73 passed; `git diff --check` passed. Scope: public manifest/parser, canonical bytes, public snapshot exports/tests, and VPS runbook example. Awaiting independent thorough review.
+- **Independent review**: CHANGES_REQUESTED (0 Critical / 1 Important / 0 Minor). `PublicSnapshotV1.published_at` accepts any nonnegative safe integer but `buildManifest` can throw an uncontrolled `RangeError` when the converted milliseconds are outside Date's ISO range. A fresh TDD repair agent must choose and enforce a single explicit timestamp boundary at the appropriate contract boundary, add RED/GREEN regression coverage, preserve existing valid behavior, commit/push, then receive a fresh review.
+- **Repair**: `e0938f1a8ab4f3d6ccd5ac0612d3532abf155e09` (`fix(domain): validate snapshot publication time`) is pushed. `published_at` is now constrained consistently at builder/parser boundaries to nonnegative ISO-convertible Unix seconds through `8_640_000_000_000`; a RED test at `8_640_000_000_001` failed before the repair. GREEN: focused 16/16, domain typecheck, full domain 73/73, and diff check passed. Awaiting fresh final review.
+- **Final review**: APPROVED (0 Critical / 0 Important / 0 Minor). It confirmed strict manifest parser/key/hash/git SHA/item-count/UTC behavior, canonical-byte and business-hash boundaries, exports/response-shape compatibility, correct Task 3.2 ownership of persistent generation/no-op allocation, and the Date-safe timestamp repair. Task 3.1 is ready for plan/OpenSpec checkoff.
+
+## Active batch: Task 3.2 (2026-09-02)
+
+- **Plan task**: `Task 3.2: S3-compatible R2 原子发布与 replay`.
+- **OpenSpec task**: `3.2 Implement snapshot upload, readback verification, replay-safe pending publication, final manifest switching, and failure-injection tests`.
+- **Stage**: `final-review`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix round: 1.
+- **Dispatch baseline**: `582402c5891aea67985a1fe67f69239242658bba` on `codex/vps-task-3-1`. Task 3.1 has passed its five plan-step checkoffs and its OpenSpec checkoff, including final independent review approval. No Task 3.2 implementation commit exists yet. The implementer must verify all AWS SDK/S3 interfaces locally before writing adapters, create RED evidence before production code, and report exact RED/GREEN commands, changed files, commit hash, and push result.
+- **Implementation**: `ae3a4ce56c39b250a51bf7b9239bfbedcb554804` (`feat(vps-sync): publish immutable R2 snapshots`) is pushed and visible. Local AWS SDK types verified endpoint/path style/credentials/commands/conditional PUT/byte body APIs. RED: missing `publish.ts`; GREEN: focused 4/4, VPS 154/154, typecheck, build:check, and diff check passed. The manifest PUT then readback boundary is externally indeterminate on readback failure; implementation keeps the database pending record for replay instead of claiming an impossible S3 rollback. Awaiting independent thorough review.
+- **Independent review**: CHANGES_REQUESTED (1 Critical / 3 Important / 1 Minor). Shadow incorrectly shares verified state and immutable object namespace with live; a shadow success can suppress a later live manifest. Pending replay is tied to run ID and cannot recover an existing immutable object after a prior partial attempt; conditional 412/409 handling is incomplete, and tests do not model these failures. Fresh TDD repair must isolate shadow keys/state, resume a pending candidate without changing its generation across a new run ID, validate preexisting immutable objects before continuing, make the documented conflict behavior explicit, and cover the reviewed failure cases before re-review.
+- **Repair**: `eb5ad26` (`fix(vps-sync): make snapshot publication replay-safe`) is pushed. RED covered mode isolation, cross-run replay, S3 412, and 409 retry/failure. Shadow now uses its own state port and `shadow/snapshots/...` namespace; live remains publishable after shadow. A new run resumes the persisted pending owner without generation drift, validates a preexisting immutable object after 412, and retries 409 once before reporting a clear conflict. GREEN: focused 8/8, VPS 158/158, typecheck, build:check, build, and diff check passed. Awaiting fresh final review.
+
+## Active batch: Task 2.2 (historical)
 
 - Plan task: `Task 2.2: 一次性 coordinator、run outcomes 与媒体生命周期`.
 - OpenSpec task: `2.2 Implement the one-shot run coordinator, heartbeat/terminal outcomes, no-change behavior, media refresh lifecycle, and concurrent-run exclusion with RED-to-GREEN tests`.
