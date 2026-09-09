@@ -1,5 +1,12 @@
 # Subagent Progress
 
+## Task 4.2 dispatch (2026-09-09)
+
+- **Plan/OpenSpec task**: `Task 4.2: R2 → Cache API → legacy KV fallback` / `4.2 Implement fallback order R2 to last verified Cache API to migration-period legacy KV, including corrupt, missing, rollback-generation, and VPS-offline tests`.
+- **Stage**: `implementing`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix rounds: 0.
+- **Baseline**: `origin/dev` `92ef245ca0f38ae07a23195beac17d168cb6ad4c` (PR #17, Task 4.1 merged). The branch is `codex/vps-task-4-2` in `.worktrees/vps-task-4-2`.
+- **Boundary**: replace the retained legacy-pointer compatibility cache with a validated `{ manifest, snapshot }` Cache API envelope keyed to the manifest generation/hash; reject rollback generations; expose `r2|cache|legacy` health source; preserve public response/parameter contracts and never access VPS or PostgreSQL. Do not start Task 5.1.
+
 ## Task 4.1 final checkoff (2026-09-09)
 
 - **Plan/OpenSpec task**: `Task 4.1: Read Worker manifest/snapshot 验证切入` / `4.1 Add R2 manifest/snapshot validation to the Read Worker while preserving public response shapes and parameter contracts`.
