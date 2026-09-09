@@ -7,7 +7,6 @@ import {
   readSnapshotSource,
   type ReadSnapshotCache,
   type ReadSnapshotDataR2,
-  type ReadSnapshotKv,
 } from './r2-snapshot.ts'
 import { buildMigrationHealth, type MigrationHealthD1, type MigrationHealthEnv } from './health.ts'
 
@@ -59,7 +58,6 @@ function defaultSnapshotCache(): ReadSnapshotCache {
 function snapshotSourceFor(env: ReadEnv) {
   return readSnapshotSource(
     env.AIRING_CAL_DATA_R2 as unknown as ReadSnapshotDataR2,
-    env.AIRING_CAL_KV as ReadSnapshotKv,
     defaultSnapshotCache(),
   )
 }
@@ -342,7 +340,7 @@ async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
   const page = parsePositiveInteger('page', singleQueryParameter(url.searchParams, 'page'), 1)
   const limit = parsePositiveInteger('limit', singleQueryParameter(url.searchParams, 'limit'), 24, 100)
   const source = await snapshotSourceFor(env)
-  if (source.mode === 'r2') {
+  if (source.mode !== 'legacy') {
     const data = source.snapshot.collections[type]
     const start = (page - 1) * limit
     return json({
@@ -365,7 +363,7 @@ async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
 async function handleCalendar(env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const source = await snapshotSourceFor(env)
-  if (source.mode === 'r2') return json(source.snapshot.calendar)
+  if (source.mode !== 'legacy') return json(source.snapshot.calendar)
   const activeInstance = await activeSnapshotInstance(storage)
   const data = await readSnapshot<unknown[]>(storage, activeInstance, 'calendar', snapshotCalendarKey()) ?? []
   return json(await hydrateCalendarImages(data, env))
@@ -421,7 +419,7 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
         stale: workflowStale,
       })
     : null
-  const migrationHealth = await buildMigrationHealth(migrationHealthEnvFor(env))
+  const migrationHealth = await buildMigrationHealth(migrationHealthEnvFor(env), await snapshotSourceFor(env))
   return json({
     ok: true,
     worker: 'read-worker',

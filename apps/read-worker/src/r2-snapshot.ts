@@ -3,18 +3,12 @@ import {
   parsePublicSnapshotV1,
   type PublicSnapshotManifestV1,
 } from '@airing-cal/domain'
-import { PUBLIC_READ_MODE_KV_KEY, type PublicSnapshotPointerV1, type PublicSnapshotV1 } from '@airing-cal/storage'
+import { type PublicSnapshotV1 } from '@airing-cal/storage'
 
 const MANIFEST_KEY = 'public/manifest.json'
-const POINTER_KEY = 'public:current'
-const LOWERCASE_SHA256 = /^[0-9a-f]{64}$/
 
 export interface ReadSnapshotDataR2 {
   get(key: string): Promise<{ key: string; text(): Promise<string> } | null>
-}
-
-export interface ReadSnapshotKv {
-  get(key: string, type: 'json'): Promise<unknown>
 }
 
 export interface ReadSnapshotCache {
@@ -24,22 +18,11 @@ export interface ReadSnapshotCache {
 
 export type SnapshotSource =
   | { mode: 'legacy' }
-  | { mode: 'r2'; snapshot: PublicSnapshotV1 }
+  | { mode: 'r2' | 'cache'; snapshot: PublicSnapshotV1 }
 
-/** Kept for migration health and the legacy-pointer cache fallback; primary reads use manifests. */
-export function validatePointer(value: unknown): PublicSnapshotPointerV1 | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
-  const candidate = value as Record<string, unknown>
-  const keys = ['schema_version', 'generation', 'content_hash', 'r2_key', 'published_at']
-  if (candidate.schema_version !== 1
-    || Object.keys(candidate).length !== keys.length
-    || !keys.every((key) => Object.hasOwn(candidate, key))
-    || !Number.isSafeInteger(candidate.generation) || (candidate.generation as number) < 0
-    || typeof candidate.content_hash !== 'string' || !LOWERCASE_SHA256.test(candidate.content_hash)
-    || typeof candidate.r2_key !== 'string'
-    || !Number.isSafeInteger(candidate.published_at) || (candidate.published_at as number) < 0) return null
-  const pointer = candidate as unknown as PublicSnapshotPointerV1
-  return pointer.r2_key === `snapshots/v1/${pointer.generation}-${pointer.content_hash}.json` ? pointer : null
+interface VerifiedEnvelope {
+  manifest: PublicSnapshotManifestV1
+  snapshot: PublicSnapshotV1
 }
 
 function matchesManifest(snapshot: PublicSnapshotV1, manifest: PublicSnapshotManifestV1): boolean {
@@ -49,44 +32,52 @@ function matchesManifest(snapshot: PublicSnapshotV1, manifest: PublicSnapshotMan
     && new Date(snapshot.published_at * 1000).toISOString() === manifest.published_at
 }
 
-function cacheRequest(contentHash: string): Request {
-  return new Request(`https://cache.local/r2-snapshot/${contentHash}`)
+function cacheRequest(manifest: PublicSnapshotManifestV1): Request {
+  return new Request(`https://cache.local/r2-snapshot/${manifest.generation}-${manifest.content_sha256}`)
 }
 
-async function loadLegacyVerifiedSnapshot(
-  dataR2: ReadSnapshotDataR2,
+function lastVerifiedCacheRequest(): Request {
+  return new Request('https://cache.local/r2-snapshot/last-verified')
+}
+
+async function parseVerifiedEnvelope(value: unknown): Promise<VerifiedEnvelope | null> {
+  try {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+    const candidate = value as Record<string, unknown>
+    const manifest = parsePublicSnapshotManifestV1(candidate.manifest)
+    const snapshot = await parsePublicSnapshotV1(candidate.snapshot)
+    return matchesManifest(snapshot, manifest) ? { manifest, snapshot } : null
+  } catch {
+    return null
+  }
+}
+
+async function loadCachedEnvelope(cache: ReadSnapshotCache): Promise<VerifiedEnvelope | null> {
+  try {
+    const cached = await cache.match(lastVerifiedCacheRequest())
+    return cached ? await parseVerifiedEnvelope(await cached.json()) : null
+  } catch {
+    return null
+  }
+}
+
+async function cacheVerifiedEnvelope(
   cache: ReadSnapshotCache,
-  pointer: PublicSnapshotPointerV1,
-): Promise<PublicSnapshotV1 | null> {
+  envelope: VerifiedEnvelope,
+): Promise<void> {
+  const body = JSON.stringify(envelope)
   try {
-    const object = await dataR2.get(pointer.r2_key)
-    if (object !== null) {
-      const snapshot = await parsePublicSnapshotV1(JSON.parse(await object.text()))
-      if (snapshot.generation === pointer.generation && snapshot.content_hash === pointer.content_hash) {
-        try {
-          await cache.put(
-            cacheRequest(pointer.content_hash),
-            new Response(JSON.stringify(snapshot), { headers: { 'content-type': 'application/json' } }),
-          )
-        } catch {
-          // Cache warming is best effort; the verified R2 object is already loaded.
-        }
-        return snapshot
-      }
-    }
+    await cache.put(
+      cacheRequest(envelope.manifest),
+      new Response(body, { headers: { 'content-type': 'application/json' } }),
+    )
+    await cache.put(
+      lastVerifiedCacheRequest(),
+      new Response(body, { headers: { 'content-type': 'application/json' } }),
+    )
   } catch {
-    // Use the last verified cache entry below.
+    // Cache warming is best effort; the verified R2 pair is already loaded.
   }
-  try {
-    const cached = await cache.match(cacheRequest(pointer.content_hash))
-    if (cached) {
-      const snapshot = await parsePublicSnapshotV1(await cached.json())
-      if (snapshot.generation === pointer.generation && snapshot.content_hash === pointer.content_hash) return snapshot
-    }
-  } catch {
-    // Fall through to legacy below.
-  }
-  return null
 }
 
 export async function loadVerifiedSnapshot(
@@ -105,27 +96,26 @@ export async function loadVerifiedSnapshot(
 
 export async function readSnapshotSource(
   dataR2: ReadSnapshotDataR2,
-  legacyKv?: ReadSnapshotKv,
-  legacyCache?: ReadSnapshotCache,
+  cache?: ReadSnapshotCache,
 ): Promise<SnapshotSource> {
+  const cached = cache && await loadCachedEnvelope(cache)
   try {
     const object = await dataR2.get(MANIFEST_KEY)
     if (object !== null && object.key === MANIFEST_KEY) {
       const manifest = parsePublicSnapshotManifestV1(JSON.parse(await object.text()))
       const snapshot = await loadVerifiedSnapshot(dataR2, manifest)
-      if (snapshot) return { mode: 'r2', snapshot }
+      if (snapshot) {
+        if (cached && (manifest.generation < cached.manifest.generation
+          || (manifest.generation === cached.manifest.generation
+            && manifest.content_sha256 !== cached.manifest.content_sha256))) {
+          return { mode: 'cache', snapshot: cached.snapshot }
+        }
+        if (cache) await cacheVerifiedEnvelope(cache, { manifest, snapshot })
+        return { mode: 'r2', snapshot }
+      }
     }
   } catch {
-    // Preserve the pre-manifest cache fallback for the migration window.
+    // Use only a fully revalidated cache envelope below.
   }
-  if (!legacyKv || !legacyCache) return { mode: 'legacy' }
-  const readMode = await legacyKv.get(PUBLIC_READ_MODE_KV_KEY, 'json')
-  const isR2 = typeof readMode === 'object'
-    && readMode !== null
-    && !Array.isArray(readMode)
-    && (readMode as { mode?: unknown }).mode === 'r2'
-  if (!isR2) return { mode: 'legacy' }
-  const pointer = validatePointer(await legacyKv.get(POINTER_KEY, 'json'))
-  const snapshot = pointer && await loadLegacyVerifiedSnapshot(dataR2, legacyCache, pointer)
-  return snapshot ? { mode: 'r2', snapshot } : { mode: 'legacy' }
+  return cached ? { mode: 'cache', snapshot: cached.snapshot } : { mode: 'legacy' }
 }
