@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { buildManifest, buildPublicSnapshot } from '@airing-cal/domain'
 import worker from './index.ts'
 
 class MockKV {
@@ -44,9 +45,19 @@ class MockR2 {
   }
 }
 
-function env(kv = new MockKV()) {
+class MockDataR2 {
+  values = new Map<string, string>()
+
+  async get(key: string) {
+    const value = this.values.get(key)
+    return value === undefined ? null : { key, async text() { return value } }
+  }
+}
+
+function env(kv = new MockKV(), dataR2 = new MockDataR2()) {
   return {
     AIRING_CAL_KV: kv,
+    AIRING_CAL_DATA_R2: dataR2,
     AIRING_CAL_R2: new MockR2(),
     NSFW_SHOW: 'true',
   }
@@ -93,6 +104,28 @@ test('read-worker returns collection snapshot by type from KV', async () => {
   assert.equal(response.status, 200)
   assert.deepEqual(body.data, [{ subject_id: 1, title: 'A' }])
   assert.deepEqual(body.types, { watching: 1, _total: 1 })
+})
+
+test('read-worker keeps collection and calendar response fixtures unchanged for a manifest snapshot', async () => {
+  const legacy = new MockKV()
+  legacy.values.set('snapshot:collections:watching', [])
+  legacy.values.set('snapshot:summary', { want: 0, watched: 0, watching: 0, on_hold: 0, dropped: 0, _total: 0 })
+  legacy.values.set('snapshot:calendar', [])
+  const snapshot = await buildPublicSnapshot({ collections: [], calendar: [], published_at: 1_000 }, 9)
+  const manifest = buildManifest(snapshot, {
+    source_observed_at: '1970-01-01T00:16:41.000Z',
+    git_sha: 'a'.repeat(40),
+  })
+  const dataR2 = new MockDataR2()
+  dataR2.values.set('public/manifest.json', JSON.stringify(manifest))
+  dataR2.values.set(manifest.snapshot_key, JSON.stringify(snapshot))
+
+  for (const path of ['/collections?type=watching', '/calendar']) {
+    const legacyResponse = await worker.fetch(new Request(`https://read.local${path}`), env(legacy) as any)
+    const r2Response = await worker.fetch(new Request(`https://read.local${path}`), env(new MockKV(), dataR2) as any)
+    assert.equal(r2Response.status, legacyResponse.status, path)
+    assert.deepEqual(await r2Response.json(), await legacyResponse.json(), path)
+  }
 })
 
 test('read-worker paginates collection snapshots by page and limit', async () => {
