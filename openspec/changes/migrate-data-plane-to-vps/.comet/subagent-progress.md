@@ -1,5 +1,12 @@
 # Subagent Progress
 
+## Task 5.1 dispatch (2026-09-09)
+
+- **Plan/OpenSpec task**: `Task 5.1: custom-format backup、checksum manifest 与 partial outcome` / `5.1 Verify pg_dump/pg_restore and R2 client contracts, then implement custom-format backup upload, checksum manifest, partial-success semantics, and tests`.
+- **Stage**: `implementing`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix rounds: 0.
+- **Baseline**: `origin/dev` `511b6c5eaca324afa9d0f656313b0276e6b97ffa` (PR #18 merged); branch `codex/vps-task-5-1` in `.worktrees/vps-task-5-1`.
+- **Preflight evidence**: `command -v pg_dump` and `command -v pg_restore` returned no executable, so their `--help` contracts and a real backup/restore drill remain pending and must not be claimed. The implementation must verify existing local TypeScript R2/S3 client types before use, keep `DATABASE_URL` out of argv/logs, and use fakes for tests.
+
 ## Task 4.2 dispatch (2026-09-09)
 
 - **Plan/OpenSpec task**: `Task 4.2: R2 → Cache API → legacy KV fallback` / `4.2 Implement fallback order R2 to last verified Cache API to migration-period legacy KV, including corrupt, missing, rollback-generation, and VPS-offline tests`.
