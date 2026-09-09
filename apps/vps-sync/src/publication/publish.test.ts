@@ -8,9 +8,15 @@ const hash = 'a'.repeat(64)
 const observedAt = '2026-09-02T00:00:00.000Z'
 const gitSha = 'b'.repeat(40)
 
-function candidate(): SnapshotPublicationCandidate {
+function candidate(version = 0): SnapshotPublicationCandidate {
   return {
-    snapshot: { collections: [], calendar: [], published_at: 1_725_235_200 },
+    snapshot: {
+      collections: version === 0 ? [] : [{ subject_id: version, name: `Subject ${version}`, name_cn: '', summary: '',
+        images: { common: null, large: null }, image_status: { common: 'missing_source', large: 'missing_source' },
+        eps: 0, total_episodes: 0, ep_status: 0, vol_status: 0, type: 2, collection_type: 1, rate: 0,
+        nsfw: false, date: '', tags: [], updated_at: '' }],
+      calendar: [], published_at: 1_725_235_200,
+    },
     runId: 'run-1', observedAt, gitSha,
   }
 }
@@ -37,7 +43,7 @@ function fixture() {
       getState: async () => publications.get(mode)!,
       savePending: async (input) => {
         events.push(`pending:${mode}:${input.generation}`)
-        publications.set(mode, state({ pendingGeneration: input.generation, pendingContentHash: input.contentHash,
+        publications.set(mode, state({ ...publications.get(mode)!, pendingGeneration: input.generation, pendingContentHash: input.contentHash,
           pendingObjectKey: input.objectKey, pendingRunId: input.runId, pendingCreatedAt: input.createdAt }))
         return publications.get(mode)!
       },
@@ -45,6 +51,17 @@ function fixture() {
         events.push(`claim:${mode}:${input.generation}`)
         const publication = publications.get(mode)!
         publications.set(mode, { ...publication, pendingClaimedAt: input.claimedAt })
+        return publications.get(mode)!
+      },
+      clearUnclaimedPending: async (input) => {
+        events.push(`clear:${mode}:${input.verifiedGeneration}`)
+        const publication = publications.get(mode)!
+        if (publication.verifiedGeneration === input.verifiedGeneration
+          && publication.verifiedContentHash === input.verifiedContentHash
+          && publication.pendingGeneration !== null && publication.pendingClaimedAt === null) {
+          publications.set(mode, { ...publication, pendingGeneration: null, pendingContentHash: null,
+            pendingObjectKey: null, pendingRunId: null, pendingClaimedAt: null, pendingCreatedAt: null })
+        }
         return publications.get(mode)!
       },
       verify: async (input) => {
@@ -181,7 +198,29 @@ test('does not allocate or write when the canonical content hash is already veri
   assert.equal(await publishSnapshot(ports, candidate(), 'live'), 'published')
   events.length = 0
   assert.equal(await publishSnapshot(ports, candidate(), 'live'), 'no_change')
-  assert.deepEqual(events, [])
+  assert.deepEqual(events, ['clear:live:1'])
   assert.equal(canonicalSnapshotBytes(snapshot).byteLength > 0, true)
   assert.notEqual(snapshot.content_hash, hash)
 })
+
+for (const mode of ['live', 'shadow'] as const) {
+  test(`clears an unclaimed ${mode} pending candidate when content returns to verified`, async () => {
+    const { ports, publication } = fixture()
+    assert.equal(await publishSnapshot(ports, candidate(), mode), 'published')
+
+    const put = ports.s3.put
+    ports.s3.put = async (key, bytes, options) => {
+      if (key.includes('snapshots/')) throw new Error('B failed')
+      await put(key, bytes, options)
+    }
+    assert.equal(await publishSnapshot(ports, candidate(1), mode), 'pending')
+    assert.equal(publication(mode).pendingGeneration, 2)
+    assert.equal(publication(mode).pendingClaimedAt, null)
+
+    ports.s3.put = put
+    assert.equal(await publishSnapshot(ports, candidate(), mode), 'no_change')
+    assert.equal(publication(mode).pendingGeneration, null)
+    assert.equal(await publishSnapshot(ports, candidate(2), mode), 'published')
+    assert.equal(publication(mode).verifiedGeneration, 2)
+  })
+}

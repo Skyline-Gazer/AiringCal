@@ -12,6 +12,7 @@ import type {
   PublicationClaimInput,
   PublicationState,
   PublicationVerificationInput,
+  UnclaimedPendingCleanupInput,
 } from '../postgres/repositories.ts'
 import type { S3Port } from './s3.ts'
 
@@ -26,6 +27,7 @@ export type PublicationStatePort = {
   getState(): Promise<PublicationState>
   savePending(input: PendingPublicationInput): Promise<PublicationState>
   claimPending(input: PublicationClaimInput): Promise<PublicationState>
+  clearUnclaimedPending(input: UnclaimedPendingCleanupInput): Promise<PublicationState>
   verify(input: PublicationVerificationInput): Promise<PublicationState>
 }
 
@@ -46,7 +48,13 @@ export async function publishSnapshot(
   const publication = ports.publication.forMode(mode)
   const initial = await publication.getState()
   const hashProbe = await buildPublicSnapshot(candidate.snapshot, initial.verifiedGeneration)
-  if (initial.verifiedContentHash === hashProbe.content_hash) return 'no_change'
+  if (initial.verifiedContentHash === hashProbe.content_hash) {
+    await publication.clearUnclaimedPending({
+      verifiedGeneration: initial.verifiedGeneration,
+      verifiedContentHash: initial.verifiedContentHash,
+    })
+    return 'no_change'
+  }
 
   const pendingMatches = initial.pendingGeneration !== null
     && initial.pendingContentHash === hashProbe.content_hash

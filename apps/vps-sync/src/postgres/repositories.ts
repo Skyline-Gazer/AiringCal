@@ -551,6 +551,7 @@ export class PostgresAuthority {
       getState: () => this.getPublicationStateForMode(mode),
       savePending: (input) => this.savePendingPublicationForMode(mode, input),
       claimPending: (input) => this.claimPendingPublicationForMode(mode, input),
+      clearUnclaimedPending: (input) => this.clearUnclaimedPendingForMode(mode, input),
       verify: (input) => this.verifyPublicationForMode(mode, input),
     }
   }
@@ -620,6 +621,10 @@ export class PostgresAuthority {
   }
 
   async clearUnclaimedPending(input: UnclaimedPendingCleanupInput): Promise<PublicationState> {
+    return this.clearUnclaimedPendingForMode('live', input)
+  }
+
+  private async clearUnclaimedPendingForMode(mode: 'live' | 'shadow', input: UnclaimedPendingCleanupInput): Promise<PublicationState> {
     assertUnclaimedPendingCleanupInput(input)
     const result = await this.query<PublicationRow>(this.pool,
        `UPDATE publications SET pending_generation = NULL, pending_content_hash = NULL,
@@ -629,12 +634,12 @@ export class PostgresAuthority {
          AND verified_content_hash IS NOT DISTINCT FROM $2
          AND pending_generation IS NOT NULL AND pending_claimed_at IS NULL
        RETURNING *`,
-      [input.verifiedGeneration, input.verifiedContentHash, 'live'],
+      [input.verifiedGeneration, input.verifiedContentHash, mode],
     )
     if ((result.rowCount ?? 0) === 1) {
       return parsePublicationRow(requiredRow(result.rows[0], 'PUBLICATION_STATE_MISSING'))
     }
-    const current = await this.getPublicationState()
+    const current = await this.getPublicationStateForMode(mode)
     if (current.verifiedGeneration !== input.verifiedGeneration
       || current.verifiedContentHash !== input.verifiedContentHash) {
       throw new Error('PUBLICATION_GENERATION_CONFLICT')
