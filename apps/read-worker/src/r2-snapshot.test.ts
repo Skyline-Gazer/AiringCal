@@ -1,20 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildManifest, buildPublicSnapshot, type PublicSnapshotManifestV1 } from '@airing-cal/domain'
-import type { PublicSnapshotPointerV1, PublicSnapshotV1 } from '@airing-cal/storage'
-import { loadVerifiedSnapshot, readSnapshotSource, type ReadSnapshotCache, type ReadSnapshotDataR2, type ReadSnapshotKv } from './r2-snapshot.ts'
-
-const hash = 'c'.repeat(64)
-
-function pointer(generation = 9): PublicSnapshotPointerV1 {
-  return {
-    schema_version: 1,
-    generation,
-    content_hash: hash,
-    r2_key: `snapshots/v1/${generation}-${hash}.json`,
-    published_at: 1_000,
-  }
-}
+import type { PublicSnapshotV1 } from '@airing-cal/storage'
+import { loadVerifiedSnapshot, readSnapshotSource, type ReadSnapshotCache, type ReadSnapshotDataR2 } from './r2-snapshot.ts'
 
 async function fixture(generation = 9): Promise<{ manifest: PublicSnapshotManifestV1; snapshot: PublicSnapshotV1 }> {
   const snapshot = await buildPublicSnapshot({ collections: [], calendar: [], published_at: 1_000 }, generation)
@@ -27,20 +15,30 @@ async function fixture(generation = 9): Promise<{ manifest: PublicSnapshotManife
   }
 }
 
+function envelopeRequest(manifest: PublicSnapshotManifestV1): Request {
+  return new Request(`https://cache.local/r2-snapshot/${manifest.generation}-${manifest.content_sha256}`)
+}
+
+function lastVerifiedEnvelopeRequest(): Request {
+  return new Request('https://cache.local/r2-snapshot/last-verified')
+}
+
+async function cacheEnvelope(
+  cache: ReadSnapshotCache,
+  manifest: PublicSnapshotManifestV1,
+  snapshot: PublicSnapshotV1,
+): Promise<void> {
+  const body = JSON.stringify({ manifest, snapshot })
+  await cache.put(envelopeRequest(manifest), new Response(body, { headers: { 'content-type': 'application/json' } }))
+  await cache.put(lastVerifiedEnvelopeRequest(), new Response(body, { headers: { 'content-type': 'application/json' } }))
+}
+
 class FakeR2 implements ReadSnapshotDataR2 {
   objects = new Map<string, string>()
 
   async get(key: string): Promise<{ key: string; text(): Promise<string> } | null> {
     const value = this.objects.get(key)
     return value === undefined ? null : { key, async text() { return value } }
-  }
-}
-
-class FakeKv implements ReadSnapshotKv {
-  values = new Map<string, unknown>()
-
-  async get(key: string, _type: 'json'): Promise<unknown> {
-    return this.values.get(key) ?? null
   }
 }
 
@@ -64,12 +62,6 @@ class ThrowingR2 extends FakeR2 {
   override async get(key: string): Promise<{ key: string; text(): Promise<string> } | null> {
     if (key === this.failingKey) throw new Error(`R2 get failed for ${key}`)
     return await super.get(key)
-  }
-}
-
-class ThrowingCache extends FakeCache {
-  override async put(_request: Request, _response: Response): Promise<void> {
-    throw new Error('Cache put failed')
   }
 }
 
@@ -132,69 +124,72 @@ test('falls back to the complete legacy source when snapshot R2 get throws', asy
   assert.deepEqual(await readSnapshotSource(r2), { mode: 'legacy' })
 })
 
-test('warms the old cache after a legacy pointer R2 snapshot is verified', async () => {
-  const { snapshot } = await fixture()
-  const kv = new FakeKv()
-  const pointerValue = { ...pointer(), content_hash: snapshot.content_hash, r2_key: `snapshots/v1/9-${snapshot.content_hash}.json` }
-  kv.values.set('public:read-mode', { mode: 'r2' })
-  kv.values.set('public:current', pointerValue)
-  const cache = new FakeCache()
-  const r2 = new FakeR2()
-  r2.objects.set(pointerValue.r2_key, JSON.stringify(snapshot))
-
-  assert.deepEqual(await readSnapshotSource(r2, kv, cache), { mode: 'r2', snapshot })
-  const cached = await cache.match(new Request(`https://cache.local/r2-snapshot/${snapshot.content_hash}`))
-  assert.deepEqual(await cached?.json(), snapshot)
-})
-
-test('serves a verified legacy pointer R2 snapshot when cache warming fails', async () => {
-  const { snapshot } = await fixture()
-  const kv = new FakeKv()
-  const pointerValue = { ...pointer(), content_hash: snapshot.content_hash, r2_key: `snapshots/v1/9-${snapshot.content_hash}.json` }
-  kv.values.set('public:read-mode', { mode: 'r2' })
-  kv.values.set('public:current', pointerValue)
-  const r2 = new FakeR2()
-  r2.objects.set(pointerValue.r2_key, JSON.stringify(snapshot))
-
-  assert.deepEqual(await readSnapshotSource(r2, kv, new ThrowingCache()), { mode: 'r2', snapshot })
-})
-
-test('falls back to the previously verified cache when manifest R2 get fails', async () => {
-  const { snapshot } = await fixture()
-  const kv = new FakeKv()
-  const pointerValue = { ...pointer(), content_hash: snapshot.content_hash, r2_key: `snapshots/v1/9-${snapshot.content_hash}.json` }
-  kv.values.set('public:read-mode', { mode: 'r2' })
-  kv.values.set('public:current', pointerValue)
-  const cache = new FakeCache()
-  await cache.put(
-    new Request(`https://cache.local/r2-snapshot/${snapshot.content_hash}`),
-    new Response(JSON.stringify(snapshot), { headers: { 'content-type': 'application/json' } }),
-  )
-
-  assert.deepEqual(await readSnapshotSource(new ThrowingR2('public/manifest.json'), kv, cache), { mode: 'r2', snapshot })
-})
-
-test('falls back to the previously verified cache when the manifest snapshot is missing', async () => {
+test('caches a verified manifest and snapshot envelope under its generation and hash', async () => {
   const { manifest, snapshot } = await fixture()
-  const kv = new FakeKv()
-  const pointerValue = { ...pointer(), content_hash: snapshot.content_hash, r2_key: `snapshots/v1/9-${snapshot.content_hash}.json` }
-  kv.values.set('public:read-mode', { mode: 'r2' })
-  kv.values.set('public:current', pointerValue)
   const cache = new FakeCache()
-  await cache.put(
-    new Request(`https://cache.local/r2-snapshot/${snapshot.content_hash}`),
-    new Response(JSON.stringify(snapshot), { headers: { 'content-type': 'application/json' } }),
-  )
+  const r2 = new FakeR2()
+  r2.objects.set('public/manifest.json', JSON.stringify(manifest))
+  r2.objects.set(manifest.snapshot_key, JSON.stringify(snapshot))
+
+  assert.deepEqual(await readSnapshotSource(r2, cache), { mode: 'r2', snapshot })
+  assert.deepEqual(await (await cache.match(envelopeRequest(manifest)))?.json(), { manifest, snapshot })
+  assert.deepEqual(await (await cache.match(lastVerifiedEnvelopeRequest()))?.json(), { manifest, snapshot })
+})
+
+test('uses the last verified manifest and snapshot envelope when R2 is offline', async () => {
+  const { manifest, snapshot } = await fixture()
+  const cache = new FakeCache()
+  await cacheEnvelope(cache, manifest, snapshot)
+
+  assert.deepEqual(await readSnapshotSource(new ThrowingR2('public/manifest.json'), cache), {
+    mode: 'cache',
+    snapshot,
+  })
+})
+
+test('uses the verified envelope when the R2 snapshot is missing', async () => {
+  const { manifest, snapshot } = await fixture()
+  const cache = new FakeCache()
+  await cacheEnvelope(cache, manifest, snapshot)
   const r2 = new FakeR2()
   r2.objects.set('public/manifest.json', JSON.stringify(manifest))
 
-  assert.deepEqual(await readSnapshotSource(r2, kv, cache), { mode: 'r2', snapshot })
+  assert.deepEqual(await readSnapshotSource(r2, cache), { mode: 'cache', snapshot })
 })
 
-test('falls back to legacy when manifest R2 get fails and the old cache misses', async () => {
-  const kv = new FakeKv()
-  kv.values.set('public:read-mode', { mode: 'r2' })
-  kv.values.set('public:current', pointer())
+test('uses the verified envelope when the R2 snapshot is corrupt', async () => {
+  const { manifest, snapshot } = await fixture()
+  const cache = new FakeCache()
+  await cacheEnvelope(cache, manifest, snapshot)
+  const r2 = new FakeR2()
+  r2.objects.set('public/manifest.json', JSON.stringify(manifest))
+  r2.objects.set(manifest.snapshot_key, '{')
 
-  assert.deepEqual(await readSnapshotSource(new ThrowingR2('public/manifest.json'), kv, new FakeCache()), { mode: 'legacy' })
+  assert.deepEqual(await readSnapshotSource(r2, cache), { mode: 'cache', snapshot })
+})
+
+test('rejects a rollback manifest and keeps the newer verified cache envelope', async () => {
+  const cached = await fixture(9)
+  const rolledBack = await fixture(8)
+  const cache = new FakeCache()
+  await cacheEnvelope(cache, cached.manifest, cached.snapshot)
+  const r2 = new FakeR2()
+  r2.objects.set('public/manifest.json', JSON.stringify(rolledBack.manifest))
+  r2.objects.set(rolledBack.manifest.snapshot_key, JSON.stringify(rolledBack.snapshot))
+
+  assert.deepEqual(await readSnapshotSource(r2, cache), {
+    mode: 'cache',
+    snapshot: cached.snapshot,
+  })
+})
+
+test('rejects a corrupt cached envelope and falls back to legacy without mixing sources', async () => {
+  const { manifest, snapshot } = await fixture()
+  const cache = new FakeCache()
+  await cache.put(
+    lastVerifiedEnvelopeRequest(),
+    new Response(JSON.stringify({ manifest, snapshot: { ...snapshot, published_at: snapshot.published_at + 1 } })),
+  )
+
+  assert.deepEqual(await readSnapshotSource(new ThrowingR2('public/manifest.json'), cache), { mode: 'legacy' })
 })

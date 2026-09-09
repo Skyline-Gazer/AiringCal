@@ -3,9 +3,10 @@
 ## Task 4.2 dispatch (2026-09-09)
 
 - **Plan/OpenSpec task**: `Task 4.2: R2 → Cache API → legacy KV fallback` / `4.2 Implement fallback order R2 to last verified Cache API to migration-period legacy KV, including corrupt, missing, rollback-generation, and VPS-offline tests`.
-- **Stage**: `implementing`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix rounds: 0.
+- **Stage**: `implementation complete; awaiting independent review`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix rounds: 0.
 - **Baseline**: `origin/dev` `92ef245ca0f38ae07a23195beac17d168cb6ad4c` (PR #17, Task 4.1 merged). The branch is `codex/vps-task-4-2` in `.worktrees/vps-task-4-2`.
 - **Boundary**: replace the retained legacy-pointer compatibility cache with a validated `{ manifest, snapshot }` Cache API envelope keyed to the manifest generation/hash; reject rollback generations; expose `r2|cache|legacy` health source; preserve public response/parameter contracts and never access VPS or PostgreSQL. Do not start Task 5.1.
+- **Implementation evidence**: strict TDD RED observed after dependency recovery: R2 offline returned `legacy`, rollback generation was accepted as `r2`, and health could not report `cache`. GREEN: `src/r2-snapshot.test.ts` 12/12 (offline, missing, corrupt, rollback, invalid envelope); `src/health.test.ts` 6/6; full Read Worker 56/56; workspace `typecheck`, `build:check`, and `git diff --check` pass. The task command's bare filenames do not resolve from this package, so focused files ran as `src/r2-snapshot.test.ts` and `src/health.test.ts`; `tsx` requires the approved non-sandbox local IPC environment. No live R2/KV/VPS/PostgreSQL calls were made.
 
 ## Task 4.1 final checkoff (2026-09-09)
 
