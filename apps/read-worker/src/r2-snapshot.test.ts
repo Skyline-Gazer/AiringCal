@@ -126,6 +126,21 @@ test('falls back to the complete legacy source when snapshot R2 get throws', asy
   assert.deepEqual(await readSnapshotSource(r2), { mode: 'legacy' })
 })
 
+test('warms the old cache after a legacy pointer R2 snapshot is verified', async () => {
+  const { snapshot } = await fixture()
+  const kv = new FakeKv()
+  const pointerValue = { ...pointer(), content_hash: snapshot.content_hash, r2_key: `snapshots/v1/9-${snapshot.content_hash}.json` }
+  kv.values.set('public:read-mode', { mode: 'r2' })
+  kv.values.set('public:current', pointerValue)
+  const cache = new FakeCache()
+  const r2 = new FakeR2()
+  r2.objects.set(pointerValue.r2_key, JSON.stringify(snapshot))
+
+  assert.deepEqual(await readSnapshotSource(r2, kv, cache), { mode: 'r2', snapshot })
+  const cached = await cache.match(new Request(`https://cache.local/r2-snapshot/${snapshot.content_hash}`))
+  assert.deepEqual(await cached?.json(), snapshot)
+})
+
 test('falls back to the previously verified cache when manifest R2 get fails', async () => {
   const { snapshot } = await fixture()
   const kv = new FakeKv()

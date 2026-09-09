@@ -62,7 +62,17 @@ async function loadLegacyVerifiedSnapshot(
     const object = await dataR2.get(pointer.r2_key)
     if (object !== null) {
       const snapshot = await parsePublicSnapshotV1(JSON.parse(await object.text()))
-      if (snapshot.generation === pointer.generation && snapshot.content_hash === pointer.content_hash) return snapshot
+      if (snapshot.generation === pointer.generation && snapshot.content_hash === pointer.content_hash) {
+        try {
+          await cache.put(
+            cacheRequest(pointer.content_hash),
+            new Response(JSON.stringify(snapshot), { headers: { 'content-type': 'application/json' } }),
+          )
+        } catch {
+          // Cache warming is best effort; the verified R2 object is already loaded.
+        }
+        return snapshot
+      }
     }
   } catch {
     // Use the last verified cache entry below.
