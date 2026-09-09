@@ -1,11 +1,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildManifest, buildPublicSnapshot, type PublicSnapshotManifestV1 } from '@airing-cal/domain'
-import type { PublicSnapshotV1 } from '@airing-cal/storage'
+import type { PublicCalendarDayV1, PublicSnapshotV1 } from '@airing-cal/storage'
 import { loadVerifiedSnapshot, readSnapshotSource, type ReadSnapshotCache, type ReadSnapshotDataR2 } from './r2-snapshot.ts'
 
-async function fixture(generation = 9): Promise<{ manifest: PublicSnapshotManifestV1; snapshot: PublicSnapshotV1 }> {
-  const snapshot = await buildPublicSnapshot({ collections: [], calendar: [], published_at: 1_000 }, generation)
+async function fixture(
+  generation = 9,
+  publishedAt = 1_000,
+  calendar: PublicCalendarDayV1[] = [],
+): Promise<{ manifest: PublicSnapshotManifestV1; snapshot: PublicSnapshotV1 }> {
+  const snapshot = await buildPublicSnapshot({ collections: [], calendar, published_at: publishedAt }, generation)
   return {
     snapshot,
     manifest: buildManifest(snapshot, {
@@ -176,6 +180,24 @@ test('rejects a rollback manifest and keeps the newer verified cache envelope', 
   const r2 = new FakeR2()
   r2.objects.set('public/manifest.json', JSON.stringify(rolledBack.manifest))
   r2.objects.set(rolledBack.manifest.snapshot_key, JSON.stringify(rolledBack.snapshot))
+
+  assert.deepEqual(await readSnapshotSource(r2, cache), {
+    mode: 'cache',
+    snapshot: cached.snapshot,
+  })
+})
+
+test('rejects a same-generation manifest with a different hash and keeps the verified cache envelope', async () => {
+  const cached = await fixture(9)
+  const conflicting = await fixture(9, 1_000, [{
+    weekday: { en: 'Sun', cn: '星期日', ja: '日', id: 7 },
+    items: [],
+  }])
+  const cache = new FakeCache()
+  await cacheEnvelope(cache, cached.manifest, cached.snapshot)
+  const r2 = new FakeR2()
+  r2.objects.set('public/manifest.json', JSON.stringify(conflicting.manifest))
+  r2.objects.set(conflicting.manifest.snapshot_key, JSON.stringify(conflicting.snapshot))
 
   assert.deepEqual(await readSnapshotSource(r2, cache), {
     mode: 'cache',
