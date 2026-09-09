@@ -4,6 +4,19 @@
 
 `apps/vps-sync` 仅使用标准 TLS `DATABASE_URL` 连接 PostgreSQL，且不使用供应商 SDK 或控制面 API。当前支持的 server baseline 是 PostgreSQL 18；运行环境必须保持在受维护的 `18.x` patch release。不得自动升级到未来 major，升级前必须完成显式兼容性评审和新的 real-server integration。PostgreSQL 17 compatibility 未验证，也不属于本次已批准 baseline 的验收门禁。
 
+VPS 运行时组合入口只读取以下配置；它创建 Node `pg` authority 和 R2 的 S3-compatible port，再注入单次 `runOnce`。全部必填，不输出配置值，也不提供 scheduler 或其它运行模式。
+
+| 变量 | 用途 |
+| --- | --- |
+| `DATABASE_URL` | direct/session-preserving PostgreSQL TLS connection。 |
+| `R2_ENDPOINT` | R2 S3-compatible endpoint。 |
+| `R2_BUCKET` | 存放 immutable snapshot 的 bucket。 |
+| `R2_ACCESS_KEY_ID` | R2 S3 access key ID。 |
+| `R2_SECRET_ACCESS_KEY` | R2 S3 secret access key。 |
+| `R2_REGION` | R2 S3 signing region（通常为 `auto`）。 |
+
+发布上传或回读失败会保留 PostgreSQL 中可重放的 pending publication；组合层只将该结果交给 coordinator 的既有脱敏 `runtime/STAGE_FAILED` 终态路径，绝不把 R2 错误内容持久化或通知。
+
 迁移运行器在开始业务同步前执行，并先取得独立 PostgreSQL session advisory lock，随后才在锁内 bootstrap/校验 `schema_migrations`、读取 history 和应用 migration tail；未获得该锁会失败退出，不能执行任何 bootstrap DDL 或继续业务写入。`DATABASE_URL` 必须是 direct/session-preserving connection，不能使用 transaction pooling：advisory lock 属于数据库 session，事务池会在事务间切换 server connection。该要求同样适用于后续 migrations 以及计划中的 `pg_dump`/`pg_restore` 工作。
 
 ## PostgreSQL authority 写入边界
