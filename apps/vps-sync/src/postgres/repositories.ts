@@ -3,6 +3,7 @@ import type { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg'
 import { withSessionLock } from './migrate.ts'
 import { isDeepStrictEqual } from 'node:util'
 import type { SubjectSession, MediaCandidate } from '../media/refresh.ts'
+import type { PublicationPort, PublicationStatePort } from '../publication/publish.ts'
 import {
   assertCompleteStateInput,
   assertMediaResultInput,
@@ -538,14 +539,35 @@ export class PostgresAuthority {
   }
 
   async getPublicationState(): Promise<PublicationState> {
-    const result = await this.query<PublicationRow>(this.pool, 'SELECT * FROM publications WHERE id = true')
+    return this.getPublicationStateForMode('live')
+  }
+
+  publicationPort(): PublicationPort {
+    return { forMode: (mode) => this.publicationStatePort(mode) }
+  }
+
+  private publicationStatePort(mode: 'live' | 'shadow'): PublicationStatePort {
+    return {
+      getState: () => this.getPublicationStateForMode(mode),
+      savePending: (input) => this.savePendingPublicationForMode(mode, input),
+      claimPending: (input) => this.claimPendingPublicationForMode(mode, input),
+      verify: (input) => this.verifyPublicationForMode(mode, input),
+    }
+  }
+
+  private async getPublicationStateForMode(mode: 'live' | 'shadow'): Promise<PublicationState> {
+    const result = await this.query<PublicationRow>(this.pool, 'SELECT * FROM publications WHERE mode = $1', [mode])
     return parsePublicationRow(requiredRow(result.rows[0], 'PUBLICATION_STATE_MISSING'))
   }
 
   async savePendingPublication(input: PendingPublicationInput): Promise<PublicationState> {
+    return this.savePendingPublicationForMode('live', input)
+  }
+
+  private async savePendingPublicationForMode(mode: 'live' | 'shadow', input: PendingPublicationInput): Promise<PublicationState> {
     assertPendingPublicationInput(input)
     return this.transaction(async (client) => {
-      const result = await this.query<PublicationRow>(client, 'SELECT * FROM publications WHERE id = true FOR UPDATE')
+      const result = await this.query<PublicationRow>(client, 'SELECT * FROM publications WHERE mode = $1 FOR UPDATE', [mode])
       const current = parsePublicationRow(requiredRow(result.rows[0], 'PUBLICATION_STATE_MISSING'))
       if (current.pendingGeneration === input.generation
         && current.pendingContentHash === input.contentHash
@@ -562,28 +584,32 @@ export class PostgresAuthority {
       const update = await this.query<PublicationRow>(client,
         `UPDATE publications SET pending_generation = $1, pending_content_hash = $2,
           pending_object_key = $3, pending_run_id = $4, pending_claimed_at = $5,
-          pending_created_at = $6 WHERE id = true RETURNING *`,
-        [input.generation, input.contentHash, input.objectKey, input.runId, null, input.createdAt],
+          pending_created_at = $6 WHERE mode = $7 RETURNING *`,
+        [input.generation, input.contentHash, input.objectKey, input.runId, null, input.createdAt, mode],
       )
       return parsePublicationRow(requiredRow(update.rows[0], 'PUBLICATION_STATE_MISSING'))
     })
   }
 
   async claimPendingPublication(input: PublicationClaimInput): Promise<PublicationState> {
+    return this.claimPendingPublicationForMode('live', input)
+  }
+
+  private async claimPendingPublicationForMode(mode: 'live' | 'shadow', input: PublicationClaimInput): Promise<PublicationState> {
     assertPublicationClaimInput(input)
     const result = await this.query<PublicationRow>(this.pool,
       `UPDATE publications SET pending_claimed_at = $5
-       WHERE id = true AND pending_generation = $1 AND pending_content_hash = $2
+       WHERE mode = $6 AND pending_generation = $1 AND pending_content_hash = $2
          AND pending_object_key = $3 AND pending_run_id = $4
          AND pending_claimed_at IS NULL
          AND pending_generation = verified_generation + 1
        RETURNING *`,
-      [input.generation, input.contentHash, input.objectKey, input.runId, input.claimedAt],
+      [input.generation, input.contentHash, input.objectKey, input.runId, input.claimedAt, mode],
     )
     if ((result.rowCount ?? 0) === 1) {
       return parsePublicationRow(requiredRow(result.rows[0], 'PUBLICATION_STATE_MISSING'))
     }
-    const current = await this.getPublicationState()
+    const current = await this.getPublicationStateForMode(mode)
     if (current.pendingGeneration === input.generation
       && current.pendingContentHash === input.contentHash
       && current.pendingObjectKey === input.objectKey
@@ -596,14 +622,14 @@ export class PostgresAuthority {
   async clearUnclaimedPending(input: UnclaimedPendingCleanupInput): Promise<PublicationState> {
     assertUnclaimedPendingCleanupInput(input)
     const result = await this.query<PublicationRow>(this.pool,
-      `UPDATE publications SET pending_generation = NULL, pending_content_hash = NULL,
+       `UPDATE publications SET pending_generation = NULL, pending_content_hash = NULL,
          pending_object_key = NULL, pending_run_id = NULL, pending_claimed_at = NULL,
          pending_created_at = NULL
-       WHERE id = true AND verified_generation = $1
+       WHERE mode = $3 AND verified_generation = $1
          AND verified_content_hash IS NOT DISTINCT FROM $2
          AND pending_generation IS NOT NULL AND pending_claimed_at IS NULL
        RETURNING *`,
-      [input.verifiedGeneration, input.verifiedContentHash],
+      [input.verifiedGeneration, input.verifiedContentHash, 'live'],
     )
     if ((result.rowCount ?? 0) === 1) {
       return parsePublicationRow(requiredRow(result.rows[0], 'PUBLICATION_STATE_MISSING'))
@@ -617,18 +643,22 @@ export class PostgresAuthority {
   }
 
   async verifyPublication(input: PublicationVerificationInput): Promise<PublicationState> {
+    return this.verifyPublicationForMode('live', input)
+  }
+
+  private async verifyPublicationForMode(mode: 'live' | 'shadow', input: PublicationVerificationInput): Promise<PublicationState> {
     assertPublicationVerificationInput(input)
     const result = await this.query<PublicationRow>(this.pool,
       `UPDATE publications SET verified_generation = $1, verified_content_hash = $2,
         verified_object_key = $3, verified_at = $6, verified_run_id = pending_run_id,
         pending_generation = NULL, pending_content_hash = NULL, pending_object_key = NULL,
         pending_run_id = NULL, pending_claimed_at = NULL, pending_created_at = NULL
-       WHERE id = true AND pending_generation = $1 AND pending_content_hash = $2
+       WHERE mode = $7 AND pending_generation = $1 AND pending_content_hash = $2
          AND pending_object_key = $3 AND pending_run_id = $4
          AND pending_claimed_at = $5 AND pending_claimed_at IS NOT NULL
          AND pending_generation = verified_generation + 1
        RETURNING *`,
-      [input.generation, input.contentHash, input.objectKey, input.runId, input.claimedAt, input.verifiedAt],
+      [input.generation, input.contentHash, input.objectKey, input.runId, input.claimedAt, input.verifiedAt, mode],
     )
     if ((result.rowCount ?? 0) !== 1) throw new Error('PUBLICATION_GENERATION_CONFLICT')
     return parsePublicationRow(requiredRow(result.rows[0], 'PUBLICATION_STATE_MISSING'))

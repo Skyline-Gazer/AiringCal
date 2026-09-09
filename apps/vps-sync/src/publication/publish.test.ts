@@ -139,6 +139,20 @@ test('validates an existing immutable snapshot after a real conditional 412 resp
   assert.ok(events.includes(`get:${key}`))
 })
 
+test('does not switch a manifest when a 412 existing snapshot has wrong bytes', async () => {
+  const { ports, objects, publication } = fixture()
+  const snapshot = await buildPublicSnapshot(candidate().snapshot, 1)
+  const key = `snapshots/v1/1-${snapshot.content_hash}.json`
+  objects.set(key, new TextEncoder().encode('{"truncated":true}'))
+  ports.s3.put = async (objectKey, _bytes, options) => {
+    if (objectKey === key && options?.ifNoneMatch) throw { $metadata: { httpStatusCode: 412 } }
+  }
+  assert.equal(await publishSnapshot(ports, candidate(), 'live'), 'pending')
+  assert.equal(objects.has('public/manifest.json'), false)
+  assert.equal(publication().verifiedGeneration, 0)
+  assert.equal(publication().pendingGeneration, 1)
+})
+
 test('retries a documented conditional 409 conflict once instead of swallowing it as pending', async () => {
   const { ports, events } = fixture()
   const put = ports.s3.put
