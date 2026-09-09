@@ -5,7 +5,9 @@ import { isConfirmedNotFoundSubjectMeta, type SubjectMeta } from '@airing-cal/do
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 import {
   readSnapshotSource,
+  type ReadSnapshotCache,
   type ReadSnapshotDataR2,
+  type ReadSnapshotKv,
 } from './r2-snapshot.ts'
 import { buildMigrationHealth, type MigrationHealthD1, type MigrationHealthEnv } from './health.ts'
 
@@ -40,8 +42,26 @@ function nowSeconds(): number {
   return Math.floor(Date.now() / 1000)
 }
 
+function defaultSnapshotCache(): ReadSnapshotCache {
+  const cache = (globalThis as { caches?: { default?: Cache } }).caches?.default
+  return {
+    async match(request: Request): Promise<Response | undefined> {
+      if (!cache) throw new Error('Cache API unavailable')
+      return await cache.match(request)
+    },
+    async put(request: Request, response: Response): Promise<void> {
+      if (!cache) throw new Error('Cache API unavailable')
+      await cache.put(request, response)
+    },
+  }
+}
+
 function snapshotSourceFor(env: ReadEnv) {
-  return readSnapshotSource(env.AIRING_CAL_DATA_R2 as unknown as ReadSnapshotDataR2)
+  return readSnapshotSource(
+    env.AIRING_CAL_DATA_R2 as unknown as ReadSnapshotDataR2,
+    env.AIRING_CAL_KV as ReadSnapshotKv,
+    defaultSnapshotCache(),
+  )
 }
 
 function migrationHealthEnvFor(env: ReadEnv): MigrationHealthEnv {

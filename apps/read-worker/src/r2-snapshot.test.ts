@@ -1,8 +1,20 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { buildManifest, buildPublicSnapshot, type PublicSnapshotManifestV1 } from '@airing-cal/domain'
-import type { PublicSnapshotV1 } from '@airing-cal/storage'
-import { loadVerifiedSnapshot, readSnapshotSource, type ReadSnapshotDataR2 } from './r2-snapshot.ts'
+import type { PublicSnapshotPointerV1, PublicSnapshotV1 } from '@airing-cal/storage'
+import { loadVerifiedSnapshot, readSnapshotSource, type ReadSnapshotCache, type ReadSnapshotDataR2, type ReadSnapshotKv } from './r2-snapshot.ts'
+
+const hash = 'c'.repeat(64)
+
+function pointer(generation = 9): PublicSnapshotPointerV1 {
+  return {
+    schema_version: 1,
+    generation,
+    content_hash: hash,
+    r2_key: `snapshots/v1/${generation}-${hash}.json`,
+    published_at: 1_000,
+  }
+}
 
 async function fixture(generation = 9): Promise<{ manifest: PublicSnapshotManifestV1; snapshot: PublicSnapshotV1 }> {
   const snapshot = await buildPublicSnapshot({ collections: [], calendar: [], published_at: 1_000 }, generation)
@@ -21,6 +33,26 @@ class FakeR2 implements ReadSnapshotDataR2 {
   async get(key: string): Promise<{ key: string; text(): Promise<string> } | null> {
     const value = this.objects.get(key)
     return value === undefined ? null : { key, async text() { return value } }
+  }
+}
+
+class FakeKv implements ReadSnapshotKv {
+  values = new Map<string, unknown>()
+
+  async get(key: string, _type: 'json'): Promise<unknown> {
+    return this.values.get(key) ?? null
+  }
+}
+
+class FakeCache implements ReadSnapshotCache {
+  values = new Map<string, Response>()
+
+  async match(request: Request): Promise<Response | undefined> {
+    return this.values.get(request.url)
+  }
+
+  async put(request: Request, response: Response): Promise<void> {
+    this.values.set(request.url, response)
   }
 }
 
@@ -92,4 +124,44 @@ test('falls back to the complete legacy source when snapshot R2 get throws', asy
   r2.objects.set('public/manifest.json', JSON.stringify(manifest))
 
   assert.deepEqual(await readSnapshotSource(r2), { mode: 'legacy' })
+})
+
+test('falls back to the previously verified cache when manifest R2 get fails', async () => {
+  const { snapshot } = await fixture()
+  const kv = new FakeKv()
+  const pointerValue = { ...pointer(), content_hash: snapshot.content_hash, r2_key: `snapshots/v1/9-${snapshot.content_hash}.json` }
+  kv.values.set('public:read-mode', { mode: 'r2' })
+  kv.values.set('public:current', pointerValue)
+  const cache = new FakeCache()
+  await cache.put(
+    new Request(`https://cache.local/r2-snapshot/${snapshot.content_hash}`),
+    new Response(JSON.stringify(snapshot), { headers: { 'content-type': 'application/json' } }),
+  )
+
+  assert.deepEqual(await readSnapshotSource(new ThrowingR2('public/manifest.json'), kv, cache), { mode: 'r2', snapshot })
+})
+
+test('falls back to the previously verified cache when the manifest snapshot is missing', async () => {
+  const { manifest, snapshot } = await fixture()
+  const kv = new FakeKv()
+  const pointerValue = { ...pointer(), content_hash: snapshot.content_hash, r2_key: `snapshots/v1/9-${snapshot.content_hash}.json` }
+  kv.values.set('public:read-mode', { mode: 'r2' })
+  kv.values.set('public:current', pointerValue)
+  const cache = new FakeCache()
+  await cache.put(
+    new Request(`https://cache.local/r2-snapshot/${snapshot.content_hash}`),
+    new Response(JSON.stringify(snapshot), { headers: { 'content-type': 'application/json' } }),
+  )
+  const r2 = new FakeR2()
+  r2.objects.set('public/manifest.json', JSON.stringify(manifest))
+
+  assert.deepEqual(await readSnapshotSource(r2, kv, cache), { mode: 'r2', snapshot })
+})
+
+test('falls back to legacy when manifest R2 get fails and the old cache misses', async () => {
+  const kv = new FakeKv()
+  kv.values.set('public:read-mode', { mode: 'r2' })
+  kv.values.set('public:current', pointer())
+
+  assert.deepEqual(await readSnapshotSource(new ThrowingR2('public/manifest.json'), kv, new FakeCache()), { mode: 'legacy' })
 })
