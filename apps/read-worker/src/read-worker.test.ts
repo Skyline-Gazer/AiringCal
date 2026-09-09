@@ -54,6 +54,27 @@ class MockDataR2 {
   }
 }
 
+class TrackingKV extends MockKV {
+  getCalls: string[] = []
+
+  override async get(key: string, type?: 'json') {
+    this.getCalls.push(key)
+    return await super.get(key, type)
+  }
+}
+
+class SnapshotCache {
+  constructor(private readonly envelope: unknown) {}
+
+  async match(request: Request) {
+    return request.url === 'https://cache.local/r2-snapshot/last-verified'
+      ? new Response(JSON.stringify(this.envelope))
+      : undefined
+  }
+
+  async put() {}
+}
+
 function env(kv = new MockKV(), dataR2 = new MockDataR2()) {
   return {
     AIRING_CAL_KV: kv,
@@ -125,6 +146,44 @@ test('read-worker keeps collection and calendar response fixtures unchanged for 
     const r2Response = await worker.fetch(new Request(`https://read.local${path}`), env(new MockKV(), dataR2) as any)
     assert.equal(r2Response.status, legacyResponse.status, path)
     assert.deepEqual(await r2Response.json(), await legacyResponse.json(), path)
+  }
+})
+
+test('read-worker serves a verified cached snapshot without reading legacy KV when R2 is unavailable', async () => {
+  const kv = new TrackingKV()
+  const snapshot = await buildPublicSnapshot({
+    collections: [{
+      subject_id: 1,
+      name: 'Cached collection', name_cn: '', summary: '', images: { common: null, large: null },
+      image_status: { common: 'pending_next_cron', large: 'pending_next_cron' }, eps: 1, total_episodes: 1,
+      ep_status: 0, vol_status: 0, type: 2, collection_type: 3, rate: 0, nsfw: false, date: '', tags: [], updated_at: '',
+    }],
+    calendar: [{ weekday: { en: 'Mon', cn: '星期一', ja: '月', id: 1 }, items: [] }],
+    published_at: 1_000,
+  }, 9)
+  const manifest = buildManifest(snapshot, {
+    source_observed_at: '1970-01-01T00:16:41.000Z',
+    git_sha: 'a'.repeat(40),
+  })
+  const originalCaches = (globalThis as { caches?: unknown }).caches
+  ;(globalThis as { caches?: unknown }).caches = { default: new SnapshotCache({ manifest, snapshot }) }
+
+  try {
+    for (const [path, expected] of [
+      ['/collections?type=watching', { data: snapshot.collections.watching, total: 1, page: 1, limit: 24, types: snapshot.summary }],
+      ['/calendar', snapshot.calendar],
+    ] as const) {
+      const response = await worker.fetch(new Request(`https://read.local${path}`), {
+        AIRING_CAL_KV: kv,
+        AIRING_CAL_DATA_R2: { get: async () => { throw new Error('R2 offline') } },
+      } as any)
+
+      assert.equal(response.status, 200, path)
+      assert.deepEqual(await response.json(), expected, path)
+    }
+    assert.deepEqual(kv.getCalls, [])
+  } finally {
+    ;(globalThis as { caches?: unknown }).caches = originalCaches
   }
 })
 

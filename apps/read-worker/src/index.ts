@@ -340,7 +340,7 @@ async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
   const page = parsePositiveInteger('page', singleQueryParameter(url.searchParams, 'page'), 1)
   const limit = parsePositiveInteger('limit', singleQueryParameter(url.searchParams, 'limit'), 24, 100)
   const source = await snapshotSourceFor(env)
-  if (source.mode === 'r2') {
+  if (source.mode !== 'legacy') {
     const data = source.snapshot.collections[type]
     const start = (page - 1) * limit
     return json({
@@ -363,7 +363,7 @@ async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
 async function handleCalendar(env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const source = await snapshotSourceFor(env)
-  if (source.mode === 'r2') return json(source.snapshot.calendar)
+  if (source.mode !== 'legacy') return json(source.snapshot.calendar)
   const activeInstance = await activeSnapshotInstance(storage)
   const data = await readSnapshot<unknown[]>(storage, activeInstance, 'calendar', snapshotCalendarKey()) ?? []
   return json(await hydrateCalendarImages(data, env))
