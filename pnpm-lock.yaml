@@ -103,6 +103,9 @@ importers:
       '@airing-cal/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@airing-cal/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
       '@aws-sdk/client-s3':
         specifier: 3.1124.0
         version: 3.1124.0
