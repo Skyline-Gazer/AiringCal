@@ -32,13 +32,18 @@ function pgEnvironment(databaseUrl: string): Record<string, string | undefined> 
   if (url.protocol !== 'postgres:' && url.protocol !== 'postgresql:') throw new Error('BACKUP_DATABASE_URL_INVALID')
   const name = url.pathname.slice(1)
   if (!url.hostname || !name) throw new Error('BACKUP_DATABASE_URL_INVALID')
-  return {
+  const environment: Record<string, string | undefined> = {
     PGHOST: url.hostname,
     PGPORT: url.port || '5432',
     PGUSER: decodeURIComponent(url.username),
     PGPASSWORD: decodeURIComponent(url.password),
     PGDATABASE: decodeURIComponent(name),
   }
+  for (const [key, value] of url.searchParams) {
+    if (key !== 'sslmode' || environment.PGSSLMODE !== undefined || !value) throw new Error('BACKUP_DATABASE_URL_INVALID')
+    environment.PGSSLMODE = value
+  }
+  return environment
 }
 
 function timestamp(now: number): string { return new Date(now).toISOString().replace(/[.:]/g, '-') }
@@ -74,7 +79,8 @@ export function createProductionBackup(input: Pick<BackupDependencies, 'database
   return createBackup({
     ...input,
     command: (command, args, environment) => new Promise((resolve, reject) => {
-      const child = spawn(command, args, { env: { ...process.env, ...environment }, stdio: 'ignore' })
+      const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PG')))
+      const child = spawn(command, args, { env: { ...env, ...environment }, stdio: 'ignore' })
       child.once('error', reject)
       child.once('exit', (code) => code === 0 ? resolve() : reject(new Error('BACKUP_DUMP_FAILED')))
     }),

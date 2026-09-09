@@ -73,7 +73,7 @@ VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection
 
 ## PostgreSQL backup 上传
 
-运行时在发布成功或确认 `no_change` 后执行 `pg_dump --format=custom`。连接 URL 只被解析为子进程的 `PGHOST`、`PGPORT`、`PGUSER`、`PGPASSWORD` 与 `PGDATABASE` 环境变量，不进入 argv、R2 key、manifest、持久化结果或日志。dump 写入受限的 `/tmp/airing-cal/backup-*` 目录；无论 dump、读取或任一上传成功与否，目录都会在 `finally` 中移除。
+运行时在发布成功或确认 `no_change` 后执行 `pg_dump --format=custom`。连接 URL 只被解析为子进程的 `PGHOST`、`PGPORT`、`PGUSER`、`PGPASSWORD`、`PGDATABASE` 与受支持的 TLS 参数 `sslmode`（映射为 `PGSSLMODE`）环境变量，不进入 argv、R2 key、manifest、持久化结果或日志；其他 URL query 参数会在命令启动前以 `BACKUP_DATABASE_URL_INVALID` 拒绝。子进程会清除宿主环境中的全部 `PG*` 变量，避免它们改变该 URL 指定的目标。dump 写入受限的 `/tmp/airing-cal/backup-*` 目录；无论 dump、读取或任一上传成功与否，目录都会在 `finally` 中移除。
 
 成功时先上传 `backups/postgres/YYYY/MM/DD/<timestamp>-<40-char-git-sha>.dump`，再上传同 stem 的 `.json`。manifest 是 canonical JSON，严格包含 `schema_version`、`run_id`、`git_sha`、`created_at`、`object_key`、`size`、`sha256`。R2 dump 或 manifest 上传失败不会撤销公开 snapshot；协调器会把 backup component 标为 failed，并将终态保留为 `partial`。retention、下载、checksum 回验、`pg_restore` 和真实恢复演练属于后续任务，当前没有实现。
 

@@ -6,7 +6,7 @@ test('creates a custom dump then uploads dump before its canonical manifest', as
   const events: string[] = []
   const files = new Map<string, Uint8Array>()
   const backup = createBackup({
-    databaseUrl: 'postgres://user:secret@db.example:5432/airing',
+    databaseUrl: 'postgres://user:secret@db.example:5432/airing?sslmode=require',
     gitSha: 'a'.repeat(40),
     now: () => Date.parse('2026-09-09T12:34:56.000Z'),
     command: async (command, args, environment) => {
@@ -16,6 +16,8 @@ test('creates a custom dump then uploads dump before its canonical manifest', as
       assert.ok(!args.some((arg) => arg.includes('postgres://')))
       assert.equal(environment.PGHOST, 'db.example')
       assert.equal(environment.PGDATABASE, 'airing')
+      assert.equal(environment.PGSSLMODE, 'require')
+      assert.equal(environment.PGOPTIONS, undefined)
       const output = args.find((arg) => arg.startsWith('--file='))?.slice('--file='.length)
       assert.ok(output)
       files.set(output, new TextEncoder().encode('custom-dump'))
@@ -38,6 +40,37 @@ test('creates a custom dump then uploads dump before its canonical manifest', as
   assert.equal(result.size, 11)
   assert.match(result.sha256, /^[a-f0-9]{64}$/)
   assert.ok(events.some((event) => event.startsWith('remove:/tmp/airing-cal/backup-1')))
+})
+
+test('rejects backup URLs with unsupported connection parameters', async () => {
+  const backup = createBackup({
+    databaseUrl: 'postgres://user:secret@db.example/airing?application_name=unsafe', gitSha: 'c'.repeat(40), now: () => 0,
+    command: async () => { throw new Error('must not run') },
+    files: { makeDirectory: async () => '/tmp/airing-cal/backup-3', read: async () => new Uint8Array(), remove: async () => undefined },
+    s3: { put: async () => undefined },
+  })
+
+  await assert.rejects(() => backup({ runId: 'run-3' }), { message: 'BACKUP_DATABASE_URL_INVALID' })
+})
+
+test('does not copy host PostgreSQL connection defaults into pg_dump', async () => {
+  const previous = process.env.PGOPTIONS
+  process.env.PGOPTIONS = '--host-override'
+  try {
+    const backup = createBackup({
+      databaseUrl: 'postgres://user:secret@db.example/airing?sslmode=require', gitSha: 'd'.repeat(40), now: () => 0,
+      command: async (_command, _args, environment) => {
+        assert.equal(environment.PGOPTIONS, undefined)
+        assert.equal(environment.PGSSLMODE, 'require')
+      },
+      files: { makeDirectory: async () => '/tmp/airing-cal/backup-4', read: async () => new Uint8Array(), remove: async () => undefined },
+      s3: { put: async () => undefined },
+    })
+    await backup({ runId: 'run-4' })
+  } finally {
+    if (previous === undefined) delete process.env.PGOPTIONS
+    else process.env.PGOPTIONS = previous
+  }
 })
 
 test('cleans the temporary directory if pg_dump fails', async () => {
