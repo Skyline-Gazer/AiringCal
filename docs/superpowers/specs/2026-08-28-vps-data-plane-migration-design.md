@@ -296,3 +296,9 @@ SQL mocks cannot substitute for these gates.
 8. Retain legacy data resources for at least 30 days. Cleanup is a separate approved change.
 
 Rollback restores the previous verified R2 manifest or legacy read mode and deploys a known-compatible GHCR SHA. It never reverses database migrations, deletes PostgreSQL rows, or removes R2 snapshots/backups/Cloudflare resources.
+
+## 14. Task 3.2 runtime composition
+
+The VPS executable has one dedicated composition entry. It reads only the already-documented PostgreSQL and S3-compatible R2 configuration, constructs `PostgresAuthority` and `createS3Port`, and injects them into the existing `runOnce` boundary. It adds no container, general DI framework, alternate scheduler, or new runtime mode.
+
+The entry maps publication failures to existing sanitized terminal-result categories while leaving the durable pending publication state intact for replay. Tests inject the same ports rather than reading environment variables; the composition test covers required configuration and proves it passes the constructed ports into `runOnce`.
