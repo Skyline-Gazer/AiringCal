@@ -1,5 +1,12 @@
 # Subagent Progress
 
+## Task 6.2 final evidence (2026-09-10)
+
+- **Plan/OpenSpec task**: `Task 6.2: 飞书投递与 notification_failed persistence` / `6.2 Implement bounded notification delivery, notification_failed persistence, previous-failure summary, and credential/error redaction tests`.
+- **Stage**: `final-review`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix rounds: 1.
+- **Implementation**: `7de07df` added bounded delivery and persistence. Review found that a resolved `failed` result was persisted as success and that timeout excluded JSON parsing. Repair `2fc0f26` changes notification result signaling to `sent|failed`; the coordinator records notification failure in its second finish without changing the already-persisted business outcome; the timeout races fetch plus body parsing.
+- **TDD evidence**: RED command `pnpm -F @airing-cal/vps-sync test -- src/notification/deliver.test.ts src/run.test.ts src/postgres/repositories.test.ts` had two expected failures: resolved delivery failure marked notification success, and a hanging `response.json()` exceeded the timeout. GREEN: the same focused suite 30/30; full VPS 187/187, typecheck, build:check, build, and diff check passed. Independent re-run after sandbox IPC limitation passed 64/64; code review found 0 Critical / 0 Important / 0 Minor after this evidence record.
+
 ## Task 5.2 dispatch (2026-09-10)
 
 - **Plan/OpenSpec task**: `Task 5.2: retention 与安全 restore-verify` / `5.2 Implement explicit 30-daily/monthly retention selection and an empty-database restore verification command with non-destructive key and recovery tests`.
