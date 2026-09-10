@@ -26,3 +26,33 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build:check
+
+  vps-sync-image:
+    needs: validate
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify Docker and Alpine package contracts
+        run: |
+          docker buildx build --help
+          docker buildx imagetools inspect node:alpine
+          docker run --rm node:alpine sh -ec 'apk search -x ca-certificates postgresql18-client curl bind-tools netcat-openbsd procps-ng jq'
+      - name: Build production and debug VPS sync images
+        run: |
+          docker build --target production --tag airing-cal-vps-sync:production --file Dockerfile.vps-sync .
+          docker build --target debug --tag airing-cal-vps-sync:debug --file Dockerfile.vps-sync .
+      - name: Verify production image boundaries
+        run: |
+          test "$(docker image inspect --format '{{.Config.User}}' airing-cal-vps-sync:production)" = node
+          test "$(docker image inspect --format '{{json .Config.ExposedPorts}}' airing-cal-vps-sync:production)" = null
+          docker run --rm --entrypoint sh airing-cal-vps-sync:production -ec 'test "$(id -u)" -ne 0; test ! -e /app/src; test ! -e /app/test; test ! -e /app/.git; ! command -v curl; ! command -v git; ! command -v jq; ! command -v python3; ! command -v dig; ! command -v nc; ! command -v make; ! command -v g++'
+      - name: Verify debug diagnostics and fail-closed entrypoint
+        run: |
+          docker run --rm --entrypoint sh airing-cal-vps-sync:debug -ec 'command -v curl; command -v dig; command -v nc; command -v ps; command -v jq'
+          set +e
+          docker run --rm --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m airing-cal-vps-sync:production > entrypoint.log 2>&1
+          status=$?
+          cat entrypoint.log
+          test "$status" -eq 1
+          grep -q RUNTIME_ENTRYPOINT_UNCONFIGURED entrypoint.log

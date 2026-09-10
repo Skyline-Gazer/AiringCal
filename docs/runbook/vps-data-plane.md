@@ -47,7 +47,7 @@ pnpm -F @airing-cal/vps-sync test:integration
 
 核验来源（访问日期：2026-09-10）：Docker Hub 的 [Node Official Image](https://hub.docker.com/_/node) 列出 `node:alpine` 和受支持架构；[nodejs/docker-node Best Practices](https://github.com/nodejs/docker-node/blob/main/docs/BestPractices.md) 说明 Alpine variant、multi-stage、non-root `node` user 及直接 `node` CMD；Alpine v3.24 package index 确认 [ca-certificates](https://pkgs.alpinelinux.org/package/v3.24/main/ppc64le/ca-certificates)、[postgresql18-client](https://pkgs.alpinelinux.org/package/v3.24/main/riscv64/postgresql18-client)、[netcat-openbsd](https://pkgs.alpinelinux.org/package/v3.24/main/armv7/netcat-openbsd) 与 [procps-ng](https://pkgs.alpinelinux.org/package/v3.24/main/x86_64/procps-ng) 名称。其余 debug package URL 已以 v3.24 官方 index 的 `curl`、`bind-tools`、`jq` 路径作 HTTP 200 存在性核验。
 
-本机未安装 `docker`，所以没有运行 Docker CLI、`buildx`、`apk` 或任何 image/container build，也没有记录猜测的 Node、Alpine 版本或 digest。具备 Docker 的受控环境必须先使用官方 [imagetools inspect](https://docs.docker.com/reference/cli/docker/buildx/imagetools/inspect/) 对当时的 `node:alpine` 记录 digest/架构，再运行实际 target build 与 image-content、non-root、read-only filesystem、no-listening-port 验证；这些是 pending container gates，不能由静态测试替代。
+本机未安装 `docker`，因此本地不运行 Docker CLI、`buildx`、`apk` 或 image/container build。PR/push 的 GitHub-hosted Ubuntu runner 执行同一受控验证：先运行 `docker buildx --help`、`imagetools inspect node:alpine` 和临时 `node:alpine` 的 `apk search`，再构建 production/debug target，验证 production 的非 root 用户、无 exposed port、无 source/test/.git/诊断工具，验证 debug 诊断工具，并以 read-only root + tmpfs 运行入口，断言它在 Task 9.3 CLI composition 前以 `RUNTIME_ENTRYPOINT_UNCONFIGURED` 和状态 1 fail closed。该 job 不登录 registry、不推送 image、不连接 VPS 或任何生产数据服务；run log 的 Runner Image 链接是实际已安装 Docker/buildx 版本的审计来源。
 
 ## 上游完整抓取与重试
 
