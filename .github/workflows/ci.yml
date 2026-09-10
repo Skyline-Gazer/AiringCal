@@ -37,7 +37,7 @@ jobs:
         run: |
           docker buildx build --help
           docker buildx imagetools inspect node:alpine
-          docker run --rm node:alpine sh -ec 'apk search -x ca-certificates postgresql18-client curl bind-tools netcat-openbsd procps-ng jq'
+          docker run --rm node:alpine sh -ec 'apk update >/dev/null; apk search -x ca-certificates postgresql18-client curl bind-tools netcat-openbsd procps-ng jq'
       - name: Build production and debug VPS sync images
         run: |
           docker build --target production --tag airing-cal-vps-sync:production --file Dockerfile.vps-sync .
