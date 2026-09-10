@@ -41,6 +41,14 @@ pnpm -F @airing-cal/vps-sync test:integration
 
 参考：<https://www.postgresql.org/docs/18/release-18.html>、<https://www.postgresql.org/docs/18/app-pgdump.html>、<https://neon.com/docs/connect/connection-pooling>。
 
+## Alpine 镜像静态契约
+
+`Dockerfile.vps-sync` 提供 `production` 与显式 opt-in 的 `debug` target。production 只从 build stage 拷贝 `apps/vps-sync/dist`，并只从 production-dependencies stage 拷贝运行时 `node_modules`，以非 root `node` 用户运行，不声明端口；运行时仅安装 CA certificates 与 `postgresql18-client`。debug 继承 production，额外包含已核验的 HTTPS/DNS/TCP/process/network/JSON 诊断包：`curl`、`bind-tools`、`netcat-openbsd`、`procps-ng`、`jq`。`scripts/verify-vps-sync-image.mjs` 对这些 Dockerfile final-stage 边界执行静态断言；它不声称检查了实际 image filesystem。
+
+核验来源（访问日期：2026-09-10）：Docker Hub 的 [Node Official Image](https://hub.docker.com/_/node) 列出 `node:alpine` 和受支持架构；[nodejs/docker-node Best Practices](https://github.com/nodejs/docker-node/blob/main/docs/BestPractices.md) 说明 Alpine variant、multi-stage、non-root `node` user 及直接 `node` CMD；Alpine v3.24 package index 确认 [ca-certificates](https://pkgs.alpinelinux.org/package/v3.24/main/ppc64le/ca-certificates)、[postgresql18-client](https://pkgs.alpinelinux.org/package/v3.24/main/riscv64/postgresql18-client)、[netcat-openbsd](https://pkgs.alpinelinux.org/package/v3.24/main/armv7/netcat-openbsd) 与 [procps-ng](https://pkgs.alpinelinux.org/package/v3.24/main/x86_64/procps-ng) 名称。其余 debug package URL 已以 v3.24 官方 index 的 `curl`、`bind-tools`、`jq` 路径作 HTTP 200 存在性核验。
+
+本机未安装 `docker`，所以没有运行 Docker CLI、`buildx`、`apk` 或任何 image/container build，也没有记录猜测的 Node、Alpine 版本或 digest。具备 Docker 的受控环境必须先使用官方 [imagetools inspect](https://docs.docker.com/reference/cli/docker/buildx/imagetools/inspect/) 对当时的 `node:alpine` 记录 digest/架构，再运行实际 target build 与 image-content、non-root、read-only filesystem、no-listening-port 验证；这些是 pending container gates，不能由静态测试替代。
+
 ## 上游完整抓取与重试
 
 VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection page 与 calendar 请求只由外层重试一次策略控制，最多总计 3 次请求。所有已配置用户的每一页和 calendar 都通过完整性边界后，才会产生可提交的完整观察；分页 total、offset、limit、页长度、重复 subject 或运行时 payload 结构异常都会 fail closed。

@@ -1,0 +1,27 @@
+FROM node:alpine AS deps
+WORKDIR /workspace
+
+RUN npm install --global pnpm@9.15.9
+COPY . .
+RUN pnpm install --frozen-lockfile
+
+FROM deps AS build
+RUN pnpm -F @airing-cal/vps-sync build
+
+FROM node:alpine AS production-dependencies
+WORKDIR /app
+RUN npm install --omit=dev --ignore-scripts --no-package-lock @sentry/node@10.73.0
+
+FROM node:alpine AS production
+WORKDIR /app
+ENV NODE_ENV=production
+RUN apk add --no-cache ca-certificates postgresql18-client
+COPY --from=build /workspace/apps/vps-sync/dist ./dist
+COPY --from=production-dependencies /app/node_modules ./node_modules
+USER node
+CMD ["node", "dist/runtime.js"]
+
+FROM production AS debug
+USER root
+RUN apk add --no-cache curl bind-tools netcat-openbsd procps-ng jq
+USER node
