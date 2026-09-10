@@ -9,7 +9,7 @@ export type PublicationResult =
   | { status: 'published' | 'no_change'; generation: number; contentHash: string }
   | { status: 'failed' | 'skipped' }
 export type MediaSummary = { selected: number; succeeded: number; failed: number }
-export type RunResult = RunFinishInput & { source: RunRequest['source']; mode: RunRequest['mode']; publication?: PublicationResult }
+export type RunResult = RunFinishInput & { source: RunRequest['source']; mode: RunRequest['mode']; gitSha?: string; publication?: PublicationResult }
 export type RunContext = RunRequest & { runId: string; observedAt: string }
 
 export interface RunDependencies {

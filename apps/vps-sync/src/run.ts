@@ -85,7 +85,7 @@ async function runOnceCoordinator(
   const startedAt = at()
   const context = { ...request, runId: deps.runId, observedAt: startedAt }
   const result: RunResult = {
-    ...request, id: deps.runId, stage: 'lock', status: 'failed', heartbeatAt: startedAt,
+    ...request, id: deps.runId, gitSha: validGitSha(deps.gitSha), stage: 'lock', status: 'failed', heartbeatAt: startedAt,
     finishedAt: startedAt, counts: {}, stageDurations: {}, sanitizedError: null,
     components: { collection: 'not_attempted', calendar: 'not_attempted', media: 'not_attempted', publication: 'not_attempted', backup: 'not_attempted', notification: 'not_attempted' },
   }
@@ -95,7 +95,7 @@ async function runOnceCoordinator(
   const components = { ...result.components }
   let heartbeatFailed = false
   const persist = async () => {
-    const { source: _source, mode: _mode, publication: _publication, ...row } = result
+    const { source: _source, mode: _mode, gitSha: _gitSha, publication: _publication, ...row } = result
     await deps.authority.finishRun(row)
   }
   const stage = async <T>(name: keyof RunFinishInput['stageDurations'], operation: () => Promise<T>): Promise<T> => {

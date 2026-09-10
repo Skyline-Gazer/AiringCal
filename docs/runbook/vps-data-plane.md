@@ -83,6 +83,14 @@ VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection
 
 每阶段开始和长阶段每 30 秒更新 heartbeat；阶段完成会取消并等待在途心跳。并行 heartbeat 失败记录为脱敏降级终态，但不会丢弃已经完成的 authority 计数、发布里程碑或阻止对应备份。若 notification 阶段本身的 heartbeat 在首次通知期间失败，协调器会在 timer drain 后发送一次无 heartbeat 的最终降级修正通知，不递归重试。最终释放业务锁与调用资源清理端口。上游可信错误保留 category/code/stage/attempt，未知异常只记录稳定 `runtime/STAGE_FAILED`，不复制异常消息。
 
+## 飞书通知 payload 与签名
+
+`buildFeishuMessage` 目前只构造自定义机器人 `text` 请求体，不读取 webhook、不发出网络请求，也不改变 run 结果。它对每个终态 (`success`、`no_change`、`partial`、`failed`、`skipped`) 输出 run ID、mode/source、Asia/Shanghai 时间、publication generation/hash、有限计数、阶段耗时、publication/backup/notification 结果、git SHA、Node 与 Alpine 字段；coordinator 只传入已验证的 40 位小写 git SHA，构造器会再次校验，缺失或无效值才输出 `unknown`。Alpine 仍为 `unknown`，Node 取当前 `process.version`。前次通知失败仅以 category/code/stage 摘要附加。
+
+实现遵循飞书开放平台的[自定义机器人使用指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot.md)（访问日期：2026-09-10）：POST JSON body 的成功响应 `code` 为 `0`；开启签名时 body 同时携带字符串秒级 `timestamp` 与 `sign`，timestamp 必须在一小时内，sign 为以 `timestamp + "\\n" + secret` 作为 key、空字节串作为消息的 HMAC-SHA256 再 Base64 编码。实际 webhook URL 与 secret 只能由后续投递边界接收，绝不能记录、通知或测试调用。
+
+通知构造只消费结构化、已脱敏的 `RunResult`；URL、credential/token/header 形态及 raw exception 文本均替换为 `[redacted]`。未实现投递、超时/retry、数据库 `notification_failed` persistence 或 webhook 成功响应校验；这些属于 Task 6.2。
+
 ## VPS 可选 Sentry tracing
 
 VPS coordinator 可注入 `createNodeSentryTracing(process.env)` 生成的 SDK-neutral `TracingPort`。只有设置 `SENTRY_DSN` 才会初始化 `@sentry/node`；未设置时为 no-op，不初始化也不发送。`SENTRY_TRACES_SAMPLE_RATE` 必须是有限的 `[0, 1]` 数值，未设置默认为 `1`，无效值同样返回 no-op。
