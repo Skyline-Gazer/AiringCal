@@ -59,6 +59,7 @@ class RecordingDatabase {
   readonly subjects = new Map<number, StoredSubject>()
   readonly media = new Map<number, StoredMedia>()
   readonly calls: QueryCall[] = []
+  notificationFailed = false
   publication: StoredPublication = {
     verifiedGeneration: 0,
     verifiedContentHash: null,
@@ -108,6 +109,12 @@ class RecordingClient {
     }
 
     if (normalized.includes('pg_try_advisory_lock')) return { rows: [{ acquired: true } as unknown as Row], rowCount: 1 }
+
+    if (normalized.includes("components ->> 'notification' = 'failed'")) {
+      return this.database.notificationFailed
+        ? { rows: [{ id: RUN_1 } as unknown as Row], rowCount: 1 }
+        : empty<Row>()
+    }
 
     if (normalized.startsWith('SELECT id, content_hash, deleted_at FROM subjects')) {
       const ids = new Set((values[0] as readonly string[]).map(Number))
@@ -847,6 +854,18 @@ test('persists only the sanitized run error projection and parameterizes every b
     assert.match(call.sql, /\$\d/)
     assert.equal(call.sql.includes(RUN_1), false)
   }
+})
+
+test('returns only a stable compact summary for the most recent notification failure', async () => {
+  const pool = new RecordingPool()
+  pool.database.notificationFailed = true
+  const repository = authority(pool)
+  const previous = await (repository as PostgresAuthority & {
+    previousNotificationFailure(): Promise<unknown>
+  }).previousNotificationFailure()
+
+  assert.deepEqual(previous, { category: 'notification', code: 'NOTIFICATION_FAILED', stage: 'notification' })
+  assert.match(pool.database.calls.at(-1)?.sql ?? '', /components ->> 'notification' = 'failed'/)
 })
 
 test('rejects an opaque begin-run stage before issuing any query', async () => {

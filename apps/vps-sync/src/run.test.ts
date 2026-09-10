@@ -87,6 +87,20 @@ test('no change still backs up; backup failure is partial; notification does not
   assert.equal(result.status, 'partial')
   assert.equal(result.components.notification, 'failed')
 })
+test('persists the business terminal result before notifying and forwards only the prior compact failure', async () => {
+  const { deps, events, finished } = fixture()
+  let previous: unknown
+  ;(deps.authority as unknown as { previousNotificationFailure(): Promise<unknown> }).previousNotificationFailure = async () => ({
+    category: 'postgres://prior-secret@example.test/app', code: 'token=prior-secret', stage: 'notification',
+  })
+  deps.notify = async (_result, nextPrevious) => { events.push('notify'); previous = nextPrevious }
+
+  const result = await runOnce(deps, request)
+  assert.equal(result.status, 'success')
+  assert.ok(events.indexOf('finish') < events.indexOf('notify'))
+  assert.equal((finished[0] as { components: { notification: string } }).components.notification, 'not_attempted')
+  assert.deepEqual(previous, { category: 'postgres://prior-secret@example.test/app', code: 'token=prior-secret', stage: 'notification' })
+})
 test('terminal outcomes have explicit process exit mapping', () => {
   for (const status of ['success', 'no_change', 'skipped'] as const) assert.equal(exitCode(status), 0)
   for (const status of ['partial', 'failed'] as const) assert.equal(exitCode(status), 1)

@@ -4,6 +4,7 @@ import { withSessionLock } from './migrate.ts'
 import { isDeepStrictEqual } from 'node:util'
 import type { SubjectSession, MediaCandidate } from '../media/refresh.ts'
 import type { PublicationPort, PublicationStatePort } from '../publication/publish.ts'
+import type { PreviousNotificationFailure } from '../notification/feishu.ts'
 import {
   assertCompleteStateInput,
   assertMediaResultInput,
@@ -681,6 +682,16 @@ export class PostgresAuthority {
       [input.id, input.stage, input.status, input.heartbeatAt, input.finishedAt,
         input.counts, input.stageDurations, sanitizedError, input.components],
     )
+  }
+
+  async previousNotificationFailure(): Promise<PreviousNotificationFailure | undefined> {
+    const result = await this.query(this.pool,
+      `SELECT id FROM sync_runs WHERE components ->> 'notification' = 'failed'
+       ORDER BY finished_at DESC NULLS LAST LIMIT 1`,
+    )
+    return result.rows[0] === undefined
+      ? undefined
+      : { category: 'notification', code: 'NOTIFICATION_FAILED', stage: 'notification' }
   }
 
   private async insertCollection(

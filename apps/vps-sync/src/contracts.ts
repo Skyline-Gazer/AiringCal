@@ -2,6 +2,7 @@ import type { CompleteStateInput, RunStartInput, RunFinishInput } from './postgr
 import type { TracingPort } from './observability/tracing.ts'
 import type { CompleteFullFetch } from '@airing-cal/bgm-api'
 import type { ProjectionUser } from './upstream/projection.ts'
+import type { PreviousNotificationFailure } from './notification/feishu.ts'
 
 export type RunRequest = Pick<RunStartInput, 'mode' | 'source'>
 export type RunStatus = RunFinishInput['status']
@@ -23,13 +24,14 @@ export interface RunDependencies {
     heartbeat(id: string, stage: string, at: string): Promise<void>
     commitCompleteState(input: CompleteStateInput): Promise<RunFinishInput['counts'] | void>
     finishRun(input: RunFinishInput): Promise<void>
+    previousNotificationFailure?(): Promise<PreviousNotificationFailure | undefined>
   }
   /** Returns only a validated, complete upstream collection/calendar observation. */
   fetchComplete(context: RunContext): Promise<CompleteFullFetch>
   media(context: RunContext): Promise<MediaSummary>
   publish(context: RunContext): Promise<PublicationResult>
   backup(context: RunContext, publication: Extract<PublicationResult, { generation: number }>): Promise<void>
-  notify(result: RunResult): Promise<void>
+  notify(result: RunResult, previousFailure?: PreviousNotificationFailure): Promise<void>
   close(): Promise<void>
   /** Optional observability boundary; omitted tracing remains a no-op. */
   tracing?: TracingPort
