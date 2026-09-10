@@ -1,5 +1,12 @@
 # Subagent Progress
 
+## Task 5.1 dispatch (2026-09-09)
+
+- **Plan/OpenSpec task**: `Task 5.1: custom-format backup、checksum manifest 与 partial outcome` / `5.1 Verify pg_dump/pg_restore and R2 client contracts, then implement custom-format backup upload, checksum manifest, partial-success semantics, and tests`.
+- **Stage**: `implementing`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix rounds: 0.
+- **Baseline**: `origin/dev` `511b6c5eaca324afa9d0f656313b0276e6b97ffa` (PR #18 merged); branch `codex/vps-task-5-1` in `.worktrees/vps-task-5-1`.
+- **Preflight evidence**: The initial `PATH` lookup found no executable. On 2026-09-09, Homebrew keg-only `libpq` 18.6 was installed and `/opt/homebrew/opt/libpq/bin/pg_dump --help` plus `/opt/homebrew/opt/libpq/bin/pg_restore --help` were run, confirming custom format/output and the documented connection option surface. A disposable PostgreSQL 18.6 cluster listening only on `127.0.0.1:55439` then completed a real local drill: `pg_dump -F c`, isolated `PGHOST`/`PGPORT`/`PGUSER` connection variables, `pg_restore -e` into an empty target database, and a restored table count of 1. The first shell-quoting probe failed but its trap cleaned up; the second run succeeded, followed by `pg_ctl stop` and exact temporary-directory removal. No credentials were recorded. This is local, destructible evidence—not a production drill. Real R2 upload/readback was deliberately not executed or claimed. The implementation must verify existing local TypeScript R2/S3 client types before use, keep `DATABASE_URL` out of argv/logs, and use fakes for tests.
+
 ## Task 4.2 dispatch (2026-09-09)
 
 - **Plan/OpenSpec task**: `Task 4.2: R2 → Cache API → legacy KV fallback` / `4.2 Implement fallback order R2 to last verified Cache API to migration-period legacy KV, including corrupt, missing, rollback-generation, and VPS-offline tests`.

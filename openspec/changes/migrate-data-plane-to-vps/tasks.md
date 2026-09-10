@@ -25,7 +25,7 @@
 
 ## 5. Backup and Restore
 
-- [ ] 5.1 Verify pg_dump/pg_restore and R2 client contracts, then implement custom-format backup upload, checksum manifest, partial-success semantics, and tests
+- [x] 5.1 Verify pg_dump/pg_restore and R2 client contracts, then implement custom-format backup upload, checksum manifest, partial-success semantics, and tests
 - [ ] 5.2 Implement explicit 30-daily/monthly retention selection and an empty-database restore verification command with non-destructive key and recovery tests
 
 ## 6. Feishu Run Notifications

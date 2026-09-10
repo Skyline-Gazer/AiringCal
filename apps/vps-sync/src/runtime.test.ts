@@ -21,11 +21,11 @@ const result: RunResult = {
   components: { collection: 'success', calendar: 'success', media: 'success', publication: 'success', backup: 'success', notification: 'success' },
 }
 
-function input(): Omit<RunDependencies, 'authority' | 'lock' | 'publish' | 'close'> & { request: { mode: 'shadow'; source: 'manual' }; publicationCandidate: () => Promise<never> } {
+function input(): Omit<RunDependencies, 'authority' | 'lock' | 'publish' | 'backup' | 'close'> & { request: { mode: 'shadow'; source: 'manual' }; publicationCandidate: () => Promise<never> } {
   return {
     request: { mode: 'shadow', source: 'manual' }, runId: 'run', gitSha: 'a'.repeat(40), projectionUsers: [], now: () => 0,
     fetchComplete: async () => { throw new Error('not called') }, media: async () => ({ selected: 0, succeeded: 0, failed: 0 }),
-    backup: async () => undefined, notify: async () => undefined, publicationCandidate: async () => { throw new Error('not called') },
+    notify: async () => undefined, publicationCandidate: async () => { throw new Error('not called') },
   }
 }
 
@@ -55,6 +55,7 @@ test('constructs PostgreSQL and S3 ports then injects them into runOnce', async 
   })
   assert.ok(dependencies?.authority)
   assert.ok(dependencies?.lock)
+  assert.equal(typeof dependencies?.backup, 'function')
   assert.equal(dependencies?.close, pool.end)
 })
 

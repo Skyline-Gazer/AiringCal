@@ -4,6 +4,7 @@ import { runOnce } from './run.ts'
 import { PostgresAuthority } from './postgres/repositories.ts'
 import { publishSnapshot, type SnapshotPublicationCandidate } from './publication/publish.ts'
 import { createS3Port, type S3Port, type S3PortOptions } from './publication/s3.ts'
+import { createProductionBackup } from './backup/backup.ts'
 
 type RuntimeEnvironment = Record<string, string | undefined>
 
@@ -13,7 +14,7 @@ export type RuntimeConfig = {
   forbiddenValues: readonly string[]
 }
 
-export type RuntimeInput = Omit<RunDependencies, 'authority' | 'lock' | 'publish' | 'close'> & {
+export type RuntimeInput = Omit<RunDependencies, 'authority' | 'lock' | 'publish' | 'backup' | 'close'> & {
   request: RunRequest
   publicationCandidate(context: Parameters<RunDependencies['publish']>[0]): Promise<SnapshotPublicationCandidate>
 }
@@ -74,6 +75,7 @@ export async function runFromEnvironment(
       if (state.verifiedContentHash === null) throw new Error('PUBLICATION_PENDING')
       return { status: outcome, generation: state.verifiedGeneration, contentHash: state.verifiedContentHash }
     },
+    backup: async (context) => { await createProductionBackup({ databaseUrl: config.databaseUrl, gitSha: input.gitSha, now: input.now, s3 })(context) },
     close: pool.end,
   }, input.request)
 }

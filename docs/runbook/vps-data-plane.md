@@ -37,7 +37,7 @@ pnpm -F @airing-cal/vps-sync test:integration
 
 已执行证据：2026-08-31 在 PostgreSQL 18.6 direct TLS server 上，该命令退出 0（9 pass、0 fail、0 skipped、25,756.220958 ms）。开始/结束查询均确认 `new_remaining_test_schemas=[]`；suite 仅创建并删除随机 schema。完整范围、commit identity 和环境边界见 [PostgreSQL 18 integration evidence](../verification/2026-08-31-vps-sync-postgresql-18-integration.md)。文档不记录或示例化任何实际连接 URL、hostname、username 或 secret。
 
-`psql` 不参与实现的 Node `pg` migration/lock 路径，因此此前 `psql` preflight 已由上述 real Node `pg` API test 对该路径的验收证据取代。Docker disposable instance、CI service 配置和 `psql --help` 均未执行，仍是单独的 container/CLI 前置检查；已核验官方 `postgres:18-alpine` tag 存在，但尚未将其用于本项目容器验证。计划的 PostgreSQL 18 `pg_dump`/`pg_restore` client、CLI `--help` contract validation，以及真实 backup/restore drill 均保持 pending。
+`psql` 不参与实现的 Node `pg` migration/lock 路径，因此此前 `psql` preflight 已由上述 real Node `pg` API test 对该路径的验收证据取代。Docker disposable instance、CI service 配置和 `psql --help` 均未执行，仍是单独的 container/CLI 前置检查；已核验官方 `postgres:18-alpine` tag 存在，但尚未将其用于本项目容器验证。2026-09-09 已在本机 Homebrew keg-only `libpq` 18.6 的绝对路径运行 `pg_dump --help`、`pg_restore --help`：前者确认 `--format=c|d|t|p`、`--file` 和 database/host/port/username 连接选项，后者确认 custom archive 输入及 database/host/port/username 连接选项；实现使用的 `PGHOST`、`PGPORT`、`PGUSER`、`PGPASSWORD`、`PGDATABASE` 与 `PGSSLMODE` 隔离环境变量也已有自动测试。随后在仅监听 `127.0.0.1:55439` 的临时 PostgreSQL 18.6 集群完成可销毁的本地演练：custom `pg_dump -F c`，使用该组 `PG*` 连接变量，向空目标库执行 `pg_restore -e`，恢复后表计数为 1。命令参数均先由上述 `--help` 确认；首次 shell 引号探针失败后 trap 已清理，第二次演练成功，`pg_ctl stop` 和精确临时目录移除均完成。该证据不含 URL、hostname、username 或 secret，也不代表生产环境演练。真实 R2 上传/回读未执行且未在此声明；它们仍由受控的外部集成验证覆盖。
 
 参考：<https://www.postgresql.org/docs/18/release-18.html>、<https://www.postgresql.org/docs/18/app-pgdump.html>、<https://neon.com/docs/connect/connection-pooling>。
 
@@ -69,7 +69,13 @@ VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection
 
 媒体直接写入 `applyMediaResult` 与锁内写入均受同一 subject advisory lock 保护。锁内读取后会在 SQL mutation 前拒绝旧围栏；合并 last-known-good 后内容、hash、状态与重试/tombstone 时间均相同的记录不执行 UPDATE。锁生命周期之外保留的 save closure 不能继续写入。
 
-`runOnce` 是端口注入的单轮协调器，接受 `shadow|live` 与 `scheduled|manual`。抓取端口返回已验证完整并保留 calendar 可选字段 presence 的 `CompleteFullFetch`；协调器先投影成严格 `CompleteStateInput` 再调用权威事务。同一 subject 的 calendar 实际提供字段优先，collection 只能补 calendar 缺失字段；双方都未提供 `name` 时，PostgreSQL authority JSON/hash 保持该字段缺失，own-property 显式空字符串则保留，旧 public collection shape 仅在 consumer 转换时补 `name: ''`。collection-only、calendar-only 与跨用户重复 subject 均保留，重复 collection subject 按配置用户顺序稳定选择。非完整抓取或未知用户在提交前拒绝，空收藏的配置用户仍写入投影以维持删除保护。协调器随后按媒体、发布、备份顺序运行；发布端口只有返回 `published` 或 `no_change` 才允许备份，媒体降级不阻止发布或备份。终态先写入 PostgreSQL 再调用通知端口，随后独立保存通知结果。锁竞争产生 persisted/notified `skipped`，不抓取上游或写 R2。`success/no_change/skipped` 映射退出码 0，`partial/failed` 映射 1。这些模块提供编排接口，不是可部署的 CLI 或发布/备份/飞书实现。
+`runOnce` 是端口注入的单轮协调器，接受 `shadow|live` 与 `scheduled|manual`。抓取端口返回已验证完整并保留 calendar 可选字段 presence 的 `CompleteFullFetch`；协调器先投影成严格 `CompleteStateInput` 再调用权威事务。同一 subject 的 calendar 实际提供字段优先，collection 只能补 calendar 缺失字段；双方都未提供 `name` 时，PostgreSQL authority JSON/hash 保持该字段缺失，own-property 显式空字符串则保留，旧 public collection shape 仅在 consumer 转换时补 `name: ''`。collection-only、calendar-only 与跨用户重复 subject 均保留，重复 collection subject 按配置用户顺序稳定选择。非完整抓取或未知用户在提交前拒绝，空收藏的配置用户仍写入投影以维持删除保护。协调器随后按媒体、发布、备份顺序运行；发布端口只有返回 `published` 或 `no_change` 才允许备份，媒体降级不阻止发布或备份。终态先写入 PostgreSQL 再调用通知端口，随后独立保存通知结果。锁竞争产生 persisted/notified `skipped`，不抓取上游或写 R2。`success/no_change/skipped` 映射退出码 0，`partial/failed` 映射 1。
+
+## PostgreSQL backup 上传
+
+运行时在发布成功或确认 `no_change` 后执行 `pg_dump --format=custom`。连接 URL 只被解析为子进程的 `PGHOST`、`PGPORT`、`PGUSER`、`PGPASSWORD`、`PGDATABASE` 与受支持的 TLS 参数 `sslmode`（映射为 `PGSSLMODE`）环境变量，不进入 argv、R2 key、manifest、持久化结果或日志；其他 URL query 参数会在命令启动前以 `BACKUP_DATABASE_URL_INVALID` 拒绝。子进程会清除宿主环境中的全部 `PG*` 变量，避免它们改变该 URL 指定的目标。dump 写入受限的 `/tmp/airing-cal/backup-*` 目录；无论 dump、读取或任一上传成功与否，目录都会在 `finally` 中移除。
+
+成功时先上传 `backups/postgres/YYYY/MM/DD/<timestamp>-<40-char-git-sha>.dump`，再上传同 stem 的 `.json`。manifest 是 canonical JSON，严格包含 `schema_version`、`run_id`、`git_sha`、`created_at`、`object_key`、`size`、`sha256`。R2 dump 或 manifest 上传失败不会撤销公开 snapshot；协调器会把 backup component 标为 failed，并将终态保留为 `partial`。retention、下载、checksum 回验、`pg_restore` 和真实恢复演练属于后续任务，当前没有实现。
 
 每阶段开始和长阶段每 30 秒更新 heartbeat；阶段完成会取消并等待在途心跳。并行 heartbeat 失败记录为脱敏降级终态，但不会丢弃已经完成的 authority 计数、发布里程碑或阻止对应备份。若 notification 阶段本身的 heartbeat 在首次通知期间失败，协调器会在 timer drain 后发送一次无 heartbeat 的最终降级修正通知，不递归重试。最终释放业务锁与调用资源清理端口。上游可信错误保留 category/code/stage/attempt，未知异常只记录稳定 `runtime/STAGE_FAILED`，不复制异常消息。
 
