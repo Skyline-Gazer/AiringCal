@@ -25,7 +25,7 @@ export function verifyVpsSyncImage(directory = root) {
   assert.match(production, /COPY --from=build \/workspace\/apps\/vps-sync\/dist \.\/dist/)
   assert.match(production, /COPY --from=production-dependencies \/app\/node_modules \.\/node_modules/)
   assert.match(production, /^USER node$/m)
-  assert.match(production, /^CMD \["node", "dist\/runtime\.js"\]$/m)
+  assert.match(production, /^CMD \["node", "dist\/entrypoint\.js"\]$/m)
   assert.doesNotMatch(production, /\b(?:curl|git|jq|python|bind-tools|netcat|procps|make|g\+\+)\b/)
   assert.doesNotMatch(production, /\b(?:src|test)\b/)
   assert.doesNotMatch(production, /^EXPOSE\b/m)

@@ -36,3 +36,11 @@ test('the emitted runtime imports with only its production packages', () => {
     rmSync(runtimeDirectory, { recursive: true, force: true })
   }
 })
+
+test('the emitted container entrypoint fails closed until the production CLI exists', () => {
+  execFileSync('pnpm', ['run', 'build'], { cwd: appDirectory, stdio: 'pipe' })
+  assert.throws(
+    () => execFileSync(process.execPath, ['dist/entrypoint.js'], { cwd: appDirectory, encoding: 'utf8', stdio: 'pipe' }),
+    (error: { status?: number; stderr?: string }) => error.status === 1 && error.stderr?.includes('RUNTIME_ENTRYPOINT_UNCONFIGURED'),
+  )
+})

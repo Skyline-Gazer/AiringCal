@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && esbuild dist/upstream/fetch.js dist/upstream/retry.js dist/run.js dist/runtime.js dist/media/refresh.js dist/postgres/repositories.js --bundle --splitting --allow-overwrite --external:pg --external:@aws-sdk/client-s3 --format=esm --platform=node --target=node20 --outdir=dist --outbase=dist && cp -R src/postgres/migrations dist/postgres/migrations",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && esbuild dist/entrypoint.js dist/upstream/fetch.js dist/upstream/retry.js dist/run.js dist/runtime.js dist/media/refresh.js dist/postgres/repositories.js --bundle --splitting --allow-overwrite --external:pg --external:@aws-sdk/client-s3 --format=esm --platform=node --target=node20 --outdir=dist --outbase=dist && cp -R src/postgres/migrations dist/postgres/migrations",
     "build:check": "tsc --noEmit",
     "test": "tsx --test --test-skip-pattern=PostgreSQL",
     "test:integration": "tsx --test src/postgres/postgres.integration.test.ts",

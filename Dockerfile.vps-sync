@@ -19,7 +19,7 @@ RUN apk add --no-cache ca-certificates postgresql18-client
 COPY --from=build /workspace/apps/vps-sync/dist ./dist
 COPY --from=production-dependencies /app/node_modules ./node_modules
 USER node
-CMD ["node", "dist/runtime.js"]
+CMD ["node", "dist/entrypoint.js"]
 
 FROM production AS debug
 USER root
