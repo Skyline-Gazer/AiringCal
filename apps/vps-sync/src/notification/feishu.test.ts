@@ -38,3 +38,14 @@ test('redacts URL, token, header and raw exception-like text before it reaches a
   assert.match(text, /\[redacted\]/)
   assert.equal(redactText(unsafe), '[redacted]')
 })
+
+test('redacts PostgreSQL and R2 credentials from both notification error fields', () => {
+  const databaseUrl = 'postgresql://sync-user:database-secret@postgres.example/airing?sslmode=require'
+  const accessKey = 'R2_ACCESS_KEY_ID=r2-access-secret'
+  const secretKey = 'R2_SECRET_ACCESS_KEY=r2-secret'
+  const failed = result('failed') as RunResult & { sanitizedError: { category: string; code: string; attemptCount: number; stage: string } }
+  failed.sanitizedError = { category: databaseUrl, code: accessKey, attemptCount: 1, stage: secretKey }
+  const text = buildFeishuMessage(failed, { category: databaseUrl, code: accessKey, stage: secretKey }).content.text
+  for (const secret of ['sync-user', 'database-secret', 'postgres.example', 'r2-access-secret', 'r2-secret']) assert.doesNotMatch(text, new RegExp(secret))
+  assert.match(text, /\[redacted\]/)
+})
