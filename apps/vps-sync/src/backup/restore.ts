@@ -25,10 +25,12 @@ function databaseIdentity(value: string): { identity: string; environment: Recor
   const sslmodes = query.filter(([key]) => key === 'sslmode')
   if (query.length !== sslmodes.length || sslmodes.length > 1 || sslmodes[0]?.[1] === '') throw new Error('RESTORE_DATABASE_URL_INVALID')
   const port = url.port || '5432'
+  const host = url.hostname.replace(/\.+$/, '')
+  if (!host) throw new Error('RESTORE_DATABASE_URL_INVALID')
   return {
-    identity: `${url.hostname.toLowerCase()}:${port}/${decodeURIComponent(url.pathname.slice(1))}`,
+    identity: `${host.toLowerCase()}:${port}/${decodeURIComponent(url.pathname.slice(1))}`,
     environment: {
-      PGHOST: url.hostname, PGPORT: port, PGUSER: decodeURIComponent(url.username), PGPASSWORD: decodeURIComponent(url.password),
+      PGHOST: host, PGPORT: port, PGUSER: decodeURIComponent(url.username), PGPASSWORD: decodeURIComponent(url.password),
       PGDATABASE: decodeURIComponent(url.pathname.slice(1)), ...(sslmodes.length ? { PGSSLMODE: sslmodes[0]![1] } : {}),
     },
   }

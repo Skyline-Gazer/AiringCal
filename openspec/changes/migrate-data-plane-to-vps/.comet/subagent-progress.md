@@ -6,6 +6,7 @@
 - **Stage**: `implementing`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix rounds: 0.
 - **Baseline**: `origin/dev` `2a172431f254e7ad843b0d6fdd86118b9c13d9d3` (PR #19 merged); branch `codex/vps-task-5-2`.
 - **Boundary**: selection only deletes explicit backup grammar keys after deterministic 30-daily/monthly retention evaluation. Restore-verify must reject production-equivalent or nonempty targets before `pg_restore`, validate downloaded checksum, schema/row counts/snapshot hash, and never publish or notify.
+- **Safety repair TDD evidence (2026-09-10)**: RED command `pnpm --filter ./apps/vps-sync test -- src/backup/retention.test.ts src/backup/restore.test.ts` exited 1 with 6 pass / 2 fail: syntactically matching but invalid month/day/hour/minute/second timestamps allowed deletion, and `prod.example.` reached download instead of `RESTORE_TARGET_PRODUCTION`. GREEN after the minimal fail-closed UTC round-trip validation and trailing-dot host normalization: the same command passed 8/8. Milliseconds are already constrained by the existing three-digit grammar to `000`–`999`; no wider millisecond form can enter the deletion path. Full VPS/typecheck/build/diff evidence remains pending this repair's verification.
 
 ## Task 5.1 dispatch (2026-09-09)
 

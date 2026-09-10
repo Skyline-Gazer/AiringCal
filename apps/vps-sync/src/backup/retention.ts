@@ -9,6 +9,10 @@ function points(entries: readonly string[]): BackupPoint[] | undefined {
     if (!match) return undefined
     const [, year, month, day, fileStem, extension] = match
     if (fileStem!.slice(0, 10) !== `${year}-${month}-${day}`) return undefined
+    const timestamp = fileStem!.slice(0, 24)
+    const instant = new Date(`${timestamp.slice(0, 10)}T${timestamp.slice(11, 13)}:${timestamp.slice(14, 16)}:${timestamp.slice(17, 19)}.${timestamp.slice(20, 23)}Z`)
+    if (Number.isNaN(instant.getTime()) || instant.toISOString()
+      !== `${timestamp.slice(0, 10)}T${timestamp.slice(11, 13)}:${timestamp.slice(14, 16)}:${timestamp.slice(17, 19)}.${timestamp.slice(20, 23)}Z`) return undefined
     const stem = key.slice(0, -extension!.length - 1)
     const point = result.get(stem) ?? { stem, day: `${year}-${month}-${day}`, month: `${year}-${month}`, timestamp: fileStem!, keys: [] }
     if (point.keys.includes(key)) return undefined

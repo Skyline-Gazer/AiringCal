@@ -34,3 +34,15 @@ test('refuses deletion when listed objects are not complete explicit backup pair
     `backups/postgres/2026/01/02/2026-01-01T00-00-00-000Z-${sha}.json`,
   ]), [])
 })
+
+test('refuses deletion when a backup timestamp is not a real UTC calendar time', () => {
+  for (const [date, time] of [
+    ['2026-99-01', '00-00-00-000Z'],
+    ['2026-02-29', '00-00-00-000Z'],
+    ['2026-01-01', '29-00-00-000Z'],
+    ['2026-01-01', '00-60-00-000Z'],
+    ['2026-01-01', '00-00-60-000Z'],
+  ]) {
+    assert.deepEqual(selectBackupDeletions([...pair('2026-01-01', '00-00-00-000Z'), ...pair(date, time)]), [])
+  }
+})

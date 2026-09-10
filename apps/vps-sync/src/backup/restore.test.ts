@@ -53,6 +53,15 @@ test('closes the target connection when a safety gate rejects restore', async ()
   assert.ok(events.includes('close'))
 })
 
+test('rejects a production target with a trailing-dot hostname before download', async () => {
+  const { deps, events } = dependencies({
+    targetDatabaseUrl: 'postgres://user:secret@prod.example./airing?sslmode=require',
+    s3: { get: async () => { events.push('download'); return null } },
+  })
+  await assert.rejects(() => restoreVerify(deps, key), /RESTORE_TARGET_PRODUCTION/)
+  assert.deepEqual(events, ['close'])
+})
+
 test('rejects an invalid key or checksum mismatch before pg_restore', async () => {
   const invalid = dependencies()
   await assert.rejects(() => restoreVerify(invalid.deps, 'backups/postgres/unsafe.dump'), /RESTORE_BACKUP_KEY_INVALID/)
