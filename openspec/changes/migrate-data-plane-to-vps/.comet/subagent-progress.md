@@ -1,5 +1,13 @@
 # Subagent Progress
 
+## Task 7.1 final checkoff (2026-09-10)
+
+- **Plan/OpenSpec task**: `Task 7.1: Alpine production/debug images` / `7.1 Verify official node:alpine metadata and Alpine package names, then add multi-stage production/debug Docker targets with image-content and non-root/read-only runtime checks`.
+- **Stage**: `final-review`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix rounds: 1.
+- **Implementation and repair**: `cdbf34c` added the image/verifier; `944156f` externalized production runtime imports; `d2ad268` added the intentionally fail-closed runtime entrypoint pending Task 9.3 composition; `e6b0ef7`/`68acfb5` added GitHub-hosted Docker validation; `03b612c` made forbidden-tool checks fail closed. No GHCR login/push or Task 8 publication was added.
+- **Verification**: GitHub Actions run `34457400140` passed `validate` and `vps-sync-image` against PR merge test commit `09a34db`: it built production/debug images, checked non-root/no exposed ports, production content boundaries, and the read-only fail-closed entrypoint (`RUNTIME_ENTRYPOINT_UNCONFIGURED`, exit 1). The tool gate exits per detected forbidden tool. `nc` is retained only as the unavoidable BusyBox base utility; production declares no netcat package or call, while debug installs `netcat-openbsd`.
+- **Independent final review**: APPROVED (0 Critical / 0 Important / 0 Minor). Re-ran `node --test scripts/verify-vps-sync-image.test.mjs` (2/2) and `pnpm -F @airing-cal/vps-sync test -- src/build-output.test.ts` (3/3); reviewer confirmed external runtime imports and Task 8 boundary.
+
 ## Task 6.2 final evidence (2026-09-10)
 
 - **Plan/OpenSpec task**: `Task 6.2: 飞书投递与 notification_failed persistence` / `6.2 Implement bounded notification delivery, notification_failed persistence, previous-failure summary, and credential/error redaction tests`.

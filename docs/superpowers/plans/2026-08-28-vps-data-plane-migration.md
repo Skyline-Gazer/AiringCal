@@ -273,11 +273,11 @@ Task 2.2 projection 收口：`CompleteFullFetch` 保留 calendar 可选字段（
 **Interfaces:**
 - Targets: `production` 与 `debug`；CLI entry executes compiled `apps/vps-sync`；production user non-root；Dockerfile 的 build stage 调用 `pnpm -F @airing-cal/vps-sync build`，production stage 只拷贝 `dist/` 与 production dependencies。
 
-- [ ] **Step 1: image/package 验证** — `docker buildx imagetools inspect node:alpine` 确认架构/digest；在临时 `node:alpine` 容器运行 `apk search` 验证 CA、PostgreSQL client 和 debug HTTPS/DNS/TCP/process/network/JSON 包名；`docker buildx build --help` 验证 flags。
-- [ ] **Step 2: RED verifier** — 测试 production 不含 git/curl/python/editor/jq/DNS/build toolchain/source/tests/dev dependencies，uid 非 0、无监听端口；debug 含经验证工具。
-- [ ] **Step 3: 运行 RED** — `node --test scripts/verify-vps-sync-image.test.mjs`，预期 Dockerfile/targets 缺失而 FAIL。
-- [ ] **Step 4: GREEN** — multi-stage deps/build/production/debug；production 仅 compiled app、prod deps、CA、最小 PG client/runtime；清缓存；build 与 verifier PASS。
-- [ ] **Step 5: 文档、提交与推送** — 记录 resolved versions/digest 检查法；commit `build(vps-sync): add minimal Alpine images` 后 push。
+- [x] **Step 1: image/package 验证** — `docker buildx imagetools inspect node:alpine` 确认架构/digest；在临时 `node:alpine` 容器运行 `apk search` 验证 CA、PostgreSQL client 和 debug HTTPS/DNS/TCP/process/network/JSON 包名；`docker buildx build --help` 验证 flags。
+- [x] **Step 2: RED verifier** — 测试 production 不含 git/curl/python/editor/jq/DNS/build toolchain/source/tests/dev dependencies，uid 非 0、无监听端口；debug 含经验证工具。
+- [x] **Step 3: 运行 RED** — `node --test scripts/verify-vps-sync-image.test.mjs`，预期 Dockerfile/targets 缺失而 FAIL。
+- [x] **Step 4: GREEN** — multi-stage deps/build/production/debug；production 仅 compiled app、prod deps、CA、最小 PG client/runtime；清缓存；build 与 verifier PASS。
+- [x] **Step 5: 文档、提交与推送** — 记录 resolved versions/digest 检查法；commit `build(vps-sync): add minimal Alpine images` 后 push。
 
 ### Task 7.2: SHA-pinned Compose、secrets、tmp 与 host cron
 
