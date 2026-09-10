@@ -75,7 +75,11 @@ VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection
 
 运行时在发布成功或确认 `no_change` 后执行 `pg_dump --format=custom`。连接 URL 只被解析为子进程的 `PGHOST`、`PGPORT`、`PGUSER`、`PGPASSWORD`、`PGDATABASE` 与受支持的 TLS 参数 `sslmode`（映射为 `PGSSLMODE`）环境变量，不进入 argv、R2 key、manifest、持久化结果或日志；其他 URL query 参数会在命令启动前以 `BACKUP_DATABASE_URL_INVALID` 拒绝。子进程会清除宿主环境中的全部 `PG*` 变量，避免它们改变该 URL 指定的目标。dump 写入受限的 `/tmp/airing-cal/backup-*` 目录；无论 dump、读取或任一上传成功与否，目录都会在 `finally` 中移除。
 
-成功时先上传 `backups/postgres/YYYY/MM/DD/<timestamp>-<40-char-git-sha>.dump`，再上传同 stem 的 `.json`。manifest 是 canonical JSON，严格包含 `schema_version`、`run_id`、`git_sha`、`created_at`、`object_key`、`size`、`sha256`。R2 dump 或 manifest 上传失败不会撤销公开 snapshot；协调器会把 backup component 标为 failed，并将终态保留为 `partial`。retention、下载、checksum 回验、`pg_restore` 和真实恢复演练属于后续任务，当前没有实现。
+成功时先上传 `backups/postgres/YYYY/MM/DD/<timestamp>-<40-char-git-sha>.dump`，再上传同 stem 的 `.json`。manifest 是 canonical JSON，严格包含 `schema_version`、`run_id`、`git_sha`、`created_at`、`object_key`、`size`、`sha256`。R2 dump 或 manifest 上传失败不会撤销公开 snapshot；协调器会把 backup component 标为 failed，并将终态保留为 `partial`。
+
+保留选择只接收完整的 `.dump`/`.json` 成对对象，且每个 key 必须精确匹配上述 prefix、日期目录、UTC timestamp 和 40 位小写 git SHA。列表包含未知、重复、不完整或目录与 timestamp 不一致的 key 时，该轮不删除任何对象。正常情况下保留最新 30 个 calendar-day 的最后一个恢复点；更早月份仅保留该月最后一个成功点。选择函数只返回已验证的精确 key，调用方不得对 prefix 做递归删除。
+
+`restoreVerify` 是显式注入的恢复演练边界：调用方必须为独立的目标库创建连接，并传入生产与目标 `DATABASE_URL`、选择的 `.dump` key、R2 port、`pg_restore` port，以及恢复后 schema/row-count/snapshot-hash verifier。它先用规范化 host/port/database identity 拒绝生产目标，再证明目标库没有用户表；然后下载同 stem manifest 和 archive、对 SHA-256/size/object key 回验、在隔离 `PG*` 环境下执行已由 PostgreSQL 18.6 `pg_restore --help` 确认的 `--exit-on-error --no-owner --no-privileges --format=c`。任一门禁或校验失败均在 `pg_restore` 前停止；恢复模块不发布 snapshot、不通知用户，也不接收生产写入 port。当前没有自动连接生产或执行真实 R2/数据库恢复的 CLI；受控临时演练由后续 operator/restore-drill command 注入这些 ports，不能以本模块替代生产演练。
 
 每阶段开始和长阶段每 30 秒更新 heartbeat；阶段完成会取消并等待在途心跳。并行 heartbeat 失败记录为脱敏降级终态，但不会丢弃已经完成的 authority 计数、发布里程碑或阻止对应备份。若 notification 阶段本身的 heartbeat 在首次通知期间失败，协调器会在 timer drain 后发送一次无 heartbeat 的最终降级修正通知，不递归重试。最终释放业务锁与调用资源清理端口。上游可信错误保留 category/code/stage/attempt，未知异常只记录稳定 `runtime/STAGE_FAILED`，不复制异常消息。
 
