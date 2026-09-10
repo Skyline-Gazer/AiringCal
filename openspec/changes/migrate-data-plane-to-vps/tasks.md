@@ -30,7 +30,7 @@
 
 ## 6. Feishu Run Notifications
 
-- [ ] 6.1 Verify the official Feishu webhook/signature contract and implement success, no-change, partial, failure, and skipped notification payload tests
+- [x] 6.1 Verify the official Feishu webhook/signature contract and implement success, no-change, partial, failure, and skipped notification payload tests
 - [ ] 6.2 Implement bounded notification delivery, notification_failed persistence, previous-failure summary, and credential/error redaction tests
 
 ## 7. Alpine Container and VPS Operation
