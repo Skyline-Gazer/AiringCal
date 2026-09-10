@@ -229,11 +229,11 @@ Task 2.2 projection 收口：`CompleteFullFetch` 保留 calendar 可选字段（
 **Interfaces:**
 - Produces: `selectBackupDeletions(entries): string[]` 保留最新 30 日及更早每月最后成功点；`restoreVerify(deps, key, targetUrl): Promise<RestoreReport>`。
 
-- [ ] **Step 1: RED tests** — 跨月/同日多份/非法 key/list uncertainty；只删除显式 grammar keys；target 非空或等于 production URL 均在 pg_restore 前失败；恢复后校验 migration、row counts 与 regenerated snapshot hash。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- retention.test.ts restore.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — retention 纯函数；restore 下载并校验 checksum，再向明确空库执行 verified `pg_restore` flags，绝不 publish/notify user data。
-- [ ] **Step 4: REFACTOR/验证** — backup suite/typecheck PASS；显式测试 production URL 规范化比较。
-- [ ] **Step 5: 文档、提交与推送** — 写完整 restore drill 命令与安全门；commit `feat(vps-sync): retain and verify PostgreSQL backups` 后 push。
+- [x] **Step 1: RED tests** — 跨月/同日多份/非法 key/list uncertainty；只删除显式 grammar keys；target 非空或等于 production URL 均在 pg_restore 前失败；恢复后校验 migration、row counts 与 regenerated snapshot hash。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- retention.test.ts restore.test.ts` 预期 FAIL。
+- [x] **Step 3: GREEN** — retention 纯函数；restore 下载并校验 checksum，再向明确空库执行 verified `pg_restore` flags，绝不 publish/notify user data。
+- [x] **Step 4: REFACTOR/验证** — backup suite/typecheck PASS；显式测试 production URL 规范化比较。
+- [x] **Step 5: 文档、提交与推送** — 写完整 restore drill 命令与安全门；commit `feat(vps-sync): retain and verify PostgreSQL backups` 后 push。
 
 ### Task 6.1: 飞书 payload 与签名
 
