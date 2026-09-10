@@ -25,7 +25,7 @@ function fixture() {
     media: async () => { events.push('media'); return { selected: 0, succeeded: 0, failed: 0 } },
     publish: async () => { events.push('publish'); return { status: 'published', generation: 1, contentHash: 'a'.repeat(64) } },
     backup: async () => { events.push('backup') },
-    notify: async (result) => { events.push('notify'); notified.push(structuredClone(result)) },
+    notify: async (result) => { events.push('notify'); notified.push(structuredClone(result)); return 'sent' },
     close: async () => { events.push('close') },
   }
   return { deps, events, finished, notified, committed }
@@ -87,13 +87,25 @@ test('no change still backs up; backup failure is partial; notification does not
   assert.equal(result.status, 'partial')
   assert.equal(result.components.notification, 'failed')
 })
+test('persists a failed delivery without changing the business terminal result', async () => {
+  const { deps, finished } = fixture()
+  deps.notify = async () => 'failed'
+
+  const result = await runOnce(deps, request)
+
+  assert.equal(result.status, 'success')
+  assert.equal(result.components.notification, 'failed')
+  assert.equal(finished.length, 2)
+  assert.equal((finished[0] as { components: { notification: string } }).components.notification, 'not_attempted')
+  assert.equal((finished.at(-1) as { components: { notification: string } }).components.notification, 'failed')
+})
 test('persists the business terminal result before notifying and forwards only the prior compact failure', async () => {
   const { deps, events, finished } = fixture()
   let previous: unknown
   ;(deps.authority as unknown as { previousNotificationFailure(): Promise<unknown> }).previousNotificationFailure = async () => ({
     category: 'postgres://prior-secret@example.test/app', code: 'token=prior-secret', stage: 'notification',
   })
-  deps.notify = async (_result, nextPrevious) => { events.push('notify'); previous = nextPrevious }
+  deps.notify = async (_result, nextPrevious) => { events.push('notify'); previous = nextPrevious; return 'sent' }
 
   const result = await runOnce(deps, request)
   assert.equal(result.status, 'success')
@@ -166,6 +178,7 @@ test('notification heartbeat failure sends one final degraded correction and dra
     notified.push(structuredClone(result))
     t.mock.timers.tick(30000)
     await Promise.resolve()
+    return 'sent'
   }
   const result = await runOnce(deps, request)
   assert.equal(result.status, 'partial')

@@ -51,15 +51,16 @@ export async function deliverNotification(
     headers.Sign = signFeishu(timestamp, config.secret)
   }
   try {
-    const response = await Promise.race([
-      io.fetch(config.webhookUrl, {
+    const delivery = async (): Promise<'sent' | 'failed'> => {
+      const response = await io.fetch(config.webhookUrl, {
         method: 'POST', headers, body: JSON.stringify(buildFeishuMessage(result, previousFailure)), signal: controller.signal,
-      }).catch(() => undefined),
-      timeout,
-    ])
-    if (timedOut || response === 'timeout' || response === undefined || !response.ok) return 'failed'
-    const body: unknown = await response.json().catch(() => undefined)
-    return typeof body === 'object' && body !== null && (body as { code?: unknown }).code === 0 ? 'sent' : 'failed'
+      }).catch(() => undefined)
+      if (response === undefined || !response.ok) return 'failed'
+      const body: unknown = await response.json().catch(() => undefined)
+      return typeof body === 'object' && body !== null && (body as { code?: unknown }).code === 0 ? 'sent' : 'failed'
+    }
+    const outcome = await Promise.race([delivery(), timeout])
+    return !timedOut && outcome === 'sent' ? 'sent' : 'failed'
   } catch {
     return 'failed'
   } finally {

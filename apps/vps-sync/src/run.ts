@@ -103,6 +103,9 @@ async function runOnceCoordinator(
     try { previousFailure = await deps.authority.previousNotificationFailure?.() } catch { /* Notification history is fail-open. */ }
     return deps.notify(structuredClone(result), previousFailure)
   }
+  const notifyOrThrow = async () => {
+    if (await notify() !== 'sent') throw new Error('NOTIFICATION_FAILED')
+  }
   const stage = async <T>(name: keyof RunFinishInput['stageDurations'], operation: () => Promise<T>): Promise<T> => {
     let status: 'success' | 'failed' = 'success'
     return spanFailOpen(
@@ -200,7 +203,7 @@ async function runOnceCoordinator(
     try {
       await stage('notification', () => {
         notifiedStatus = result.status
-        return notify()
+        return notifyOrThrow()
       })
       components.notification = 'success'
     }
@@ -208,7 +211,7 @@ async function runOnceCoordinator(
     result.stage = 'finished'; result.heartbeatAt = at()
     applyHeartbeatFailure()
     if (components.notification === 'success' && notifiedStatus !== result.status) {
-      try { await notify() }
+      try { await notifyOrThrow() }
       catch { components.notification = 'failed' }
     }
     await persist()
@@ -219,7 +222,7 @@ async function runOnceCoordinator(
     result.finishedAt = result.heartbeatAt = at()
     result.components = components; result.counts = counts; result.stageDurations = durations
     if (begun) { try { await persist() } catch { /* A database outage cannot persist its own terminal state. */ } }
-    try { await notify(); components.notification = 'success' }
+    try { await notifyOrThrow(); components.notification = 'success' }
     catch { components.notification = 'failed' }
     return result
   } finally {
@@ -229,7 +232,7 @@ async function runOnceCoordinator(
       result.finishedAt = result.heartbeatAt = at()
       result.components = components; result.counts = counts; result.stageDurations = durations
       if (begun) { try { await persist() } catch { /* A database outage cannot persist its own terminal state. */ } }
-      try { await notify(); components.notification = 'success' }
+      try { await notifyOrThrow(); components.notification = 'success' }
       catch { components.notification = 'failed' }
       if (begun) { try { await persist() } catch { /* Pool close failure can make correction persistence unavailable. */ } }
     }

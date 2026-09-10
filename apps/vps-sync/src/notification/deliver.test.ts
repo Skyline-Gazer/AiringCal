@@ -33,6 +33,26 @@ test('marks a bounded timeout as failed without exposing webhook credentials', a
   assert.equal(signal?.aborted, true)
 })
 
+test('bounds a response body that never resolves', async () => {
+  let timeout: () => void = () => undefined
+  const outcome = await Promise.race([
+    deliverNotification(
+      { webhookUrl: 'https://open.feishu.cn/webhook', timeoutMs: 1 },
+      result,
+      undefined,
+      { fetch: async () => ({
+        ok: true,
+        json: async () => {
+          timeout()
+          return new Promise<never>(() => undefined)
+        },
+      }) as unknown as Response, clock: { ...clock(), setTimeout: (callback) => { timeout = callback; return 1 } } },
+    ),
+    new Promise<'still waiting'>((resolve) => setImmediate(() => resolve('still waiting'))),
+  ])
+  assert.equal(outcome, 'failed')
+})
+
 test('marks non-2xx and malformed successful responses as failed after one delivery attempt', async () => {
   for (const response of [
     new Response('{"code":0}', { status: 500 }),

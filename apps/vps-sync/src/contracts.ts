@@ -31,7 +31,7 @@ export interface RunDependencies {
   media(context: RunContext): Promise<MediaSummary>
   publish(context: RunContext): Promise<PublicationResult>
   backup(context: RunContext, publication: Extract<PublicationResult, { generation: number }>): Promise<void>
-  notify(result: RunResult, previousFailure?: PreviousNotificationFailure): Promise<void>
+  notify(result: RunResult, previousFailure?: PreviousNotificationFailure): Promise<'sent' | 'failed'>
   close(): Promise<void>
   /** Optional observability boundary; omitted tracing remains a no-op. */
   tracing?: TracingPort
