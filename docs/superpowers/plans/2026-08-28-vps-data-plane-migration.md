@@ -258,11 +258,11 @@ Task 2.2 projection 收口：`CompleteFullFetch` 保留 calendar 可选字段（
 **Interfaces:**
 - Produces: `deliverNotification(config, result): Promise<'sent'|'failed'>`；独立 `notification_failed` 状态和前次未投递摘要。
 
-- [ ] **Step 1: RED tests** — bounded timeout/non-2xx/invalid success body 为 failed；业务终态先持久化；通知失败不改变 publication/backup；下一次成功消息含前次 compact summary；日志无 webhook/signature/DB URL。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- deliver.test.ts run.test.ts repositories.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — 注入 fetch/clock，投递一次且失败不抛过业务边界，repository 独立记录结果。
-- [ ] **Step 4: REFACTOR/验证** — notification/run suites/typecheck PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步 secret 与失败语义；commit `feat(vps-sync): deliver terminal Feishu notifications` 后 push。
+- [x] **Step 1: RED tests** — bounded timeout/non-2xx/invalid success body 为 failed；业务终态先持久化；通知失败不改变 publication/backup；下一次成功消息含前次 compact summary；日志无 webhook/signature/DB URL。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- deliver.test.ts run.test.ts repositories.test.ts` 预期 FAIL。
+- [x] **Step 3: GREEN** — 注入 fetch/clock，投递一次且失败不抛过业务边界，repository 独立记录结果。
+- [x] **Step 4: REFACTOR/验证** — notification/run suites/typecheck PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步 secret 与失败语义；commit `feat(vps-sync): deliver terminal Feishu notifications` 后 push。
 
 ### Task 7.1: Alpine production/debug images
 

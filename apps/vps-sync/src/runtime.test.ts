@@ -25,7 +25,7 @@ function input(): Omit<RunDependencies, 'authority' | 'lock' | 'publish' | 'back
   return {
     request: { mode: 'shadow', source: 'manual' }, runId: 'run', gitSha: 'a'.repeat(40), projectionUsers: [], now: () => 0,
     fetchComplete: async () => { throw new Error('not called') }, media: async () => ({ selected: 0, succeeded: 0, failed: 0 }),
-    notify: async () => undefined, publicationCandidate: async () => { throw new Error('not called') },
+    notify: async () => 'sent', publicationCandidate: async () => { throw new Error('not called') },
   }
 }
 
