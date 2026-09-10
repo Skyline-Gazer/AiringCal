@@ -46,7 +46,18 @@ jobs:
         run: |
           test "$(docker image inspect --format '{{.Config.User}}' airing-cal-vps-sync:production)" = node
           test "$(docker image inspect --format '{{json .Config.ExposedPorts}}' airing-cal-vps-sync:production)" = null
-          docker run --rm --entrypoint sh airing-cal-vps-sync:production -ec 'test "$(id -u)" -ne 0; test ! -e /app/src; test ! -e /app/test; test ! -e /app/.git; ! command -v curl; ! command -v git; ! command -v jq; ! command -v python3; ! command -v dig; ! command -v nc; ! command -v make; ! command -v g++'
+          docker run --rm --entrypoint sh airing-cal-vps-sync:production -ec '
+            test "$(id -u)" -ne 0
+            test ! -e /app/src
+            test ! -e /app/test
+            test ! -e /app/.git
+            for tool in curl git jq python3 dig make g++; do
+              if command -v "$tool" >/dev/null; then
+                echo "FORBIDDEN_PRODUCTION_TOOL:$tool" >&2
+                exit 1
+              fi
+            done
+          '
       - name: Verify debug diagnostics and fail-closed entrypoint
         run: |
           docker run --rm --entrypoint sh airing-cal-vps-sync:debug -ec 'command -v curl; command -v dig; command -v nc; command -v ps; command -v jq'

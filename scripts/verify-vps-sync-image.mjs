@@ -13,6 +13,7 @@ function stage(source, name) {
 export function verifyVpsSyncImage(directory = root) {
   const dockerfile = readFileSync(`${directory}/Dockerfile.vps-sync`, 'utf8')
   const ignored = readFileSync(`${directory}/.dockerignore`, 'utf8')
+  const workflow = readFileSync(`${directory}/.github/workflows/ci.yml`, 'utf8')
   const build = stage(dockerfile, 'build')
   const productionDependencies = stage(dockerfile, 'production-dependencies')
   const production = stage(dockerfile, 'production')
@@ -33,6 +34,10 @@ export function verifyVpsSyncImage(directory = root) {
   assert.match(debug, /apk add --no-cache curl bind-tools netcat-openbsd procps-ng jq/)
   assert.match(debug, /^USER node$/m)
   for (const pattern of ['.git', 'node_modules', 'dist', '.env']) assert.match(ignored, new RegExp(`^${pattern.replace('.', '\\.')}`, 'm'))
+  const productionToolCheck = ['curl', 'git', 'jq', 'python3', 'dig', 'make', 'g++']
+  assert.match(workflow, /for tool in curl git jq python3 dig make g\+\+; do/)
+  assert.match(workflow, /if command -v "\$tool" >\/dev\/null; then/)
+  assert.match(workflow, /FORBIDDEN_PRODUCTION_TOOL:\$tool/)
 
-  return { production: 'verified', debug: 'verified' }
+  return { production: 'verified', productionToolCheck, debug: 'verified' }
 }
