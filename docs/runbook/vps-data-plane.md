@@ -85,7 +85,7 @@ VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection
 
 ## 飞书通知 payload 与签名
 
-`buildFeishuMessage` 目前只构造自定义机器人 `text` 请求体，不读取 webhook、不发出网络请求，也不改变 run 结果。它对每个终态 (`success`、`no_change`、`partial`、`failed`、`skipped`) 输出 run ID、mode/source、Asia/Shanghai 时间、publication generation/hash、有限计数、阶段耗时、publication/backup/notification 结果、git SHA、Node 与 Alpine 字段；当前 `RunResult` 尚未携带 build metadata，所以 git SHA 与 Alpine 字段明确输出 `unknown`，Node 取当前 `process.version`。前次通知失败仅以 category/code/stage 摘要附加。
+`buildFeishuMessage` 目前只构造自定义机器人 `text` 请求体，不读取 webhook、不发出网络请求，也不改变 run 结果。它对每个终态 (`success`、`no_change`、`partial`、`failed`、`skipped`) 输出 run ID、mode/source、Asia/Shanghai 时间、publication generation/hash、有限计数、阶段耗时、publication/backup/notification 结果、git SHA、Node 与 Alpine 字段；coordinator 只传入已验证的 40 位小写 git SHA，构造器会再次校验，缺失或无效值才输出 `unknown`。Alpine 仍为 `unknown`，Node 取当前 `process.version`。前次通知失败仅以 category/code/stage 摘要附加。
 
 实现遵循飞书开放平台的[自定义机器人使用指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot.md)（访问日期：2026-09-10）：POST JSON body 的成功响应 `code` 为 `0`；开启签名时 body 同时携带字符串秒级 `timestamp` 与 `sign`，timestamp 必须在一小时内，sign 为以 `timestamp + "\\n" + secret` 作为 key、空字节串作为消息的 HMAC-SHA256 再 Base64 编码。实际 webhook URL 与 secret 只能由后续投递边界接收，绝不能记录、通知或测试调用。
 

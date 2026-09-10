@@ -12,6 +12,8 @@ export function signFeishu(timestamp: string, secret: string): string {
 
 function count(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0 }
 
+function gitSha(value: unknown): string { return typeof value === 'string' && /^[a-f0-9]{40}$/.test(value) ? value : 'unknown' }
+
 function localTime(value: string): string {
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? 'invalid' : new Intl.DateTimeFormat('zh-CN', {
@@ -30,7 +32,7 @@ export function buildFeishuMessage(result: RunResult, previousFailure?: Previous
     `users=${count(result.counts.users)} collections=${count(result.counts.collections)} inserted=${count(result.counts.inserted)} updated=${count(result.counts.updated)}`,
     ...Object.entries(result.stageDurations).map(([stage, duration]) => `${stage}=${count(duration)}ms`),
     `publication=${result.components.publication ?? 'not_attempted'} backup=${result.components.backup ?? 'not_attempted'} notification=${result.components.notification ?? 'not_attempted'}`,
-    `git_sha=unknown node=${process.version} alpine=unknown`,
+    `git_sha=${gitSha(result.gitSha)} node=${process.version} alpine=unknown`,
     ...(result.sanitizedError ? [`error=${redactText(`${result.sanitizedError.category}/${result.sanitizedError.code}/${result.sanitizedError.stage}`)}`] : []),
     ...(previousFailure ? [`previous_failure=${redactText(`${previousFailure.category}/${previousFailure.code}/${previousFailure.stage}`)}`] : []),
   ]
