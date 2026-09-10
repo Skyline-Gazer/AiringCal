@@ -20,7 +20,7 @@ export function verifyVpsSyncImage(directory = root) {
 
   assert.match(dockerfile, /^FROM node:alpine AS deps$/m)
   assert.match(build, /pnpm -F @airing-cal\/vps-sync build/)
-  assert.match(productionDependencies, /npm install --omit=dev --ignore-scripts --no-package-lock @sentry\/node@10\.73\.0/)
+  assert.match(productionDependencies, /npm install --omit=dev --ignore-scripts --no-package-lock @aws-sdk\/client-s3@3\.1124\.0 @sentry\/node@10\.73\.0 pg@8\.23\.0/)
   assert.match(production, /apk add --no-cache ca-certificates postgresql18-client/)
   assert.match(production, /COPY --from=build \/workspace\/apps\/vps-sync\/dist \.\/dist/)
   assert.match(production, /COPY --from=production-dependencies \/app\/node_modules \.\/node_modules/)

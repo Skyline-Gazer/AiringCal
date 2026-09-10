@@ -10,7 +10,7 @@ RUN pnpm -F @airing-cal/vps-sync build
 
 FROM node:alpine AS production-dependencies
 WORKDIR /app
-RUN npm install --omit=dev --ignore-scripts --no-package-lock @sentry/node@10.73.0
+RUN npm install --omit=dev --ignore-scripts --no-package-lock @aws-sdk/client-s3@3.1124.0 @sentry/node@10.73.0 pg@8.23.0
 
 FROM node:alpine AS production
 WORKDIR /app
