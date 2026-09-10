@@ -1,5 +1,12 @@
 # Subagent Progress
 
+## Task 5.2 dispatch (2026-09-10)
+
+- **Plan/OpenSpec task**: `Task 5.2: retention 与安全 restore-verify` / `5.2 Implement explicit 30-daily/monthly retention selection and an empty-database restore verification command with non-destructive key and recovery tests`.
+- **Stage**: `implementing`; mode: `subagent-driven-development`, `tdd`, `thorough`; review/fix rounds: 0.
+- **Baseline**: `origin/dev` `2a172431f254e7ad843b0d6fdd86118b9c13d9d3` (PR #19 merged); branch `codex/vps-task-5-2`.
+- **Boundary**: selection only deletes explicit backup grammar keys after deterministic 30-daily/monthly retention evaluation. Restore-verify must reject production-equivalent or nonempty targets before `pg_restore`, validate downloaded checksum, schema/row counts/snapshot hash, and never publish or notify.
+
 ## Task 5.1 dispatch (2026-09-09)
 
 - **Plan/OpenSpec task**: `Task 5.1: custom-format backup、checksum manifest 与 partial outcome` / `5.1 Verify pg_dump/pg_restore and R2 client contracts, then implement custom-format backup upload, checksum manifest, partial-success semantics, and tests`.
