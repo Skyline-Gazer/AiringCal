@@ -33,6 +33,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - name: Render and validate VPS one-shot Compose config
+        run: |
+          docker compose config --help
+          docker compose run --help
+          flock --help
+          docker compose --env-file deploy/vps/.env.example -f deploy/vps/compose.yaml config --format json > "$RUNNER_TEMP/vps-compose.json"
+          node scripts/validate-vps-compose.mjs "$RUNNER_TEMP/vps-compose.json"
       - name: Verify Docker and Alpine package contracts
         run: |
           docker buildx build --help
