@@ -24,5 +24,4 @@ if [ "$image_count" -ne 1 ] || ! printf '%s\n' "$image" | grep -Eq '^ghcr\.io/sk
   exit 2
 fi
 
-unset VPS_SYNC_IMAGE
-exec flock -n /tmp/airing-cal-sync.lock docker compose --env-file "$directory/.env" -f "$directory/compose.yaml" run --rm sync sync "--mode=$mode" --source=scheduled
+VPS_SYNC_IMAGE="$image" exec flock -n /tmp/airing-cal-sync.lock docker compose --env-file "$directory/.env" -f "$directory/compose.yaml" run --rm sync sync "--mode=$mode" --source=scheduled

@@ -25,6 +25,12 @@ docker compose --env-file deploy/vps/.env -f deploy/vps/compose.yaml config --qu
 deploy/vps/run-sync.sh live
 ```
 
+本地 shadow 演练使用同一个已校验镜像：
+
+```sh
+deploy/vps/run-sync.sh shadow
+```
+
 脚本通过 host `flock -n` 取得非阻塞锁；锁已被占用时会以非零状态退出。Linux cron 可以直接调用它，例如：
 
 ```cron

@@ -100,20 +100,20 @@ test('run-sync rejects an invalid host image before invoking Docker', () => {
   }
 })
 
-test('run-sync uses its validated host image instead of an inherited override', () => {
+test('run-sync passes its validated image ahead of dotenv and inherited overrides', () => {
   const directory = mkdtempSync(join(tmpdir(), 'airing-cal-run-sync-'))
   try {
     copyFileSync('deploy/vps/run-sync.sh', join(directory, 'run-sync.sh'))
     chmodSync(join(directory, 'run-sync.sh'), 0o755)
-    writeFileSync(join(directory, '.env'), `VPS_SYNC_IMAGE=${validImage}\n`)
+    writeFileSync(join(directory, '.env'), `VPS_SYNC_IMAGE=${validImage}\nexport VPS_SYNC_IMAGE=ghcr.io/skyline-gazer/airing-cal-sync:latest\n`)
     writeFileSync(join(directory, 'flock'), '#!/usr/bin/env sh\n[ "$1" = -n ] && shift\nshift\nexec "$@"\n')
-    writeFileSync(join(directory, 'docker'), '#!/usr/bin/env sh\ntest -z "$VPS_SYNC_IMAGE"\ntouch "$DOCKER_CALLED"\n')
+    writeFileSync(join(directory, 'docker'), '#!/usr/bin/env sh\nset -eu\ntest "$VPS_SYNC_IMAGE" = "$EXPECTED_IMAGE"\ntouch "$DOCKER_CALLED"\n')
     chmodSync(join(directory, 'flock'), 0o755)
     chmodSync(join(directory, 'docker'), 0o755)
     const marker = join(directory, 'docker-called')
     const result = spawnSync(join(directory, 'run-sync.sh'), ['live'], {
       encoding: 'utf8',
-      env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, VPS_SYNC_IMAGE: 'ghcr.io/skyline-gazer/airing-cal-sync:latest', DOCKER_CALLED: marker },
+      env: { ...process.env, PATH: `${directory}:${process.env.PATH}`, VPS_SYNC_IMAGE: 'ghcr.io/skyline-gazer/airing-cal-sync:latest', EXPECTED_IMAGE: validImage, DOCKER_CALLED: marker },
     })
     assert.equal(result.status, 0, result.stderr)
     assert.equal(existsSync(marker), true)
