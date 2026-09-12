@@ -41,11 +41,19 @@ pnpm -F @airing-cal/vps-sync test:integration
 
 参考：<https://www.postgresql.org/docs/18/release-18.html>、<https://www.postgresql.org/docs/18/app-pgdump.html>、<https://neon.com/docs/connect/connection-pooling>。
 
+## Alpine 镜像静态契约
+
+`Dockerfile.vps-sync` 提供 `production` 与显式 opt-in 的 `debug` target。production 只从 build stage 拷贝 `apps/vps-sync/dist`，并只从 production-dependencies stage 拷贝运行时 `node_modules`，以非 root `node` 用户运行，不声明端口；运行时仅安装 CA certificates 与 `postgresql18-client`。debug 继承 production，额外包含已核验的 HTTPS/DNS/TCP/process/network/JSON 诊断包：`curl`、`bind-tools`、`netcat-openbsd`、`procps-ng`、`jq`。`scripts/verify-vps-sync-image.mjs` 对 Dockerfile final-stage 边界及 CI 的逐工具 production 拒绝循环执行静态断言；托管 CI 再构建实际 image 并逐项拒绝 `curl`、`git`、`jq`、`python3`、`dig`、`make` 和 `g++`。`node:alpine` 基础 BusyBox 自带的 `nc` 不属于该诊断包集合，不能仅通过删去 `postgresql18-client` 移除；生产运行时不依赖或调用它。
+
+核验来源（访问日期：2026-09-10）：Docker Hub 的 [Node Official Image](https://hub.docker.com/_/node) 列出 `node:alpine` 和受支持架构；[nodejs/docker-node Best Practices](https://github.com/nodejs/docker-node/blob/main/docs/BestPractices.md) 说明 Alpine variant、multi-stage、non-root `node` user 及直接 `node` CMD；Alpine v3.24 package index 确认 [ca-certificates](https://pkgs.alpinelinux.org/package/v3.24/main/ppc64le/ca-certificates)、[postgresql18-client](https://pkgs.alpinelinux.org/package/v3.24/main/riscv64/postgresql18-client)、[netcat-openbsd](https://pkgs.alpinelinux.org/package/v3.24/main/armv7/netcat-openbsd) 与 [procps-ng](https://pkgs.alpinelinux.org/package/v3.24/main/x86_64/procps-ng) 名称。其余 debug package URL 已以 v3.24 官方 index 的 `curl`、`bind-tools`、`jq` 路径作 HTTP 200 存在性核验。
+
+本机未安装 `docker`，因此本地不运行 Docker CLI、`buildx`、`apk` 或 image/container build。PR/push 的 GitHub-hosted Ubuntu runner 执行同一受控验证：先运行 `docker buildx --help`、`imagetools inspect node:alpine` 和临时 `node:alpine` 的 `apk search`，再构建 production/debug target，验证 production 的非 root 用户、无 exposed port、无 source/test/.git/诊断工具，验证 debug 诊断工具，并以 read-only root + tmpfs 运行入口，断言它在 Task 9.3 CLI composition 前以 `RUNTIME_ENTRYPOINT_UNCONFIGURED` 和状态 1 fail closed。该 job 不登录 registry、不推送 image、不连接 VPS 或任何生产数据服务；run log 的 Runner Image 链接是实际已安装 Docker/buildx 版本的审计来源。
+
 ## 上游完整抓取与重试
 
 VPS 上游适配器以 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection page 与 calendar 请求只由外层重试一次策略控制，最多总计 3 次请求。所有已配置用户的每一页和 calendar 都通过完整性边界后，才会产生可提交的完整观察；分页 total、offset、limit、页长度、重复 subject 或运行时 payload 结构异常都会 fail closed。
 
-`pnpm -F @airing-cal/vps-sync build` 保留 `dist` 中原有的 PostgreSQL entry locations 与 migration SQL copy，并把 `dist/upstream/fetch.js` 及其 workspace runtime dependencies 打包为 Node ESM。该 emitted adapter 可由 plain Node 直接 import，不依赖仓库 TypeScript source 或开发 loader。
+`pnpm -F @airing-cal/vps-sync build` 保留 `dist` 中原有的 PostgreSQL entry locations 与 migration SQL copy，并把 `dist/upstream/fetch.js` 及其 workspace runtime dependencies 打包为 Node ESM。该 emitted adapter 可由 plain Node 直接 import，不依赖仓库 TypeScript source 或开发 loader。当前 `dist/entrypoint.js` 是 Docker CMD 的 fail-closed 占位入口：它明确以非零状态退出，直到 Task 9.3 提供经过验证的 production CLI composition；它不会伪造同步输入或发起外部 I/O。
 
 | 上游结果 | 处理 |
 | --- | --- |
