@@ -120,3 +120,57 @@ PASS
 
 - Fix commit: `b60aea89c21155f3d921be10efe2054347031238` (`fix(vps-sync): fail closed on host image and rendered service`), pushed to `codex/vps-task-7-2`.
 - GitHub Actions run: [34670495133](https://github.com/Skyline-Gazer/AiringCal/actions/runs/34670495133), created from that commit and in progress when this evidence was recorded. It is the required real Docker Compose rendering check; this report does not claim its result before completion.
+
+---
+
+## Second review repair evidence (2026-09-12)
+
+### Root cause and call semantics
+
+- `run-sync.sh` accepted only bare `VPS_SYNC_IMAGE=...` lines but handed the same `.env` to Compose. Compose's parser accepts `export VPS_SYNC_IMAGE=...`, so a later exported floating tag could differ from the shell-validated value.
+- Docker's Compose interpolation documentation confirms that the shell environment takes precedence over `--env-file`; the official `compose-go` dotenv parser confirms `export` support. A local POSIX-shell check also confirmed that `VPS_SYNC_IMAGE="$image" exec ...` exports the exact assignment to the executed command.
+- The old fake Docker stub did not enable `set -e`; its failed `test -z` therefore did not fail the test process, producing a false positive.
+
+### RED
+
+```text
+$ node --test scripts/validate-vps-compose.test.mjs
+pass 7, fail 1
+
+run-sync passes its validated image ahead of dotenv and inherited overrides
+docker: VPS_SYNC_IMAGE: unbound variable
+```
+
+The regression fixture has a valid bare full SHA followed by `export VPS_SYNC_IMAGE=...:latest`, and also supplies an inherited `latest`. Its fake Docker uses `set -eu` and requires the exact validated SHA. Before the repair, `run-sync.sh` removed the variable and the fake boundary failed.
+
+### GREEN
+
+`run-sync.sh` now executes Compose with `VPS_SYNC_IMAGE="$image"` explicitly assigned after the strict SHA check. This shell value takes precedence over both the inherited value and every `.env` declaration, so Compose cannot interpolate another image during its second parse.
+
+```text
+$ node --test scripts/validate-vps-compose.test.mjs
+pass 8, fail 0
+
+$ sh -n deploy/vps/run-sync.sh
+PASS
+
+$ CI=true pnpm test
+PASS
+
+$ CI=true pnpm typecheck
+PASS
+
+$ CI=true pnpm build:check
+PASS
+
+$ git diff --check
+PASS
+```
+
+The VPS README also now shows the local `deploy/vps/run-sync.sh shadow` invocation and retains the Task 9.3 fail-closed CLI-composition boundary.
+
+### Commit and hosted CI
+
+- Repair commit: `49adfbaf2de363810e72945df2aba464a18d7c0a` (`fix(vps-sync): pin validated image for Compose`), pushed to `codex/vps-task-7-2`.
+- GitHub Actions run: [34670886293](https://github.com/Skyline-Gazer/AiringCal/actions/runs/34670886293) was `validate` in progress when checked. Its dependent `vps-sync-image` job had not started; this report does not claim a hosted Compose result before that job completes.
+- Local `docker` and `flock` remain unavailable, so no local Compose rendering or container execution was attempted.
