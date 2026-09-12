@@ -68,3 +68,55 @@ The first full quality-gate attempt could not start because this worktree had no
 - Local `docker compose config` and `flock`: executables are absent on this host.
 - Any local container pull or container run.
 - GHCR login, image push, registry publication, deployment, or production sync execution.
+
+## Review repair evidence (2026-09-12)
+
+### Root cause and contract verification
+
+- `deploy/vps/run-sync.sh` passed its local `.env` directly to Compose; the SHA contract was only represented by Compose interpolation and the CI example file, so a floating host image could reach Docker.
+- `scripts/validate-vps-compose.mjs` searched all rendered YAML text. An `x-irrelevant` extension could therefore supply security-looking keys while `services.sync` was insecure, and `ro,mode=1777` matched the old tmpfs regex.
+- Local `docker` and `flock` remain unavailable. Docker's official `docker compose config` reference was checked before the CI change: it states that `config` renders the resolved/canonical model and documents `--format json` and `--quiet`.
+
+### RED
+
+```text
+$ node --test scripts/validate-vps-compose.test.mjs
+pass 4, fail 3
+
+- x-irrelevant top-level security keys were accepted although services.sync lacked init.
+- /tmp/airing-cal:ro,mode=1777 was accepted as writable.
+- a host .env VPS_SYNC_IMAGE=...:latest reached the fake Docker boundary.
+```
+
+The first green review exposed one test gap: valid host `.env` expansion was not covered. A focused RED then produced `pass 7, fail 1`, with the valid full SHA rejected as `VPS_SYNC_IMAGE_MUST_BE_FULL_SHA` because the shell expansion was literal. The one-line correction was made only after that RED.
+
+### GREEN
+
+```text
+$ node --test scripts/validate-vps-compose.test.mjs
+pass 8, fail 0
+
+$ sh -n deploy/vps/run-sync.sh
+PASS
+
+$ git diff --check
+PASS
+
+$ CI=true pnpm test
+PASS
+
+$ CI=true pnpm typecheck
+PASS
+
+$ CI=true pnpm build:check
+PASS
+```
+
+- `run-sync.sh` accepts exactly one strict image line from its local `.env`, emits `VPS_SYNC_IMAGE_MUST_BE_FULL_SHA` before `flock` or Docker for invalid input, and removes inherited `VPS_SYNC_IMAGE` so Compose cannot override the validated host file.
+- CI now asks Compose for the rendered JSON model and the validator checks only `services.sync`; the new regressions assert the explicit `SYNC_INIT_REQUIRED` and `SYNC_TMPFS_MUST_BE_WRITABLE` rejection reasons.
+- README uses `config --quiet` so the local syntax/configuration check does not write interpolated secrets to stdout. It also records the existing fail-closed boundary and that actual CLI composition belongs to Task 9.3.
+
+### Commit and hosted CI
+
+- Fix commit: `b60aea89c21155f3d921be10efe2054347031238` (`fix(vps-sync): fail closed on host image and rendered service`), pushed to `codex/vps-task-7-2`.
+- GitHub Actions run: [34670495133](https://github.com/Skyline-Gazer/AiringCal/actions/runs/34670495133), created from that commit and in progress when this evidence was recorded. It is the required real Docker Compose rendering check; this report does not claim its result before completion.
