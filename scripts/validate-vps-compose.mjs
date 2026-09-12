@@ -4,18 +4,33 @@ import { readFileSync } from 'node:fs'
 const imagePattern = /^ghcr\.io\/skyline-gazer\/airing-cal-sync:[0-9a-f]{40}$/
 const requiredEnvironment = ['DATABASE_URL', 'R2_ENDPOINT', 'R2_BUCKET', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_REGION']
 
+function hasWritableTmpfs(tmpfs) {
+  return Array.isArray(tmpfs) && tmpfs.some((mount) => {
+    if (typeof mount !== 'string') return false
+    const [target, options = ''] = mount.split(':', 2)
+    const optionSet = new Set(options.split(','))
+    return target === '/tmp/airing-cal' && optionSet.has('mode=1777') && !optionSet.has('ro')
+  })
+}
+
 export function validateVpsComposeText(source) {
-  const images = [...source.matchAll(/^\s*image:\s*['"]?([^'"\s]+)['"]?\s*$/gm)].map((match) => match[1])
-  assert.deepEqual(images.length, 1, 'VPS_SYNC_IMAGE_REQUIRED_ONCE')
-  assert.match(images[0], imagePattern, 'VPS_SYNC_IMAGE_MUST_BE_FULL_SHA')
-  assert.match(source, /^\s*init:\s*true\s*$/m, 'INIT_REQUIRED')
-  assert.match(source, /^\s*read_only:\s*true\s*$/m, 'READ_ONLY_REQUIRED')
-  assert.match(source, /^\s*user:\s*node\s*$/m, 'NON_ROOT_USER_REQUIRED')
-  assert.match(source, /^\s*cap_drop:\s*\n\s*-\s*ALL\s*$/m, 'CAP_DROP_ALL_REQUIRED')
-  assert.match(source, /^\s*-\s*\/tmp\/airing-cal:.*mode=1777\s*$/m, 'WRITABLE_TMPFS_REQUIRED')
-  for (const key of requiredEnvironment) assert.match(source, new RegExp(`^\\s+${key}:`, 'm'), `RUNTIME_ENV_REQUIRED:${key}`)
-  assert.doesNotMatch(source, /^\s*(?:ports|restart|privileged|volumes):/m, 'ONE_SHOT_BOUNDARY_VIOLATION')
-  assert.doesNotMatch(source, /docker\.sock/, 'DOCKER_SOCKET_FORBIDDEN')
+  let config
+  try {
+    config = JSON.parse(source)
+  } catch {
+    assert.fail('RENDERED_COMPOSE_JSON_REQUIRED')
+  }
+
+  const sync = config?.services?.sync
+  assert.ok(sync && typeof sync === 'object' && !Array.isArray(sync), 'SYNC_SERVICE_REQUIRED')
+  assert.match(sync.image, imagePattern, 'VPS_SYNC_IMAGE_MUST_BE_FULL_SHA')
+  assert.equal(sync.init, true, 'SYNC_INIT_REQUIRED')
+  assert.equal(sync.read_only, true, 'SYNC_READ_ONLY_REQUIRED')
+  assert.equal(sync.user, 'node', 'SYNC_NON_ROOT_USER_REQUIRED')
+  assert.ok(Array.isArray(sync.cap_drop) && sync.cap_drop.includes('ALL'), 'SYNC_CAP_DROP_ALL_REQUIRED')
+  assert.ok(hasWritableTmpfs(sync.tmpfs), 'SYNC_TMPFS_MUST_BE_WRITABLE')
+  for (const key of requiredEnvironment) assert.ok(Object.hasOwn(sync.environment ?? {}, key), `SYNC_RUNTIME_ENV_REQUIRED:${key}`)
+  for (const key of ['ports', 'restart', 'privileged', 'volumes']) assert.equal(Object.hasOwn(sync, key), false, 'ONE_SHOT_BOUNDARY_VIOLATION')
 }
 
 if (process.argv[1] === new URL(import.meta.url).pathname) {

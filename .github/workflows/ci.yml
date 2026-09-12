@@ -38,8 +38,8 @@ jobs:
           docker compose config --help
           docker compose run --help
           flock --help
-          docker compose --env-file deploy/vps/.env.example -f deploy/vps/compose.yaml config > "$RUNNER_TEMP/vps-compose.yaml"
-          node scripts/validate-vps-compose.mjs "$RUNNER_TEMP/vps-compose.yaml"
+          docker compose --env-file deploy/vps/.env.example -f deploy/vps/compose.yaml config --format json > "$RUNNER_TEMP/vps-compose.json"
+          node scripts/validate-vps-compose.mjs "$RUNNER_TEMP/vps-compose.json"
       - name: Verify Docker and Alpine package contracts
         run: |
           docker buildx build --help

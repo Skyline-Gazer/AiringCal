@@ -11,11 +11,13 @@ chmod 600 deploy/vps/.env
 
 `VPS_SYNC_IMAGE` 必须是 `ghcr.io/skyline-gazer/airing-cal-sync:` 加完整 40 位小写 Git SHA；不要使用 `latest`、debug 标签或短 SHA。`DATABASE_URL` 与 `R2_*` 是运行期 secrets，不能提交或输出到日志。
 
-先在主机上渲染配置：
+先在主机上做不回显插值 secrets 的配置验证：
 
 ```sh
-docker compose --env-file deploy/vps/.env -f deploy/vps/compose.yaml config
+docker compose --env-file deploy/vps/.env -f deploy/vps/compose.yaml config --quiet
 ```
+
+当前镜像与 Compose 边界均 fail-closed；实际 CLI composition 归 Task 9.3。
 
 执行计划同步：
 
