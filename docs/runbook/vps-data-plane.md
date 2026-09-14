@@ -30,6 +30,19 @@ DATABASE_URL=postgres://postgres:test@127.0.0.1:54329/postgres VPS_SYNC_TEST_DAT
 
 `publications` 只允许一行，内含 verified 与至多一个 pending。`savePendingPublication` 只接受下一代 generation；精确候选支持 replay，未被 claim 的候选允许由更新观察替换。`claim`/`release` 必须使用同一完整候选；`verifyPublication` 仅提升已 claim 且身份一致的 pending，已验证候选可幂等重放。相同 verified hash 返回 `no_change`，只清理未 claim 且不晚于当前观察的 pending。这里的 object key 是不带部署命名空间的逻辑 key；外部发布调用方负责选择 live/shadow 命名空间。
 
+## 上游完整抓取与重试
+
+VPS 适配器使用 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection 分页请求和 calendar 请求只由外层 retry 处理，最多三次尝试。所有配置用户的分页和 calendar 通过完整性校验后，才会生成可提交的 `CompleteFullFetch`；primary user、任一分页或 calendar 不完整都会 fail closed。
+
+| 上游结果 | 处理 |
+| --- | --- |
+| 401 / 403 | 认证终态，一次失败，不重试。 |
+| collection / calendar 404 | `not_found` 终态，不当作空数据。 |
+| 429、5xx、超时、网络错误 | 最多三次外层尝试；合法 `Retry-After` 受最大延迟限制，否则使用有界指数退避和 jitter。 |
+| invalid JSON、schema mismatch、分页漂移或重复项 | `contract` 终态，不返回完整输入。 |
+
+持久化/通知只使用稳定的 `category`、`code`、`stage` 和 `attempt`，不携带 token、URL、响应 body 或底层异常消息。
+
 ## Secret 禁存与测试
 
 数据库只保存明确列出的业务字段；额外 upstream 属性、raw response、authorization、token、webhook 和连接配置不写入 JSON。初始化 authority 时必须传入运行时凭据值列表，所有可持久化自由文本/JSON 都会检查这些值；发现匹配即在写入前拒绝。通用 PostgreSQL URL、Bearer header、带密码 URL 也会被拒绝。错误持久化只接受稳定类别，未知错误映射为 `UNKNOWN`，不会存异常消息。`finishRun` 通过固定字段记录终态、组件结果、媒体计数与阶段耗时；通知结果可更新，但不能改写已结束 run 的业务状态、publication 或 backup 结果。

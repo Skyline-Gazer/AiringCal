@@ -97,6 +97,9 @@ importers:
 
   apps/vps-sync:
     dependencies:
+      '@airing-cal/bgm-api':
+        specifier: workspace:*
+        version: link:../../packages/bgm-api
       pg:
         specifier: 8.23.0
         version: 8.23.0
