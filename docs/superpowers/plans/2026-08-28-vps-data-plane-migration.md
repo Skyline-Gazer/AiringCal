@@ -53,16 +53,16 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `applyMigrations(pool: Pool): Promise<void>`；`withSessionLock<T>(client: PoolClient, key: bigint, work: () => Promise<T>): Promise<{ acquired: boolean; value?: T }>`；不可变 `schema_migrations(name text primary key, checksum text, applied_at timestamptz)`。
 
-- [ ] **Step 1: 验证依赖与 PostgreSQL API** — 执行 `pnpm view pg version`、检查 `node_modules/pg` types，并在临时 PostgreSQL 上执行 `psql --help` 与 `SELECT pg_try_advisory_lock(1);`；把确认的版本和签名记录在实现注释/PR notes。集成测试环境（需先具备 Docker）：本地用 `docker run --rm -e POSTGRES_PASSWORD=test -p 54329:5432 postgres:17-alpine` 启动 disposable 实例，CI 用 `services: postgres:17-alpine` 加 health check；`DATABASE_URL` 指向该实例，测试结束销毁。启动命令写进 `docs/runbook/vps-data-plane.md`。本地无 Docker 时这些集成测试标记为环境前置，不在本机强制执行。
-- [ ] **Step 2: 写 RED 测试** — 测试按文件名顺序应用 migration、重复执行 no-op、checksum 改变时报 `MIGRATION_CHECKSUM_MISMATCH`、两个连接仅一个获得相同 session lock。
+- [x] **Step 1: 验证依赖与 PostgreSQL API** — 执行 `pnpm view pg version`、检查 `node_modules/pg` types，并在临时 PostgreSQL 上执行 `psql --help` 与 `SELECT pg_try_advisory_lock(1);`；把确认的版本和签名记录在实现注释/PR notes。集成测试环境（需先具备 Docker）：本地用 `docker run --rm -e POSTGRES_PASSWORD=test -p 54329:5432 postgres:17-alpine` 启动 disposable 实例，CI 用 `services: postgres:17-alpine` 加 health check；`DATABASE_URL` 指向该实例，测试结束销毁。启动命令写进 `docs/runbook/vps-data-plane.md`。本地无 Docker 时这些集成测试标记为环境前置，不在本机强制执行。
+- [x] **Step 2: 写 RED 测试** — 测试按文件名顺序应用 migration、重复执行 no-op、checksum 改变时报 `MIGRATION_CHECKSUM_MISMATCH`、两个连接仅一个获得相同 session lock。
   ```ts
   await applyMigrations(pool)
   await assert.rejects(() => applyMigrations(poolWithChangedChecksum), /MIGRATION_CHECKSUM_MISMATCH/)
   assert.deepEqual(await Promise.all([claim(a), claim(b)]).then(xs => xs.map(x => x.acquired).sort()), [false, true])
   ```
-- [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- migrate.test.ts`，预期因 `applyMigrations` 不存在而 FAIL。
-- [ ] **Step 4: 最小 GREEN + REFACTOR** — 实现 checksum、migration lock、逐文件事务和 schema ahead/behind 拒绝；运行同一测试与 `pnpm -F @airing-cal/vps-sync typecheck`，预期 PASS。
-- [ ] **Step 5: 文档、提交与推送** — 在 `docs/runbook/vps-data-plane.md` 记录 migration 前置条件与不可逆策略；`git add ... && git commit -m "feat(vps-sync): add PostgreSQL migration runner" && git push`。
+- [x] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- migrate.test.ts`，预期因 `applyMigrations` 不存在而 FAIL。
+- [x] **Step 4: 最小 GREEN + REFACTOR** — 实现 checksum、migration lock、逐文件事务和 schema ahead/behind 拒绝；运行同一测试与 `pnpm -F @airing-cal/vps-sync typecheck`，预期 PASS。
+- [x] **Step 5: 文档、提交与推送** — 在 `docs/runbook/vps-data-plane.md` 记录 migration 前置条件与不可逆策略；`git add ... && git commit -m "feat(vps-sync): add PostgreSQL migration runner" && git push`。
 
 ### Task 1.2: 规范化 PostgreSQL repositories
 

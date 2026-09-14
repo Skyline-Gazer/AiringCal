@@ -1,6 +1,6 @@
 ## 1. PostgreSQL Authority
 
-- [ ] 1.1 Verify PostgreSQL client/migration APIs, add the VPS application package, and implement versioned schema migrations plus advisory-lock tests using TDD
+- [x] 1.1 Verify PostgreSQL client/migration APIs, add the VPS application package, and implement versioned schema migrations plus advisory-lock tests using TDD
 - [ ] 1.2 Implement provider-neutral repositories for collection, calendar, media, sync-run, and publication state with transaction, deletion-safety, replay, and secret-persistence tests
 
 ## 2. VPS Synchronization Runtime
