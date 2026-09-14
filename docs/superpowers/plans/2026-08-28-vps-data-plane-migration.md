@@ -95,11 +95,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 - Consumes: `BgmClient`、`assembleFullFetch(...)`；`BgmClient` 必须以 `maxGetRetries: 0` 构造以关闭内置 retry，retry 只在 `withRetry` 单层发生。
 - Produces: `fetchCompleteInput(config, client, clock): Promise<CompleteFullFetch>`；`withRetry<T>(operation, policy): Promise<T>`；分类码 `auth|not_found|rate_limited|upstream|timeout|network|contract`。
 
-- [ ] **Step 1: API 验证** — 在 `docs/example/api/bgm-api.json` 搜索 collection/calendar/detail 端点、method、Bearer mode、limit/offset 与 response schema；再读 `packages/bgm-api/src/bgm-client.ts` 的真实方法签名。
-- [ ] **Step 2: RED tests** — 覆盖 401/403 一次即失败，429/5xx/timeout/network 最多三次且合法 `Retry-After` 有上限，invalid JSON/schema 终止；primary user/任一分页/calendar 不完整时不返回 `CompleteFullFetch`；断言 429 只触发外层 `withRetry` 的三次尝试，而非 client 内置 retry 与外层叠加。
-- [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- retry.test.ts fetch.test.ts` 预期 FAIL。
-- [ ] **Step 4: GREEN/REFACTOR** — 复用 client 和 `assembleFullFetch`，注入 sleep/random 使 jitter 可测，错误只携带 stable code/stage/attempt；局部与 package tests/typecheck PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步 retry 表；commit `feat(vps-sync): fetch complete upstream state` 后 push。
+- [x] **Step 1: API 验证** — 在 `docs/example/api/bgm-api.json` 搜索 collection/calendar/detail 端点、method、Bearer mode、limit/offset 与 response schema；再读 `packages/bgm-api/src/bgm-client.ts` 的真实方法签名。
+- [x] **Step 2: RED tests** — 覆盖 401/403 一次即失败，429/5xx/timeout/network 最多三次且合法 `Retry-After` 有上限，invalid JSON/schema 终止；primary user/任一分页/calendar 不完整时不返回 `CompleteFullFetch`；断言 429 只触发外层 `withRetry` 的三次尝试，而非 client 内置 retry 与外层叠加。
+- [x] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- retry.test.ts fetch.test.ts` 预期 FAIL。
+- [x] **Step 4: GREEN/REFACTOR** — 复用 client 和 `assembleFullFetch`，注入 sleep/random 使 jitter 可测，错误只携带 stable code/stage/attempt；局部与 package tests/typecheck PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步 retry 表；commit `feat(vps-sync): fetch complete upstream state` 后 push。
 
 ### Task 2.2: 一次性 coordinator、run outcomes 与媒体生命周期
 

@@ -5,7 +5,7 @@
 
 ## 2. VPS Synchronization Runtime
 
-- [ ] 2.1 Reuse the verified bgm.tv client/domain logic to implement complete collection/calendar input, bounded retry, primary failure protection, and normalized diff tests
+- [x] 2.1 Reuse the verified bgm.tv client/domain logic to implement complete collection/calendar input, bounded retry, primary failure protection, and normalized diff tests
 - [ ] 2.2 Implement the one-shot run coordinator, heartbeat/terminal outcomes, no-change behavior, media refresh lifecycle, and concurrent-run exclusion with RED-to-GREEN tests
 
 ## 3. Immutable R2 Publication
