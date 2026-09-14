@@ -73,17 +73,17 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `PostgresAuthority` methods `beginRun`、`commitCompleteState`、`listDueMedia`、`applyMediaResult`、`getPublicationState`、`savePendingPublication`、`verifyPublication`、`finishRun`；rows use `users/subjects/collection_items/subject_media/calendar_entries/sync_runs/publications`.
 
-- [ ] **Step 1: RED tests** — 用真实临时 PG 验证完整 transaction rollback、两次完整 observation 才确认删除、恢复条目取消 missing、旧 `observed_at/run_id` media 写入被拒、pending replay/generation conflict、所有 text/json 列扫描不到测试 secrets。
+- [x] **Step 1: RED tests** — 用真实临时 PG 验证完整 transaction rollback、两次完整 observation 才确认删除、恢复条目取消 missing、旧 `observed_at/run_id` media 写入被拒、pending replay/generation conflict、所有 text/json 列扫描不到测试 secrets。
   ```ts
   await authority.commitCompleteState(firstMissing)
   assert.equal(await authority.collectionExists('u', 1), true)
   await authority.commitCompleteState(secondMissing)
   assert.equal(await authority.collectionExists('u', 1), false)
   ```
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- repositories.test.ts`，预期因 repository 未定义而 FAIL。
-- [ ] **Step 3: GREEN** — 增加约束、upserts、删除观察、calendar replace、publication singleton/pending 和 sanitized run persistence；事务中不得发网络请求。
-- [ ] **Step 4: REFACTOR/验证** — `pnpm -F @airing-cal/vps-sync test -- repositories.test.ts && pnpm -F @airing-cal/vps-sync typecheck` PASS；检查 SQL 参数全部参数化。
-- [ ] **Step 5: 文档、提交与推送** — 同步 schema/secret 禁存规则；commit `feat(vps-sync): add normalized PostgreSQL authority` 后 push。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- repositories.test.ts`，预期因 repository 未定义而 FAIL。
+- [x] **Step 3: GREEN** — 增加约束、upserts、删除观察、calendar replace、publication singleton/pending 和 sanitized run persistence；事务中不得发网络请求。
+- [x] **Step 4: REFACTOR/验证** — `pnpm -F @airing-cal/vps-sync test -- repositories.test.ts && pnpm -F @airing-cal/vps-sync typecheck` PASS；检查 SQL 参数全部参数化。
+- [x] **Step 5: 文档、提交与推送** — 同步 schema/secret 禁存规则；commit `feat(vps-sync): add normalized PostgreSQL authority` 后 push。
 
 ### Task 2.1: 完整上游抓取与有界 retry
 
