@@ -45,7 +45,7 @@ export async function applyMigrations(pool: Pool): Promise<void> {
   const client = await pool.connect();
 
   try {
-    await withSessionLock(client, MIGRATION_LOCK_KEY, async () => {
+    const lock = await withSessionLock(client, MIGRATION_LOCK_KEY, async () => {
       await client.query(`
         CREATE TABLE IF NOT EXISTS schema_migrations (
           name text PRIMARY KEY,
@@ -96,6 +96,8 @@ export async function applyMigrations(pool: Pool): Promise<void> {
         }
       }
     });
+
+    if (!lock.acquired) throw new Error("MIGRATION_LOCK_UNAVAILABLE");
   } finally {
     client.release();
   }
