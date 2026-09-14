@@ -5,7 +5,7 @@ import test from "node:test";
 
 import { Pool, type PoolClient } from "pg";
 
-import { applyMigrations, withSessionLock } from "./migrate.js";
+import { applyMigrations, compareMigrationNames, withSessionLock } from "./migrate.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const canRunIntegrationTests = Boolean(databaseUrl && process.env.VPS_SYNC_TEST_DATABASE === "1");
@@ -19,6 +19,13 @@ async function writeTestMigration(name: string, sql: string): Promise<() => Prom
   await writeFile(testMigration(name), sql);
   return () => unlink(testMigration(name));
 }
+
+test("sorts migration names by fixed UTF-16 order", () => {
+  assert.deepEqual(
+    ["z_001.sql", "é-001.sql", "a_001.sql", "A-001.sql"].sort(compareMigrationNames),
+    ["A-001.sql", "a_001.sql", "z_001.sql", "é-001.sql"],
+  );
+});
 
 test("rejects migrations when its advisory lock is unavailable", async () => {
   const client = {

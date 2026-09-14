@@ -7,6 +7,10 @@ const MIGRATION_LOCK_KEY = 7_262_935_169n;
 
 type Migration = { checksum: string; name: string; sql: string };
 
+export function compareMigrationNames(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 async function migrations(): Promise<Migration[]> {
   const directory = new URL("./migrations/", import.meta.url);
   const entries = await readdir(directory, { withFileTypes: true });
@@ -14,7 +18,7 @@ async function migrations(): Promise<Migration[]> {
   return Promise.all(
     entries
       .filter((entry) => entry.isFile() && entry.name.endsWith(".sql"))
-      .sort((a, b) => a.name.localeCompare(b.name))
+      .sort((a, b) => compareMigrationNames(a.name, b.name))
       .map(async (entry) => {
         const sql = await readFile(new URL(entry.name, directory), "utf8");
         return { checksum: createHash("sha256").update(sql).digest("hex"), name: entry.name, sql };
