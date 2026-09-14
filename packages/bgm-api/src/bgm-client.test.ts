@@ -100,6 +100,30 @@ test('GET retries 429 and 5xx responses at most twice', async () => {
   }
 })
 
+test('maxGetRetries=0 preserves Retry-After metadata on terminal 429 and 5xx errors', async () => {
+  for (const status of [429, 503]) {
+    const originalFetch = globalThis.fetch
+    let calls = 0
+    globalThis.fetch = async () => {
+      calls++
+      return new Response(JSON.stringify({ title: 'retry later' }), {
+        status,
+        headers: { 'Retry-After': '17' },
+      })
+    }
+    try {
+      await assert.rejects(
+        () => new BgmClient(undefined, { maxGetRetries: 0 }).getCalendar(),
+        (error: unknown) => error instanceof BgmHttpError
+          && (error as BgmHttpError & { retryAfter?: string }).retryAfter === '17',
+      )
+      assert.equal(calls, 1)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+})
+
 test('GET retries timeout and network failures', async () => {
   for (const failure of [new DOMException('timed out', 'TimeoutError'), new TypeError('network down')]) {
     const originalFetch = globalThis.fetch

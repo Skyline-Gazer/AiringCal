@@ -7,9 +7,12 @@ export type TokenStatus =
   | { status: 'probe_failed' }
 
 export class BgmHttpError extends Error {
-  constructor(public status: number, message: string) {
+  readonly retryAfter?: string
+
+  constructor(public status: number, message: string, metadata?: { retryAfter?: string }) {
     super(message)
     this.name = 'BgmHttpError'
+    if (typeof metadata?.retryAfter === 'string') this.retryAfter = metadata.retryAfter
   }
 }
 
@@ -131,6 +134,11 @@ export class BgmClient {
     return this.retryBaseDelayMs * 2 ** attempt
   }
 
+  private retryMetadata(response: Response): { retryAfter?: string } {
+    const retryAfter = response.headers.get('retry-after')
+    return retryAfter === null ? {} : { retryAfter }
+  }
+
   /** 统一 fetch 包装：GET 有界重试，写请求单次执行；异常按类型返回中文错误。 */
   private async fetchJson(url: string, init?: RequestInit): Promise<any> {
     const method = (init?.method ?? 'GET').toUpperCase()
@@ -170,7 +178,11 @@ export class BgmClient {
       }
       if (!res.ok) {
         const body = await res.text().catch(() => '')
-        throw new BgmHttpError(res.status, `bgm.tv 返回错误 (${res.status}): ${body.slice(0, 300)}`)
+        throw new BgmHttpError(
+          res.status,
+          `bgm.tv 返回错误 (${res.status}): ${body.slice(0, 300)}`,
+          res.status === 429 || res.status >= 500 ? this.retryMetadata(res) : undefined,
+        )
       }
       if (res.status === 204) return undefined
       const body = await res.text()
@@ -212,7 +224,9 @@ export class BgmClient {
       throw new BgmNetworkError(`无法连接 bgm.tv 图片: ${error?.message || String(error)}`)
     }
     if (res.status === 404) return null
-    if (res.status === 429 || res.status >= 500) throw new BgmHttpError(res.status, `bgm.tv 图片返回错误 (${res.status})`)
+    if (res.status === 429 || res.status >= 500) {
+      throw new BgmHttpError(res.status, `bgm.tv 图片返回错误 (${res.status})`, this.retryMetadata(res))
+    }
     if (!res.ok) return null
     return {
       data: await res.arrayBuffer(),

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { transformCalendar } from '@airing-cal/domain'
+import { assembleFullFetch as sharedAssembleFullFetch } from '@airing-cal/bgm-api'
 import { assembleFullFetch } from './full-fetch-boundary.ts'
 
 const entry = {
@@ -31,6 +32,10 @@ const calendar = [{
     rating: { score: 0, rank: 0, total: 0 },
   }],
 }]
+
+test('sync-worker re-exports the canonical full-fetch assembler', () => {
+  assert.equal(assembleFullFetch, sharedAssembleFullFetch)
+})
 
 test('assembleFullFetch marks input complete only with every collection page and calendar', () => {
   const result = assembleFullFetch(

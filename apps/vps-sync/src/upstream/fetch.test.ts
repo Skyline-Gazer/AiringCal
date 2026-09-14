@@ -52,6 +52,70 @@ test('fetchCompleteInput fetches every page and calendar before returning a comp
   assert.equal(result.calendar[0]?.items[0]?.name, '')
 })
 
+test('fetchCompleteInput normalizes collection transport subjects without dropping display fields', async () => {
+  const transportSubject = {
+    id: 23080,
+    type: 2,
+    name: 'Transport title',
+    name_cn: '传输标题',
+    short_summary: 'transport summary',
+    date: '2026-09-01',
+    tags: [{ name: 'tag', count: 1 }],
+    score: 8.7,
+    eps: 12,
+    volumes: 0,
+    collection_total: 456,
+    rank: 123,
+    total_episodes: 24,
+    nsfw: true,
+    images: { large: 'large', common: 'common', medium: 'medium', small: 'small', grid: 'grid' },
+  }
+  const client = {
+    getCollections: async () => ({ total: 1, offset: 0, limit: 1, data: [{ ...entry(23080), subject: transportSubject }] }),
+    getCalendar: async () => calendar,
+  } as unknown as BgmClient
+
+  const result = await fetchCompleteInput(config, client, () => 1_000)
+
+  assert.deepEqual(result.collections[0]?.collection.subject, {
+    id: 23080,
+    type: 2,
+    name: 'Transport title',
+    name_cn: '传输标题',
+    summary: 'transport summary',
+    nsfw: true,
+    date: '2026-09-01',
+    eps: 12,
+    total_episodes: 24,
+    images: { large: 'large', common: 'common', medium: 'medium', small: 'small', grid: 'grid' },
+    rating: { score: 8.7, rank: 123, total: 456 },
+  })
+})
+
+test('fetchCompleteInput accepts already typed slim subjects and falls back safely', async () => {
+  const typedSubject = {
+    id: 23080,
+    type: 2,
+    name: 'Typed title',
+    name_cn: '类型标题',
+    summary: 'typed summary',
+    nsfw: false,
+    date: '2026-09-02',
+    eps: 6,
+    total_episodes: 6,
+    images: { large: 'large', common: 'common', medium: 'medium', small: 'small', grid: 'grid' },
+    rating: { score: 7.5, rank: 321, total: 654 },
+  }
+  const client = {
+    getCollections: async () => ({ total: 1, offset: 0, limit: 1, data: [{ ...entry(23080), subject: typedSubject }] }),
+    getCalendar: async () => calendar,
+  } as unknown as BgmClient
+
+  const result = await fetchCompleteInput(config, client, () => 1_000)
+
+  assert.deepEqual(result.collections[0]?.collection.subject, typedSubject)
+})
+
 test('fetchCompleteInput requires every configured user and protects the primary input', async () => {
   const calls: string[] = []
   const users = [

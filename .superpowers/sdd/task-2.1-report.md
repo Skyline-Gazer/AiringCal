@@ -71,3 +71,66 @@ git diff --check
 ## 提交
 
 提交信息：`feat(vps-sync): fetch complete upstream state`
+
+## 审查修复报告（2026-09-14）
+
+### 修复范围
+
+- 将 `assembleFullFetch`、`CollectionFetchPage`、`CollectionFetchGroup` 与 `CompleteFullFetch` 移入 `@airing-cal/bgm-api`；`apps/sync-worker/src/full-fetch-boundary.ts` 仅保留兼容 wrapper，VPS 上游抓取直接复用 package 导出，删除第二份组装逻辑。
+- `BgmHttpError` 增加可选的 `retryAfter` 安全元数据，仅从 429/5xx 响应的 `Retry-After` header 复制值；构造器原有调用兼容。VPS retry 继续读取该字段并执行已有上限/回退策略。
+- VPS collection boundary 将 OpenAPI transport SlimSubject 显式归一化为 `BgmSlimSubject`：`short_summary`→`summary`、`score/rank/collection_total`→`rating`，保留名称、日期、图片与 eps，使用已验证 `total_episodes` 或 eps fallback，并保留真实布尔 `nsfw` 或安全默认；同时接受现有 typed canonical subject fixtures。
+- 未修改 plan、OpenSpec 或 `.comet.yaml`，未调用真实 API，未勾选任务。
+
+### TDD 证据
+
+RED：
+
+```text
+pnpm -F @airing-cal/vps-sync test -- retry.test.ts fetch.test.ts
+```
+
+在允许 `tsx` IPC 管道后，26 tests 中 2 个新增 SlimSubject 断言失败（17 passed、7 skipped），分别显示 transport 字段未归一化与 typed subject 被 contract 拒绝。
+
+```text
+pnpm -F @airing-cal/bgm-api test -- src/bgm-client.test.ts
+```
+
+23 tests 中新增真实 client 断言失败（22 passed、1 failed）：`maxGetRetries: 0` 的 429/503 `BgmHttpError` 没有 `retryAfter`。
+
+```text
+pnpm -F @airing-cal/sync-worker test -- src/full-fetch-boundary.test.ts
+```
+
+新增 wrapper identity 断言在 package 尚无导出时失败：`@airing-cal/bgm-api` 不提供 `assembleFullFetch`。
+
+GREEN：
+
+```text
+pnpm -F @airing-cal/vps-sync test -- retry.test.ts fetch.test.ts
+```
+
+26 tests：19 passed、0 failed、7 skipped（既有 PostgreSQL integration 条件跳过）。
+
+```text
+pnpm -F @airing-cal/bgm-api test
+pnpm -F @airing-cal/sync-worker test
+```
+
+分别为 29/29 与 228/228 passed。
+
+### 验证命令
+
+```text
+pnpm test                         # exit 0，workspace 全量测试通过
+pnpm typecheck                    # exit 0，workspace typecheck 通过
+pnpm -F @airing-cal/vps-sync build # exit 0
+pnpm build:check                  # exit 0；Wrangler 仅输出既有本机日志目录 EPERM 噪声，dry-run/type checks 完成
+git diff --check                  # exit 0
+```
+
+### 顾虑
+
+- 本环境未配置 disposable PostgreSQL，因此 vps-sync 既有 7 个数据库集成用例保持 skipped；单元与 workspace 回归均通过。
+- `pnpm build:check` 的 Wrangler 子进程尝试写用户目录日志时打印 `EPERM`，但各 dry-run 与命令整体 exit 0；这不是本次代码变更引入的失败。
+
+修复提交 subject：`fix(vps-sync): share and normalize upstream boundary`

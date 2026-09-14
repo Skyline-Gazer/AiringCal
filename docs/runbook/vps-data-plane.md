@@ -38,7 +38,7 @@ VPS 适配器使用 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection �
 | --- | --- |
 | 401 / 403 | 认证终态，一次失败，不重试。 |
 | collection / calendar 404 | `not_found` 终态，不当作空数据。 |
-| 429、5xx、超时、网络错误 | 最多三次外层尝试；合法 `Retry-After` 受最大延迟限制，否则使用有界指数退避和 jitter。 |
+| 429、5xx、超时、网络错误 | 最多三次外层尝试；`BgmClient` 仅透传响应的 `Retry-After` header 值，合法值受最大延迟限制，否则使用有界指数退避和 jitter。 |
 | invalid JSON、schema mismatch、分页漂移或重复项 | `contract` 终态，不返回完整输入。 |
 
 持久化/通知只使用稳定的 `category`、`code`、`stage` 和 `attempt`，不携带 token、URL、响应 body 或底层异常消息。

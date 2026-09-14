@@ -1,7 +1,11 @@
 import {
   BgmClient,
-  type BgmCalendarItem,
+  assembleFullFetch,
   type BgmCollection,
+  type BgmSlimSubject,
+  type CollectionFetchGroup,
+  type CollectionFetchPage,
+  type CompleteFullFetch,
 } from '@airing-cal/bgm-api'
 import {
   UpstreamFetchError,
@@ -11,25 +15,7 @@ import {
 } from './retry.js'
 
 export { UpstreamFetchError } from './retry.js'
-
-export interface CollectionFetchPage {
-  offset: number
-  total: number
-  data: BgmCollection[] | null
-}
-
-export interface CollectionFetchGroup {
-  user_id: string
-  pages: CollectionFetchPage[]
-  pageLimit: number
-}
-
-export interface CompleteFullFetch {
-  collections: Array<{ user_id: string; collection: BgmCollection }>
-  calendar: BgmCalendarItem[]
-  observedAt: number
-  complete: true
-}
+export type { CollectionFetchGroup, CollectionFetchPage, CompleteFullFetch } from '@airing-cal/bgm-api'
 
 export interface CompleteFetchUser {
   userId: string
@@ -59,13 +45,15 @@ function isSubjectType(value: unknown): value is number {
   return isSafeNonNegativeInteger(value) && [1, 2, 3, 4, 6].includes(value)
 }
 
-function isSlimSubject(value: unknown): boolean {
-  if (!isRecord(value)) return false
+function normalizeSlimSubject(value: unknown): BgmSlimSubject | null {
+  if (!isRecord(value)) return null
+  const isTransport = 'short_summary' in value || 'collection_total' in value || 'volumes' in value || 'tags' in value
   const {
     id,
     type,
     name,
     name_cn: nameCn,
+    summary,
     short_summary: shortSummary,
     date,
     tags,
@@ -74,7 +62,10 @@ function isSlimSubject(value: unknown): boolean {
     volumes,
     collection_total: collectionTotal,
     rank,
+    total_episodes: totalEpisodes,
+    nsfw,
     images,
+    rating,
   } = value
   if (
     !isSafeNonNegativeInteger(id)
@@ -82,23 +73,69 @@ function isSlimSubject(value: unknown): boolean {
     || !isSubjectType(type)
     || typeof name !== 'string'
     || typeof nameCn !== 'string'
-    || typeof shortSummary !== 'string'
+    || (summary !== undefined && typeof summary !== 'string')
+    || (shortSummary !== undefined && typeof shortSummary !== 'string')
     || (date !== undefined && typeof date !== 'string')
+    || !isSafeNonNegativeInteger(eps)
+    || (totalEpisodes !== undefined && !isSafeNonNegativeInteger(totalEpisodes))
+    || (nsfw !== undefined && typeof nsfw !== 'boolean')
+    || !isRecord(images)
+    || !['large', 'common', 'medium', 'small', 'grid'].every((size) => typeof images[size] === 'string')
+  ) return null
+
+  if (isTransport && (
+    typeof shortSummary !== 'string'
     || !Array.isArray(tags)
     || !tags.every((tag) => isRecord(tag) && typeof tag.name === 'string' && isSafeNonNegativeInteger(tag.count))
+    || !isSafeNonNegativeInteger(volumes)
     || typeof score !== 'number'
     || !Number.isFinite(score)
-    || !isSafeNonNegativeInteger(eps)
-    || !isSafeNonNegativeInteger(volumes)
     || !isSafeNonNegativeInteger(collectionTotal)
     || !isSafeNonNegativeInteger(rank)
-    || !isRecord(images)
-  ) return false
-  return ['large', 'common', 'medium', 'small', 'grid'].every((size) => typeof images[size] === 'string')
+  )) return null
+  if (score !== undefined && (typeof score !== 'number' || !Number.isFinite(score))) return null
+  if (collectionTotal !== undefined && !isSafeNonNegativeInteger(collectionTotal)) return null
+  if (rank !== undefined && !isSafeNonNegativeInteger(rank)) return null
+
+  const canonicalRating = isRecord(rating)
+    && typeof rating.score === 'number'
+    && Number.isFinite(rating.score)
+    && isSafeNonNegativeInteger(rating.rank)
+    && isSafeNonNegativeInteger(rating.total)
+    ? { score: rating.score, rank: rating.rank, total: rating.total }
+    : null
+  const transportRating = typeof score === 'number'
+    && Number.isFinite(score)
+    && isSafeNonNegativeInteger(rank)
+    && isSafeNonNegativeInteger(collectionTotal)
+    ? { score, rank, total: collectionTotal }
+    : null
+  const normalizedRating = canonicalRating ?? transportRating
+  if (normalizedRating === null) return null
+
+  return {
+    id,
+    type,
+    name,
+    name_cn: nameCn,
+    summary: typeof summary === 'string' ? summary : shortSummary as string,
+    nsfw: nsfw === true,
+    date: typeof date === 'string' ? date : '',
+    eps,
+    total_episodes: isSafeNonNegativeInteger(totalEpisodes) ? totalEpisodes : eps,
+    images: {
+      large: images.large as string,
+      common: images.common as string,
+      medium: images.medium as string,
+      small: images.small as string,
+      grid: images.grid as string,
+    },
+    rating: normalizedRating,
+  }
 }
 
-function isCollection(value: unknown): value is BgmCollection {
-  if (!isRecord(value)) return false
+function normalizeCollection(value: unknown): BgmCollection | null {
+  if (!isRecord(value)) return null
   const {
     subject_id: subjectId,
     subject_type: subjectType,
@@ -112,21 +149,27 @@ function isCollection(value: unknown): value is BgmCollection {
     private: isPrivate,
     subject,
   } = value
-  return isSafeNonNegativeInteger(subjectId)
-    && subjectId > 0
-    && isSubjectType(subjectType)
-    && isSafeNonNegativeInteger(rate)
-    && isSafeNonNegativeInteger(type)
-    && [1, 2, 3, 4, 5].includes(type)
-    && (comment === undefined || typeof comment === 'string')
-    && Array.isArray(tags)
-    && tags.every((tag) => typeof tag === 'string')
-    && isSafeNonNegativeInteger(epStatus)
-    && isSafeNonNegativeInteger(volStatus)
-    && typeof updatedAt === 'string'
-    && Number.isFinite(Date.parse(updatedAt))
-    && typeof isPrivate === 'boolean'
-    && (subject === undefined || isSlimSubject(subject))
+  if (!isSafeNonNegativeInteger(subjectId)
+    || subjectId === 0
+    || !isSubjectType(subjectType)
+    || !isSafeNonNegativeInteger(rate)
+    || !isSafeNonNegativeInteger(type)
+    || ![1, 2, 3, 4, 5].includes(type)
+    || (comment !== undefined && typeof comment !== 'string')
+    || !Array.isArray(tags)
+    || !tags.every((tag) => typeof tag === 'string')
+    || !isSafeNonNegativeInteger(epStatus)
+    || !isSafeNonNegativeInteger(volStatus)
+    || typeof updatedAt !== 'string'
+    || !Number.isFinite(Date.parse(updatedAt))
+    || typeof isPrivate !== 'boolean'
+  ) return null
+  const normalizedSubject = subject === undefined ? undefined : normalizeSlimSubject(subject)
+  if (subject !== undefined && normalizedSubject === null) return null
+  return {
+    ...value,
+    ...(normalizedSubject === undefined ? {} : { subject: normalizedSubject }),
+  } as BgmCollection
 }
 
 function parseCollectionPage(
@@ -137,134 +180,18 @@ function parseCollectionPage(
 ): { total: number; data: BgmCollection[] } {
   if (!isRecord(value)) throw contract('collections')
   const { total, offset, limit, data } = value
+  const normalizedData = Array.isArray(data) ? data.map(normalizeCollection) : null
   if (
     !isSafeNonNegativeInteger(total)
     || (offset !== undefined && offset !== expectedOffset)
     || (limit !== undefined && limit !== expectedLimit)
-    || !Array.isArray(data)
-    || !data.every(isCollection)
+    || normalizedData === null
+    || normalizedData.some((entry) => entry === null)
   ) throw contract('collections')
   if (expectedTotal !== undefined && total !== expectedTotal) throw contract('collections')
   const expectedLength = Math.min(expectedLimit, Math.max(0, total - expectedOffset))
-  if (data.length !== expectedLength) throw contract('collections')
-  return { total, data }
-}
-
-function normalizeCalendarSubject(value: unknown): BgmCalendarItem['items'][number] | null {
-  if (!isRecord(value) || !isSafeNonNegativeInteger(value.id) || value.id === 0 || !isSubjectType(value.type)) return null
-  for (const field of ['name', 'name_cn', 'summary']) {
-    if (value[field] !== undefined && typeof value[field] !== 'string') return null
-  }
-  for (const field of ['eps', 'eps_count', 'total_episodes', 'rank']) {
-    if (value[field] !== undefined && !isSafeNonNegativeInteger(value[field])) return null
-  }
-  if (value.nsfw !== undefined && typeof value.nsfw !== 'boolean') return null
-  if (value.date !== undefined && typeof value.date !== 'string') return null
-  if (value.air_date !== undefined && typeof value.air_date !== 'string') return null
-  if (value.images !== undefined) {
-    if (!isRecord(value.images)) return null
-    for (const size of ['large', 'common', 'medium', 'small', 'grid']) {
-      if (value.images[size] !== undefined && typeof value.images[size] !== 'string') return null
-    }
-  }
-  if (value.rating !== undefined) {
-    if (!isRecord(value.rating)) return null
-    if (value.rating.score !== undefined && (typeof value.rating.score !== 'number' || !Number.isFinite(value.rating.score))) return null
-    if (value.rating.total !== undefined && !isSafeNonNegativeInteger(value.rating.total)) return null
-    if (value.rating.rank !== undefined && !isSafeNonNegativeInteger(value.rating.rank)) return null
-  }
-  const images = isRecord(value.images) ? value.images : {}
-  const rating = isRecord(value.rating) && typeof value.rating.score === 'number'
-    ? {
-        score: value.rating.score,
-        rank: isSafeNonNegativeInteger(value.rank)
-          ? value.rank
-          : isRecord(value.rating) && isSafeNonNegativeInteger(value.rating.rank) ? value.rating.rank : 0,
-        total: isRecord(value.rating) && isSafeNonNegativeInteger(value.rating.total) ? value.rating.total : 0,
-      }
-    : undefined
-  return {
-    id: value.id,
-    type: value.type,
-    name: typeof value.name === 'string' ? value.name : '',
-    name_cn: typeof value.name_cn === 'string' ? value.name_cn : '',
-    summary: typeof value.summary === 'string' ? value.summary : '',
-    nsfw: value.nsfw === true,
-    date: typeof value.date === 'string' ? value.date : typeof value.air_date === 'string' ? value.air_date : '',
-    eps: isSafeNonNegativeInteger(value.eps) ? value.eps : 0,
-    ...(isSafeNonNegativeInteger(value.eps_count) ? { eps_count: value.eps_count } : {}),
-    ...(isSafeNonNegativeInteger(value.total_episodes) ? { total_episodes: value.total_episodes } : {}),
-    images: {
-      large: typeof images.large === 'string' ? images.large : '',
-      common: typeof images.common === 'string' ? images.common : '',
-      medium: typeof images.medium === 'string' ? images.medium : '',
-      small: typeof images.small === 'string' ? images.small : '',
-      grid: typeof images.grid === 'string' ? images.grid : '',
-    },
-    ...(rating ? { rating } : {}),
-  } as BgmCalendarItem['items'][number]
-}
-
-function assembleFullFetch(groups: CollectionFetchGroup[], calendar: unknown, observedAt: number): CompleteFullFetch {
-  if (!Array.isArray(calendar)) throw new Error('Incomplete calendar fetch')
-  const normalizedCalendar: BgmCalendarItem[] = []
-  for (const day of calendar) {
-    if (!isRecord(day) || !isRecord(day.weekday) || !Array.isArray(day.items)) throw new Error('Incomplete calendar fetch')
-    const weekday = day.weekday
-    if (
-      typeof weekday.en !== 'string'
-      || typeof weekday.cn !== 'string'
-      || typeof weekday.ja !== 'string'
-      || !isSafeNonNegativeInteger(weekday.id)
-    ) throw new Error('Incomplete calendar fetch')
-    const items = day.items.map(normalizeCalendarSubject)
-    if (items.some((item) => item === null)) throw new Error('Incomplete calendar fetch')
-    normalizedCalendar.push({
-      weekday: { en: weekday.en, cn: weekday.cn, ja: weekday.ja, id: weekday.id },
-      items: items as BgmCalendarItem['items'],
-    })
-  }
-  if (!isSafeNonNegativeInteger(observedAt)) throw new Error('Invalid full-fetch observation')
-  const collections: Array<{ user_id: string; collection: BgmCollection }> = []
-  const userIds = new Set<string>()
-  for (const group of groups) {
-    if (
-      typeof group.user_id !== 'string'
-      || group.user_id.length === 0
-      || !Number.isSafeInteger(group.pageLimit)
-      || group.pageLimit <= 0
-      || !Array.isArray(group.pages)
-      || group.pages.length === 0
-    ) throw new Error('Incomplete collection fetch')
-    if (userIds.has(group.user_id)) throw new Error(`Duplicate collection user: ${group.user_id}`)
-    userIds.add(group.user_id)
-    const declaredTotal = group.pages[0]?.total
-    if (!isSafeNonNegativeInteger(declaredTotal)) throw new Error('Incomplete collection fetch')
-    const expectedPages = Math.max(1, Math.ceil(declaredTotal / group.pageLimit))
-    if (group.pages.length !== expectedPages) throw new Error('Incomplete collection fetch')
-    const subjectIds = new Set<number>()
-    for (let index = 0; index < group.pages.length; index++) {
-      const page = group.pages[index]
-      const expectedOffset = index * group.pageLimit
-      const expectedLength = Math.min(group.pageLimit, Math.max(0, declaredTotal - expectedOffset))
-      if (
-        page === undefined
-        || page.data === null
-        || page.total !== declaredTotal
-        || page.offset !== expectedOffset
-        || page.data.length !== expectedLength
-      ) throw new Error('Incomplete collection fetch')
-      for (const entry of page.data) {
-        if (!isSafeNonNegativeInteger(entry.subject_id) || entry.subject_id === 0 || subjectIds.has(entry.subject_id)) {
-          throw new Error('Incomplete collection fetch')
-        }
-        subjectIds.add(entry.subject_id)
-        collections.push({ user_id: group.user_id, collection: entry })
-      }
-    }
-    if (subjectIds.size !== declaredTotal) throw new Error('Incomplete collection fetch')
-  }
-  return { collections, calendar: normalizedCalendar, observedAt, complete: true }
+  if (normalizedData.length !== expectedLength) throw contract('collections')
+  return { total, data: normalizedData as BgmCollection[] }
 }
 
 function validConfig(config: CompleteFetchConfig): boolean {
