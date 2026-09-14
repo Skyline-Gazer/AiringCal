@@ -30,6 +30,12 @@ DATABASE_URL=postgres://postgres:test@127.0.0.1:54329/postgres VPS_SYNC_TEST_DAT
 
 `publications` 只允许一行，内含 verified 与至多一个 pending。`savePendingPublication` 只接受下一代 generation；精确候选支持 replay，未被 claim 的候选允许由更新观察替换。`claim`/`release` 必须使用同一完整候选；`verifyPublication` 仅提升已 claim 且身份一致的 pending，已验证候选可幂等重放。相同 verified hash 返回 `no_change`，只清理未 claim 且不晚于当前观察的 pending。这里的 object key 是不带部署命名空间的逻辑 key；外部发布调用方负责选择 live/shadow 命名空间。
 
+## 一次性同步与媒体生命周期
+
+`runOnce` 通过端口注入依赖，按 lock → complete collection/calendar fetch → complete-state commit → media refresh → publication → backup → notification 顺序执行。每个阶段先更新 heartbeat；锁未取得时只记录并通知 `skipped`，不调用上游、媒体或发布写入。完整抓取失败不会提交 authority state；媒体的 detail、metadata 与 image 独立处理，瞬态失败保留最后成功引用并使本轮为 `partial`，subject 404 使用有界 tombstone。终态为 `success`、`no_change`、`skipped` 时进程退出码为 0，`partial` 与 `failed` 为非零。
+
+媒体刷新按 `new_or_changed → hot → cold → retry` 的稳定优先级和 subject ID 排序，cold 使用 UTC 星期分片，并固定最多四个并发 subject。每个 subject 的 PostgreSQL 行锁覆盖上游读取、图片校验、R2 PUT 与引用提交；图片只接受 HTTPS 白名单 host、200 与允许 MIME，限制 8 MiB 后计算 SHA-256，先写对象再保存引用。shadow 对象使用 `shadow/images/<sha256>/original`，相同 hash/key 复用对象。
+
 ## 上游完整抓取与重试
 
 VPS 适配器使用 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection 分页请求和 calendar 请求只由外层 retry 处理，最多三次尝试。所有配置用户的分页和 calendar 通过完整性校验后，才会生成可提交的 `CompleteFullFetch`；primary user、任一分页或 calendar 不完整都会 fail closed。
