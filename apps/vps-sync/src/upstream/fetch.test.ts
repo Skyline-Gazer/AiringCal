@@ -116,6 +116,33 @@ test('fetchCompleteInput accepts already typed slim subjects and falls back safe
   assert.deepEqual(result.collections[0]?.collection.subject, typedSubject)
 })
 
+test('fetchCompleteInput rejects canonical slim subjects without summary', async () => {
+  const incompleteCanonicalSubject = {
+    id: 23080,
+    type: 2,
+    name: 'Canonical title',
+    name_cn: '规范标题',
+    nsfw: false,
+    date: '2026-09-02',
+    eps: 6,
+    total_episodes: 6,
+    images: { large: 'large', common: 'common', medium: 'medium', small: 'small', grid: 'grid' },
+    rating: { score: 7.5, rank: 321, total: 654 },
+  }
+  const client = {
+    getCollections: async () => ({ total: 1, offset: 0, limit: 1, data: [{ ...entry(23080), subject: incompleteCanonicalSubject }] }),
+    getCalendar: async () => calendar,
+  } as unknown as BgmClient
+
+  await assert.rejects(
+    () => fetchCompleteInput(config, client, () => 1_000),
+    (error: unknown) => error instanceof UpstreamFetchError
+      && error.category === 'contract'
+      && error.stage === 'collections'
+      && error.attempt === 1,
+  )
+})
+
 test('fetchCompleteInput requires every configured user and protects the primary input', async () => {
   const calls: string[] = []
   const users = [

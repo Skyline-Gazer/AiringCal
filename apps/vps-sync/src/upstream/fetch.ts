@@ -83,6 +83,8 @@ function normalizeSlimSubject(value: unknown): BgmSlimSubject | null {
     || !['large', 'common', 'medium', 'small', 'grid'].every((size) => typeof images[size] === 'string')
   ) return null
 
+  if (!isTransport && typeof summary !== 'string') return null
+
   if (isTransport && (
     typeof shortSummary !== 'string'
     || !Array.isArray(tags)

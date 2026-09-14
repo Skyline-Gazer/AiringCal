@@ -134,3 +134,49 @@ git diff --check                  # exit 0
 - `pnpm build:check` 的 Wrangler 子进程尝试写用户目录日志时打印 `EPERM`，但各 dry-run 与命令整体 exit 0；这不是本次代码变更引入的失败。
 
 修复提交 subject：`fix(vps-sync): share and normalize upstream boundary`
+
+## 最后一轮审查修复（2026-09-14）
+
+### 修复范围
+
+- canonical slim subject 分支现在明确要求 `summary` 为字符串；缺失时在 collection normalization boundary 立即报告 contract failure，不再将 `undefined` 断言为 `BgmSlimSubject.summary`。
+- 新增最小 canonical 缺失 `summary` fixture 回归测试；transport `short_summary` 映射和已有 typed canonical fixture 继续保留并通过。
+- 未修改 plan、OpenSpec 或 `.comet.yaml`，未调用真实 API，未勾选任务。
+
+### TDD 证据
+
+RED：
+
+```text
+pnpm -F @airing-cal/vps-sync test -- retry.test.ts fetch.test.ts
+```
+
+行为级失败已确认：27 tests 中 19 passed、1 failed、7 skipped；新增 `fetchCompleteInput rejects canonical slim subjects without summary` 失败并报告 `Missing expected rejection`。第一次沙箱内运行的 `tsx` `listen EPERM` 仅为环境权限限制，未作为行为 RED 依据。
+
+GREEN：
+
+```text
+pnpm -F @airing-cal/vps-sync test -- retry.test.ts fetch.test.ts
+```
+
+通过：27 tests 中 20 passed、0 failed、7 skipped。
+
+### 验证命令
+
+```text
+pnpm -F @airing-cal/vps-sync typecheck  # exit 0
+pnpm -F @airing-cal/vps-sync build      # exit 0
+pnpm test                               # exit 0
+pnpm typecheck                          # exit 0
+pnpm build:check                        # exit 0
+git diff --check                        # exit 0
+```
+
+### 提交
+
+提交主题：`fix(vps-sync): reject incomplete canonical subjects`
+
+### 剩余顾虑
+
+- 本环境未配置 disposable PostgreSQL，因此 vps-sync 既有 7 个数据库集成用例保持 skipped；本轮 focused 与 workspace 单元回归均通过。
+- `pnpm build:check` 的 Wrangler 可能打印既有本机日志目录 `EPERM` 噪声，但本轮命令 exit 0；不是本次修复引入的失败。
