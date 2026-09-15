@@ -63,3 +63,10 @@ git diff --check                         # PASS
 - 新增 `0002_media_component_state.sql`，不改已存在的 `0001_initial.sql`，以 allow-listed JSONB 保存各组件 status、metadata 及 metadata/image hashes；旧行由 legacy aggregate 列兼容推导。SQL contract 测试验证失败状态不延长 tombstone，并验证组件状态 round-trip。
 - complete-state 写入跳过未变化 subject/calendar 行；collection 计数分别区分 inserted、updated、unchanged，并由运行中的 SQL contract 测试覆盖。
 - RED：review 回归在实现前共 41 tests，29 passed、5 failed、7 个 PostgreSQL integration tests skipped。GREEN：`pnpm test` 为 41 tests，34 passed、0 failed、7 skipped；`pnpm typecheck`、`pnpm build` 与 `git diff --check` 均通过。因环境未提供 PostgreSQL，真实 migration/row-lock/transaction integration coverage 仍待 CI 或 disposable PostgreSQL 执行。
+
+## PostgreSQL integration follow-up（2026-09-15）
+
+- CI run `34919316452`（commit `6f9fbcf`）确认 repository integration fixture 只执行 `0001_initial.sql`，没有 `0002_media_component_state.sql`，因此两个 media integration cases 报 `component_state` 列不存在。将 fixture 改为调用 `applyMigrations(pool)`，由仓库迁移入口应用全部 migration；migration 顺序及重复应用已有测试覆盖。
+- 同一 run 的 publication case 收到 `RUN_CONFLICT` 而非预期的 `GENERATION_CONFLICT`。它在 `requireRun` 阶段失败；全迁移 fixture 下尚未有真实 PostgreSQL 重跑证据，因此本轮不改该断言或猜测原因，待本次 push 后 CI 复查。
+- 本机没有可用 PostgreSQL 服务；`initdb` 在沙箱内因 shared-memory 权限失败，按要求不继续搭建本机数据库。标准 `pnpm -F @airing-cal/vps-sync test` 也因沙箱禁止 tsx IPC socket（`listen EPERM`）未能启动；等价本地 Node test runner 命令 `node --import tsx --test src/**/*.test.ts` 通过：51 tests，44 passed、0 failed、7 PostgreSQL tests skipped。`typecheck`、`build` 与 `git diff --check` 均通过。
+- 下一轮 CI 对全迁移 repository integration fixture 的验证状态：待本修复 commit push 后触发。

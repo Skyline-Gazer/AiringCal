@@ -1,9 +1,9 @@
 import { strict as assert } from "node:assert";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { Pool, type PoolClient } from "pg";
 
+import { applyMigrations } from "./migrate.js";
 import { PostgresAuthority, type CompleteState, type CompleteStateInput, type MediaResultInput, type Publication, type Subject } from "./repositories.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -170,7 +170,7 @@ test("normalized PostgreSQL authority", { skip: !enabled }, async (t) => {
 
   try {
     await admin.query(`CREATE SCHEMA "${schema}"`);
-    await pool.query(await readFile(new URL("./migrations/0001_initial.sql", import.meta.url), "utf8"));
+    await applyMigrations(pool);
 
     await t.test("complete input commits normalized state; incomplete or duplicate input changes nothing", async () => {
       await start("r1", 100);
