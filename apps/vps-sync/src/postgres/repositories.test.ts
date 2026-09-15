@@ -2,9 +2,9 @@ import { strict as assert } from "node:assert";
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 
-import { PostgresAuthority, type CompleteState, type Publication, type Subject } from "./repositories.js";
+import { PostgresAuthority, type CompleteState, type CompleteStateInput, type MediaResultInput, type Publication, type Subject } from "./repositories.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const enabled = Boolean(databaseUrl && process.env.VPS_SYNC_TEST_DATABASE === "1");
@@ -14,6 +14,136 @@ const subject: Subject = { subject_id: 1, type: 2, name: "test", name_cn: "测�
 
 test("repository exports its PostgreSQL authority", () => {
   assert.equal(typeof PostgresAuthority, "function");
+});
+
+test("media result SQL preserves failed component state without renewing a stale tombstone", async () => {
+  const statements: Array<{ sql: string; values: unknown[] }> = [];
+  const retry: MediaResultInput = {
+    subjectId: 1,
+    runId: "media-retry",
+    observedAt: new Date(600_000).toISOString(),
+    detail: { id: 1, type: 2, name: "test", name_cn: "测试", summary: "summary", date: "2026-01-01", eps: 12, total_episodes: 12, nsfw: false },
+    metadata: { exists: false, nsfw: true, checked_at: 500, expires_at: 500, reason: "not_found" },
+    imageRefs: { common: { hash, uri: `/image/${hash}`, r2_key: `images/${hash}/original` }, large: null },
+    detailHash: hash,
+    metadataHash: "d".repeat(64),
+    imageHash: "c".repeat(64),
+    status: { detail: "failed", metadata: "failed", image: "success" },
+    nextRetryAt: new Date(4_200_000).toISOString(),
+    deletedAt: null,
+    lastSuccessAt: new Date(400_000).toISOString(),
+  };
+  const componentState = {
+    status: retry.status,
+    metadata: retry.metadata,
+    metadataHash: retry.metadataHash,
+    imageHash: retry.imageHash,
+  };
+  const row = {
+    subject_id: 1,
+    run_id: retry.runId,
+    observed_at: 600,
+    status: "failed",
+    detail: { id: 1, type: 2, name: "test", name_cn: "测试", summary: "summary", date: "2026-01-01", eps: 12, total_episodes: 12, nsfw: false },
+    detail_hash: hash,
+    common_key: `images/${hash}/original`,
+    common_hash: hash,
+    large_key: null,
+    large_hash: null,
+    next_retry_at: 4_200,
+    tombstone_until: null,
+    last_success_at: 400,
+    component_state: componentState,
+  };
+  const client = {
+    query: async (sql: string, values: unknown[] = []) => {
+      statements.push({ sql, values });
+      if (sql.startsWith("SELECT 1 FROM sync_runs")) return { rowCount: 1, rows: [{}] };
+      if (sql.startsWith("SELECT observed_at, run_id FROM subject_media")) return { rowCount: 1, rows: [{ observed_at: 500, run_id: "old" }] };
+      if (sql.startsWith("SELECT * FROM subject_media")) return { rowCount: 1, rows: [row] };
+      return { rowCount: 1, rows: [] };
+    },
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const pool = { connect: async () => client } as unknown as Pool;
+  const authority = new PostgresAuthority(pool, secrets);
+
+  assert.equal(await authority.applyMediaResult(retry), true);
+  const update = statements.find((statement) => statement.sql.includes("UPDATE subject_media SET"));
+  assert.ok(update);
+  assert.equal(update.values[12], "failed");
+  assert.equal(update.values[16], null);
+  assert.match(update.sql, /component_state/);
+  assert.deepEqual(update.values[18], componentState);
+
+  const roundTrip = await authority.withSubject(1, async (session) => session.current);
+  assert.deepEqual(roundTrip?.status, retry.status);
+  assert.deepEqual(roundTrip?.metadata, retry.metadata);
+  assert.equal(roundTrip?.metadataHash, retry.metadataHash);
+  assert.equal(roundTrip?.imageHash, retry.imageHash);
+  assert.equal(roundTrip?.deletedAt, null);
+  assert.equal(roundTrip?.nextRetryAt, retry.nextRetryAt);
+});
+
+test("complete-state SQL counts collection diffs and skips unchanged subject/calendar writes", async () => {
+  const state = (runId: string, observedAt: number, contentHash: string): CompleteStateInput => {
+    const subjectInput = {
+      id: 2,
+      subjectType: 2,
+      payload: { id: 2, type: 2, name: "counted", name_cn: "counted", summary: "", date: "", eps: 1, total_episodes: 1, nsfw: false },
+      contentHash,
+      upstreamUpdatedAt: null,
+    };
+    return {
+      runId,
+      observedAt: new Date(observedAt * 1_000).toISOString(),
+      users: [{
+        id: "u-counted",
+        upstreamUserId: "counted-user",
+        items: [{
+          subject: subjectInput,
+          collection: {
+            payload: { collection_type: 3, rate: 8, tags: ["anime"], comment: "hello", ep_status: 1, vol_status: 0, private: false },
+            contentHash,
+            upstreamUpdatedAt: null,
+          },
+        }],
+      }],
+      calendarEntries: [{ weekdayId: 1, subjectId: 2, subject: subjectInput, payload: { weekday: { id: 1 }, subject_id: 2 } }],
+    };
+  };
+  const countsFor = async (input: CompleteStateInput, collectionResult: { rowCount: number; rows: Array<{ inserted?: boolean }> }) => {
+    const statements: string[] = [];
+    const client = {
+      query: async (sql: string) => {
+        statements.push(sql);
+        if (sql.startsWith("SELECT 1 FROM sync_runs")) return { rowCount: 1, rows: [{}] };
+        if (sql.startsWith("SELECT observed_at, state_committed_at, status")) return { rowCount: 1, rows: [{ observed_at: Number(new Date(input.observedAt).getTime() / 1_000), state_committed_at: null, status: "running" }] };
+        if (sql.startsWith("SELECT run_id, observed_at FROM sync_runs WHERE state_committed_at")) return { rowCount: 0, rows: [] };
+        if (sql.startsWith("SELECT state_committed_at, status")) return { rowCount: 1, rows: [{ state_committed_at: null, status: "running" }] };
+        if (sql.includes("INSERT INTO collection_items")) return collectionResult;
+        if (sql.includes("UPDATE collection_items SET")) return { rowCount: 0, rows: [] };
+        return { rowCount: 1, rows: [] };
+      },
+      release: () => undefined,
+    } as unknown as PoolClient;
+    const authority = new PostgresAuthority({ connect: async () => client } as unknown as Pool, secrets);
+    const counts = await authority.commitCompleteState(input);
+    return { counts, statements };
+  };
+
+  const inserted = await countsFor(state("count-1", 500, hash), { rowCount: 1, rows: [{ inserted: true }] });
+  assert.deepEqual(inserted.counts, { collections: 1, inserted: 1, updated: 0, unchanged: 0, missing: 0, deleted: 0 });
+  assert.ok(inserted.statements.some((sql) => sql.includes("WHERE subjects.content_hash IS DISTINCT FROM EXCLUDED.content_hash")));
+  assert.ok(inserted.statements.some((sql) => sql.includes("RETURNING (xmax = 0) AS inserted")));
+  assert.ok(inserted.statements.some((sql) => sql.includes("DELETE FROM calendar_entries existing_entry") && sql.includes("unnest($1::integer[], $2::integer[])")));
+  assert.ok(inserted.statements.some((sql) => sql.includes("ON CONFLICT (weekday, subject_id) DO NOTHING")));
+
+  const unchanged = await countsFor(state("count-2", 600, hash), { rowCount: 0, rows: [] });
+  assert.deepEqual(unchanged.counts, { collections: 1, inserted: 0, updated: 0, unchanged: 1, missing: 0, deleted: 0 });
+
+  const updated = await countsFor(state("count-3", 700, "c".repeat(64)), { rowCount: 1, rows: [{ inserted: false }] });
+  assert.deepEqual(updated.counts, { collections: 1, inserted: 0, updated: 1, unchanged: 0, missing: 0, deleted: 0 });
 });
 
 test("normalized PostgreSQL authority", { skip: !enabled }, async (t) => {
@@ -84,6 +214,53 @@ test("normalized PostgreSQL authority", { skip: !enabled }, async (t) => {
       assert.equal(await authority.collectionExists("u", 1), true);
     });
 
+    await t.test("complete sync skips unchanged subject/calendar writes and reports collection diffs accurately", async () => {
+      const countedState = (runId: string, observedAt: number, changed = false): CompleteStateInput => {
+        const contentHash = changed ? "c".repeat(64) : hash;
+        const subjectInput = {
+          id: 2,
+          subjectType: 2,
+          payload: { id: 2, type: 2, name: changed ? "changed" : "counted", name_cn: "counted", summary: "", date: "", eps: 1, total_episodes: 1, nsfw: false },
+          contentHash,
+          upstreamUpdatedAt: null,
+        };
+        return {
+          runId,
+          observedAt: new Date(observedAt * 1_000).toISOString(),
+          users: [{
+            id: "u-counted",
+            upstreamUserId: "counted-user",
+            items: [{
+              subject: subjectInput,
+              collection: {
+                payload: { collection_type: 3, rate: changed ? 9 : 8, tags: ["anime"], comment: "hello", ep_status: 1, vol_status: 0, private: false },
+                contentHash,
+                upstreamUpdatedAt: null,
+              },
+            }],
+          }],
+          calendarEntries: [{ weekdayId: 1, subjectId: 2, subject: subjectInput, payload: { weekday: { id: 1 }, subject_id: 2 } }],
+        };
+      };
+
+      await start("counts-1", 500);
+      assert.deepEqual(await authority.commitCompleteState(countedState("counts-1", 500)), {
+        collections: 1, inserted: 1, updated: 0, unchanged: 0, missing: 0, deleted: 0,
+      });
+      await start("counts-2", 600);
+      assert.deepEqual(await authority.commitCompleteState(countedState("counts-2", 600)), {
+        collections: 1, inserted: 0, updated: 0, unchanged: 1, missing: 0, deleted: 0,
+      });
+      assert.deepEqual((await pool.query("SELECT last_seen_at FROM subjects WHERE subject_id = 2")).rows, [{ last_seen_at: "500" }]);
+      assert.deepEqual((await pool.query("SELECT observed_at FROM calendar_entries WHERE subject_id = 2")).rows, [{ observed_at: "500" }]);
+      await start("counts-3", 700);
+      assert.deepEqual(await authority.commitCompleteState(countedState("counts-3", 700, true)), {
+        collections: 1, inserted: 0, updated: 1, unchanged: 0, missing: 0, deleted: 0,
+      });
+      assert.deepEqual((await pool.query("SELECT last_seen_at FROM subjects WHERE subject_id = 2")).rows, [{ last_seen_at: "700" }]);
+      assert.deepEqual((await pool.query("SELECT observed_at FROM calendar_entries WHERE subject_id = 2")).rows, [{ observed_at: "500" }]);
+    });
+
     await t.test("due media candidates fence old timestamps and old run IDs; failures preserve last good components", async () => {
       const [candidate] = await authority.listDueMedia({ run_id: "r4", observed_at: 400, limit: 10 });
       assert.deepEqual({ subject_id: candidate.subject_id, run_id: candidate.run_id, observed_at: candidate.observed_at }, { subject_id: 1, run_id: "r4", observed_at: 400 });
@@ -100,6 +277,37 @@ test("normalized PostgreSQL authority", { skip: !enabled }, async (t) => {
       assert.equal(media.detail.name, "test");
       assert.equal(media.run_id, "r6");
       assert.deepEqual(await authority.listDueMedia({ run_id: "r6", observed_at: 500, limit: 10 }), []);
+    });
+
+    await t.test("expired not-found metadata with a transient failure round-trips component outcomes without a tombstone", async () => {
+      await start("media-retry", 600);
+      const retry: MediaResultInput = {
+        subjectId: 1,
+        runId: "media-retry",
+        observedAt: new Date(600_000).toISOString(),
+        detail: { id: 1, type: 2, name: "test", name_cn: "测试", summary: "summary", date: "2026-01-01", eps: 12, total_episodes: 12, nsfw: false },
+        metadata: { exists: false, nsfw: true, checked_at: 500, expires_at: 500, reason: "not_found" },
+        imageRefs: { common: { hash, uri: `/image/${hash}`, r2_key: `images/${hash}/original` }, large: null },
+        detailHash: hash,
+        metadataHash: "d".repeat(64),
+        imageHash: "c".repeat(64),
+        status: { detail: "failed", metadata: "failed", image: "success" },
+        nextRetryAt: new Date(4_200_000).toISOString(),
+        deletedAt: null,
+        lastSuccessAt: new Date(400_000).toISOString(),
+      };
+      await authority.withSubject(1, async (session) => {
+        assert.equal(await session.save(retry), true);
+      });
+      const roundTrip = await authority.withSubject(1, async (session) => session.current);
+      assert.deepEqual(roundTrip?.status, retry.status);
+      assert.deepEqual(roundTrip?.metadata, retry.metadata);
+      assert.equal(roundTrip?.metadataHash, retry.metadataHash);
+      assert.equal(roundTrip?.imageHash, retry.imageHash);
+      assert.equal(roundTrip?.detail?.name, "test");
+      assert.equal(roundTrip?.deletedAt, null);
+      assert.equal(roundTrip?.nextRetryAt, retry.nextRetryAt);
+      assert.deepEqual((await pool.query("SELECT status, tombstone_until FROM subject_media WHERE subject_id = 1")).rows, [{ status: "failed", tombstone_until: null }]);
     });
 
     await t.test("singleton publication supports pending replay, claims, generation conflicts and verified replay", async () => {

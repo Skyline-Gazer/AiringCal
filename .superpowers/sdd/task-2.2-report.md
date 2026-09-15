@@ -53,7 +53,13 @@ git diff --check                         # PASS
 
 ## 已知局限与风险
 
-- 当前初始 migration 的 `subject_media` 是旧 normalized schema，没有独立 metadata/image JSON 列；authority adapter 通过既有 detail/hash/key/status 列保持兼容，后续 schema 变更若引入独立列需要替换映射。
-- 本环境未提供 disposable PostgreSQL，因此真实 row/advisory lock、SQL DTO 映射、数据库 fence 与 rollback 集成断言仍为既有 skipped tests；必须由 CI/PostgreSQL 环境确认。
+- 本环境未提供 disposable PostgreSQL，因此真实 row/advisory lock、SQL DTO 映射、数据库 fence 与 rollback 集成断言仍为 skipped tests；必须由 CI/PostgreSQL 环境确认。
 - coordinator 的 infrastructure composition root（S3/Feishu/实际 subject detail client）不在本 brief 允许文件内；`runOnce` 仅实现可注入端口。
 - 媒体 404 tombstone 当前针对明确的 subject detail `null` 结果；图片响应的非 200 仍按可重试的媒体失败处理，以保留旧引用。
+
+## Task 2.2 review follow-up（2026-09-15）
+
+- 只有本轮明确的 detail `null` 会映射到 `not_found` 并创建 24 小时 tombstone。detail 网络/5xx 等瞬态失败保持最近成功的 detail、metadata 与 image refs，清除过期 `deletedAt`，并在一小时后重试；图片 429、5xx 响应或 fetch 超时/网络错误也使用一小时重试，非法图片内容仍走常规刷新周期。
+- 新增 `0002_media_component_state.sql`，不改已存在的 `0001_initial.sql`，以 allow-listed JSONB 保存各组件 status、metadata 及 metadata/image hashes；旧行由 legacy aggregate 列兼容推导。SQL contract 测试验证失败状态不延长 tombstone，并验证组件状态 round-trip。
+- complete-state 写入跳过未变化 subject/calendar 行；collection 计数分别区分 inserted、updated、unchanged，并由运行中的 SQL contract 测试覆盖。
+- RED：review 回归在实现前共 41 tests，29 passed、5 failed、7 个 PostgreSQL integration tests skipped。GREEN：`pnpm test` 为 41 tests，34 passed、0 failed、7 skipped；`pnpm typecheck`、`pnpm build` 与 `git diff --check` 均通过。因环境未提供 PostgreSQL，真实 migration/row-lock/transaction integration coverage 仍待 CI 或 disposable PostgreSQL 执行。

@@ -20,9 +20,9 @@ DATABASE_URL=postgres://postgres:test@127.0.0.1:54329/postgres VPS_SYNC_TEST_DAT
 
 ## 规范化 authority
 
-`PostgresAuthority` 接收通过 `DATABASE_URL` 创建的 `pg.Pool` 和运行时 secret 值列表。`0001_initial.sql` 创建 `users`、`subjects`、`collection_items`、`subject_media`、`calendar_entries`、`sync_runs`、`publications`。这是尚未部署的初始 migration；若开发数据库已应用旧占位版本，checksum 校验会拒绝它，测试应使用新的 disposable schema，不能修改数据库中的 checksum 绕过校验。
+`PostgresAuthority` 接收通过 `DATABASE_URL` 创建的 `pg.Pool` 和运行时 secret 值列表。`0001_initial.sql` 创建 `users`、`subjects`、`collection_items`、`subject_media`、`calendar_entries`、`sync_runs`、`publications`；`0002_media_component_state.sql` 为 `subject_media` 增加仅含 allow-listed component status、metadata 与 hash 的 JSONB 列。保持 `0001` 不变；旧媒体行继续从原聚合列推导组件状态。这些是尚未部署的 migrations；若开发数据库已应用旧占位版本，checksum 校验会拒绝它，测试应使用新的 disposable schema，不能修改数据库中的 checksum 绕过校验。
 
-`beginRun` 记录 run identity、source、mode、git SHA 和 Unix 秒观察时间。`commitCompleteState` 接受全部配置用户的完整结果和完整日历；用户缺失、重复 subject、重复收藏、非法日历或 incomplete 标记均会拒绝写入。调用方先完成分页与 upstream contract 校验，再提交已归一化数据。事务用 advisory lock 串行化，subjects/collections 的 upsert、日历替换及 run checkpoint 一起提交或回滚；事务期间仅访问 PostgreSQL。
+`beginRun` 记录 run identity、source、mode、git SHA 和 Unix 秒观察时间。`commitCompleteState` 接受全部配置用户的完整结果和完整日历；用户缺失、重复 subject、重复收藏、非法日历或 incomplete 标记均会拒绝写入。调用方先完成分页与 upstream contract 校验，再提交已归一化数据。事务用 advisory lock 串行化，subjects/collections 的 upsert、日历替换及 run checkpoint 一起提交或回滚；未变化的 subject 与日历行不重写，collection 结果分别报告 inserted、updated、unchanged；事务期间仅访问 PostgreSQL。
 
 收藏使用 `(user_id, subject_id)` 主键。第一次完整缺失观察记录 `missing_since`，只有更晚的一次完整缺失观察才写 `deleted_at`；同一个 run 重放不会推进删除。重新观察到条目会清除两个标记。顺序与 `packages/domain/src/collection-diff.ts` 的规则一致，没有独立缺失次数计数器。
 
@@ -32,7 +32,7 @@ DATABASE_URL=postgres://postgres:test@127.0.0.1:54329/postgres VPS_SYNC_TEST_DAT
 
 ## 一次性同步与媒体生命周期
 
-`runOnce` 通过端口注入依赖，按 lock → complete collection/calendar fetch → complete-state commit → media refresh → publication → backup → notification 顺序执行。每个阶段先更新 heartbeat；锁未取得时只记录并通知 `skipped`，不调用上游、媒体或发布写入。完整抓取失败不会提交 authority state；媒体的 detail、metadata 与 image 独立处理，瞬态失败保留最后成功引用并使本轮为 `partial`，subject 404 使用有界 tombstone。终态为 `success`、`no_change`、`skipped` 时进程退出码为 0，`partial` 与 `failed` 为非零。
+`runOnce` 通过端口注入依赖，按 lock → complete collection/calendar fetch → complete-state commit → media refresh → publication → backup → notification 顺序执行。每个阶段先更新 heartbeat；锁未取得时只记录并通知 `skipped`，不调用上游、媒体或发布写入。完整抓取失败不会提交 authority state；媒体的 detail、metadata 与 image 独立处理，瞬态失败保留最后成功引用并使本轮为 `partial`。只有明确的 detail `null` 才创建 24 小时 tombstone；detail 网络/服务端失败会清除已过期 tombstone 并在一小时后重试。图片 429、5xx 响应或 fetch 超时/网络错误也在一小时后重试；无效图片内容保留正常刷新调度。终态为 `success`、`no_change`、`skipped` 时进程退出码为 0，`partial` 与 `failed` 为非零。
 
 媒体刷新按 `new_or_changed → hot → cold → retry` 的稳定优先级和 subject ID 排序，cold 使用 UTC 星期分片，并固定最多四个并发 subject。每个 subject 的 PostgreSQL 行锁覆盖上游读取、图片校验、R2 PUT 与引用提交；图片只接受 HTTPS 白名单 host、200 与允许 MIME，限制 8 MiB 后计算 SHA-256，先写对象再保存引用。shadow 对象使用 `shadow/images/<sha256>/original`，相同 hash/key 复用对象。
 

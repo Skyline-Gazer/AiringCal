@@ -192,6 +192,7 @@ async function refreshSubject(
     lastSuccessAt: current?.lastSuccessAt ?? null,
   }
   let failed = false
+  let retrySoon = false
   try {
     const detail = await deps.detail(candidate.subjectId)
     if (detail === null) {
@@ -229,7 +230,13 @@ async function refreshSubject(
       present++
       try {
         const normalized = normalizeUrl(source)
-        const { bytes, contentType } = await readImage(await deps.image(normalized))
+        const response = await deps.image(normalized)
+        if (response.status === 429 || response.status >= 500) {
+          retrySoon = true
+          await response.body?.cancel()
+          throw new Error('MEDIA_IMAGE_UPSTREAM')
+        }
+        const { bytes, contentType } = await readImage(response)
         const hash = digest(bytes)
         const reference = imageReference(hash, context.mode)
         const reusable = Object.values(previousRefs).some((old) => old?.hash === hash && old.r2_key === reference.r2_key)
@@ -238,18 +245,20 @@ async function refreshSubject(
           uploaded.add(reference.r2_key)
         }
         result.imageRefs = { ...result.imageRefs!, [size]: reference }
-      } catch {
+      } catch (error) {
+        if (error instanceof TypeError || (typeof DOMException !== 'undefined' && error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError'))) retrySoon = true
         failed = true
       }
     }
     result.status = { ...result.status, image: failed ? 'failed' : present ? 'success' : 'missing' }
     result.imageHash = digest(JSON.stringify(result.imageRefs))
     if (!failed) result.lastSuccessAt = context.observedAt
-    result.nextRetryAt = nextRefreshAt(candidate.subjectId, now)
+    result.nextRetryAt = retrySoon ? new Date(now + RETRY_MS).toISOString() : nextRefreshAt(candidate.subjectId, now)
   } catch {
     failed = true
     result.status = { detail: 'failed', metadata: 'failed', image: 'failed' }
     result.nextRetryAt = new Date(now + RETRY_MS).toISOString()
+    result.deletedAt = null
   }
   await session.save(result)
   return failed

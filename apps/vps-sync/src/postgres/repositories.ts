@@ -70,6 +70,12 @@ export interface PublicationState {
 export interface MediaCandidate { subject_id: number; run_id: string; observed_at: number }
 export interface MediaResult extends MediaCandidate {
   status: "ok" | "failed" | "not_found";
+  component_state?: {
+    status: MediaStatus;
+    metadata: MediaMetadata | null;
+    metadataHash: string | null;
+    imageHash: string | null;
+  };
   detail?: Subject;
   detail_hash?: string;
   common_key?: string | null;
@@ -225,6 +231,28 @@ const integer = (value: unknown, min = 0): value is number => Number.isSafeInteg
 const sha256 = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const hashPattern = /^[0-9a-f]{64}$/;
 const identityPattern = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
+const MEDIA_COMPONENT_STATUSES = new Set<MediaComponentStatus>(["pending", "success", "failed", "missing", "not_found", "not_modified"]);
+const MEDIA_METADATA_REASONS = new Set<MediaMetadata["reason"]>(["subject_detail", "not_found", "not_found_or_restricted", "network_error", "upstream_error"]);
+
+function isMediaStatus(value: unknown): value is MediaStatus {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  return Object.entries(value as Record<string, unknown>).every(([key, status]) =>
+    (key === "detail" || key === "metadata" || key === "image")
+      && (status === undefined || (typeof status === "string" && MEDIA_COMPONENT_STATUSES.has(status as MediaComponentStatus))));
+}
+
+function isMediaMetadata(value: unknown): value is MediaMetadata | null {
+  if (value === null) return true;
+  if (typeof value !== "object" || Array.isArray(value)) return false;
+  const metadata = value as Record<string, unknown>;
+  return Object.keys(metadata).every((key) => key === "exists" || key === "nsfw" || key === "checked_at" || key === "expires_at" || key === "reason")
+    && (metadata.exists === null || typeof metadata.exists === "boolean")
+    && typeof metadata.nsfw === "boolean"
+    && integer(metadata.checked_at)
+    && (metadata.expires_at === undefined || metadata.expires_at === null || integer(metadata.expires_at))
+    && typeof metadata.reason === "string"
+    && MEDIA_METADATA_REASONS.has(metadata.reason as MediaMetadata["reason"]);
+}
 
 function requireValid(valid: boolean, error = "INVALID_COMPLETE_STATE"): asserts valid {
   if (!valid) throw new Error(error);
@@ -407,7 +435,7 @@ function mediaResultFromInput(input: MediaResultInput): MediaResult {
     nsfw: detail.nsfw ?? false,
   });
   const componentFailed = Object.values(input.status).includes("failed");
-  const status: MediaResult["status"] = input.status.detail === "not_found" || input.metadata?.exists === false
+  const status: MediaResult["status"] = input.status.detail === "not_found"
     ? "not_found" : componentFailed ? "failed" : "ok";
   const ref = (size: "common" | "large") => {
     const value = input.imageRefs?.[size];
@@ -421,6 +449,12 @@ function mediaResultFromInput(input: MediaResultInput): MediaResult {
     run_id: input.runId,
     observed_at: epochSeconds(input.observedAt),
     status,
+    component_state: {
+      status: { ...input.status },
+      metadata: input.metadata,
+      metadataHash: input.metadataHash,
+      imageHash: input.imageHash,
+    },
     ...(subject === undefined ? {} : { detail: subject }),
     ...(input.detailHash === null ? {} : { detail_hash: input.detailHash }),
     common_key: common.key,
@@ -428,8 +462,7 @@ function mediaResultFromInput(input: MediaResultInput): MediaResult {
     large_key: large.key,
     large_hash: large.hash,
     ...(input.nextRetryAt === null ? {} : { next_retry_at: epochSeconds(input.nextRetryAt) }),
-    ...(input.metadata?.expires_at == null ? {} : { tombstone_until: input.metadata.expires_at }),
-    ...(input.status.detail === "not_found" || input.metadata?.exists === false ? { tombstone_until: Math.floor((epochSeconds(input.observedAt) + 86_400)) } : {}),
+    ...(input.status.detail === "not_found" ? { tombstone_until: Math.floor((epochSeconds(input.observedAt) + 86_400)) } : {}),
     ...(input.status.detail === "failed" || componentFailed ? { error_code: input.status.image === "failed" ? "MEDIA_INVALID" : "UPSTREAM_SERVER" } : {}),
   };
 }
@@ -439,13 +472,16 @@ function mediaStateFromRow(row: Record<string, unknown>): MediaState {
   const commonHash = typeof row.common_hash === "string" ? row.common_hash : null;
   const largeKey = typeof row.large_key === "string" ? row.large_key : null;
   const largeHash = typeof row.large_hash === "string" ? row.large_hash : null;
-  const status = row.status === "not_found"
+  const legacyStatus = row.status === "not_found"
     ? { detail: "not_found" as const, metadata: "success" as const, image: "not_found" as const }
     : row.status === "ok"
       ? { detail: "success" as const, metadata: "success" as const, image: "success" as const }
       : row.status === "failed"
         ? { detail: "failed" as const, metadata: "failed" as const, image: "failed" as const }
         : {};
+  const rawComponents = row.component_state && typeof row.component_state === "object" && !Array.isArray(row.component_state)
+    ? row.component_state as Record<string, unknown> : null;
+  const status = isMediaStatus(rawComponents?.status) ? rawComponents.status : legacyStatus;
   const rawDetail = row.detail && typeof row.detail === "object" ? row.detail as Record<string, unknown> : null;
   const detail: MediaDetail | null = rawDetail === null ? null : {
     id: Number(rawDetail.id ?? rawDetail.subject_id ?? row.subject_id),
@@ -459,18 +495,20 @@ function mediaStateFromRow(row: Record<string, unknown>): MediaState {
     total_episodes: typeof rawDetail.total_episodes === "number" ? rawDetail.total_episodes : undefined,
   };
   const tombstone = isoTimestamp(row.tombstone_until);
+  const storedMetadata = rawComponents && Object.prototype.hasOwnProperty.call(rawComponents, "metadata") && isMediaMetadata(rawComponents.metadata)
+    ? rawComponents.metadata : undefined;
   return {
     subjectId: Number(row.subject_id),
     runId: typeof row.run_id === "string" ? row.run_id : null,
     observedAt: isoTimestamp(row.observed_at),
     detail,
-    metadata: row.status === "not_found"
+    metadata: storedMetadata !== undefined ? storedMetadata : row.status === "not_found"
       ? { exists: false, nsfw: true, checked_at: Number(row.checked_at ?? 0), expires_at: row.tombstone_until == null ? null : Number(row.tombstone_until), reason: "not_found" }
       : detail === null ? null : { exists: true, nsfw: detail.nsfw === true, checked_at: Number(row.checked_at ?? 0), expires_at: null, reason: "subject_detail" },
     imageRefs: { common: commonKey && commonHash ? { hash: commonHash, uri: `/image/${commonHash}`, r2_key: commonKey } : null, large: largeKey && largeHash ? { hash: largeHash, uri: `/image/${largeHash}`, r2_key: largeKey } : null },
     detailHash: typeof row.detail_hash === "string" ? row.detail_hash : null,
-    metadataHash: null,
-    imageHash: null,
+    metadataHash: typeof rawComponents?.metadataHash === "string" && hashPattern.test(rawComponents.metadataHash) ? rawComponents.metadataHash : null,
+    imageHash: typeof rawComponents?.imageHash === "string" && hashPattern.test(rawComponents.imageHash) ? rawComponents.imageHash : null,
     status,
     nextRetryAt: isoTimestamp(row.next_retry_at ?? row.tombstone_until ?? row.next_refresh_at),
     deletedAt: tombstone,
@@ -591,9 +629,12 @@ export class PostgresAuthority {
         ON CONFLICT (subject_id) DO UPDATE SET type=EXCLUDED.type, name=EXCLUDED.name, name_cn=EXCLUDED.name_cn,
         summary=EXCLUDED.summary, date=EXCLUDED.date, eps=EXCLUDED.eps, total_episodes=EXCLUDED.total_episodes,
         nsfw=EXCLUDED.nsfw, rating=EXCLUDED.rating, content_hash=EXCLUDED.content_hash, upstream_updated_at=EXCLUDED.upstream_updated_at,
-        last_seen_at=EXCLUDED.last_seen_at, missing_since=NULL, deleted_at=NULL`,
+        last_seen_at=EXCLUDED.last_seen_at, missing_since=NULL, deleted_at=NULL
+        WHERE subjects.content_hash IS DISTINCT FROM EXCLUDED.content_hash OR subjects.missing_since IS NOT NULL OR subjects.deleted_at IS NOT NULL`,
       [subject.subject_id, subject.type, subject.name, subject.name_cn, subject.summary, subject.date, subject.eps, subject.total_episodes, subject.nsfw, subject.rating ?? null, subject.content_hash ?? sha256(subject), subject.upstream_updated_at, state.observed_at]);
-      let changed = 0;
+      let inserted = 0;
+      let updated = 0;
+      let unchanged = 0;
       let missing = 0;
       let deleted = 0;
       for (const user of users) {
@@ -606,9 +647,12 @@ export class PostgresAuthority {
             private=EXCLUDED.private, upstream_updated_at=EXCLUDED.upstream_updated_at, content_hash=EXCLUDED.content_hash,
             changed_at=CASE WHEN collection_items.content_hash <> EXCLUDED.content_hash THEN EXCLUDED.changed_at ELSE collection_items.changed_at END,
             missing_since=NULL, deleted_at=NULL
-            WHERE collection_items.content_hash <> EXCLUDED.content_hash OR collection_items.missing_since IS NOT NULL`,
+            WHERE collection_items.content_hash <> EXCLUDED.content_hash OR collection_items.missing_since IS NOT NULL
+            RETURNING (xmax = 0) AS inserted`,
           [user.user_id, item.subject_id, item.collection_type, item.rate, JSON.stringify(item.tags), item.comment, item.ep_status, item.vol_status, item.private, item.upstream_updated_at, item.content_hash ?? sha256(item), state.observed_at]);
-          changed += result.rowCount ?? 0;
+          if ((result.rowCount ?? 0) === 0) unchanged++;
+          else if (result.rows[0]?.inserted === true) inserted++;
+          else updated++;
         }
         // Same rule as domain/collection-diff: missing once, deleted only at a later complete observation.
         const result = await client.query(`UPDATE collection_items SET
@@ -618,16 +662,20 @@ export class PostgresAuthority {
         missing += result.rows.filter((row) => row.deleted_at === null).length;
         deleted += result.rows.filter((row) => row.deleted_at !== null).length;
       }
-      await client.query("DELETE FROM calendar_entries");
-      for (const entry of calendar) await client.query("INSERT INTO calendar_entries (weekday, subject_id, observed_at) VALUES ($1,$2,$3)", [entry.weekday, entry.subject_id, state.observed_at]);
+      await client.query(`DELETE FROM calendar_entries existing_entry
+        WHERE NOT EXISTS (SELECT 1 FROM unnest($1::integer[], $2::integer[]) AS expected(weekday, subject_id)
+          WHERE expected.weekday=existing_entry.weekday AND expected.subject_id=existing_entry.subject_id)`,
+      [calendar.map((entry) => entry.weekday), calendar.map((entry) => entry.subject_id)]);
+      for (const entry of calendar) await client.query(`INSERT INTO calendar_entries (weekday, subject_id, observed_at) VALUES ($1,$2,$3)
+        ON CONFLICT (weekday, subject_id) DO NOTHING`, [entry.weekday, entry.subject_id, state.observed_at]);
       await client.query(`UPDATE subjects SET deleted_at=CASE WHEN missing_since < $1 THEN $1 ELSE NULL END,
         missing_since=COALESCE(missing_since,$1) WHERE NOT (subject_id=ANY($2::integer[])) AND deleted_at IS NULL
         AND NOT EXISTS (SELECT 1 FROM collection_items c WHERE c.subject_id=subjects.subject_id AND c.deleted_at IS NULL)`, [state.observed_at, [...ids]]);
       await client.query(`INSERT INTO subject_media (subject_id) SELECT subject_id FROM subjects WHERE deleted_at IS NULL ON CONFLICT DO NOTHING`);
       await client.query(`UPDATE sync_runs SET stage='state_committed', state_committed_at=$2, heartbeat_at=$2,
         collection_count=$3, calendar_count=$4, changed_count=$5, missing_count=$6, deleted_count=$7 WHERE run_id=$1`,
-      [state.run_id, state.observed_at, users.reduce((sum, user) => sum + user.items.length, 0), calendar.length, changed, missing, deleted]);
-      return { collections: users.reduce((sum, user) => sum + user.items.length, 0), inserted: changed, updated: changed, missing, deleted };
+      [state.run_id, state.observed_at, users.reduce((sum, user) => sum + user.items.length, 0), calendar.length, inserted + updated, missing, deleted]);
+      return { collections: users.reduce((sum, user) => sum + user.items.length, 0), inserted, updated, unchanged, missing, deleted };
     });
   }
 
@@ -704,13 +752,18 @@ export class PostgresAuthority {
   private validateMediaResult(input: MediaResult): Subject | undefined {
     requireValid(integer(input.subject_id, 1) && integer(input.observed_at) && ["ok", "failed", "not_found"].includes(input.status), "INVALID_MEDIA");
     for (const time of [input.next_refresh_at, input.next_retry_at, input.tombstone_until]) requireValid(time === undefined || integer(time), "INVALID_MEDIA");
+    if (input.component_state !== undefined) {
+      requireValid(isMediaStatus(input.component_state.status) && isMediaMetadata(input.component_state.metadata)
+        && (input.component_state.metadataHash === null || hashPattern.test(input.component_state.metadataHash))
+        && (input.component_state.imageHash === null || hashPattern.test(input.component_state.imageHash)), "INVALID_MEDIA");
+    }
     const detail = input.detail === undefined ? undefined : subjectProjection(input.detail);
     requireValid(detail === undefined || (detail.subject_id === input.subject_id && hashPattern.test(input.detail_hash ?? "")), "INVALID_MEDIA");
     for (const [key, hash] of [[input.common_key, input.common_hash], [input.large_key, input.large_hash]]) {
       requireValid((key === undefined && hash === undefined) || (key === null && hash === null)
         || (typeof key === "string" && typeof hash === "string" && hashPattern.test(hash) && (key === `images/${hash}/original` || key === `shadow/images/${hash}/original`)), "INVALID_MEDIA");
     }
-    this.safe({ detail, detail_hash: input.detail_hash, common_key: input.common_key, common_hash: input.common_hash, large_key: input.large_key, large_hash: input.large_hash });
+    this.safe({ detail, detail_hash: input.detail_hash, common_key: input.common_key, common_hash: input.common_hash, large_key: input.large_key, large_hash: input.large_hash, component_state: input.component_state });
     return detail;
   }
 
@@ -729,12 +782,13 @@ export class PostgresAuthority {
         status=$13, observed_at=$2, run_id=$3, checked_at=$2,
         last_success_at=CASE WHEN $14 THEN $2 ELSE last_success_at END,
         next_refresh_at=COALESCE($15,next_refresh_at), next_retry_at=$16, tombstone_until=$17,
-        retry_count=CASE WHEN $14 THEN 0 ELSE retry_count+1 END, error_code=$18 WHERE subject_id=$1`,
+        retry_count=CASE WHEN $14 THEN 0 ELSE retry_count+1 END, error_code=$18,
+        component_state=COALESCE($19::jsonb,component_state) WHERE subject_id=$1`,
     [input.subject_id, input.observed_at, input.run_id, detailSuccess, detail ?? null, input.detail_hash ?? null,
         input.common_key !== undefined, input.common_key ?? null, input.common_hash ?? null,
         input.large_key !== undefined, input.large_key ?? null, input.large_hash ?? null,
         input.status, success, input.next_refresh_at ?? null, success ? null : input.next_retry_at ?? null,
-        input.status === "not_found" ? input.tombstone_until ?? null : null, success ? null : code(input.error_code)]);
+        input.status === "not_found" ? input.tombstone_until ?? null : null, success ? null : code(input.error_code), input.component_state ?? null]);
     return true;
   }
 

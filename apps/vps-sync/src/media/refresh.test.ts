@@ -50,7 +50,43 @@ test('transient image failure retains each last-known-good size while detail suc
   assert.deepEqual(saves[0]?.imageRefs, { common: oldRef, large: oldRef })
   assert.equal(saves[0]?.detail?.name, 'subject')
   assert.equal(saves[0]?.status.metadata, 'success')
-  assert.ok(Date.parse(saves[0]!.nextRetryAt!) > Date.parse(at))
+  assert.equal(Date.parse(saves[0]!.nextRetryAt!) - Date.parse(at), 3_600_000)
+  assert.equal(saves[0]?.status.image, 'failed')
+})
+
+test('expired not-found metadata is not renewed after a transient detail error', async () => {
+  const expired = '2026-08-30T00:00:00.000Z'
+  const { deps, saves } = fixture(stored({
+    metadata: { exists: false, nsfw: true, checked_at: 1, expires_at: 1, reason: 'not_found' },
+    status: { detail: 'not_found', metadata: 'success', image: 'not_found' },
+    deletedAt: expired,
+    nextRetryAt: expired,
+  }))
+  deps.detail = async () => { throw new TypeError('fetch failed') }
+  assert.equal((await refreshMedia(deps, context)).failed, 1)
+  assert.equal(saves[0]?.detail?.name, 'old')
+  assert.deepEqual(saves[0]?.imageRefs, { common: oldRef, large: oldRef })
+  assert.equal(saves[0]?.metadata?.exists, false)
+  assert.equal(saves[0]?.status.detail, 'failed')
+  assert.equal(saves[0]?.status.metadata, 'failed')
+  assert.equal(saves[0]?.deletedAt, null)
+  assert.equal(Date.parse(saves[0]!.nextRetryAt!) - Date.parse(at), 3_600_000)
+})
+
+test('invalid image content remains a slow refresh while network errors retry quickly', async () => {
+  const invalid = fixture(stored())
+  invalid.deps.image = async () => new Response('not an image', { headers: { 'content-type': 'text/html' } })
+  await refreshMedia(invalid.deps, context)
+  assert.ok(Date.parse(invalid.saves[0]!.nextRetryAt!) - Date.parse(at) >= 6 * 86_400_000)
+  assert.equal(invalid.saves[0]?.status.image, 'failed')
+
+  const network = fixture(stored())
+  network.deps.image = async () => { throw new TypeError('fetch failed') }
+  await refreshMedia(network.deps, context)
+  assert.equal(Date.parse(network.saves[0]!.nextRetryAt!) - Date.parse(at), 3_600_000)
+  assert.equal(network.saves[0]?.status.detail, 'success')
+  assert.equal(network.saves[0]?.status.metadata, 'success')
+  assert.equal(network.saves[0]?.status.image, 'failed')
 })
 
 test('detail 404 keeps existing public data and sets a bounded tombstone; TTL skips upstream', async () => {

@@ -53,7 +53,7 @@ test("applies migrations in lexical order once and rejects changed checksums", {
     await applyMigrations(pool);
     assert.deepEqual(
       (await pool.query("SELECT name FROM schema_migrations ORDER BY name")).rows,
-      [{ name: "0001_initial.sql" }, { name: createName }, { name: insertName }],
+      [{ name: "0001_initial.sql" }, { name: "0002_media_component_state.sql" }, { name: createName }, { name: insertName }],
     );
     assert.deepEqual((await pool.query(`SELECT value FROM ${table}`)).rows, [{ value: 1 }]);
 
