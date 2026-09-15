@@ -11,6 +11,9 @@
   },
   "dependencies": {
     "@airing-cal/bgm-api": "workspace:*",
+    "@airing-cal/domain": "workspace:*",
+    "@airing-cal/storage": "workspace:*",
+    "@aws-sdk/client-s3": "3.1124.0",
     "pg": "8.23.0"
   },
   "devDependencies": {
