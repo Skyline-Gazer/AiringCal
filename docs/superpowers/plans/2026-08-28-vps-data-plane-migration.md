@@ -149,16 +149,16 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 ### Task 4.1: Read Worker manifest/snapshot 验证切入
 
 **Files:**
-- Modify: `apps/read-worker/src/r2-snapshot.ts`, `apps/read-worker/src/r2-snapshot.test.ts`, `apps/read-worker/src/index.ts`, `apps/read-worker/src/read-worker.test.ts`
+- Modify: `apps/read-worker/src/r2-snapshot.ts`, `apps/read-worker/src/r2-snapshot.test.ts`, `apps/read-worker/src/r2-mode-contract.test.ts`, `apps/read-worker/src/health.ts`, `apps/read-worker/src/health.test.ts`, `apps/read-worker/src/index.ts`, `README.md`, `docs/runbook/migrate-public-reads.md`, `docs/runbook/vps-data-plane.md`
 
 **Interfaces:**
 - Replaces legacy pointer parsing with `PublicSnapshotManifestV1` at exact R2 key `public/manifest.json`；public routes/query/response remain unchanged。
 
-- [ ] **Step 1: RED tests** — valid manifest loads immutable object；未知 schema、extra/missing key、bad timestamp/git SHA/item count/key/hash/truncated JSON 均拒绝；现有 endpoint fixtures 深等于切换前 response。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/read-worker test -- r2-snapshot.test.ts read-worker.test.ts` 预期新 manifest cases FAIL。
-- [ ] **Step 3: GREEN** — 从 R2 binding 读 manifest，复用 domain parsers；不得引入 DB driver/VPS URL/env。
-- [ ] **Step 4: REFACTOR/验证** — read-worker test/typecheck/build:check PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步读路径；commit `feat(read-worker): validate R2 publication manifest` 后 push。
+- [x] **Step 1: RED tests** — valid manifest loads immutable object；未知 schema、extra/missing key、bad timestamp/git SHA/item count/key/hash/truncated JSON 均拒绝；现有 endpoint fixtures 深等于切换前 response。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/read-worker test -- src/r2-snapshot.test.ts src/read-worker.test.ts` 预期新 manifest cases FAIL。
+- [x] **Step 3: GREEN** — 从 R2 binding 读 manifest，复用 domain parsers；不得引入 DB driver/VPS URL/env。
+- [x] **Step 4: REFACTOR/验证** — read-worker test/typecheck/build:check PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步读路径；commit `feat(read-worker): validate R2 publication manifest`（`bf52e3d`）后 push。
 
 ### Task 4.2: R2 → Cache API → legacy KV fallback
 
@@ -169,7 +169,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 - Produces Cache API envelope `{ manifest, snapshot }`；只缓存完整验证 pair；source health `r2|cache|legacy`。
 
 - [ ] **Step 1: RED tests** — R2 missing/corrupt/offline 用重新验证的 envelope；回退 generation 拒绝；无 envelope 才 legacy；禁止混用 R2 manifest 与 cache/legacy payload。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/read-worker test -- r2-snapshot.test.ts health.test.ts` 预期 FAIL。
+- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/read-worker test -- src/r2-snapshot.test.ts src/health.test.ts` 预期 FAIL。
 - [ ] **Step 3: GREEN** — cache key 绑定 manifest generation/hash，保存 last-verified envelope，迁移期开启完整 legacy fallback。
 - [ ] **Step 4: REFACTOR/验证** — read-worker tests/typecheck/build:check PASS。
 - [ ] **Step 5: 文档、提交与推送** — 同步 health/fallback；commit `feat(read-worker): add verified snapshot fallback chain` 后 push。
