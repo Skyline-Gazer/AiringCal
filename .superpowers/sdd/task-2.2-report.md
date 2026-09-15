@@ -67,6 +67,12 @@ git diff --check                         # PASS
 ## PostgreSQL integration follow-up（2026-09-15）
 
 - CI run `34919316452`（commit `6f9fbcf`）确认 repository integration fixture 只执行 `0001_initial.sql`，没有 `0002_media_component_state.sql`，因此两个 media integration cases 报 `component_state` 列不存在。将 fixture 改为调用 `applyMigrations(pool)`，由仓库迁移入口应用全部 migration；migration 顺序及重复应用已有测试覆盖。
-- 同一 run 的 publication case 收到 `RUN_CONFLICT` 而非预期的 `GENERATION_CONFLICT`。它在 `requireRun` 阶段失败；全迁移 fixture 下尚未有真实 PostgreSQL 重跑证据，因此本轮不改该断言或猜测原因，待本次 push 后 CI 复查。
+- 同一 run 的 publication case 收到 `RUN_CONFLICT` 而非预期的 `GENERATION_CONFLICT`，失败在 `requireRun` 阶段；未凭猜测改断言。后续 CI run `34920348154` 使用全迁移 fixture 重跑后该 publication 子测通过。
 - 本机没有可用 PostgreSQL 服务；`initdb` 在沙箱内因 shared-memory 权限失败，按要求不继续搭建本机数据库。标准 `pnpm -F @airing-cal/vps-sync test` 也因沙箱禁止 tsx IPC socket（`listen EPERM`）未能启动；等价本地 Node test runner 命令 `node --import tsx --test src/**/*.test.ts` 通过：51 tests，44 passed、0 failed、7 PostgreSQL tests skipped。`typecheck`、`build` 与 `git diff --check` 均通过。
-- 下一轮 CI 对全迁移 repository integration fixture 的验证状态：待本修复 commit push 后触发。
+- 当时下一轮全迁移 CI 的状态为待触发；该状态由 run `34920348154` 更新，详情见下一节。
+
+## PostgreSQL CI follow-up（run `34920348154`, 2026-09-15）
+
+- 全迁移集成套件已通过 publication 子测；本轮剩余两处失败。media assertion 原先无 `WHERE` 地取 `subject_media` 的 `rows[0]`，而前序 counts 子测创建了 `subject_id=2` 且它的 image key 为空；PostgreSQL 不保证无序查询的首行，故 CI 可能读到 subject 2 的 null key。现将读取限定为 `subject_id=1`，让既有的 successful → failed → stale → not_found 流程校验目标 subject 的最后成功引用。此修复只收窄测试查询，不改 repository 保存逻辑；过滤后的实际 PG 结果待新 CI 确认。
+- `next_retry_at` 等 PostgreSQL `BIGINT` 字段由 pg 以十进制字符串返回；`isoTimestamp` 原先把 `"4200"` 作为日期文本传给 `Date.parse`，得到了公元 4200 年。现对整数数字字符串按现有数值语义应用秒/毫秒阈值，并保留 ISO 日期字符串解析；新增 seconds 与 milliseconds 的回归断言。
+- TDD：新增时间戳测试先 RED（`"4200"` 得 `4200-01-01T00:00:00.000Z`，预期 `1970-01-01T01:10:00.000Z`），修复后 focused repository tests GREEN。全包 Node runner：52 tests，45 passed、0 failed、7 PostgreSQL integration tests skipped；`typecheck`、`build`、`git diff --check` 均通过。下一轮真实 PostgreSQL CI 状态待本修复 push 后触发。

@@ -90,6 +90,22 @@ test("media result SQL preserves failed component state without renewing a stale
   assert.equal(roundTrip?.nextRetryAt, retry.nextRetryAt);
 });
 
+test("PostgreSQL bigint text timestamps preserve epoch seconds and milliseconds", async () => {
+  const row: Record<string, unknown> = { subject_id: 1, next_retry_at: "4200" };
+  const client = {
+    query: async (sql: string) => ({ rows: sql.startsWith("SELECT * FROM subject_media") ? [row] : [] }),
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const authority = new PostgresAuthority({ connect: async () => client } as unknown as Pool, secrets);
+  const nextRetryAt = async (value: string) => {
+    row.next_retry_at = value;
+    return authority.withSubject(1, async (session) => session.current?.nextRetryAt);
+  };
+
+  assert.equal(await nextRetryAt("4200"), new Date(4_200_000).toISOString());
+  assert.equal(await nextRetryAt("4200000000000"), new Date(4_200_000_000_000).toISOString());
+});
+
 test("complete-state SQL counts collection diffs and skips unchanged subject/calendar writes", async () => {
   const state = (runId: string, observedAt: number, contentHash: string): CompleteStateInput => {
     const subjectInput = {
@@ -277,7 +293,7 @@ test("normalized PostgreSQL authority", { skip: !enabled }, async (t) => {
       await start("r6", 500);
       assert.equal(await authority.applyMediaResult({ subject_id: 1, run_id: "r6", observed_at: 500, status: "not_found", tombstone_until: 700 }), true);
       assert.equal(await authority.applyMediaResult({ subject_id: 1, run_id: "r5", observed_at: 500, status: "ok", common_key: null, common_hash: null }), false);
-      const media = (await pool.query("SELECT common_key, detail, run_id FROM subject_media")).rows[0];
+      const media = (await pool.query("SELECT common_key, detail, run_id FROM subject_media WHERE subject_id = 1")).rows[0];
       assert.equal(media.common_key, image);
       assert.equal(media.detail.name, "test");
       assert.equal(media.run_id, "r6");

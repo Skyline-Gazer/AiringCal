@@ -304,10 +304,14 @@ function epochSeconds(value: string | number): number {
 
 function isoTimestamp(value: unknown): string | null {
   if (value === null || value === undefined) return null;
-  const milliseconds = typeof value === "number"
-    ? (value <= 1_000_000_000_000 ? value * 1_000 : value)
-    : typeof value === "string" ? Date.parse(value) : Number.NaN;
-  return Number.isFinite(milliseconds) ? new Date(milliseconds).toISOString() : null;
+  const numeric = typeof value === "number" ? value
+    : typeof value === "string" && /^-?\d+$/.test(value) ? Number(value)
+      : null;
+  const milliseconds = numeric === null
+    ? typeof value === "string" ? Date.parse(value) : Number.NaN
+    : numeric <= 1_000_000_000_000 ? numeric * 1_000 : numeric;
+  const date = new Date(milliseconds);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 function subjectFromInput(input: SubjectInput): Subject {
