@@ -5,12 +5,17 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
+import type { Readable } from 'node:stream'
 
 export interface S3Port {
   put(key: string, bytes: Uint8Array, options?: { ifNoneMatch?: '*' }): Promise<void>
   get(key: string): Promise<Uint8Array | null>
   list(prefix: string): Promise<string[]>
   delete(key: string): Promise<void>
+}
+
+export interface S3StreamPort {
+  putStream(key: string, body: Readable, options: { contentLength: number; contentType: string }): Promise<void>
 }
 
 export interface R2Config {
@@ -39,22 +44,31 @@ export function createS3Port(config: R2Config, client = new S3Client({
   region: 'auto',
   endpoint: config.endpoint,
   credentials: { accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey },
-})): S3Port {
+})): S3Port & S3StreamPort {
+  const put = async (
+    key: string,
+    body: Uint8Array | Readable,
+    options?: { ifNoneMatch?: '*'; contentLength?: number; contentType?: string },
+  ) => {
+    try {
+      await client.send(new PutObjectCommand({
+        Bucket: config.bucket,
+        Key: key,
+        Body: body,
+        ContentLength: options?.contentLength,
+        ContentType: options?.contentType ?? 'application/json',
+        IfNoneMatch: options?.ifNoneMatch,
+      }))
+    } catch (error) {
+      if (options?.ifNoneMatch === '*' && isConditionalWriteConflict(error)) return
+      throw error
+    }
+  }
+
   return {
-    async put(key, bytes, options) {
-      try {
-        await client.send(new PutObjectCommand({
-          Bucket: config.bucket,
-          Key: key,
-          Body: bytes,
-          ContentType: 'application/json',
-          IfNoneMatch: options?.ifNoneMatch,
-        }))
-      } catch (error) {
-        if (options?.ifNoneMatch === '*' && isConditionalWriteConflict(error)) return
-        throw error
-      }
-    },
+    put: (key, bytes, options) => put(key, bytes, options),
+
+    putStream: (key, body, options) => put(key, body, options),
 
     async get(key) {
       try {

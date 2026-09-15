@@ -63,6 +63,21 @@ R2 失败时，已 claim pending 保持可重放，数据库 verified 不前移�
 
 如果进程未能确认回滚，下一次 live replay 会先比较当前 manifest 与 claimed pending。只有候选 manifest 的 schema/字段/字节以及 immutable snapshot 的 readback、schema 与 hash 均重新验证通过，才尝试提升 PostgreSQL verified。promotion 结果不明时，只有 fresh authority 明确仍为旧 verified 加同一 claimed pending 才恢复 prior；状态读取失败或返回其他状态时保留已完整验证的候选指针并返回 pending，等待下一轮 reconcile。候选验证失败时，从 verified snapshot 重建 canonical prior manifest 并读回确认（首次发布则删除候选指针），pending 保持可重放。
 
+## PostgreSQL backup
+
+只有 publication 已返回 `published` 或 `no_change` 后才创建 backup。`pg_dump --format=custom --file=<private-temp-file>` 生成 PostgreSQL custom archive，之后由 `pg_restore` 读取该 custom archive。连接 URI 不传入子进程 argv 或日志；实现解析 URI，将受支持的连接参数写入临时 `pg_service.conf`（0600），再通过 `PGSERVICEFILE` / `PGSERVICE` 选择该 service。子进程会清除继承的 libpq `PG*` 连接环境变量，避免宿主默认值覆盖或补充目标连接。service-file 和环境变量约定见 PostgreSQL [connection service file](https://www.postgresql.org/docs/17/libpq-pgservice.html) 与 [environment variables](https://www.postgresql.org/docs/17/libpq-envars.html)。实现先流式读取 archive 计算 SHA-256 与字节数，再以带 `ContentLength` 的流式 R2 PUT 写入 dump，成功后才写 manifest。上传使用单次 PutObject 而非 multipart；Cloudflare R2 单次 PutObject 上限为 5 GiB，接近该上限时应先实现 multipart 再提升该边界（见 [R2 upload limits](https://developers.cloudflare.com/r2/objects/upload-objects/)）。
+
+临时目录位于 `/tmp/airing-cal/backup-*`，权限限制为 owner-only，并在成功或失败后清理。失败会将本轮标为 `partial`，但不会撤销已完成的 publication。具体 archive 行为与 PostgreSQL 17 CLI/连接环境变量依据官方文档：[pg_dump](https://www.postgresql.org/docs/17/app-pgdump.html)、[pg_restore](https://www.postgresql.org/docs/17/app-pgrestore.html)、[libpq environment variables](https://www.postgresql.org/docs/17/libpq-envars.html)；官方 [`postgres:17-alpine` Dockerfile](https://github.com/docker-library/postgres/blob/master/17/alpine3.23/Dockerfile) 从 PostgreSQL 17 源码构建客户端。本地环境没有容器 runtime，因此不能直接执行目标镜像的 `pg_dump --help` / `pg_restore --help`；实现按这些 PostgreSQL 17 primary source contract 验证。
+
+Dump 和 manifest 使用同一 UTC 时间戳与完整 git SHA：
+
+```text
+backups/postgres/YYYY/MM/DD/YYYYMMDDTHHmmssSSSZ-<git-sha>.dump
+backups/postgres/YYYY/MM/DD/YYYYMMDDTHHmmssSSSZ-<git-sha>.json
+```
+
+manifest 是规范化 JSON，固定字段为 `schema_version`、`run_id`、`git_sha`、`created_at`、`object_key`、`size` 与 `sha256`。Dump 必须先成功上传，manifest 才可见；命令、dump 上传或 manifest 上传失败均记为 backup 失败，并由 run 终态规则标为 `partial`。
+
 ## 上游完整抓取与重试
 
 VPS 适配器使用 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection 分页请求和 calendar 请求只由外层 retry 处理，最多三次尝试。所有配置用户的分页和 calendar 通过完整性校验后，才会生成可提交的 `CompleteFullFetch`；primary user、任一分页或 calendar 不完整都会 fail closed。

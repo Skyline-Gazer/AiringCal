@@ -97,6 +97,25 @@ test('no change still backs up and backup failure becomes partial', async () => 
   assert.equal(result.components.notification, 'failed')
 })
 
+test('backup failure after publication or no change preserves publication and persists partial', async () => {
+  for (const publication of [
+    { status: 'published', generation: 2, contentHash: 'b'.repeat(64) },
+    { status: 'no_change', generation: 2, contentHash: 'b'.repeat(64) },
+  ] as const) {
+    const { deps, finished } = fixture()
+    deps.publish = async () => publication
+    deps.backup = async () => { throw new Error('backup upload failed') }
+
+    const result = await runOnce(deps, request)
+    assert.equal(result.status, 'partial')
+    assert.deepEqual(result.publication, publication)
+    assert.equal(result.components.publication, publication.status === 'published' ? 'success' : 'no_change')
+    assert.equal(result.components.backup, 'failed')
+    assert.equal(finished[0] && (finished[0] as typeof result).status, 'partial')
+    assert.deepEqual((finished[0] as typeof result).publication, publication)
+  }
+})
+
 test('terminal outcomes have explicit process exit mapping', () => {
   for (const status of ['success', 'no_change', 'skipped'] as const) assert.equal(exitCode(status), 0)
   for (const status of ['partial', 'failed'] as const) assert.equal(exitCode(status), 1)
