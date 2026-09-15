@@ -91,6 +91,25 @@ test('health reports validated manifest metadata independently from migration re
   assert.equal(health.migration.read_mode, 'legacy')
 })
 
+test('health reports last-verified cache metadata without changing its fields', async () => {
+  const verified = await verifiedSource()
+  const source: SnapshotSource = {
+    mode: 'cache',
+    manifest: verified.manifest,
+    snapshot: verified.snapshot,
+  }
+
+  const health = await buildMigrationHealth(env(), source)
+
+  assert.deepEqual(health.snapshot, {
+    source: 'cache',
+    generation: verified.manifest.generation,
+    r2_key: verified.manifest.snapshot_key,
+    verified_at: verified.snapshot.published_at,
+  })
+  assert.deepEqual(Object.keys(health.snapshot).sort(), ['generation', 'r2_key', 'source', 'verified_at'])
+})
+
 test('an unavailable D1 degrades instead of failing health', async () => {
   const d1 = new FakeHealthD1()
   d1.fail = true

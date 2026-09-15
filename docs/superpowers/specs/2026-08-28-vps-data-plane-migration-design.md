@@ -183,9 +183,9 @@ Shadow mode writes a shadow manifest/object namespace and comparison evidence bu
 
 ## 8. Cloudflare read path
 
-Read Worker reads `public/manifest.json` from its data R2 binding and validates exact keys, schema, timestamps, full git SHA, item count, monotonic generation, hash, and snapshot key. It then loads and parses the immutable snapshot.
+Read Worker reads `public/manifest.json` from its data R2 binding and validates exact keys, schema, timestamps, full git SHA, item count, hash, and snapshot key before parsing the immutable snapshot. A rollback check applies only when the current request can read the `last-verified` pointer and re-validate its complete `{ manifest, snapshot }` envelope; then a lower generation or a different hash at the same generation is rejected relative to that envelope.
 
-Each edge location stores a last-verified manifest/snapshot envelope in Cache API. On R2 failure or invalid data, Read Worker uses the envelope only after re-validating both objects. During migration, absence of any verified R2 source falls back to the complete legacy KV snapshot; fields are never mixed between sources.
+The verified envelope is stored in Cache API with a per-isolate write queue. Cloudflare documents that Cache API contents do not replicate outside the originating data center ([Cache API documentation](https://developers.cloudflare.com/workers/runtime-apis/cache/)); entries may also be absent, expire, or be evicted. The queue serializes writes only within one Worker isolate, and Cache API has no shared atomic compare-and-swap across isolates. Rollback protection across isolates or points of presence is therefore best effort; the Read Worker does not promise a global monotonic generation. On R2 failure or invalid data, it uses only an envelope the current request can re-validate, then falls back during migration to the complete legacy KV snapshot. Fields are never mixed between sources.
 
 The public URL and response shapes remain unchanged. Public request handlers have no VPS endpoint, database driver, or database credential. Image requests continue to read content-addressed R2 objects and apply public caching.
 

@@ -36,7 +36,7 @@ export interface MigrationHealthEnv {
 
 export interface MigrationHealth {
   snapshot: {
-    source: 'legacy' | 'r2'
+    source: 'legacy' | 'r2' | 'cache'
     generation: number | null
     r2_key: string | null
     verified_at: number | null
@@ -157,9 +157,9 @@ export async function buildMigrationHealth(
     && (readModeValue as { mode?: unknown }).mode === 'r2'
     ? 'r2'
     : 'legacy'
-  const snapshot = source.mode === 'r2'
+  const snapshot = source.mode !== 'legacy'
     ? {
-        source: 'r2' as const,
+        source: source.mode,
         generation: source.manifest.generation,
         r2_key: source.manifest.snapshot_key,
         verified_at: source.snapshot.published_at,

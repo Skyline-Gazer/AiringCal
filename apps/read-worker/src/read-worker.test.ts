@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { buildManifest, buildPublicSnapshot } from '@airing-cal/domain'
 import worker from './index.ts'
 
 class MockKV {
@@ -41,6 +42,27 @@ class MockR2 {
       httpMetadata: { contentType: 'image/png' },
       customMetadata: { bytes: '5', source_size: 'common' },
     }
+  }
+}
+
+class MockDataR2 {
+  objects = new Map<string, string>()
+
+  async get(key: string) {
+    const value = this.objects.get(key)
+    return value === undefined ? null : { key, async text() { return value } }
+  }
+}
+
+class MockSnapshotCache {
+  values = new Map<string, Response>()
+
+  async match(request: Request): Promise<Response | undefined> {
+    return this.values.get(request.url)?.clone()
+  }
+
+  async put(request: Request, response: Response): Promise<void> {
+    this.values.set(request.url, response.clone())
   }
 }
 
@@ -93,6 +115,38 @@ test('read-worker returns collection snapshot by type from KV', async () => {
   assert.equal(response.status, 200)
   assert.deepEqual(body.data, [{ subject_id: 1, title: 'A' }])
   assert.deepEqual(body.types, { watching: 1, _total: 1 })
+})
+
+test('read-worker serves a whole last-verified cache pair before conflicting legacy KV data', async () => {
+  const kv = new MockKV()
+  kv.values.set('snapshot:collections:watching', [{ subject_id: 999, title: 'legacy' }])
+  kv.values.set('snapshot:summary', { watching: 1, _total: 1 })
+  const snapshot = await buildPublicSnapshot({ collections: [], calendar: [], published_at: 1_000 }, 9)
+  const manifest = buildManifest(snapshot, { source_observed_at: 2_000, git_sha: 'b'.repeat(40) })
+  const dataR2 = new MockDataR2()
+  dataR2.objects.set('public/manifest.json', JSON.stringify(manifest))
+  dataR2.objects.set(manifest.snapshot_key, JSON.stringify(snapshot))
+  const cache = new MockSnapshotCache()
+  const priorCaches = Object.getOwnPropertyDescriptor(globalThis, 'caches')
+  Object.defineProperty(globalThis, 'caches', { configurable: true, value: { default: cache } })
+
+  try {
+    const context = env(kv) as any
+    context.AIRING_CAL_DATA_R2 = dataR2
+    const initial = await worker.fetch(new Request('https://read.local/collections?type=watching'), context)
+    assert.deepEqual((await initial.json() as any).data, [])
+
+    dataR2.objects.delete('public/manifest.json')
+    const fallback = await worker.fetch(new Request('https://read.local/collections?type=watching'), context)
+    const body = await fallback.json() as any
+
+    assert.equal(fallback.status, 200)
+    assert.deepEqual(body.data, [])
+    assert.equal(body.total, 0)
+  } finally {
+    if (priorCaches) Object.defineProperty(globalThis, 'caches', priorCaches)
+    else Reflect.deleteProperty(globalThis, 'caches')
+  }
 })
 
 test('read-worker paginates collection snapshots by page and limit', async () => {

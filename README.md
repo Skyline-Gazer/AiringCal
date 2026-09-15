@@ -11,7 +11,7 @@ AiringCal 是一个 Cloudflare Workers monorepo。它把公开访问、只读数
 | Worker | 目录 | 职责 |
 |--------|------|------|
 | `airing-cal-frontend` | `apps/frontend-worker` | 唯一公开入口，提供页面、widget 静态资源、BFF JSON route 和 `/image/:hash` 代理 |
-| `airing-cal-read` | `apps/read-worker` | 内部只读 API；公开响应按 `public:read-mode` 从 legacy KV snapshot/状态或验证过的 R2 `PublicSnapshotV1` 读取（迁移期默认 legacy，切换后 R2，带 Cache API 最后验证版与 legacy KV 双层 fallback）；`/api/health` 暴露 generation/source/budget/migration 摘要 |
+| `airing-cal-read` | `apps/read-worker` | 内部只读 API；直接读取并验证 data R2 `public/manifest.json` 与 `PublicSnapshotV1`，然后回退到 last-verified Cache API 整对和完整 legacy KV snapshot；`/api/health` 暴露 `legacy|r2|cache` source、generation、budget 与 migration 摘要 |
 | `airing-cal-sync` | `apps/sync-worker` | Cloudflare Workflow 编排 collection/calendar；每日 20:00 UTC cron 的 live 发布后追加 D1 shadow 阶段：增量同步、legacy 导入、shadow 等价比较、KV 预算记录、门禁通过后提升 shadow pointer 并切换 read-mode、14 天后限速清理 legacy key |
 | `airing-cal-media` | `apps/media-worker` | Queue consumer；D1-only V4 任务以 D1 保存媒体权威状态并写 image R2，live V3 与 V2/legacy 任务保留 KV 兼容路径 |
 
@@ -116,7 +116,7 @@ collections 使用 bgm.tv OpenAPI 允许的 `limit=50` 分页，并受 120 秒�
 
 `/api/health` 的 `data.workflow` 暴露最近 instance 的 `instance_id`、mode、source、stage、heartbeat、完成时间、计数和脱敏错误。聚合计数包含 eligible candidates `refresh_candidates` 及 `refresh_candidates_by_priority`、planner 选中 `refresh_selected`、逻辑获批 `refresh_granted`、预算留待后续 `refresh_deferred`（等于 `refresh_candidates - refresh_granted`）、producer 已确认/不确定的 `refresh_confirmed` / `refresh_uncertain`，以及预留前跳过的 `refresh_skipped`（等于 `subject_count - refresh_candidates`）。`refresh_jobs` 是 `refresh_granted` 的兼容 alias，只表示逻辑预算获批，不表示 Queue 一定物理接收；异步 consumer 的真实 KV PUT 只能从 consumer 与 Cloudflare 指标观察，Workflow 不推算实际写入数。成功或失败 run 都保留已到达的最新聚合值；这些字段只写入已有 run 记录，不创建逐 subject 指标 key。`queued`、`running` 或 `retrying` run 超过 20 分钟没有 heartbeat 时，应用侧返回 `status: "stale"` 与 `stale: true`；实际恢复、重启或终止仍以 Cloudflare Workflow instance 控制面状态为准。
 
-`/api/health` 在保留上述 legacy 字段的同时新增：`snapshot`（source/legacy 或 r2、generation、r2_key、verified_at）、`migration`（shadow_streak、legacy 导入游标与计数、kv_budget_ok、read_mode）与 `budget`（media reserved/consumed/soft/hard）。D1 读取失败时这些字段返回零值并置 `degraded: true`，不破坏既有契约。D1 rows、data R2 对象、Queue 和 KV pointer 的实际用量及错误必须分别在 Cloudflare Workflow/D1/R2/Queue/KV 控制面核对，不能从公开 health 推算。
+`/api/health` 在保留上述 legacy 字段的同时新增：`snapshot`（source 为 `legacy|r2|cache`，以及 generation、r2_key、verified_at）、`migration`（shadow_streak、legacy 导入游标与计数、kv_budget_ok、read_mode）与 `budget`（media reserved/consumed/soft/hard）。D1 读取失败时这些字段返回零值并置 `degraded: true`，不破坏既有契约。D1 rows、data R2 对象、Queue 和 KV pointer 的实际用量及错误必须分别在 Cloudflare Workflow/D1/R2/Queue/KV 控制面核对，不能从公开 health 推算。
 
 Worker Cron 来自 checked-in `wrangler.toml`；routine deploy 只同步代码与配置，不主动触发 live instance。
 
@@ -130,7 +130,7 @@ D1/data R2 实现运行在 manual `shadow` Workflow 与每日 20:00 UTC 调度 W
 4. 迁移期 shadow 发布把 pointer 写入 `public:shadow-current`；只有连续 7 次每日 shadow 一致且 KV 写预算达标后，才把 shadow pointer 提升为 `public:current` 并置 `public:read-mode=r2`。pointer 只包含 `schema_version`、`generation`、`content_hash`、`r2_key` 和 `published_at`；相同已验证内容不写 R2、不增加 generation、也不写 pointer。
 5. D1/R2/pointer 任一步失败都保留 pending/分类错误供同一 instance replay；不会通过回滚 D1 行或覆盖另一个 R2 generation 来“恢复”。
 
-公开读取入口由 `public:read-mode` 决定：`legacy` 时跟随 legacy KV `snapshot:active`/versioned keys（图片继续来自 `AIRING_CAL_R2`）；`r2` 时验证 `public:current` 后读取 `airing-cal-data` 的 `PublicSnapshotV1`，并用 Cache API 最后验证版与 legacy KV 双层 fallback。legacy 逐 subject 导入、shadow 门禁、`public:current` 读切换与旧 KV 限速清理由 OpenSpec change `migrate-public-reads-from-kv` 实现；切换与回滚操作见 [docs/runbook/migrate-public-reads.md](docs/runbook/migrate-public-reads.md)。
+公开读取入口直接从 `airing-cal-data` 读取并验证 `public/manifest.json` 与其 `PublicSnapshotV1`，之后按 last-verified Cache API 整对、完整 legacy KV snapshot 的顺序回退。`public:read-mode` 仅保留为 `/api/health` 的兼容 `migration.read_mode` 元数据；旧 D1 路径的 `public:current` 不参与 live snapshot 选择。legacy 导入、shadow 门禁与旧 KV 清理由 OpenSpec change `migrate-public-reads-from-kv` 实现；兼容状态见 [docs/runbook/migrate-public-reads.md](docs/runbook/migrate-public-reads.md)。
 
 media soft limit 50、hard limit 100 的 D1 reservation contract 已实现；只有 `new_or_changed` 候选可使用 privileged headroom。当前 shadow 调用不传 Queue submitter，因此 D1 路径 grant/submit 为 0；scheduled/manual live 仍使用 `SNAPSHOT_COORDINATOR` 的兼容预算和 legacy snapshot 发布。
 
@@ -369,10 +369,15 @@ JSON bytes 一致。请求里的 `date` 只参与审计与幂等 fingerprint；�
 | data R2 | `snapshots/v1/{generation}-{content_hash}.json` | 不可变 `PublicSnapshotV1`；写后必须回读验证 |
 | KV | `public:current` | 旧 D1 路径的 shadow pointer；Read Worker 不再以它选择公开 snapshot |
 
-Read Worker 优先读取 live manifest，并验证 manifest 字段及 snapshot 的 generation、
-hash、发布时间、item count 和 payload。manifest 缺失或无效，或 R2 与 Cache API
-均无匹配当前有效 manifest 的 snapshot 时，回退到完整 legacy KV snapshot；读取不会
-混用不同来源的字段，公开 URL、响应形状和查询参数保持不变。
+Read Worker 直接读取 live manifest，并验证 manifest 字段及 snapshot 的 generation、
+hash、发布时间、item count 和 payload。验证通过的 `{ manifest, snapshot }` 整对按
+generation/hash 写入 Cache API，并由 `last-verified` pointer 发现；整对与 pointer 设置
+30 天 freshness。只有当前请求能读取并重新验证该 pointer 指向的整对副本时，才会用它拒绝
+较低 generation 或同 generation 不同 hash 的 manifest。Cache API 内容限于来源 data
+center，可能缺失或过期；写入队列只在单个 isolate 串行，跨 isolate/POP 没有共享原子
+compare-and-swap，因此回滚保护在这些边界上是 best effort，不承诺全局 generation 单调。
+R2 不可用或无有效缓存整对时读取完整 legacy KV snapshot，来源字段不会混用。公开 URL、
+响应形状和查询参数保持不变。
 
 当前公开读取与兼容 KV key：
 
