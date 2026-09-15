@@ -275,6 +275,12 @@ export async function parsePublicSnapshotV1(value: unknown): Promise<PublicSnaps
   return snapshot
 }
 
+export function snapshotKey(generation: number, hash: string): string {
+  if (!isNonNegativeInteger(generation)) throw new Error('Invalid snapshot generation')
+  if (!LOWERCASE_SHA256.test(hash)) throw new Error('Invalid snapshot content_hash')
+  return `snapshots/v1/${generation}-${hash}.json`
+}
+
 export function snapshotObjectKey(snapshot: PublicSnapshotV1): string {
-  return `snapshots/v1/${snapshot.generation}-${snapshot.content_hash}.json`
+  return snapshotKey(snapshot.generation, snapshot.content_hash)
 }

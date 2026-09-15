@@ -155,7 +155,7 @@ test('snapshot collection items carry optional rating and reject missing or inva
   await assert.rejects(parsePublicSnapshotV1(invalidRating), /Invalid public snapshot/)
 })
 
-test('snapshot content hash excludes generation, content_hash and published_at envelope fields', async () => {
+test('snapshot content hash excludes wall-clock publication time and preserves Unix seconds', async () => {
   const input = {
     collections: [collectionItem(1, 1)],
     calendar,
@@ -165,6 +165,8 @@ test('snapshot content hash excludes generation, content_hash and published_at e
   const first = await buildPublicSnapshot(input, 1)
   const second = await buildPublicSnapshot({ ...input, content_hash: 'also-ignored', published_at: 999 }, 2)
 
+  assert.equal(Number.isSafeInteger(first.published_at), true)
+  assert.equal(Number.isSafeInteger(second.published_at), true)
   assert.equal(first.content_hash, second.content_hash)
   assert.equal(first.published_at, 100)
   assert.equal(second.published_at, 999)

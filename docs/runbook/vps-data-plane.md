@@ -36,6 +36,23 @@ DATABASE_URL=postgres://postgres:test@127.0.0.1:54329/postgres VPS_SYNC_TEST_DAT
 
 媒体刷新按 `new_or_changed → hot → cold → retry` 的稳定优先级和 subject ID 排序，cold 使用 UTC 星期分片，并固定最多四个并发 subject。每个 subject 的 PostgreSQL 行锁覆盖上游读取、图片校验、R2 PUT 与引用提交；图片只接受 HTTPS 白名单 host、200 与允许 MIME，限制 8 MiB 后计算 SHA-256，先写对象再保存引用。shadow 对象使用 `shadow/images/<sha256>/original`，相同 hash/key 复用对象。
 
+## R2 snapshot manifest
+
+发布使用精确字段的 `PublicSnapshotManifestV1`，snapshot key 固定为 `snapshots/v1/<generation>-<content_hash>.json`。`content_sha256` 与 snapshot 的 business `content_hash` 相同；`published_at` 将 snapshot 的 Unix 秒时间编码为 UTC ISO-8601，`source_observed_at` 编码本轮观察时间。`item_count` 等于 snapshot 的 `summary._total`，`git_sha` 是完整的 40 位小写 commit SHA。
+
+```json
+{
+  "schema_version": 1,
+  "generation": 9,
+  "snapshot_key": "snapshots/v1/9-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json",
+  "content_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "published_at": "2026-09-15T00:00:00.000Z",
+  "source_observed_at": "2026-09-15T00:01:00.000Z",
+  "item_count": 1,
+  "git_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+}
+```
+
 ## 上游完整抓取与重试
 
 VPS 适配器使用 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection 分页请求和 calendar 请求只由外层 retry 处理，最多三次尝试。所有配置用户的分页和 calendar 通过完整性校验后，才会生成可提交的 `CompleteFullFetch`；primary user、任一分页或 calendar 不完整都会 fail closed。

@@ -6,6 +6,17 @@ export {
   snapshotObjectKey,
 } from './public-snapshot.ts'
 export type { PublicSnapshotInput } from './public-snapshot.ts'
+export {
+  buildManifest,
+  canonicalSnapshotBytes,
+  nextSnapshotGeneration,
+  parsePublicSnapshotManifestV1,
+  snapshotKey,
+} from './public-manifest.ts'
+export type {
+  PublicSnapshotManifestMetadata,
+  PublicSnapshotManifestV1,
+} from './public-manifest.ts'
 export { normalizeCollection, planCollectionDiff } from './collection-diff.ts'
 export type {
   CollectionDiffInput,
