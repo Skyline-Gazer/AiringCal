@@ -75,6 +75,7 @@ export interface MediaResult extends MediaCandidate {
     metadata: MediaMetadata | null;
     metadataHash: string | null;
     imageHash: string | null;
+    errorCode?: string;
   };
   detail?: Subject;
   detail_hash?: string;
@@ -222,6 +223,7 @@ export type MediaResultInput = {
   nextRetryAt: string | null;
   deletedAt: string | null;
   lastSuccessAt: string | null;
+  errorCode?: string;
 };
 export type MediaState = Omit<MediaResultInput, "observedAt" | "runId"> & { observedAt: string | null; runId: string | null };
 
@@ -437,6 +439,9 @@ function mediaResultFromInput(input: MediaResultInput): MediaResult {
   const componentFailed = Object.values(input.status).includes("failed");
   const status: MediaResult["status"] = input.status.detail === "not_found"
     ? "not_found" : componentFailed ? "failed" : "ok";
+  const errorCode = input.status.detail === "failed" || componentFailed
+    ? code(input.errorCode ?? (input.status.image === "failed" ? "MEDIA_INVALID" : "UPSTREAM_SERVER"))
+    : null;
   const ref = (size: "common" | "large") => {
     const value = input.imageRefs?.[size];
     if (value === null || value === undefined) return { key: null, hash: null };
@@ -454,6 +459,7 @@ function mediaResultFromInput(input: MediaResultInput): MediaResult {
       metadata: input.metadata,
       metadataHash: input.metadataHash,
       imageHash: input.imageHash,
+      ...(errorCode === null ? {} : { errorCode }),
     },
     ...(subject === undefined ? {} : { detail: subject }),
     ...(input.detailHash === null ? {} : { detail_hash: input.detailHash }),
@@ -463,7 +469,7 @@ function mediaResultFromInput(input: MediaResultInput): MediaResult {
     large_hash: large.hash,
     ...(input.nextRetryAt === null ? {} : { next_retry_at: epochSeconds(input.nextRetryAt) }),
     ...(input.status.detail === "not_found" ? { tombstone_until: Math.floor((epochSeconds(input.observedAt) + 86_400)) } : {}),
-    ...(input.status.detail === "failed" || componentFailed ? { error_code: input.status.image === "failed" ? "MEDIA_INVALID" : "UPSTREAM_SERVER" } : {}),
+    ...(errorCode === null ? {} : { error_code: errorCode }),
   };
 }
 
@@ -481,6 +487,8 @@ function mediaStateFromRow(row: Record<string, unknown>): MediaState {
         : {};
   const rawComponents = row.component_state && typeof row.component_state === "object" && !Array.isArray(row.component_state)
     ? row.component_state as Record<string, unknown> : null;
+  const storedErrorCode = code(typeof rawComponents?.errorCode === "string" ? rawComponents.errorCode
+    : typeof row.error_code === "string" ? row.error_code : undefined);
   const status = isMediaStatus(rawComponents?.status) ? rawComponents.status : legacyStatus;
   const rawDetail = row.detail && typeof row.detail === "object" ? row.detail as Record<string, unknown> : null;
   const detail: MediaDetail | null = rawDetail === null ? null : {
@@ -513,6 +521,7 @@ function mediaStateFromRow(row: Record<string, unknown>): MediaState {
     nextRetryAt: isoTimestamp(row.next_retry_at ?? row.tombstone_until ?? row.next_refresh_at),
     deletedAt: tombstone,
     lastSuccessAt: isoTimestamp(row.last_success_at),
+    ...(storedErrorCode === null ? {} : { errorCode: storedErrorCode }),
   };
 }
 
@@ -755,7 +764,8 @@ export class PostgresAuthority {
     if (input.component_state !== undefined) {
       requireValid(isMediaStatus(input.component_state.status) && isMediaMetadata(input.component_state.metadata)
         && (input.component_state.metadataHash === null || hashPattern.test(input.component_state.metadataHash))
-        && (input.component_state.imageHash === null || hashPattern.test(input.component_state.imageHash)), "INVALID_MEDIA");
+        && (input.component_state.imageHash === null || hashPattern.test(input.component_state.imageHash))
+        && (input.component_state.errorCode === undefined || ERROR_CODES.has(input.component_state.errorCode)), "INVALID_MEDIA");
     }
     const detail = input.detail === undefined ? undefined : subjectProjection(input.detail);
     requireValid(detail === undefined || (detail.subject_id === input.subject_id && hashPattern.test(input.detail_hash ?? "")), "INVALID_MEDIA");

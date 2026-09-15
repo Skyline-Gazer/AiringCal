@@ -29,6 +29,7 @@ test("media result SQL preserves failed component state without renewing a stale
     metadataHash: "d".repeat(64),
     imageHash: "c".repeat(64),
     status: { detail: "failed", metadata: "failed", image: "success" },
+    errorCode: "UPSTREAM_NETWORK",
     nextRetryAt: new Date(4_200_000).toISOString(),
     deletedAt: null,
     lastSuccessAt: new Date(400_000).toISOString(),
@@ -38,6 +39,7 @@ test("media result SQL preserves failed component state without renewing a stale
     metadata: retry.metadata,
     metadataHash: retry.metadataHash,
     imageHash: retry.imageHash,
+    errorCode: retry.errorCode,
   };
   const row = {
     subject_id: 1,
@@ -53,6 +55,7 @@ test("media result SQL preserves failed component state without renewing a stale
     next_retry_at: 4_200,
     tombstone_until: null,
     last_success_at: 400,
+    error_code: retry.errorCode,
     component_state: componentState,
   };
   const client = {
@@ -73,6 +76,7 @@ test("media result SQL preserves failed component state without renewing a stale
   assert.ok(update);
   assert.equal(update.values[12], "failed");
   assert.equal(update.values[16], null);
+  assert.equal(update.values[17], retry.errorCode);
   assert.match(update.sql, /component_state/);
   assert.deepEqual(update.values[18], componentState);
 
@@ -81,6 +85,7 @@ test("media result SQL preserves failed component state without renewing a stale
   assert.deepEqual(roundTrip?.metadata, retry.metadata);
   assert.equal(roundTrip?.metadataHash, retry.metadataHash);
   assert.equal(roundTrip?.imageHash, retry.imageHash);
+  assert.equal(roundTrip?.errorCode, retry.errorCode);
   assert.equal(roundTrip?.deletedAt, null);
   assert.equal(roundTrip?.nextRetryAt, retry.nextRetryAt);
 });

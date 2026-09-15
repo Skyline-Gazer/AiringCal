@@ -5,6 +5,7 @@ import type {
   MediaState,
 } from '../postgres/repositories.js'
 import type { MediaSummary, RunContext } from '../contracts.js'
+import { UpstreamFetchError } from '../upstream/retry.js'
 
 export type MediaCandidate = { subjectId: number; priority: 'new_or_changed' | 'hot' | 'cold' | 'retry' }
 export type MediaSubject = NonNullable<MediaResultInput['detail']> & {
@@ -76,6 +77,23 @@ function copyRefs(refs: MediaImageRefs | null | undefined): MediaImageRefs {
     common: refs?.common ?? null,
     large: refs?.large ?? null,
   }
+}
+
+function failureCode(error: unknown, fallback: string): string {
+  if (error instanceof UpstreamFetchError) {
+    switch (error.category) {
+      case 'auth': return 'UPSTREAM_AUTH'
+      case 'not_found': return 'UPSTREAM_NOT_FOUND'
+      case 'rate_limited': return 'UPSTREAM_RATE_LIMIT'
+      case 'upstream': return 'UPSTREAM_SERVER'
+      case 'timeout': return 'UPSTREAM_TIMEOUT'
+      case 'network': return 'UPSTREAM_NETWORK'
+      case 'contract': return 'UPSTREAM_CONTRACT'
+    }
+  }
+  if (error instanceof TypeError) return 'UPSTREAM_NETWORK'
+  if (typeof DOMException !== 'undefined' && error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError')) return 'UPSTREAM_TIMEOUT'
+  return fallback
 }
 
 function changedSubjectCanBypassRetry(candidate: MediaCandidate, current: MediaState | null): boolean {
@@ -229,10 +247,16 @@ async function refreshSubject(
       if (!source) continue
       present++
       try {
-        const normalized = normalizeUrl(source)
+        let normalized: string
+        try { normalized = normalizeUrl(source) } catch {
+          result.errorCode ??= 'MEDIA_INVALID'
+          failed = true
+          continue
+        }
         const response = await deps.image(normalized)
         if (response.status === 429 || response.status >= 500) {
           retrySoon = true
+          result.errorCode ??= response.status === 429 ? 'UPSTREAM_RATE_LIMIT' : 'UPSTREAM_SERVER'
           await response.body?.cancel()
           throw new Error('MEDIA_IMAGE_UPSTREAM')
         }
@@ -241,12 +265,17 @@ async function refreshSubject(
         const reference = imageReference(hash, context.mode)
         const reusable = Object.values(previousRefs).some((old) => old?.hash === hash && old.r2_key === reference.r2_key)
         if (!reusable && !uploaded.has(reference.r2_key)) {
-          await deps.put(reference.r2_key, bytes, contentType)
+          try { await deps.put(reference.r2_key, bytes, contentType) } catch (error) {
+            result.errorCode ??= 'MEDIA_UPLOAD'
+            throw error
+          }
           uploaded.add(reference.r2_key)
         }
         result.imageRefs = { ...result.imageRefs!, [size]: reference }
       } catch (error) {
-        if (error instanceof TypeError || (typeof DOMException !== 'undefined' && error instanceof DOMException && (error.name === 'AbortError' || error.name === 'TimeoutError'))) retrySoon = true
+        const code = failureCode(error, 'MEDIA_INVALID')
+        result.errorCode ??= code
+        if (code === 'UPSTREAM_NETWORK' || code === 'UPSTREAM_TIMEOUT' || code === 'UPSTREAM_SERVER' || code === 'UPSTREAM_RATE_LIMIT') retrySoon = true
         failed = true
       }
     }
@@ -254,8 +283,9 @@ async function refreshSubject(
     result.imageHash = digest(JSON.stringify(result.imageRefs))
     if (!failed) result.lastSuccessAt = context.observedAt
     result.nextRetryAt = retrySoon ? new Date(now + RETRY_MS).toISOString() : nextRefreshAt(candidate.subjectId, now)
-  } catch {
+  } catch (error) {
     failed = true
+    result.errorCode ??= failureCode(error, 'UPSTREAM_SERVER')
     result.status = { detail: 'failed', metadata: 'failed', image: 'failed' }
     result.nextRetryAt = new Date(now + RETRY_MS).toISOString()
     result.deletedAt = null

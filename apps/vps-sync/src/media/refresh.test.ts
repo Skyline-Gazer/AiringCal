@@ -54,6 +54,24 @@ test('transient image failure retains each last-known-good size while detail suc
   assert.equal(saves[0]?.status.image, 'failed')
 })
 
+test('records stable error codes for image failures without exception details', async () => {
+  const cases = [
+    ['server', 'UPSTREAM_SERVER', (deps: MediaDependencies) => { deps.image = async () => new Response('private server body', { status: 503 }) }],
+    ['rate limit', 'UPSTREAM_RATE_LIMIT', (deps: MediaDependencies) => { deps.image = async () => new Response('private limit body', { status: 429 }) }],
+    ['network', 'UPSTREAM_NETWORK', (deps: MediaDependencies) => { deps.image = async () => { throw new TypeError('private network details') } }],
+    ['invalid MIME', 'MEDIA_INVALID', (deps: MediaDependencies) => { deps.image = async () => new Response('private HTML body', { headers: { 'content-type': 'text/html' } }) }],
+    ['R2 upload', 'MEDIA_UPLOAD', (deps: MediaDependencies) => { deps.put = async () => { throw new Error('private R2 details') } }],
+  ] as const
+
+  for (const [name, errorCode, configure] of cases) {
+    const { deps, saves } = fixture(stored())
+    configure(deps)
+    await refreshMedia(deps, context)
+    assert.equal(saves[0]?.errorCode, errorCode, name)
+    assert.doesNotMatch(JSON.stringify(saves[0]), /private/)
+  }
+})
+
 test('expired not-found metadata is not renewed after a transient detail error', async () => {
   const expired = '2026-08-30T00:00:00.000Z'
   const { deps, saves } = fixture(stored({

@@ -56,6 +56,17 @@ VPS 媒体刷新 MUST 区分可重试网络/上游错误与 404 等终态，并�
 - **WHEN** bgm.tv 明确返回 404
 - **THEN** 系统记录保守 tombstone 且不按瞬态错误立即重试
 
+### Requirement: 媒体失败原因必须使用可恢复的稳定代码
+媒体刷新 MUST 只持久化 allow-listed 稳定 `error_code`，并在读取媒体状态时还原该代码；原始异常文本 MUST NOT 写入 PostgreSQL。
+
+#### Scenario: 上游图片请求失败
+- **WHEN** 图片上游返回 503、429 或网络请求抛出 TypeError
+- **THEN** PostgreSQL 分别保存 `UPSTREAM_SERVER`、`UPSTREAM_RATE_LIMIT` 或 `UPSTREAM_NETWORK`，并在读取状态时返回相同代码
+
+#### Scenario: 图片内容无效或 R2 上传失败
+- **WHEN** 图片响应 MIME 无效或 R2 PUT 抛错
+- **THEN** PostgreSQL 分别保存 `MEDIA_INVALID` 或 `MEDIA_UPLOAD`，且不保存异常文本
+
 ### Requirement: subject 副作用必须按 generation 串行
 系统 MUST 使用 PostgreSQL advisory/row lock 和观察时间围栏串行执行同一 subject 的 detail、metadata、image 与 refresh 副作用，并拒绝过期写入。
 
