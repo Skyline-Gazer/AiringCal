@@ -183,7 +183,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `createBackup(deps, run): Promise<BackupResult>`；keys `backups/postgres/YYYY/MM/DD/<timestamp>-<git-sha>.dump|.json`；manifest 包含 schema_version/run_id/git_sha/created_at/object_key/size/sha256。
 
-- [ ] **Step 1: CLI 验证** — 对目标 Alpine PostgreSQL client 执行 `pg_dump --help`、`pg_restore --help`，确认 custom format、输出和 connection 参数；实现不得把 URL 放入 argv/log。
+- [ ] **Step 1: CLI 验证** — 优先对目标 Alpine PostgreSQL client 执行 `pg_dump --help`、`pg_restore --help`，确认 custom format、输出和 connection 参数；若工作环境无容器 runtime，则核对对应 PostgreSQL 17 官方 docs/source 与目标镜像 build recipe，并记录未直接运行 help 的限制。实现不得把 URL 放入 argv/log。
 - [ ] **Step 2: RED tests** — fake command runner 验证 dump→hash/size→dump upload→manifest upload；snapshot published/no_change 后 backup；command/upload 失败使 run partial 且不撤销 publication。
 - [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- backup.test.ts run.test.ts` 预期 FAIL。
 - [ ] **Step 4: GREEN/REFACTOR** — bounded `/tmp/airing-cal`、finally cleanup、canonical backup manifest；tests/typecheck PASS。
