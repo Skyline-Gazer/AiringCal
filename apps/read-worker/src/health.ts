@@ -9,9 +9,8 @@ import {
   type MigrationSummaryV1,
   type ShadowStreakV1,
 } from '@airing-cal/storage'
-import { validatePointer } from './r2-snapshot.ts'
+import type { SnapshotSource } from './r2-snapshot.ts'
 
-const POINTER_KEY = 'public:current'
 const MEDIA_SOFT_LIMIT = 50
 const MEDIA_HARD_LIMIT = 100
 const KV_BUDGET_MAX_WRITES = 100
@@ -141,7 +140,10 @@ async function readMediaBudget(
   return { reserved: row.reserved, consumed: row.consumed }
 }
 
-export async function buildMigrationHealth(env: MigrationHealthEnv): Promise<MigrationHealth> {
+export async function buildMigrationHealth(
+  env: MigrationHealthEnv,
+  source: SnapshotSource,
+): Promise<MigrationHealth> {
   let degraded = false
   let readModeValue: unknown
   try {
@@ -155,21 +157,12 @@ export async function buildMigrationHealth(env: MigrationHealthEnv): Promise<Mig
     && (readModeValue as { mode?: unknown }).mode === 'r2'
     ? 'r2'
     : 'legacy'
-  let pointerValue: unknown = null
-  if (readMode === 'r2') {
-    try {
-      pointerValue = await env.AIRING_CAL_KV.get(POINTER_KEY, 'json')
-    } catch {
-      degraded = true
-    }
-  }
-  const pointer = validatePointer(pointerValue)
-  const snapshot = pointer
+  const snapshot = source.mode === 'r2'
     ? {
         source: 'r2' as const,
-        generation: pointer.generation,
-        r2_key: pointer.r2_key,
-        verified_at: pointer.published_at,
+        generation: source.manifest.generation,
+        r2_key: source.manifest.snapshot_key,
+        verified_at: source.snapshot.published_at,
       }
     : {
         source: 'legacy' as const,

@@ -3,6 +3,11 @@
 > 对应 OpenSpec change：`migrate-public-reads-from-kv`。技术设计见
 > `docs/superpowers/specs/2026-07-31-migrate-public-reads-from-kv-design.md`。
 
+> **历史 runbook，当前 VPS data-plane 切换已取代此流程。** 当前 Read Worker 直接读取
+> `public/manifest.json`；`public:read-mode` 与 `public:current` 不再控制公开 snapshot 来源。
+> 当前部署和回滚请遵循 [`vps-data-plane.md`](vps-data-plane.md)。下文仅保留旧 D1/KV
+> 迁移流程的历史记录，不要据此执行当前切流或清理。
+
 ## 目标状态
 
 公开读取从 legacy KV manifest 切换到验证过的 R2 `PublicSnapshotV1`，legacy

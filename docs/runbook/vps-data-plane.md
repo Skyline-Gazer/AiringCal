@@ -55,6 +55,8 @@ DATABASE_URL=postgres://postgres:test@127.0.0.1:54329/postgres VPS_SYNC_TEST_DAT
 
 live manifest 固定为 `public/manifest.json`，指向的 immutable snapshot 使用上面的逻辑 key；shadow manifest 固定为 `shadow/manifest.json`，shadow snapshot 实际写在 `shadow/<snapshot_key>` 下。共享 manifest parser 要求 `snapshot_key` 不含 namespace；读取 shadow manifest 的比较/验证调用方必须将其映射为 `shadow/<snapshot_key>` 后读取对象，不能把 shadow key 当作 live 对象，也不能把 shadow 发布到 live key。
 
+Read Worker 直接读取 `public/manifest.json`，不再通过 KV `public:read-mode` 或 `public:current` 选择 live snapshot。它用共享 parser 校验 manifest 与 snapshot，并要求 generation、content hash、发布时间及 item count 一致；只有整份 snapshot 通过校验后才用于公开响应。当前 manifest 无效时会读取完整 legacy KV snapshot；snapshot R2 对象不可用时，只接受仍匹配当前有效 manifest 的 Cache API 副本，否则回退到完整 legacy KV snapshot。字段不会跨来源混合。公开 URL、查询参数和响应形状保持不变；Read Worker 不访问 VPS 或 PostgreSQL。
+
 live 发布先校验候选并读取 publication authority。hash 与 verified 相同则清理符合仓储规则的未 claim pending 并返回 `no_change`，不访问 R2。新 hash 使用 verified generation 的下一代；在任何 R2 操作前先持久化并 claim pending。随后读取并核对现有 live manifest 与 verified 状态，再严格按 snapshot 条件 PUT（`If-None-Match: *`）→ GET/规范化解析与 hash 校验 → manifest PUT → GET/字段校验 → `verifyPublication` 的顺序推进。immutable key 已存在时不覆盖；条件冲突只会继续读回，且字节、schema 与 hash 均匹配才可复用。已 claim 的同一 pending 重试复用原 generation 和已保存的 publication metadata；不同候选不能抢占它。shadow snapshot 使用同样的条件 PUT/readback 规则。
 
 R2 失败时，已 claim pending 保持可重放，数据库 verified 不前移。manifest 写入尝试之前失败不会替换旧指针；manifest PUT 结果不确定或 readback 校验失败时，会尝试恢复旧 manifest 原始字节（首次发布则删除新指针）并再次读取确认。`verifyPublication` 抛错时，只有 fresh authority 确认仍是旧 verified 与同一 claimed pending 才恢复旧指针；状态未知时保留已验证候选并返回 pending。snapshot 可能作为未被 manifest 引用的 immutable 对象保留。shadow 使用自己的 manifest/snapshot namespace，不读写 live key，也不 claim 或 verify live publication。

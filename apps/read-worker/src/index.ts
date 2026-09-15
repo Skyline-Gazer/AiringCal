@@ -7,7 +7,6 @@ import {
   readSnapshotSource,
   type ReadSnapshotCache,
   type ReadSnapshotDataR2,
-  type ReadSnapshotKv,
 } from './r2-snapshot.ts'
 import { buildMigrationHealth, type MigrationHealthD1, type MigrationHealthEnv } from './health.ts'
 
@@ -58,7 +57,6 @@ function defaultSnapshotCache(): ReadSnapshotCache {
 
 function snapshotSourceFor(env: ReadEnv) {
   return readSnapshotSource(
-    env.AIRING_CAL_KV as ReadSnapshotKv,
     env.AIRING_CAL_DATA_R2 as unknown as ReadSnapshotDataR2,
     defaultSnapshotCache(),
   )
@@ -421,7 +419,10 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
         stale: workflowStale,
       })
     : null
-  const migrationHealth = await buildMigrationHealth(migrationHealthEnvFor(env))
+  const migrationHealth = await buildMigrationHealth(
+    migrationHealthEnvFor(env),
+    await snapshotSourceFor(env),
+  )
   return json({
     ok: true,
     worker: 'read-worker',

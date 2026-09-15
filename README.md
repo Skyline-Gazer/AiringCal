@@ -361,12 +361,18 @@ JSON bytes 一致。请求里的 `date` 只参与审计与幂等 fingerprint；�
 不可变 payload 不重写。hot 下一次检查继续使用现有确定性 6～8 天分散规则，因此
 成功检查后的次日不会再次入队；尚未到期的相同内容仍保持 D1/R2 零写。
 
-新 shadow 发布 key：
+公开与 shadow snapshot 发布 key：
 
 | 存储 | Key | 当前用途 |
 |------|-----|---------|
+| data R2 | `public/manifest.json` | live `PublicSnapshotManifestV1`；Read Worker 直接读取并验证它及其 snapshot |
 | data R2 | `snapshots/v1/{generation}-{content_hash}.json` | 不可变 `PublicSnapshotV1`；写后必须回读验证 |
-| KV | `public:current` | 只含 version/generation/hash/R2 key/time 的 shadow pointer；当前 read-worker 不读取 |
+| KV | `public:current` | 旧 D1 路径的 shadow pointer；Read Worker 不再以它选择公开 snapshot |
+
+Read Worker 优先读取 live manifest，并验证 manifest 字段及 snapshot 的 generation、
+hash、发布时间、item count 和 payload。manifest 缺失或无效，或 R2 与 Cache API
+均无匹配当前有效 manifest 的 snapshot 时，回退到完整 legacy KV snapshot；读取不会
+混用不同来源的字段，公开 URL、响应形状和查询参数保持不变。
 
 当前公开读取与兼容 KV key：
 
