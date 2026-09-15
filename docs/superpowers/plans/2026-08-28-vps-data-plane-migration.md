@@ -125,11 +125,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `PublicSnapshotManifestV1` 精确字段；`buildManifest(snapshot, metadata)`；`parsePublicSnapshotManifestV1(value)`；`snapshotKey(generation, hash)`；`canonicalSnapshotBytes(snapshot)`；纯函数 `nextSnapshotGeneration(verified, contentHash)`（hash 相同返回 no-op，否则返回 verified generation + 1；未发布时从 1 开始）。数据库并发分配、pending/replay 仍由 Task 3.2 的 publication state machine 负责。
 
-- [ ] **Step 1: RED tests** — 精确 keys、ISO UTC、item_count、full git SHA、key/generation/hash 一致；runtime timestamps 不改变 business `content_hash`；相同 content no-op；verified N 的新内容只分配 N+1。新增：`PublicSnapshotV1.published_at` 保持 Unix-second integer 不变；`buildManifest` 的 ISO `published_at` 与该 integer 表示同一时刻；同一 business payload 在不同 wall-clock 时间产生相同 `content_hash`。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/domain test -- src/public-manifest.test.ts src/public-snapshot.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — 基于现有 `sha256Canonical`/`buildPublicSnapshot` 实现 exact parser 与 key grammar，保持 `PublicSnapshotV1` response shape。
-- [ ] **Step 4: REFACTOR/验证** — domain tests/typecheck PASS；确认导出名与后续 tasks 完全一致。
-- [ ] **Step 5: 文档、提交与推送** — 在 runbook 写 manifest 示例；commit `feat(domain): define public snapshot manifest` 后 push。
+- [x] **Step 1: RED tests** — 精确 keys、ISO UTC、item_count、full git SHA、key/generation/hash 一致；runtime timestamps 不改变 business `content_hash`；相同 content no-op；verified N 的新内容只分配 N+1。新增：`PublicSnapshotV1.published_at` 保持 Unix-second integer 不变；`buildManifest` 的 ISO `published_at` 与该 integer 表示同一时刻；同一 business payload 在不同 wall-clock 时间产生相同 `content_hash`。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/domain test -- src/public-manifest.test.ts src/public-snapshot.test.ts` 预期 FAIL。
+- [x] **Step 3: GREEN** — 基于现有 `sha256Canonical`/`buildPublicSnapshot` 实现 exact parser 与 key grammar，保持 `PublicSnapshotV1` response shape。
+- [x] **Step 4: REFACTOR/验证** — domain tests/typecheck PASS；确认导出名与后续 tasks 完全一致。
+- [x] **Step 5: 文档、提交与推送** — 在 runbook 写 manifest 示例；commit `feat(domain): define public snapshot manifest` 后 push。
 
 ### Task 3.2: S3-compatible R2 原子发布与 replay
 
@@ -140,11 +140,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `publishSnapshot(ports, candidate, mode): Promise<'published'|'no_change'|'pending'>`；live key `public/manifest.json`，shadow key `shadow/manifest.json`；S3 port `put/get/list/delete`。
 
-- [ ] **Step 1: SDK 验证** — 读取本地 AWS SDK types/官方文档确认 endpoint、path style、Put/Get/List/Delete command 与 response body；禁止写入未经验证的 option。
-- [ ] **Step 2: RED failure-injection tests** — snapshot PUT→GET/parse/hash→manifest PUT→GET/validate→DB verify 的严格顺序；每个 R2 边界失败保留旧 manifest/pending；重跑相同 pending 不跳 generation；shadow 永不写 live key。
-- [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- publish.test.ts` 预期 FAIL。
-- [ ] **Step 4: GREEN/REFACTOR** — canonical bytes、conditional conflict 处理和 readback verification；局部 tests/typecheck PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步 key/state machine；commit `feat(vps-sync): publish immutable R2 snapshots` 后 push。
+- [x] **Step 1: SDK 验证** — 读取本地 AWS SDK types/官方文档确认 endpoint、path style、Put/Get/List/Delete command 与 response body；禁止写入未经验证的 option。
+- [x] **Step 2: RED failure-injection tests** — snapshot PUT→GET/parse/hash→manifest PUT→GET/validate→DB verify 的严格顺序；每个 R2 边界失败保留旧 manifest/pending；重跑相同 pending 不跳 generation；shadow 永不写 live key。
+- [x] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- publish.test.ts` 预期 FAIL。
+- [x] **Step 4: GREEN/REFACTOR** — canonical bytes、conditional conflict 处理和 readback verification；局部 tests/typecheck PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步 key/state machine；commit `feat(vps-sync): publish immutable R2 snapshots` 后 push。
 
 ### Task 4.1: Read Worker manifest/snapshot 验证切入
 
