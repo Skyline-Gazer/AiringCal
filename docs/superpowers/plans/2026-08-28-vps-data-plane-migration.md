@@ -178,7 +178,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 
 **Files:**
 - Create: `apps/vps-sync/src/backup/backup.ts`, `apps/vps-sync/src/backup/backup.test.ts`
-- Modify: `apps/vps-sync/src/run.ts`, `apps/vps-sync/src/run.test.ts`
+- Modify: `apps/vps-sync/src/run.ts`, `apps/vps-sync/src/run.test.ts`, `apps/vps-sync/src/publication/s3.ts` (stream the dump with verified size instead of buffering the full file), `docs/runbook/vps-data-plane.md`
 
 **Interfaces:**
 - Produces: `createBackup(deps, run): Promise<BackupResult>`；keys `backups/postgres/YYYY/MM/DD/<timestamp>-<git-sha>.dump|.json`；manifest 包含 schema_version/run_id/git_sha/created_at/object_key/size/sha256。
