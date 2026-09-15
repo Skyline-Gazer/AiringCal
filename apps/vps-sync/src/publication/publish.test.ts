@@ -66,11 +66,12 @@ type Fault = {
   mode?: 'throw' | 'corrupt' | 'after'
 }
 
-function memoryS3(events: string[], initial: Record<string, Uint8Array>, fault?: Fault) {
+function memoryS3(events: string[], initial: Record<string, Uint8Array>, fault?: Fault | Fault[]) {
   const objects = new Map(Object.entries(initial).map(([key, bytes]) => [key, bytes.slice()]))
   const gets = new Map<string, number>()
   const puts = new Map<string, number>()
-  const matches = (op: Fault['op'], key: string, occurrence: number) => fault?.op === op && fault.key === key && fault.occurrence === occurrence
+  const faults = Array.isArray(fault) ? fault : fault ? [fault] : []
+  const matches = (op: Fault['op'], key: string, occurrence: number) => faults.find((item) => item.op === op && item.key === key && item.occurrence === occurrence)
   return {
     objects,
     port: {
@@ -79,7 +80,7 @@ function memoryS3(events: string[], initial: Record<string, Uint8Array>, fault?:
         const occurrence = (puts.get(key) ?? 0) + 1
         puts.set(key, occurrence)
         const injected = matches('put', key, occurrence)
-        if (injected && fault?.mode !== 'after') throw new Error('injected R2 PUT failure')
+        if (injected && injected.mode !== 'after') throw new Error('injected R2 PUT failure')
         if (options?.ifNoneMatch === '*' && objects.has(key)) return
         objects.set(key, bytes.slice())
         if (injected) throw new Error('injected ambiguous R2 PUT failure')
@@ -88,8 +89,9 @@ function memoryS3(events: string[], initial: Record<string, Uint8Array>, fault?:
         events.push(`s3:get:${key}`)
         const occurrence = (gets.get(key) ?? 0) + 1
         gets.set(key, occurrence)
-        if (matches('get', key, occurrence) && fault?.mode === 'throw') throw new Error('injected R2 GET failure')
-        if (matches('get', key, occurrence) && fault?.mode === 'corrupt') return encoder.encode('{}')
+        const injected = matches('get', key, occurrence)
+        if (injected?.mode === 'throw') throw new Error('injected R2 GET failure')
+        if (injected?.mode === 'corrupt') return encoder.encode('{}')
         return objects.get(key)?.slice() ?? null
       },
       list: async (prefix: string) => [...objects.keys()].filter((key) => key.startsWith(prefix)).sort(),
@@ -128,7 +130,7 @@ function memoryAuthority(events: string[], initial: PublicationState, failVerify
   return { authority, getState: () => structuredClone(state) }
 }
 
-async function liveFixture(fault?: Fault, failVerify = false) {
+async function liveFixture(fault?: Fault | Fault[], failVerify = false) {
   const oldSnapshot = await snapshot('previous', 100, 1)
   const newSnapshot = await snapshot('next', 200)
   const verified = publication(oldSnapshot, 1, 'run-old', 150, previousGitSha)
@@ -147,6 +149,25 @@ async function liveFixture(fault?: Fault, failVerify = false) {
   const database = memoryAuthority(events, { verified, pending: null, claimed: false }, failVerify)
   const ports: PublicationPorts = { authority: database.authority, s3: s3.port }
   return { ports, events, objects: s3.objects, database, candidate, verified, oldManifest, snapshotPath: snapshotKey(2, newSnapshot.content_hash) }
+}
+
+function injectAmbiguousPublicationCommit(ports: PublicationPorts): void {
+  const getPublicationState = ports.authority.getPublicationState
+  const verifyPublication = ports.authority.verifyPublication
+  let commitResponseLost = false
+  let stateReadFailureUsed = false
+  ports.authority.verifyPublication = async (value) => {
+    await verifyPublication(value)
+    commitResponseLost = true
+    throw new Error('injected publication commit response loss')
+  }
+  ports.authority.getPublicationState = async () => {
+    if (commitResponseLost && !stateReadFailureUsed) {
+      stateReadFailureUsed = true
+      throw new Error('injected publication state read failure')
+    }
+    return getPublicationState()
+  }
 }
 
 test('live publication verifies snapshot readback before manifest and database promotion', async () => {
@@ -214,6 +235,72 @@ test('retrying the same claimed pending publication reuses its generation', asyn
   assert.equal(fixture.database.getState().pending, null)
   assert.equal(fixture.events.filter((event) => event.startsWith('s3:put:snapshots/v1/')).length, 2)
   assert.ok(fixture.objects.has('snapshots/v1/2-' + fixture.candidate.snapshot.content_hash + '.json'))
+})
+
+test('replay validates a persisted candidate manifest and snapshot after readback and rollback both fail', async () => {
+  const fixture = await liveFixture([
+    { op: 'get', key: 'public/manifest.json', occurrence: 2, mode: 'throw' },
+    { op: 'put', key: 'public/manifest.json', occurrence: 2, mode: 'throw' },
+  ])
+
+  await assert.rejects(() => publishSnapshot(fixture.ports, fixture.candidate, 'live'), /PUBLICATION_ROLLBACK_FAILED/)
+  const expected = publication(fixture.candidate.snapshot, 2, fixture.candidate.runId, fixture.candidate.observedAt, fixture.candidate.gitSha)
+  assert.deepEqual(fixture.objects.get('public/manifest.json'), manifestBytes(fixture.candidate.snapshot, expected))
+  assert.equal(fixture.database.getState().claimed, true)
+  assert.equal(fixture.database.getState().pending?.generation, 2)
+
+  const replayStart = fixture.events.length
+  assert.equal(await publishSnapshot(fixture.ports, fixture.candidate, 'live'), 'published')
+  assert.deepEqual(fixture.database.getState().verified, expected)
+  assert.equal(fixture.database.getState().pending, null)
+  const replayEvents = fixture.events.slice(replayStart)
+  const manifestRead = replayEvents.indexOf('s3:get:public/manifest.json')
+  const snapshotRead = replayEvents.indexOf(`s3:get:${fixture.snapshotPath}`)
+  const databasePromotion = replayEvents.indexOf('db:verify:2')
+  assert.ok(manifestRead >= 0 && snapshotRead > manifestRead && databasePromotion > snapshotRead)
+})
+
+test('replay restores the verified manifest when the persisted candidate pointer is invalid', async () => {
+  const fixture = await liveFixture([
+    { op: 'get', key: 'public/manifest.json', occurrence: 2, mode: 'throw' },
+    { op: 'put', key: 'public/manifest.json', occurrence: 2, mode: 'throw' },
+  ])
+  await assert.rejects(() => publishSnapshot(fixture.ports, fixture.candidate, 'live'), /PUBLICATION_ROLLBACK_FAILED/)
+  fixture.objects.set('public/manifest.json', encoder.encode('{}'))
+
+  assert.equal(await publishSnapshot(fixture.ports, fixture.candidate, 'live'), 'pending')
+  assert.deepEqual(fixture.objects.get('public/manifest.json'), fixture.oldManifest)
+  assert.deepEqual(fixture.database.getState().verified, fixture.verified)
+  assert.equal(fixture.database.getState().pending?.generation, 2)
+  assert.equal(fixture.events.includes('db:verify:2'), false)
+})
+
+test('ambiguous database promotion keeps the verified candidate pointer during normal publication', async () => {
+  const fixture = await liveFixture()
+  injectAmbiguousPublicationCommit(fixture.ports)
+  const expected = publication(fixture.candidate.snapshot, 2, fixture.candidate.runId, fixture.candidate.observedAt, fixture.candidate.gitSha)
+
+  assert.equal(await publishSnapshot(fixture.ports, fixture.candidate, 'live'), 'pending')
+  assert.deepEqual(fixture.database.getState().verified, expected)
+  assert.deepEqual(fixture.objects.get('public/manifest.json'), manifestBytes(fixture.candidate.snapshot, expected))
+  assert.equal(await publishSnapshot(fixture.ports, fixture.candidate, 'live'), 'no_change')
+  assert.deepEqual(fixture.objects.get('public/manifest.json'), manifestBytes(fixture.candidate.snapshot, expected))
+})
+
+test('ambiguous database promotion keeps the verified candidate pointer during recovery replay', async () => {
+  const fixture = await liveFixture([
+    { op: 'get', key: 'public/manifest.json', occurrence: 2, mode: 'throw' },
+    { op: 'put', key: 'public/manifest.json', occurrence: 2, mode: 'throw' },
+  ])
+  await assert.rejects(() => publishSnapshot(fixture.ports, fixture.candidate, 'live'), /PUBLICATION_ROLLBACK_FAILED/)
+  injectAmbiguousPublicationCommit(fixture.ports)
+  const expected = publication(fixture.candidate.snapshot, 2, fixture.candidate.runId, fixture.candidate.observedAt, fixture.candidate.gitSha)
+
+  assert.equal(await publishSnapshot(fixture.ports, fixture.candidate, 'live'), 'pending')
+  assert.deepEqual(fixture.database.getState().verified, expected)
+  assert.deepEqual(fixture.objects.get('public/manifest.json'), manifestBytes(fixture.candidate.snapshot, expected))
+  assert.equal(await publishSnapshot(fixture.ports, fixture.candidate, 'live'), 'no_change')
+  assert.deepEqual(fixture.objects.get('public/manifest.json'), manifestBytes(fixture.candidate.snapshot, expected))
 })
 
 test('an existing immutable snapshot key is never overwritten', async () => {

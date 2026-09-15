@@ -57,7 +57,9 @@ live manifest 固定为 `public/manifest.json`，指向的 immutable snapshot �
 
 live 发布先校验候选并读取 publication authority。hash 与 verified 相同则清理符合仓储规则的未 claim pending 并返回 `no_change`，不访问 R2。新 hash 使用 verified generation 的下一代；在任何 R2 操作前先持久化并 claim pending。随后读取并核对现有 live manifest 与 verified 状态，再严格按 snapshot 条件 PUT（`If-None-Match: *`）→ GET/规范化解析与 hash 校验 → manifest PUT → GET/字段校验 → `verifyPublication` 的顺序推进。immutable key 已存在时不覆盖；条件冲突只会继续读回，且字节、schema 与 hash 均匹配才可复用。已 claim 的同一 pending 重试复用原 generation 和已保存的 publication metadata；不同候选不能抢占它。shadow snapshot 使用同样的条件 PUT/readback 规则。
 
-R2 失败时，已 claim pending 保持可重放，数据库 verified 不前移。manifest 写入尝试之前失败不会替换旧指针；manifest PUT 结果不确定、readback 校验失败或数据库验证失败时，会恢复旧 manifest 原始字节（首次发布则删除新指针）并再次读取确认。snapshot 可能作为未被 manifest 引用的 immutable 对象保留。shadow 使用自己的 manifest/snapshot namespace，不读写 live key，也不 claim 或 verify live publication。
+R2 失败时，已 claim pending 保持可重放，数据库 verified 不前移。manifest 写入尝试之前失败不会替换旧指针；manifest PUT 结果不确定或 readback 校验失败时，会尝试恢复旧 manifest 原始字节（首次发布则删除新指针）并再次读取确认。`verifyPublication` 抛错时，只有 fresh authority 确认仍是旧 verified 与同一 claimed pending 才恢复旧指针；状态未知时保留已验证候选并返回 pending。snapshot 可能作为未被 manifest 引用的 immutable 对象保留。shadow 使用自己的 manifest/snapshot namespace，不读写 live key，也不 claim 或 verify live publication。
+
+如果进程未能确认回滚，下一次 live replay 会先比较当前 manifest 与 claimed pending。只有候选 manifest 的 schema/字段/字节以及 immutable snapshot 的 readback、schema 与 hash 均重新验证通过，才尝试提升 PostgreSQL verified。promotion 结果不明时，只有 fresh authority 明确仍为旧 verified 加同一 claimed pending 才恢复 prior；状态读取失败或返回其他状态时保留已完整验证的候选指针并返回 pending，等待下一轮 reconcile。候选验证失败时，从 verified snapshot 重建 canonical prior manifest 并读回确认（首次发布则删除候选指针），pending 保持可重放。
 
 ## 上游完整抓取与重试
 

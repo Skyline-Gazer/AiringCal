@@ -69,6 +69,10 @@ function samePublication(left: Publication | null, right: Publication): boolean 
     && left.git_sha === right.git_sha
 }
 
+function sameOptionalPublication(left: Publication | null, right: Publication | null): boolean {
+  return left === null ? right === null : right !== null && samePublication(left, right)
+}
+
 function publicationManifestMatches(bytes: Uint8Array | null, verified: Publication | null): boolean {
   if (!verified) return bytes === null
   if (!bytes) return false
@@ -101,6 +105,32 @@ async function prepareSnapshot(snapshot: PublicSnapshotV1, publication: Publicat
 
 function buildPublicationManifest(snapshot: PublicSnapshotV1, publication: Publication) {
   return buildManifest(snapshot, { source_observed_at: publication.observed_at, git_sha: publication.git_sha })
+}
+
+async function verifySnapshotObject(s3: S3Port, snapshot: PublicSnapshotV1, publication: Publication): Promise<void> {
+  const expected = canonicalSnapshotBytes(snapshot)
+  const readback = await s3.get(publication.object_key)
+  if (!readback || !sameBytes(readback, expected)) throw new Error('SNAPSHOT_READBACK_MISMATCH')
+  const parsed = await parsePublicSnapshotV1(parseJson(readback))
+  if (parsed.generation !== publication.generation || parsed.published_at !== publication.published_at) {
+    throw new Error('SNAPSHOT_READBACK_MISMATCH')
+  }
+}
+
+async function verifiedManifestBytes(s3: S3Port, verified: Publication | null): Promise<Uint8Array | null> {
+  if (!verified) return null
+  const snapshotBytes = await s3.get(verified.object_key)
+  if (!snapshotBytes) throw new Error('VERIFIED_SNAPSHOT_MISSING')
+  const snapshot = await parsePublicSnapshotV1(parseJson(snapshotBytes))
+  if (!sameBytes(snapshotBytes, canonicalSnapshotBytes(snapshot))
+    || snapshot.generation !== verified.generation
+    || snapshot.content_hash !== verified.content_hash
+    || snapshot.published_at !== verified.published_at) {
+    throw new Error('VERIFIED_SNAPSHOT_MISMATCH')
+  }
+  const bytes = canonicalBytes(buildPublicationManifest(snapshot, verified))
+  if (!publicationManifestMatches(bytes, verified)) throw new Error('VERIFIED_MANIFEST_MISMATCH')
+  return bytes
 }
 
 async function publishLive(
@@ -148,7 +178,44 @@ async function publishLive(
   } catch {
     return 'pending'
   }
-  if (!publicationManifestMatches(previousManifest, state.verified)) return 'pending'
+  if (!publicationManifestMatches(previousManifest, state.verified)) {
+    const candidateManifestIsVisible = previousManifest !== null
+      && sameBytes(previousManifest, finalManifestBytes)
+      && publicationManifestMatches(previousManifest, publication)
+    if (candidateManifestIsVisible) {
+      let candidateSnapshotIsValid = false
+      try {
+        await verifySnapshotObject(ports.s3, finalSnapshot, publication)
+        candidateSnapshotIsValid = true
+      } catch {
+        // Do not promote a candidate whose immutable snapshot did not verify.
+      }
+      if (candidateSnapshotIsValid) {
+        try {
+          await ports.authority.verifyPublication(publication)
+          return 'published'
+        } catch {
+          let latest: Awaited<ReturnType<PublicationAuthority['getPublicationState']>>
+          try {
+            latest = await ports.authority.getPublicationState()
+          } catch {
+            // Keep the validated candidate pointer until a later replay resolves the commit outcome.
+            return 'pending'
+          }
+          if (samePublication(latest.verified, publication)) return 'published'
+          if (!sameOptionalPublication(latest.verified, state.verified)
+            || !latest.claimed
+            || !samePublication(latest.pending, publication)) return 'pending'
+        }
+      }
+    }
+    try {
+      await restoreManifest(ports.s3, LIVE_MANIFEST_KEY, await verifiedManifestBytes(ports.s3, state.verified))
+    } catch (rollbackError) {
+      throw new AggregateError([new Error('MANIFEST_READBACK_MISMATCH'), rollbackError], 'PUBLICATION_ROLLBACK_FAILED')
+    }
+    return 'pending'
+  }
 
   let manifestWriteAttempted = false
   let verificationAttempted = false
@@ -156,12 +223,7 @@ async function publishLive(
     const objectKey = publication.object_key
     const snapshotBytes = canonicalSnapshotBytes(finalSnapshot)
     await ports.s3.put(objectKey, snapshotBytes, { ifNoneMatch: '*' })
-    const snapshotReadback = await ports.s3.get(objectKey)
-    if (!snapshotReadback || !sameBytes(snapshotReadback, snapshotBytes)) throw new Error('SNAPSHOT_READBACK_MISMATCH')
-    const parsedSnapshot = await parsePublicSnapshotV1(parseJson(snapshotReadback))
-    if (parsedSnapshot.generation !== publication.generation || parsedSnapshot.published_at !== publication.published_at) {
-      throw new Error('SNAPSHOT_READBACK_MISMATCH')
-    }
+    await verifySnapshotObject(ports.s3, finalSnapshot, publication)
 
     manifestWriteAttempted = true
     await ports.s3.put(LIVE_MANIFEST_KEY, finalManifestBytes)
@@ -175,11 +237,17 @@ async function publishLive(
     return 'published'
   } catch (error) {
     if (verificationAttempted) {
+      let latest: Awaited<ReturnType<PublicationAuthority['getPublicationState']>>
       try {
-        if (samePublication((await ports.authority.getPublicationState()).verified, publication)) return 'published'
+        latest = await ports.authority.getPublicationState()
       } catch {
-        // Keep the old public pointer if the database outcome cannot be confirmed.
+        // Keep the validated candidate pointer until a later replay resolves the commit outcome.
+        return 'pending'
       }
+      if (samePublication(latest.verified, publication)) return 'published'
+      if (!sameOptionalPublication(latest.verified, state.verified)
+        || !latest.claimed
+        || !samePublication(latest.pending, publication)) return 'pending'
     }
     if (manifestWriteAttempted) {
       try {

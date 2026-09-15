@@ -16,6 +16,29 @@ test("repository exports its PostgreSQL authority", () => {
   assert.equal(typeof PostgresAuthority, "function");
 });
 
+test("invalid publication keys and Git SHAs are rejected before PostgreSQL I/O", async () => {
+  let databaseCalls = 0;
+  const pool = {
+    connect: async () => { databaseCalls += 1; throw new Error("unexpected database connection"); },
+    query: async () => { databaseCalls += 1; throw new Error("unexpected database query"); },
+  } as unknown as Pool;
+  const authority = new PostgresAuthority(pool, []);
+  const valid: Publication = {
+    generation: 1, content_hash: hash, object_key: `snapshots/v1/1-${hash}.json`,
+    published_at: 100, observed_at: 100, run_id: "run-1", item_count: 1, git_sha: "b".repeat(40),
+  };
+
+  await assert.rejects(
+    () => authority.savePendingPublication({ ...valid, object_key: `snapshots/v1/1-${hash}.invalid` }),
+    /INVALID_PUBLICATION/,
+  );
+  await assert.rejects(
+    () => authority.savePendingPublication({ ...valid, git_sha: "B".repeat(40) }),
+    /INVALID_PUBLICATION/,
+  );
+  assert.equal(databaseCalls, 0);
+});
+
 test("media result SQL preserves failed component state without renewing a stale tombstone", async () => {
   const statements: Array<{ sql: string; values: unknown[] }> = [];
   const retry: MediaResultInput = {
