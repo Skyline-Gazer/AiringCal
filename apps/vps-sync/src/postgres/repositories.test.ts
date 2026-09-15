@@ -297,7 +297,8 @@ test("normalized PostgreSQL authority", { skip: !enabled }, async (t) => {
       assert.equal(media.common_key, image);
       assert.equal(media.detail.name, "test");
       assert.equal(media.run_id, "r6");
-      assert.deepEqual(await authority.listDueMedia({ run_id: "r6", observed_at: 500, limit: 10 }), []);
+      const remainingCandidates = await authority.listDueMedia({ run_id: "r6", observed_at: 500, limit: 10 });
+      assert.deepEqual(remainingCandidates.filter(({ subject_id }) => subject_id === 1), []);
     });
 
     await t.test("expired not-found metadata with a transient failure round-trips component outcomes without a tombstone", async () => {

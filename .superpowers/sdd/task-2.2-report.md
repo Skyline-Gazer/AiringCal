@@ -76,3 +76,9 @@ git diff --check                         # PASS
 - 全迁移集成套件已通过 publication 子测；本轮剩余两处失败。media assertion 原先无 `WHERE` 地取 `subject_media` 的 `rows[0]`，而前序 counts 子测创建了 `subject_id=2` 且它的 image key 为空；PostgreSQL 不保证无序查询的首行，故 CI 可能读到 subject 2 的 null key。现将读取限定为 `subject_id=1`，让既有的 successful → failed → stale → not_found 流程校验目标 subject 的最后成功引用。此修复只收窄测试查询，不改 repository 保存逻辑；过滤后的实际 PG 结果待新 CI 确认。
 - `next_retry_at` 等 PostgreSQL `BIGINT` 字段由 pg 以十进制字符串返回；`isoTimestamp` 原先把 `"4200"` 作为日期文本传给 `Date.parse`，得到了公元 4200 年。现对整数数字字符串按现有数值语义应用秒/毫秒阈值，并保留 ISO 日期字符串解析；新增 seconds 与 milliseconds 的回归断言。
 - TDD：新增时间戳测试先 RED（`"4200"` 得 `4200-01-01T00:00:00.000Z`，预期 `1970-01-01T01:10:00.000Z`），修复后 focused repository tests GREEN。全包 Node runner：52 tests，45 passed、0 failed、7 PostgreSQL integration tests skipped；`typecheck`、`build`、`git diff --check` 均通过。下一轮真实 PostgreSQL CI 状态待本修复 push 后触发。
+
+## CI follow-up（run `34921373614`, 2026-09-15）
+
+- 在上一轮将 image-reference 查询限定到 subject 1 后，CI 暴露同一子测的 due-candidate 断言仍要求整个共享 schema 返回空列表。前序 counts 子测创建的 subject 2 没有 tombstone，仍可正常出现在 due list；本用例只需验证 subject 1 在 not-found fence 后不再 due。现只对候选按 `subject_id === 1` 过滤后断言空列表，不约束其他 subject。
+- 该修复仅调整集成测试的断言范围，不改媒体查询或保存逻辑。真实 PostgreSQL 复验待本 commit push 后的 CI。
+- 本地 Node runner 重新通过：52 tests，45 passed、0 failed、7 个 PostgreSQL 集成测试 skipped；typecheck、build 和 diff-check 通过。由于本机没有 PostgreSQL，本地无法执行这两个真实 DB 断言。
