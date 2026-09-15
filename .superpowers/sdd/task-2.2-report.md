@@ -53,7 +53,7 @@ git diff --check                         # PASS
 
 ## 已知局限与风险
 
-- 本环境未提供 disposable PostgreSQL，因此真实 row/advisory lock、SQL DTO 映射、数据库 fence 与 rollback 集成断言仍为 skipped tests；必须由 CI/PostgreSQL 环境确认。
+- 本机未提供 disposable PostgreSQL，因此本地 runner 会跳过数据库集成测试；真实 PostgreSQL row/advisory lock、SQL DTO 映射、数据库 fence 与 rollback 已由 CI PostgreSQL 服务验证（见 run `34921971541`）。
 - coordinator 的 infrastructure composition root（S3/Feishu/实际 subject detail client）不在本 brief 允许文件内；`runOnce` 仅实现可注入端口。
 - 媒体 404 tombstone 当前针对明确的 subject detail `null` 结果；图片响应的非 200 仍按可重试的媒体失败处理，以保留旧引用。
 
@@ -82,3 +82,10 @@ git diff --check                         # PASS
 - 在上一轮将 image-reference 查询限定到 subject 1 后，CI 暴露同一子测的 due-candidate 断言仍要求整个共享 schema 返回空列表。前序 counts 子测创建的 subject 2 没有 tombstone，仍可正常出现在 due list；本用例只需验证 subject 1 在 not-found fence 后不再 due。现只对候选按 `subject_id === 1` 过滤后断言空列表，不约束其他 subject。
 - 该修复仅调整集成测试的断言范围，不改媒体查询或保存逻辑。真实 PostgreSQL 复验待本 commit push 后的 CI。
 - 本地 Node runner 重新通过：52 tests，45 passed、0 failed、7 个 PostgreSQL 集成测试 skipped；typecheck、build 和 diff-check 通过。由于本机没有 PostgreSQL，本地无法执行这两个真实 DB 断言。
+
+## 最终 CI 与复审（run `34921971541`, 2026-09-15）
+
+- 通过完整 GitHub Actions CI：`pnpm typecheck`、`pnpm test`（含真实 PostgreSQL repository integration suite）、`pnpm build:check` 全绿。
+- 前轮所谓 image reference 丢失确认是测试查询未限定 subject；限定 `subject_id=1` 后真实 PostgreSQL 集成测试通过。due-candidate 断言亦只验证 subject 1 不再 due，保留其他 subject 正常入列的行为。
+- `"4200"` 等 BIGINT 十进制字符串按现有秒/毫秒阈值解析，新增 seconds 与 milliseconds 回归覆盖。
+- Luna Max 独立复审最终提交 `7e66204`、`62a97c1` 后 Approved，允许 Task 2.2 checkoff。

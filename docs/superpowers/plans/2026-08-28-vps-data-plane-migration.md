@@ -110,11 +110,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `runOnce(deps, request: { mode:'shadow'|'live'; source:'scheduled'|'manual' }): Promise<RunResult>`；status `success|no_change|partial|failed|skipped`；media result components `detail|metadata|image` with last-known-good semantics。
 
-- [ ] **Step 1: RED tests** — 断言 stage 顺序、heartbeat、lock miss 为 skipped 且无上游/R2 写；hard fetch 失败无 authority commit；媒体瞬态失败保留旧引用并发布 partial；404 设置 bounded tombstone；相同图片 bytes 不 PUT；旧 fence 结果不落库。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- refresh.test.ts run.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — 端口注入 coordinator；图片校验 HTTP/MIME/大小后 SHA-256，先 R2 PUT 再 DB reference；refresh 使用固定并发上限和现有 deterministic staggering/priority。
-- [ ] **Step 4: REFACTOR/验证** — 将终态派生收敛为纯函数；局部 tests/typecheck PASS，并确认 process exit mapping：success/no_change/skipped=0，partial/failed 非零。
-- [ ] **Step 5: 文档、提交与推送** — 同步 lifecycle/outcome；commit `feat(vps-sync): coordinate one-shot synchronization` 后 push。
+- [x] **Step 1: RED tests** — 断言 stage 顺序、heartbeat、lock miss 为 skipped 且无上游/R2 写；hard fetch 失败无 authority commit；媒体瞬态失败保留旧引用并发布 partial；404 设置 bounded tombstone；相同图片 bytes 不 PUT；旧 fence 结果不落库。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- refresh.test.ts run.test.ts` 预期 FAIL。
+- [x] **Step 3: GREEN** — 端口注入 coordinator；图片校验 HTTP/MIME/大小后 SHA-256，先 R2 PUT 再 DB reference；refresh 使用固定并发上限和现有 deterministic staggering/priority。
+- [x] **Step 4: REFACTOR/验证** — 将终态派生收敛为纯函数；局部 tests/typecheck PASS，并确认 process exit mapping：success/no_change/skipped=0，partial/failed 非零。
+- [x] **Step 5: 文档、提交与推送** — 同步 lifecycle/outcome；commit `feat(vps-sync): coordinate one-shot synchronization` 后 push。
 
 ### Task 3.1: Manifest V1、canonical hash 与 generation 规则
 
