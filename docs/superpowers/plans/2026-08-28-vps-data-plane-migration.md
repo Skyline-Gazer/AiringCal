@@ -163,16 +163,16 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 ### Task 4.2: R2 → Cache API → legacy KV fallback
 
 **Files:**
-- Modify: `apps/read-worker/src/r2-snapshot.ts`, `apps/read-worker/src/r2-snapshot.test.ts`, `apps/read-worker/src/health.ts`, `apps/read-worker/src/health.test.ts`
+- Modify: `apps/read-worker/src/r2-snapshot.ts`, `apps/read-worker/src/r2-snapshot.test.ts`, `apps/read-worker/src/health.ts`, `apps/read-worker/src/health.test.ts`, `README.md`, `docs/runbook/vps-data-plane.md`, `docs/superpowers/specs/2026-08-28-vps-data-plane-migration-design.md`, `openspec/changes/migrate-data-plane-to-vps/design.md`, `openspec/changes/migrate-data-plane-to-vps/specs/public-read-contracts/spec.md`
 
 **Interfaces:**
 - Produces Cache API envelope `{ manifest, snapshot }`；只缓存完整验证 pair；source health `r2|cache|legacy`。
 
-- [ ] **Step 1: RED tests** — R2 missing/corrupt/offline 用重新验证的 envelope；回退 generation 拒绝；无 envelope 才 legacy；禁止混用 R2 manifest 与 cache/legacy payload。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/read-worker test -- src/r2-snapshot.test.ts src/health.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — cache key 绑定 manifest generation/hash，保存 last-verified envelope，迁移期开启完整 legacy fallback。
-- [ ] **Step 4: REFACTOR/验证** — read-worker tests/typecheck/build:check PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步 health/fallback；commit `feat(read-worker): add verified snapshot fallback chain` 后 push。
+- [x] **Step 1: RED tests** — R2 missing/corrupt/offline 用重新验证的 envelope；回退 generation 拒绝；无 envelope 才 legacy；禁止混用 R2 manifest 与 cache/legacy payload。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/read-worker test -- src/r2-snapshot.test.ts src/health.test.ts` 预期 FAIL。
+- [x] **Step 3: GREEN** — cache key 绑定 manifest generation/hash，保存 last-verified envelope，迁移期开启完整 legacy fallback；回滚判断只依赖当前请求可读且重新验证的本地 envelope，Cache API 不提供跨 isolate/POP 原子 fence，不承诺全局单调保证。
+- [x] **Step 4: REFACTOR/验证** — read-worker tests/typecheck/build:check PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步 health/fallback、README 实际读取契约与 best-effort 回滚保护边界；delta spec/design 明确 Cache API 仅提供本地 envelope fence，跨 isolate/POP 无全局保证；commit `feat(read-worker): add verified snapshot fallback chain` 后 push。
 
 ### Task 5.1: custom-format backup、checksum manifest 与 partial outcome
 

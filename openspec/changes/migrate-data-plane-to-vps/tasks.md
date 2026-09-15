@@ -16,7 +16,7 @@
 ## 4. Cloudflare Read Cutover
 
 - [x] 4.1 Add R2 manifest/snapshot validation to the Read Worker while preserving public response shapes and parameter contracts
-- [ ] 4.2 Implement fallback order R2 to last verified Cache API to migration-period legacy KV, including corrupt, missing, rollback-generation, and VPS-offline tests
+- [x] 4.2 Implement fallback order R2 to last verified Cache API to migration-period legacy KV, including corrupt, missing, rollback-generation, and VPS-offline tests; document rollback fencing as best effort from a locally available, revalidated envelope, without a cross-isolate/POP global guarantee
 
 ## 5. Backup and Restore
 
