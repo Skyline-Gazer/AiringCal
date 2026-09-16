@@ -21,12 +21,12 @@
 ## 5. Backup and Restore
 
 - [x] 5.1 Verify pg_dump/pg_restore and R2 client contracts, then implement custom-format backup upload, checksum manifest, partial-success semantics, and tests
-- [ ] 5.2 Wire `createBackup` into the production `runOnce` CLI composition for published/no_change outcomes, then implement explicit 30-daily/monthly retention candidate selection (without R2 deletes) and an empty-database restore verification command with non-destructive key and recovery tests
+- [ ] 5.2 Add an injectable `runOnce` composition that wires `createBackup` and requires a notifier port; implement 30-UTC-day/monthly retention candidate selection without R2 deletes and a safe empty-database restore-verification flow. Defer the executable sync entrypoint to 6.2 and restore command/input syntax to 9.3.
 
 ## 6. Feishu Run Notifications
 
 - [ ] 6.1 Verify the official Feishu webhook/signature contract and implement success, no-change, partial, failure, and skipped notification payload tests
-- [ ] 6.2 Implement bounded notification delivery, notification_failed persistence, previous-failure summary, and credential/error redaction tests
+- [ ] 6.2 Implement bounded notification delivery, notification_failed persistence, previous-failure summary, and credential/error redaction tests; inject the real Feishu notifier and activate the executable sync entrypoint.
 
 ## 7. Alpine Container and VPS Operation
 

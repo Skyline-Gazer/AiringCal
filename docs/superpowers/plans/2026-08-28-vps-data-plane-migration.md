@@ -193,17 +193,17 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 
 **Files:**
 - Create: `apps/vps-sync/src/backup/retention.ts`, `apps/vps-sync/src/backup/retention.test.ts`, `apps/vps-sync/src/backup/restore.ts`, `apps/vps-sync/src/backup/restore.test.ts`
-- Create: `apps/vps-sync/src/cli.ts` (production composition root; wire `createBackup` into `runOnce`), `apps/vps-sync/src/cli.test.ts`
+- Create: `apps/vps-sync/src/cli.ts` (injectable `runOnce` composition; wire `createBackup` and require a notifier port), `apps/vps-sync/src/cli.test.ts`
 - Modify: `docs/runbook/vps-data-plane.md`
 
 **Interfaces:**
-- Produces: production CLI composition wires `createBackup` into `runOnce` for `published`/verified `no_change` outcomes; `selectBackupDeletions(entries): string[]` 仅返回保留最新 30 日及更早每月最后成功点之后的候选 key，不执行 R2 删除；`restoreVerify(deps, key, targetUrl): Promise<RestoreReport>`。
+- Produces: an injectable composition wires `createBackup` into `runOnce` for `published`/verified `no_change` outcomes and requires a caller-supplied notifier (no default/no-op); it does not activate an executable `sync` command. `selectBackupDeletions(entries: readonly string[] | null): string[]` only returns candidate keys and never issues R2 deletes: retain the latest complete restore point for each of the newest 30 UTC dates, then the latest complete restore point per earlier calendar month; null/list uncertainty or malformed/unpaired keys return no candidates. `restoreVerify(deps, key, targetUrl): Promise<RestoreReport>` receives the target URL by injection, rejects a non-empty target or the production database identity before `pg_restore`, and does not define CLI/env input syntax in this task.
 
-- [ ] **Step 1: RED tests** — 跨月/同日多份/非法 key/list uncertainty；CLI 将 `createBackup` 接入 `runOnce` 并覆盖 published/no_change 与 partial 失败语义；候选项只来自显式 backup-key grammar，list uncertainty 时不返回删除候选且不调用 R2 Delete；target 非空或等于 production URL 均在 pg_restore 前失败；恢复后校验 migration、row counts 与 regenerated snapshot hash。
+- [ ] **Step 1: RED tests** — 跨月、同日多份、最近 30 个 UTC 日期、非法/不成对 key 与 list uncertainty；注入式组合要求调用者提供 notifier，将 `createBackup` 接入 `runOnce` 并覆盖 published/no_change 与 partial 失败语义；list uncertainty 时不返回候选且不调用 R2 Delete；target 非空或与 production 具有相同 database identity（即使凭据不同）均在 pg_restore 前失败；恢复后校验 migration、row counts 与 regenerated snapshot hash。
 - [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- cli.test.ts retention.test.ts restore.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — retention 纯函数只返回待审查候选 key，不调用 R2 Delete；CLI 组合 `runOnce` 与 `createBackup`；restore 下载并校验 checksum，再向明确空库执行 verified `pg_restore` flags，绝不 publish/notify user data。任何实际 R2 对象删除需另行批准的 OpenSpec change。
+- [ ] **Step 3: GREEN** — retention 纯函数只返回成对、有效的待审查候选 key，不调用 R2 Delete；注入式组合 `runOnce` 与 `createBackup` 并要求调用者提供真实 notifier，不启用 executable `sync` command；restore 下载并校验 checksum，再向明确空且非 production 的库执行 verified `pg_restore` flags，绝不 publish/notify user data。Restore command 的凭据入口与可执行包装留到 Task 9.3；任何实际 R2 对象删除需另行批准的 OpenSpec change。
 - [ ] **Step 4: REFACTOR/验证** — backup/CLI/restore suite、typecheck 与 build:check PASS；显式测试 production URL 规范化比较。
-- [ ] **Step 5: 文档、提交与推送** — 写完整 restore drill 命令与安全门；commit `feat(vps-sync): retain and verify PostgreSQL backups` 后 push。
+- [ ] **Step 5: 文档、提交与推送** — 记录已实现的注入式 restore-verification 接口与安全门，不描述尚未实现的操作命令；Task 9.3 再定义并验证 restore drill 命令及凭据入口；commit `feat(vps-sync): retain and verify PostgreSQL backups` 后 push。
 
 ### Task 6.1: 飞书 payload 与签名
 
@@ -224,13 +224,14 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Files:**
 - Create: `apps/vps-sync/src/notification/deliver.ts`, `apps/vps-sync/src/notification/deliver.test.ts`
 - Modify: `apps/vps-sync/src/run.ts`, `apps/vps-sync/src/postgres/repositories.ts`
+- Modify: `apps/vps-sync/src/cli.ts`, `apps/vps-sync/src/cli.test.ts`
 
 **Interfaces:**
-- Produces: `deliverNotification(config, result): Promise<'sent'|'failed'>`；独立 `notification_failed` 状态和前次未投递摘要。
+- Produces: `deliverNotification(config, result): Promise<'sent'|'failed'>`；独立 `notification_failed` 状态和前次未投递摘要；将真实 Feishu notifier 注入 `cli.ts` 并在本 task 激活 executable `sync` entrypoint（不得使用 no-op notifier）。
 
 - [ ] **Step 1: RED tests** — bounded timeout/non-2xx/invalid success body 为 failed；业务终态先持久化；通知失败不改变 publication/backup；下一次成功消息含前次 compact summary；日志无 webhook/signature/DB URL。
 - [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- deliver.test.ts run.test.ts repositories.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — 注入 fetch/clock，投递一次且失败不抛过业务边界，repository 独立记录结果。
+- [ ] **Step 3: GREEN** — 注入 fetch/clock，投递一次且失败不抛过业务边界，repository 独立记录结果；用真实 `deliverNotification` 组合并激活 executable `sync` entrypoint。
 - [ ] **Step 4: REFACTOR/验证** — notification/run suites/typecheck PASS。
 - [ ] **Step 5: 文档、提交与推送** — 同步 secret 与失败语义；commit `feat(vps-sync): deliver terminal Feishu notifications` 后 push。
 
