@@ -99,3 +99,14 @@ git diff --check
 ```
 
 PostgreSQL 17 连接形式证据：本机 `pg_restore --version` 为 18.6，`pg_restore --help` 显示 `--dbname=NAME`、`--single-transaction`、`--no-owner` 与 `--no-privileges`；本机没有 docker/podman/nerdctl，因此未把本机帮助冒充 PG17 target-image 证据。PG17 官方 [pg_restore 文档](https://www.postgresql.org/docs/17/app-pgrestore.html)明确 `--dbname` 可接收 connection string 且其参数覆盖冲突选项；PG17 [libpq connection 文档](https://www.postgresql.org/docs/17/libpq-connect.html)定义 `keyword=value` connection string；PG17 `REL_17_STABLE` [`pg_restore.c`](https://github.com/postgres/postgres/blob/REL_17_STABLE/src/bin/pg_dump/pg_restore.c)显示 `-d/--dbname` 将参数传入 connection params；官方 [`postgres:17-alpine` Dockerfile](https://github.com/docker-library/postgres/blob/master/17/alpine3.23/Dockerfile)是目标客户端构建 recipe。因此实现使用 `--dbname=service=airing-cal-restore` 配合 0600 `PGSERVICEFILE`，目标 URL/secret 不进 argv 或日志。
+
+## 最终允许修复轮（2026-09-16，round 2/2）
+
+- 根因回归 RED：在旧实现上新增 hostaddr 选择生产 endpoint、多主机 URI/`host`/`hostaddr` 列表，以及 expected/actual 空 migration 列表、空 checksum、畸形 checksum 和字符串条目测试；原生 runner 为 20 项测试 15 pass、5 fail（hostaddr 生产身份与三类 migration 绕过），失败均发生在断言层而非测试装载错误。
+- 最小 GREEN：`databaseIdentity` 按 PG17 libpq 有效 endpoint 归一化（`hostaddr` 存在时取 `hostaddr`，并绑定端口/数据库名），`connectionParts` 拒绝 `host`/`hostaddr`/`port` 逗号列表及非 IP `hostaddr`；migration 校验要求 expected 与 actual 均为非空严格对象列表和 64 位小写 SHA-256。新增回归和原有 restore suite 共 20/20 pass。
+- 提交：`b3db2d1 fix(vps-sync): harden restore endpoint and migrations`，已推送到 `feature/20260914/migrate-data-plane-to-vps`。
+- amended focused fallback：`node --import tsx/esm --test src/cli.test.ts src/backup/retention.test.ts src/backup/restore.test.ts` — 31 pass、0 fail、0 skip。brief 指定的 `pnpm -F @airing-cal/vps-sync test -- cli.test.ts retention.test.ts restore.test.ts` 仍在测试断言前因沙箱禁止 tsx IPC socket 失败（`listen EPERM .../tsx-*/<pid>.pipe`）。
+- full vps-sync fallback：上述完整 Node runner — 124 tests，117 pass、0 fail、7 skip；skip 均为需 disposable PostgreSQL 的集成测试。
+- `pnpm -F @airing-cal/vps-sync typecheck`、`build:check`、`build` 与 `git diff --check` — 全部 PASS。
+- PG17 语义核验：官方 [libpq connection 文档](https://www.postgresql.org/docs/17/libpq-connect.html)规定 `host`/`hostaddr` 可为逗号分隔列表，且同时指定时 `hostaddr` 提供服务器网络地址；PG17 `REL_17_STABLE` [`fe-connect.c`](https://github.com/postgres/postgres/blob/REL_17_STABLE/src/interfaces/libpq/fe-connect.c)按 `hostaddr` 列表建立连接槽并将非空 `hostaddr` 标为实际 host-address 类型。实现据此拒绝多主机歧义并按有效网络 endpoint 比较生产身份。目标 URL 与 secret 仍不进入 argv 或日志。
+- 限制不变：本机没有 docker/podman/nerdctl，未能在 `postgres:17-alpine` 目标镜像内直接执行 `pg_restore --help` 或真实恢复演练；已按 PG17 官方文档、源码和官方镜像构建配方使用允许的 fallback。未启用 executable sync/restore、生产调度、生产数据库/R2 操作或 R2 删除，也未修改 plan/OpenSpec/checkpoint。
