@@ -61,6 +61,14 @@ test('same UTC date retains only its last complete restore point', async () => {
   assert.deepEqual(selectBackupDeletions([...later, ...earlier]), earlier.sort())
 })
 
+test('returns no deletion candidates when different SHAs share the latest timestamp', async () => {
+  const { selectBackupDeletions } = await retentionApi()
+  const first = point('2026-09-15', '120000000', 'a'.repeat(40))
+  const second = point('2026-09-15', '120000000', 'b'.repeat(40))
+
+  assert.deepEqual(selectBackupDeletions([...first, ...second]), [])
+})
+
 test('uncertain lists, malformed keys, and unpaired objects produce no deletion candidates', async (t) => {
   const { selectBackupDeletions } = await retentionApi()
 

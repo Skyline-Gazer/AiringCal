@@ -26,8 +26,10 @@ function parseBackupKey(key: string): { baseKey: string; date: string; timestamp
   return { baseKey: key.slice(0, -extension.length - 1), date, timestamp, extension }
 }
 
-function latest(points: readonly RestorePoint[]): RestorePoint {
-  return [...points].sort((a, b) => b.timestamp.localeCompare(a.timestamp) || b.baseKey.localeCompare(a.baseKey))[0]!
+function latest(points: readonly RestorePoint[]): RestorePoint | null {
+  const sorted = [...points].sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+  if (!sorted[0] || sorted[1]?.timestamp === sorted[0].timestamp) return null
+  return sorted[0]
 }
 
 /** Returns only paired backup-object keys eligible for a separately approved deletion. */
@@ -60,7 +62,9 @@ export function selectBackupDeletions(entries: readonly string[] | null): string
   const retained = new Set<RestorePoint>()
 
   for (const date of dailyDates) {
-    retained.add(latest(completePoints.filter((point) => point.date === date)))
+    const point = latest(completePoints.filter((candidate) => candidate.date === date))
+    if (!point) return []
+    retained.add(point)
   }
 
   const olderMonthlyPoints = new Map<string, RestorePoint[]>()
@@ -71,7 +75,11 @@ export function selectBackupDeletions(entries: readonly string[] | null): string
     pointsInMonth.push(point)
     olderMonthlyPoints.set(month, pointsInMonth)
   }
-  for (const pointsInMonth of olderMonthlyPoints.values()) retained.add(latest(pointsInMonth))
+  for (const pointsInMonth of olderMonthlyPoints.values()) {
+    const point = latest(pointsInMonth)
+    if (!point) return []
+    retained.add(point)
+  }
 
   return completePoints
     .filter((point) => !retained.has(point))
