@@ -193,15 +193,16 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 
 **Files:**
 - Create: `apps/vps-sync/src/backup/retention.ts`, `apps/vps-sync/src/backup/retention.test.ts`, `apps/vps-sync/src/backup/restore.ts`, `apps/vps-sync/src/backup/restore.test.ts`
-- Modify: `apps/vps-sync/src/cli.ts`, `docs/runbook/vps-data-plane.md`
+- Create: `apps/vps-sync/src/cli.ts` (production composition root; wire `createBackup` into `runOnce`), `apps/vps-sync/src/cli.test.ts`
+- Modify: `docs/runbook/vps-data-plane.md`
 
 **Interfaces:**
-- Produces: `selectBackupDeletions(entries): string[]` 保留最新 30 日及更早每月最后成功点；`restoreVerify(deps, key, targetUrl): Promise<RestoreReport>`。
+- Produces: production CLI composition wires `createBackup` into `runOnce` for `published`/verified `no_change` outcomes; `selectBackupDeletions(entries): string[]` 保留最新 30 日及更早每月最后成功点；`restoreVerify(deps, key, targetUrl): Promise<RestoreReport>`。
 
-- [ ] **Step 1: RED tests** — 跨月/同日多份/非法 key/list uncertainty；只删除显式 grammar keys；target 非空或等于 production URL 均在 pg_restore 前失败；恢复后校验 migration、row counts 与 regenerated snapshot hash。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- retention.test.ts restore.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — retention 纯函数；restore 下载并校验 checksum，再向明确空库执行 verified `pg_restore` flags，绝不 publish/notify user data。
-- [ ] **Step 4: REFACTOR/验证** — backup suite/typecheck PASS；显式测试 production URL 规范化比较。
+- [ ] **Step 1: RED tests** — 跨月/同日多份/非法 key/list uncertainty；CLI 将 `createBackup` 接入 `runOnce` 并覆盖 published/no_change 与 partial 失败语义；只删除显式 grammar keys；target 非空或等于 production URL 均在 pg_restore 前失败；恢复后校验 migration、row counts 与 regenerated snapshot hash。
+- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- cli.test.ts retention.test.ts restore.test.ts` 预期 FAIL。
+- [ ] **Step 3: GREEN** — retention 纯函数；CLI 组合 `runOnce` 与 `createBackup`；restore 下载并校验 checksum，再向明确空库执行 verified `pg_restore` flags，绝不 publish/notify user data。
+- [ ] **Step 4: REFACTOR/验证** — backup/CLI/restore suite、typecheck 与 build:check PASS；显式测试 production URL 规范化比较。
 - [ ] **Step 5: 文档、提交与推送** — 写完整 restore drill 命令与安全门；commit `feat(vps-sync): retain and verify PostgreSQL backups` 后 push。
 
 ### Task 6.1: 飞书 payload 与签名
