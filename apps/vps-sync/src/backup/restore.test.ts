@@ -17,7 +17,7 @@ import { canonicalJson } from '@airing-cal/storage'
 type RestoreSession = {
   withSessionLock<T>(work: () => Promise<T>): Promise<{ acquired: boolean; value?: T }>
   isEmpty(): Promise<boolean>
-  migrations(): Promise<readonly { name: string; checksum: string }[]>
+  migrations(): Promise<readonly ({ name: string; checksum: string } | string)[]>
   rowCounts(): Promise<Record<string, number>>
   publication(): Promise<{
     generation: number
@@ -165,6 +165,7 @@ async function makeFixture(options: {
   empty?: boolean
   lockAvailable?: boolean
   expectedMigrations?: readonly ({ name: string; checksum: string } | string)[]
+  restoredMigrations?: readonly ({ name: string; checksum: string } | string)[]
   publication?: Awaited<ReturnType<typeof snapshotFixture>>['publication'] | null
   projection?: Awaited<ReturnType<typeof snapshotFixture>>['projection']
   objects?: Map<string, Uint8Array>
@@ -189,7 +190,7 @@ async function makeFixture(options: {
   const restoredSession: RestoreSession = {
     withSessionLock: async (work) => ({ acquired: true, value: await work() }),
     isEmpty: async () => true,
-    migrations: async () => migrations,
+    migrations: async () => options.restoredMigrations ?? migrations,
     rowCounts: async () => rowCounts,
     publication: async () => options.publication === undefined ? base.publication : options.publication,
     snapshotProjection: async () => options.projection ?? base.projection,
@@ -226,6 +227,47 @@ test('rejects a non-empty target and a target with the production database ident
     await assert.rejects(
       () => restoreVerify(fixture.deps, dumpKey, () => targetUrl),
       label === 'non-empty target' ? /RESTORE_TARGET_NOT_EMPTY/ : /RESTORE_TARGET_IS_PRODUCTION/,
+    )
+    assert.equal(fixture.calls.length, 0, `${label} must fail before pg_restore`)
+  }
+})
+
+test('rejects hostaddr-selected production and ambiguous multi-host targets before pg_restore', async () => {
+  const { restoreVerify } = await restoreApi()
+  const cases = [
+    {
+      label: 'hostaddr-selected production endpoint',
+      productionUrl: 'postgresql://prod-user:prod-password@db.example.test:5432/bangumi?hostaddr=203.0.113.10',
+      targetUrl: 'postgresql:///bangumi?host=restore.example.test&hostaddr=203.0.113.10',
+      error: /RESTORE_TARGET_IS_PRODUCTION/,
+    },
+    {
+      label: 'multi-host URI endpoint',
+      productionUrl,
+      targetUrl: 'postgresql://prod.example.test,restore.example.test:5432/bangumi',
+      error: /RESTORE_TARGET_INVALID/,
+    },
+    {
+      label: 'multi-host host parameter',
+      productionUrl,
+      targetUrl: 'postgresql:///bangumi?host=prod.example.test,restore.example.test',
+      error: /RESTORE_TARGET_INVALID/,
+    },
+    {
+      label: 'multi-host hostaddr parameter',
+      productionUrl,
+      targetUrl: 'postgresql:///bangumi?hostaddr=203.0.113.10,198.51.100.20',
+      error: /RESTORE_TARGET_INVALID/,
+    },
+  ] as const
+
+  for (const { label, productionUrl: configuredProductionUrl, targetUrl, error } of cases) {
+    const fixture = await makeFixture()
+    fixture.deps.productionUrl = configuredProductionUrl
+    await assert.rejects(
+      () => restoreVerify(fixture.deps, dumpKey, () => targetUrl),
+      error,
+      label,
     )
     assert.equal(fixture.calls.length, 0, `${label} must fail before pg_restore`)
   }
@@ -292,6 +334,43 @@ test('does not allow expected migration names without checksums to bypass valida
     () => restoreVerify(fixture.deps, dumpKey, () => targetUrlValue),
     /RESTORE_MIGRATIONS_INVALID/,
   )
+})
+
+test('rejects empty, empty-checksum, malformed-checksum, and string migration lists', async (t) => {
+  const { restoreVerify } = await restoreApi()
+  const cases = [
+    {
+      name: 'empty migration lists',
+      expectedMigrations: [],
+      restoredMigrations: [],
+    },
+    {
+      name: 'empty checksums',
+      expectedMigrations: migrations.map(({ name }) => ({ name, checksum: '' })),
+      restoredMigrations: migrations.map(({ name }) => ({ name, checksum: '' })),
+    },
+    {
+      name: 'malformed checksums',
+      expectedMigrations: migrations.map(({ name }) => ({ name, checksum: 'A'.repeat(64) })),
+      restoredMigrations: migrations.map(({ name }) => ({ name, checksum: 'A'.repeat(64) })),
+    },
+    {
+      name: 'string migration forms',
+      expectedMigrations: migrations.map(({ name }) => name),
+      restoredMigrations: migrations.map(({ name }) => name),
+    },
+  ] as const
+
+  for (const { name, expectedMigrations, restoredMigrations } of cases) {
+    await t.test(name, async () => {
+      const fixture = await makeFixture({ expectedMigrations, restoredMigrations })
+      await assert.rejects(
+        () => restoreVerify(fixture.deps, dumpKey, () => targetUrlValue),
+        /RESTORE_MIGRATIONS_INVALID/,
+      )
+      assert.equal(fixture.calls.length, 1, 'migration validation occurs after pg_restore')
+    })
+  }
 })
 
 test('fails closed on manifest/checksum errors and missing or mismatched immutable baseline', async (t) => {

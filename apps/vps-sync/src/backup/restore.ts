@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { isIP } from 'node:net'
 import { join } from 'node:path'
 import { buildPublicSnapshot, canonicalSnapshotBytes, parsePublicSnapshotV1, snapshotKey } from '@airing-cal/domain'
 import type { PublicCalendarDayV1, PublicCollectionItemV1, PublicSnapshotV1 } from '@airing-cal/storage'
@@ -254,7 +255,17 @@ function parseConnectionQuery(search: string): [string, string][] {
   })
 }
 
-function connectionParts(databaseUrl: string): { host: string; hostaddr: string; port: string; dbname: string; user: string; password: string; query: Map<string, string> } {
+type ConnectionParts = {
+  host: string
+  hostaddr: string
+  port: string
+  dbname: string
+  user: string
+  password: string
+  query: Map<string, string>
+}
+
+function connectionParts(databaseUrl: string): ConnectionParts {
   let url: URL
   try {
     url = new URL(databaseUrl)
@@ -282,13 +293,18 @@ function connectionParts(databaseUrl: string): { host: string; hostaddr: string;
   const dbname = query.get('dbname') ?? (decode(url.pathname.slice(1)) || query.get('user') || '')
   const user = query.get('user') ?? decode(url.username)
   const password = query.get('password') ?? decode(url.password)
-  if (!host || !port || !dbname) fail('RESTORE_TARGET_INVALID')
+  if (!host || !port || !dbname || host.includes(',') || hostaddr.includes(',') || port.includes(',') || (hostaddr && isIP(hostaddr) === 0)) {
+    fail('RESTORE_TARGET_INVALID')
+  }
   return { host, hostaddr, port, dbname, user, password, query }
 }
 
 function databaseIdentity(databaseUrl: string): string {
   const parts = connectionParts(databaseUrl)
-  return [parts.host.toLowerCase(), parts.hostaddr.toLowerCase(), parts.port, parts.dbname].join('\u0000')
+  // libpq uses hostaddr for the network destination when it is present; host
+  // is only retained for authentication and password-file lookup.
+  const effectiveHost = parts.hostaddr || parts.host
+  return [effectiveHost.toLowerCase(), parts.port, parts.dbname].join('\u0000')
 }
 
 function createConnectionServiceFile(databaseUrl: string): string {
@@ -333,28 +349,44 @@ async function ensurePrivateTempRoot(path: string): Promise<void> {
   }
 }
 
-function normalizeMigrations(value: readonly ({ name: string; checksum: string } | string)[]): { name: string; checksum: string }[] {
-  return value.map((migration) => typeof migration === 'string'
-    ? { name: migration, checksum: '' }
-    : { name: migration.name, checksum: migration.checksum })
+type Migration = { name: string; checksum: string }
+
+function normalizeMigrations(value: unknown): Migration[] {
+  if (!Array.isArray(value) || value.length === 0) fail('RESTORE_MIGRATIONS_INVALID')
+  return value.map((migration) => {
+    if (typeof migration !== 'object' || migration === null || Array.isArray(migration)) {
+      fail('RESTORE_MIGRATIONS_INVALID')
+    }
+    const record = migration as Record<string, unknown>
+    if (Object.keys(record).length !== 2
+      || !Object.hasOwn(record, 'name')
+      || !Object.hasOwn(record, 'checksum')
+      || typeof record.name !== 'string'
+      || record.name.trim().length === 0
+      || !isSha256(record.checksum)) {
+      fail('RESTORE_MIGRATIONS_INVALID')
+    }
+    return { name: record.name, checksum: record.checksum }
+  })
 }
 
-async function expectedMigrations(deps: RestoreDependencies): Promise<{ name: string; checksum: string }[]> {
-  if (deps.expectedMigrations) return deps.expectedMigrations.map((migration) => ({ ...migration }))
+async function expectedMigrations(deps: RestoreDependencies): Promise<Migration[]> {
+  if (deps.expectedMigrations !== undefined) return normalizeMigrations(deps.expectedMigrations)
   try {
     const directory = new URL('../postgres/migrations/', import.meta.url)
     const entries = await readdir(directory, { withFileTypes: true })
     const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith('.sql')).sort((a, b) => a.name.localeCompare(b.name))
-    return Promise.all(files.map(async (entry) => {
+    return normalizeMigrations(await Promise.all(files.map(async (entry) => {
       const sql = await readFile(new URL(entry.name, directory))
       return { name: entry.name, checksum: createHash('sha256').update(sql).digest('hex') }
-    }))
+    })))
   } catch {
     fail('RESTORE_MIGRATIONS_INVALID')
   }
 }
 
-function validateMigrations(actualValue: readonly ({ name: string; checksum: string } | string)[], expected: readonly { name: string; checksum: string }[]): { name: string; checksum: string }[] {
+function validateMigrations(actualValue: unknown, expectedValue: unknown): Migration[] {
+  const expected = normalizeMigrations(expectedValue)
   const actual = normalizeMigrations(actualValue)
   if (actual.length !== expected.length) fail('RESTORE_MIGRATIONS_INVALID')
   for (let index = 0; index < expected.length; index += 1) {
