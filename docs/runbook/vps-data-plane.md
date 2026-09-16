@@ -65,9 +65,11 @@ R2 失败时，已 claim pending 保持可重放，数据库 verified 不前移�
 
 ## PostgreSQL backup
 
-只有 publication 已返回 `published` 或 `no_change` 后才创建 backup。`pg_dump --format=custom --file=<private-temp-file>` 生成可由 `pg_restore` 恢复的 PostgreSQL custom archive。连接 URI 不传入子进程 argv 或日志；路径、query、用户名与密码按 libpq 规则解码 percent-encoding，query 中未编码的 `+` 保留为加号，query 的 `dbname` 覆盖 path 中的数据库名。实现将受支持的连接参数写入临时 `pg_service.conf`（0600），再通过 `PGSERVICEFILE` / `PGSERVICE` 选择该 service。子进程会清除继承的 libpq `PG*` 连接环境变量，避免宿主默认值覆盖或补充目标连接。service-file 和环境变量约定见 PostgreSQL [connection service file](https://www.postgresql.org/docs/17/libpq-pgservice.html) 与 [environment variables](https://www.postgresql.org/docs/17/libpq-envars.html)。实现先流式读取 archive 计算 SHA-256 与字节数，再以带 `ContentLength` 的流式 R2 PUT 写入 dump，成功后才写 manifest。上传使用单次 PutObject 而非 multipart；Cloudflare R2 单次 PutObject 上限为 5 GiB，接近该上限时应先实现 multipart 再提升该边界（见 [R2 upload limits](https://developers.cloudflare.com/r2/objects/upload-objects/)）。
+本节记录 Task 5.1 已实现的 `createBackup` adapter 与 `runOnce` backup-port contract，不表示生产 CLI 或定时备份已启用。调用方显式将 adapter 注入 `runOnce` 后，coordinator 仅在 publication 为 `published` 或 `no_change` 时调用；备份失败会使该次 run 进入 `partial`，但不会撤销已完成的 publication。生产 composition root `apps/vps-sync/src/cli.ts` 接入 adapter 属于 Task 5.2；Task 5.1 本身没有启用生产 CLI 或 host-cron 调用路径。
 
-临时根目录 `/tmp/airing-cal` 不存在时会以 `0700` 创建；已存在时必须为当前用户所有、非符号链接且无组/其他用户权限，否则 backup 会 fail closed。其下的 `/backup-*` 目录限制为 owner-only，并在成功或失败后清理。失败会将本轮标为 `partial`，但不会撤销已完成的 publication。PostgreSQL 17 custom archive 与连接参数语义见官方文档：[pg_dump](https://www.postgresql.org/docs/17/app-pgdump.html)、[pg_restore](https://www.postgresql.org/docs/17/app-pgrestore.html)、[libpq connection URIs](https://www.postgresql.org/docs/17/libpq-connect.html)、[libpq environment variables](https://www.postgresql.org/docs/17/libpq-envars.html)。
+`pg_dump --format=custom --file=<private-temp-file>` 生成可由 `pg_restore` 恢复的 PostgreSQL custom archive。连接 URI 不传入子进程 argv 或日志；路径、query、用户名与密码按 libpq 规则解码 percent-encoding，query 中未编码的 `+` 保留为加号，query 的 `dbname` 覆盖 path 中的数据库名。实现将受支持的连接参数写入临时 `pg_service.conf`（0600），再通过 `PGSERVICEFILE` / `PGSERVICE` 选择该 service。子进程会清除继承的 libpq `PG*` 连接环境变量，避免宿主默认值覆盖或补充目标连接。service-file 和环境变量约定见 PostgreSQL [connection service file](https://www.postgresql.org/docs/17/libpq-pgservice.html) 与 [environment variables](https://www.postgresql.org/docs/17/libpq-envars.html)。实现先流式读取 archive 计算 SHA-256 与字节数，再以带 `ContentLength` 的流式 R2 PUT 写入 dump，成功后才写 manifest。上传使用单次 PutObject 而非 multipart；Cloudflare R2 单次 PutObject 上限为 5 GiB，接近该上限时应先实现 multipart 再提升该边界（见 [R2 upload limits](https://developers.cloudflare.com/r2/objects/upload-objects/)）。
+
+临时根目录 `/tmp/airing-cal` 不存在时会以 `0700` 创建；已存在时必须为当前用户所有、非符号链接且无组/其他用户权限，否则 backup 会 fail closed。其下的 `/backup-*` 目录限制为 owner-only，并在成功或失败后清理。PostgreSQL 17 custom archive 与连接参数语义见官方文档：[pg_dump](https://www.postgresql.org/docs/17/app-pgdump.html)、[pg_restore](https://www.postgresql.org/docs/17/app-pgrestore.html)、[libpq connection URIs](https://www.postgresql.org/docs/17/libpq-connect.html)、[libpq environment variables](https://www.postgresql.org/docs/17/libpq-envars.html)。
 
 Dump 和 manifest 使用同一 UTC 时间戳与完整 git SHA：
 
@@ -76,7 +78,7 @@ backups/postgres/YYYY/MM/DD/YYYYMMDDTHHmmssSSSZ-<git-sha>.dump
 backups/postgres/YYYY/MM/DD/YYYYMMDDTHHmmssSSSZ-<git-sha>.json
 ```
 
-manifest 是规范化 JSON，固定字段为 `schema_version`、`run_id`、`git_sha`、`created_at`、`object_key`、`size` 与 `sha256`。Dump 必须先成功上传，manifest 才可见；命令、dump 上传或 manifest 上传失败均记为 backup 失败，并由 run 终态规则标为 `partial`。
+manifest 是规范化 JSON，固定字段为 `schema_version`、`run_id`、`git_sha`、`created_at`、`object_key`、`size` 与 `sha256`。Dump 必须先成功上传，manifest 才可见；命令、dump 上传或 manifest 上传失败均记为 backup 失败；只有当调用方通过 `runOnce` backup port 执行该 adapter 时，coordinator 才会据此将 run 终态标为 `partial`。
 
 ## 上游完整抓取与重试
 

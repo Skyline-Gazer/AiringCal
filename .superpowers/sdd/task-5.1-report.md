@@ -67,3 +67,7 @@ node --import tsx/esm --test src/backup/backup.test.ts src/run.test.ts
 ```
 
 19/19 pass。`pnpm -F @airing-cal/vps-sync typecheck`、`pnpm -F @airing-cal/vps-sync build:check` 与 `git diff --check` 均通过。目标 `postgres:17-alpine` CLI help 未在容器内直接运行的验证限制仍如上文所述。
+
+## 文档边界
+
+本轮 runbook 更新描述 Task 5.1 已实现的 `createBackup` adapter 与 `runOnce` backup-port contract，不表示生产 CLI 或定时备份已启用；production composition wiring 属于 Task 5.2。此轮只改文档，未改 runtime、plan/OpenSpec 或 `.comet/subagent-progress.md`。
