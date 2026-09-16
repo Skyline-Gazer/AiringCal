@@ -164,6 +164,7 @@ async function snapshotFixture() {
 async function makeFixture(options: {
   empty?: boolean
   lockAvailable?: boolean
+  expectedMigrations?: readonly ({ name: string; checksum: string } | string)[]
   publication?: Awaited<ReturnType<typeof snapshotFixture>>['publication'] | null
   projection?: Awaited<ReturnType<typeof snapshotFixture>>['projection']
   objects?: Map<string, Uint8Array>
@@ -206,7 +207,7 @@ async function makeFixture(options: {
         return session
       },
     },
-    expectedMigrations: migrations,
+    expectedMigrations: options.expectedMigrations ?? migrations,
     tempRoot,
     runCommand: async (command: string, args: readonly string[], options: { env: NodeJS.ProcessEnv }) => {
       calls.push({ command, args: [...args], env: options.env })
@@ -280,6 +281,16 @@ test('uses baseline only for calendar labels and historical ordering, never for 
   await assert.rejects(
     () => restoreVerify(fixture.deps, dumpKey, () => targetUrlValue),
     /RESTORE_SNAPSHOT_HASH_MISMATCH/,
+  )
+})
+
+test('does not allow expected migration names without checksums to bypass validation', async () => {
+  const { restoreVerify } = await restoreApi()
+  const fixture = await makeFixture({ expectedMigrations: migrations.map(({ name }) => name) })
+
+  await assert.rejects(
+    () => restoreVerify(fixture.deps, dumpKey, () => targetUrlValue),
+    /RESTORE_MIGRATIONS_INVALID/,
   )
 })
 

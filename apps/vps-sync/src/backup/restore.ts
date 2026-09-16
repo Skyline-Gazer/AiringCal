@@ -131,7 +131,7 @@ export interface RestoreDependencies {
   productionUrl: string
   storage: Pick<S3Port, 'get'>
   database: { connect(url: string): Promise<RestoreDatabaseSession> }
-  expectedMigrations?: readonly ({ name: string; checksum: string } | string)[]
+  expectedMigrations?: readonly { name: string; checksum: string }[]
   tempRoot?: string
   runCommand?: CommandRunner
 }
@@ -340,7 +340,7 @@ function normalizeMigrations(value: readonly ({ name: string; checksum: string }
 }
 
 async function expectedMigrations(deps: RestoreDependencies): Promise<{ name: string; checksum: string }[]> {
-  if (deps.expectedMigrations) return normalizeMigrations(deps.expectedMigrations)
+  if (deps.expectedMigrations) return deps.expectedMigrations.map((migration) => ({ ...migration }))
   try {
     const directory = new URL('../postgres/migrations/', import.meta.url)
     const entries = await readdir(directory, { withFileTypes: true })
@@ -360,7 +360,7 @@ function validateMigrations(actualValue: readonly ({ name: string; checksum: str
   for (let index = 0; index < expected.length; index += 1) {
     const got = actual[index]
     const want = expected[index]
-    if (!got || !want || got.name !== want.name || (want.checksum !== '' && got.checksum !== want.checksum)) fail('RESTORE_MIGRATIONS_INVALID')
+    if (!got || !want || got.name !== want.name || got.checksum !== want.checksum) fail('RESTORE_MIGRATIONS_INVALID')
   }
   return actual
 }
