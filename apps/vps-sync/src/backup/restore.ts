@@ -117,6 +117,8 @@ export type RestoreProjection = {
 }
 
 export interface RestoreDatabaseSession {
+  /** Holds the target session advisory lock for the whole callback; false means the callback did not run. */
+  withSessionLock<T>(work: () => Promise<T>): Promise<{ acquired: boolean; value?: T }>
   isEmpty(): Promise<boolean>
   migrations(): Promise<readonly ({ name: string; checksum: string } | string)[]>
   rowCounts(): Promise<Record<string, number>>
@@ -561,68 +563,76 @@ export async function restoreVerify(
   let emptySession: RestoreDatabaseSession | undefined
   try {
     emptySession = await deps.database.connect(target)
-    if (!await emptySession.isEmpty()) fail('RESTORE_TARGET_NOT_EMPTY')
-  } finally {
-    await closeSession(emptySession)
-  }
+    const locked = await emptySession.withSessionLock(async () => {
+      if (!await emptySession!.isEmpty()) fail('RESTORE_TARGET_NOT_EMPTY')
 
-  let temporaryDirectory: string | undefined
-  try {
-    const tempRoot = deps.tempRoot ?? RESTORE_TEMP_ROOT
-    await ensurePrivateTempRoot(tempRoot)
-    temporaryDirectory = await mkdtemp(join(tempRoot, 'restore-'))
-    await chmod(temporaryDirectory, 0o700)
-    const dumpPath = join(temporaryDirectory, 'database.dump')
-    const serviceFile = join(temporaryDirectory, 'pg_service.conf')
-    await writeFile(dumpPath, dump, { flag: 'wx', mode: 0o600 })
-    await chmod(dumpPath, 0o600)
-    await writeFile(serviceFile, createConnectionServiceFile(target), { flag: 'wx', mode: 0o600 })
-    await chmod(serviceFile, 0o600)
-    const env: NodeJS.ProcessEnv = { ...process.env }
-    for (const variable of LIBPQ_CONNECTION_ENV) delete env[variable]
-    delete env.DATABASE_URL
-    env.PGSERVICE = RESTORE_SERVICE_NAME
-    env.PGSERVICEFILE = serviceFile
-    await (deps.runCommand ?? defaultCommandRunner)('pg_restore', [
-      `--dbname=service=${RESTORE_SERVICE_NAME}`,
-      '--no-owner',
-      '--no-privileges',
-      '--single-transaction',
-      dumpPath,
-    ], { env })
+      let temporaryDirectory: string | undefined
+      try {
+        const tempRoot = deps.tempRoot ?? RESTORE_TEMP_ROOT
+        await ensurePrivateTempRoot(tempRoot)
+        temporaryDirectory = await mkdtemp(join(tempRoot, 'restore-'))
+        await chmod(temporaryDirectory, 0o700)
+        const dumpPath = join(temporaryDirectory, 'database.dump')
+        const serviceFile = join(temporaryDirectory, 'pg_service.conf')
+        await writeFile(dumpPath, dump, { flag: 'wx', mode: 0o600 })
+        await chmod(dumpPath, 0o600)
+        await writeFile(serviceFile, createConnectionServiceFile(target), { flag: 'wx', mode: 0o600 })
+        await chmod(serviceFile, 0o600)
+        const env: NodeJS.ProcessEnv = { ...process.env }
+        for (const variable of LIBPQ_CONNECTION_ENV) delete env[variable]
+        delete env.DATABASE_URL
+        env.PGSERVICE = RESTORE_SERVICE_NAME
+        env.PGSERVICEFILE = serviceFile
+        await (deps.runCommand ?? defaultCommandRunner)('pg_restore', [
+          `--dbname=service=${RESTORE_SERVICE_NAME}`,
+          '--no-owner',
+          '--no-privileges',
+          '--single-transaction',
+          dumpPath,
+        ], { env })
 
-    let restored: RestoreDatabaseSession | undefined
-    try {
-      restored = await deps.database.connect(target)
-      const publication = validatePublication(await restored.publication())
-      const baseline = await readBaseline(deps, publication)
-      const migrations = validateMigrations(await restored.migrations(), await expectedMigrations(deps))
-      const rowCounts = validateRowCounts(await restored.rowCounts())
-      const snapshot = await rebuildSnapshot(restored, publication, baseline)
-      if (snapshot.content_hash !== publication.content_hash) fail('RESTORE_SNAPSHOT_HASH_MISMATCH')
-      return {
-        key,
-        size: manifest.size,
-        sha256: manifest.sha256,
-        migrations,
-        rowCounts,
-        snapshotHash: snapshot.content_hash,
-        publication,
+        let restored: RestoreDatabaseSession | undefined
+        try {
+          restored = await deps.database.connect(target)
+          const publication = validatePublication(await restored.publication())
+          const baseline = await readBaseline(deps, publication)
+          const migrations = validateMigrations(await restored.migrations(), await expectedMigrations(deps))
+          const rowCounts = validateRowCounts(await restored.rowCounts())
+          const snapshot = await rebuildSnapshot(restored, publication, baseline)
+          if (snapshot.content_hash !== publication.content_hash) fail('RESTORE_SNAPSHOT_HASH_MISMATCH')
+          return {
+            key,
+            size: manifest.size,
+            sha256: manifest.sha256,
+            migrations,
+            rowCounts,
+            snapshotHash: snapshot.content_hash,
+            publication,
+          }
+        } finally {
+          await closeSession(restored)
+        }
+      } catch (error) {
+        if (error instanceof Error && /^RESTORE_[A-Z0-9_]+$/.test(error.message)) throw error
+        fail('RESTORE_FAILED')
+      } finally {
+        if (temporaryDirectory) {
+          try {
+            await rm(temporaryDirectory, { recursive: true, force: true })
+          } catch {
+            fail('RESTORE_CLEANUP_FAILED')
+          }
+        }
       }
-    } finally {
-      await closeSession(restored)
-    }
+      fail('RESTORE_FAILED')
+    })
+    if (!locked.acquired) fail('RESTORE_TARGET_LOCK_UNAVAILABLE')
+    if (!locked.value) fail('RESTORE_FAILED')
+    return locked.value
   } catch (error) {
     if (error instanceof Error && /^RESTORE_[A-Z0-9_]+$/.test(error.message)) throw error
     fail('RESTORE_FAILED')
   } finally {
-    if (temporaryDirectory) {
-      try {
-        await rm(temporaryDirectory, { recursive: true, force: true })
-      } catch {
-        fail('RESTORE_CLEANUP_FAILED')
-      }
-    }
+    await closeSession(emptySession)
   }
-  fail('RESTORE_FAILED')
 }

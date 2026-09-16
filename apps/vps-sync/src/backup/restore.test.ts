@@ -15,6 +15,7 @@ import type {
 import { canonicalJson } from '@airing-cal/storage'
 
 type RestoreSession = {
+  withSessionLock<T>(work: () => Promise<T>): Promise<{ acquired: boolean; value?: T }>
   isEmpty(): Promise<boolean>
   migrations(): Promise<readonly { name: string; checksum: string }[]>
   rowCounts(): Promise<Record<string, number>>
@@ -162,6 +163,7 @@ async function snapshotFixture() {
 
 async function makeFixture(options: {
   empty?: boolean
+  lockAvailable?: boolean
   publication?: Awaited<ReturnType<typeof snapshotFixture>>['publication'] | null
   projection?: Awaited<ReturnType<typeof snapshotFixture>>['projection']
   objects?: Map<string, Uint8Array>
@@ -173,6 +175,9 @@ async function makeFixture(options: {
   const calls: { command: string; args: string[]; env: NodeJS.ProcessEnv }[] = []
   const sessions: RestoreSession[] = []
   const firstSession: RestoreSession = {
+    withSessionLock: async (work) => options.lockAvailable === false
+      ? { acquired: false }
+      : { acquired: true, value: await work() },
     isEmpty: async () => options.empty ?? true,
     migrations: async () => [],
     rowCounts: async () => ({}),
@@ -181,6 +186,7 @@ async function makeFixture(options: {
     close: async () => {},
   }
   const restoredSession: RestoreSession = {
+    withSessionLock: async (work) => ({ acquired: true, value: await work() }),
     isEmpty: async () => true,
     migrations: async () => migrations,
     rowCounts: async () => rowCounts,
@@ -222,6 +228,17 @@ test('rejects a non-empty target and a target with the production database ident
     )
     assert.equal(fixture.calls.length, 0, `${label} must fail before pg_restore`)
   }
+})
+
+test('does not run pg_restore when the empty target session cannot acquire its lock', async () => {
+  const { restoreVerify } = await restoreApi()
+  const fixture = await makeFixture({ lockAvailable: false })
+
+  await assert.rejects(
+    () => restoreVerify(fixture.deps, dumpKey, () => targetUrlValue),
+    /RESTORE_TARGET_LOCK_UNAVAILABLE/,
+  )
+  assert.equal(fixture.calls.length, 0)
 })
 
 test('downloads and verifies a dump, restores with PG17-safe flags, then validates migrations, row counts, DB projection, ordering, labels and regenerated hash', async () => {
