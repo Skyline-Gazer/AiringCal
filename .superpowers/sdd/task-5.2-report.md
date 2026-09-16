@@ -110,3 +110,11 @@ PostgreSQL 17 连接形式证据：本机 `pg_restore --version` 为 18.6，`pg_
 - `pnpm -F @airing-cal/vps-sync typecheck`、`build:check`、`build` 与 `git diff --check` — 全部 PASS。
 - PG17 语义核验：官方 [libpq connection 文档](https://www.postgresql.org/docs/17/libpq-connect.html)规定 `host`/`hostaddr` 可为逗号分隔列表，且同时指定时 `hostaddr` 提供服务器网络地址；PG17 `REL_17_STABLE` [`fe-connect.c`](https://github.com/postgres/postgres/blob/REL_17_STABLE/src/interfaces/libpq/fe-connect.c)按 `hostaddr` 列表建立连接槽并将非空 `hostaddr` 标为实际 host-address 类型。实现据此拒绝多主机歧义并按有效网络 endpoint 比较生产身份。目标 URL 与 secret 仍不进入 argv 或日志。
 - 限制不变：本机没有 docker/podman/nerdctl，未能在 `postgres:17-alpine` 目标镜像内直接执行 `pg_restore --help` 或真实恢复演练；已按 PG17 官方文档、源码和官方镜像构建配方使用允许的 fallback。未启用 executable sync/restore、生产调度、生产数据库/R2 操作或 R2 删除，也未修改 plan/OpenSpec/checkpoint。
+
+## 用户授权的额外修复轮（2026-09-16，round 3）
+
+- 根因：`connectionParts` 无条件要求 `host` 非空，导致合法的 PostgreSQL 17 `hostaddr`-only URL 在 production identity 比较时被拒绝，无法继续到恢复流程。
+- RED：新增两个回归测试后，`node --import tsx/esm --test apps/vps-sync/src/backup/restore.test.ts` 为 22 项测试 20 pass、2 fail。非生产 `postgresql:///?hostaddr=127.0.0.1&dbname=db` 和指向 production hostaddr 的目标都在 `connectionParts` 抛出 `RESTORE_TARGET_INVALID`；生产 identity 测试因此未能到达预期的 identity gate。
+- GREEN：仅当 `host` 与 `hostaddr` 都为空时拒绝；保留逗号多 host、端口列表和无效 IP 拒绝。hostaddr-only 非生产目标调用注入的 `pg_restore` 并通过 restore 验证；hostaddr-only 生产 endpoint 返回 `RESTORE_TARGET_IS_PRODUCTION`，调用 `pg_restore` 次数为 0。相同 focused 命令现为 22 pass、0 fail、0 skip。
+- 本轮完整要求验证：`pnpm -F @airing-cal/vps-sync typecheck`、`pnpm -F @airing-cal/vps-sync build:check`、`pnpm -F @airing-cal/vps-sync build` 与 `git diff --check` 均 PASS。
+- 测试通过注入的 fake database 与 command runner 验证流程，没有连接 PostgreSQL 17 实例；之前记录的本机缺少容器 runtime 的限制仍适用。本轮未修改计划、OpenSpec checkbox 或 `.comet/subagent-progress.md`。

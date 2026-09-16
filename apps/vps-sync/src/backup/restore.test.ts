@@ -273,6 +273,38 @@ test('rejects hostaddr-selected production and ambiguous multi-host targets befo
   }
 })
 
+test('accepts a hostaddr-only non-production target and completes restore verification', async () => {
+  const { restoreVerify } = await restoreApi()
+  const fixture = await makeFixture()
+
+  const report = await restoreVerify(
+    fixture.deps,
+    dumpKey,
+    () => 'postgresql:///?hostaddr=127.0.0.1&dbname=db',
+  )
+
+  assert.equal(fixture.calls.length, 1)
+  assert.equal(fixture.calls[0]?.command, 'pg_restore')
+  assert.equal(report.key, dumpKey)
+  assert.equal(report.snapshotHash, fixture.base.baseline.content_hash)
+})
+
+test('rejects a hostaddr-only target matching the production endpoint before pg_restore', async () => {
+  const { restoreVerify } = await restoreApi()
+  const fixture = await makeFixture()
+  fixture.deps.productionUrl = 'postgresql://prod-user:prod-password@db.example.test:5432/bangumi?hostaddr=203.0.113.10'
+
+  await assert.rejects(
+    () => restoreVerify(
+      fixture.deps,
+      dumpKey,
+      () => 'postgresql:///?hostaddr=203.0.113.10&dbname=bangumi',
+    ),
+    /RESTORE_TARGET_IS_PRODUCTION/,
+  )
+  assert.equal(fixture.calls.length, 0)
+})
+
 test('does not run pg_restore when the empty target session cannot acquire its lock', async () => {
   const { restoreVerify } = await restoreApi()
   const fixture = await makeFixture({ lockAvailable: false })

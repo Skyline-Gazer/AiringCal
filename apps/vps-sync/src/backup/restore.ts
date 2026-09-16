@@ -293,7 +293,7 @@ function connectionParts(databaseUrl: string): ConnectionParts {
   const dbname = query.get('dbname') ?? (decode(url.pathname.slice(1)) || query.get('user') || '')
   const user = query.get('user') ?? decode(url.username)
   const password = query.get('password') ?? decode(url.password)
-  if (!host || !port || !dbname || host.includes(',') || hostaddr.includes(',') || port.includes(',') || (hostaddr && isIP(hostaddr) === 0)) {
+  if ((!host && !hostaddr) || !port || !dbname || host.includes(',') || hostaddr.includes(',') || port.includes(',') || (hostaddr && isIP(hostaddr) === 0)) {
     fail('RESTORE_TARGET_INVALID')
   }
   return { host, hostaddr, port, dbname, user, password, query }
