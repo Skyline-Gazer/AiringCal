@@ -60,6 +60,7 @@ const dumpKey = 'backups/postgres/2026/09/15/20260915T030405006Z-' + 'a'.repeat(
 const manifestKey = dumpKey.replace(/\.dump$/, '.json')
 const dumpBytes = Buffer.from('verified custom-format PostgreSQL dump')
 const gitSha = 'b'.repeat(40)
+const backupGitSha = 'a'.repeat(40)
 const tempRoot = '/tmp/airing-cal-restore-test'
 const migrations = [
   { name: '0001_initial.sql', checksum: '33e5799c9709ff8ef843b952d6b986d9f5e1e716eb92f693df088c7f019e6b23' },
@@ -145,7 +146,7 @@ async function snapshotFixture() {
   const manifest = {
     schema_version: 1,
     run_id: 'run-backup-1',
-    git_sha: gitSha,
+    git_sha: backupGitSha,
     created_at: '2026-09-15T03:04:05.006Z',
     object_key: dumpKey,
     size: dumpBytes.length,
@@ -281,6 +282,26 @@ test('fails closed on manifest/checksum errors and missing or mismatched immutab
   await t.test('non-canonical manifest timestamp', async () => {
     const fixture = await makeFixture()
     const badManifest = { ...fixture.base.manifest, created_at: 'not-a-timestamp' }
+    fixture.deps.storage.get = async (key: string) => key === manifestKey
+      ? new TextEncoder().encode(canonicalJson(badManifest))
+      : fixture.base.objects.get(key) ?? null
+    await assert.rejects(() => restoreVerify(fixture.deps, dumpKey, () => targetUrlValue), /RESTORE_MANIFEST_INVALID/)
+    assert.equal(fixture.calls.length, 0)
+  })
+
+  await t.test('manifest git SHA must match the dump key', async () => {
+    const fixture = await makeFixture()
+    const badManifest = { ...fixture.base.manifest, git_sha: gitSha }
+    fixture.deps.storage.get = async (key: string) => key === manifestKey
+      ? new TextEncoder().encode(canonicalJson(badManifest))
+      : fixture.base.objects.get(key) ?? null
+    await assert.rejects(() => restoreVerify(fixture.deps, dumpKey, () => targetUrlValue), /RESTORE_MANIFEST_INVALID/)
+    assert.equal(fixture.calls.length, 0)
+  })
+
+  await t.test('manifest timestamp must match the dump key', async () => {
+    const fixture = await makeFixture()
+    const badManifest = { ...fixture.base.manifest, created_at: '2026-09-15T03:04:05.007Z' }
     fixture.deps.storage.get = async (key: string) => key === manifestKey
       ? new TextEncoder().encode(canonicalJson(badManifest))
       : fixture.base.objects.get(key) ?? null

@@ -175,9 +175,9 @@ function isCanonicalUtc(value: unknown): value is string {
   }
 }
 
-function parseBackupKey(key: string): { date: string; timestamp: string } {
+function parseBackupKey(key: string): { date: string; timestamp: string; createdAt: string; gitSha: string } {
   const match = /^backups\/postgres\/(\d{4})\/(\d{2})\/(\d{2})\/(\d{8}T\d{9}Z)-([0-9a-f]{40})\.dump$/.exec(key)
-  if (!match?.[1] || !match[2] || !match[3] || !match[4]) fail('RESTORE_KEY_INVALID')
+  if (!match?.[1] || !match[2] || !match[3] || !match[4] || !match[5]) fail('RESTORE_KEY_INVALID')
   const date = `${match[1]}-${match[2]}-${match[3]}`
   const timestamp = match[4]
   const iso = `${timestamp.slice(0, 4)}-${timestamp.slice(4, 6)}-${timestamp.slice(6, 8)}T${timestamp.slice(9, 11)}:${timestamp.slice(11, 13)}:${timestamp.slice(13, 15)}.${timestamp.slice(15, 18)}Z`
@@ -189,7 +189,7 @@ function parseBackupKey(key: string): { date: string; timestamp: string } {
     || timestamp.slice(6, 8) !== match[3]) {
     fail('RESTORE_KEY_INVALID')
   }
-  return { date, timestamp }
+  return { date, timestamp, createdAt: iso, gitSha: match[5] }
 }
 
 function parseJson(bytes: Uint8Array): unknown {
@@ -204,7 +204,12 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return a.byteLength === b.byteLength && a.every((value, index) => value === b[index])
 }
 
-function parseBackupManifest(bytes: Uint8Array, key: string, dump: Uint8Array): { size: number; sha256: string } {
+function parseBackupManifest(
+  bytes: Uint8Array,
+  key: string,
+  dump: Uint8Array,
+  provenance: ReturnType<typeof parseBackupKey>,
+): { size: number; sha256: string } {
   const value = parseJson(bytes)
   if (typeof value !== 'object' || value === null || Array.isArray(value)) fail('RESTORE_MANIFEST_INVALID')
   const manifest = value as Record<string, unknown>
@@ -218,6 +223,8 @@ function parseBackupManifest(bytes: Uint8Array, key: string, dump: Uint8Array): 
     || manifest.run_id.length === 0
     || !isGitSha(manifest.git_sha)
     || !isCanonicalUtc(manifest.created_at)
+    || manifest.git_sha !== provenance.gitSha
+    || manifest.created_at !== provenance.createdAt
     || manifest.object_key !== key
     || !isSafeInteger(manifest.size)
     || !isSha256(manifest.sha256)
@@ -532,7 +539,7 @@ export async function restoreVerify(
   key: string,
   targetUrl: () => string,
 ): Promise<RestoreReport> {
-  parseBackupKey(key)
+  const provenance = parseBackupKey(key)
   if (typeof targetUrl !== 'function') fail('RESTORE_TARGET_INVALID')
 
   const manifestKey = key.slice(0, -'.dump'.length) + '.json'
@@ -540,7 +547,7 @@ export async function restoreVerify(
   const manifestBytes = await deps.storage.get(manifestKey)
   if (!dump) fail('RESTORE_DUMP_MISSING')
   if (!manifestBytes) fail('RESTORE_MANIFEST_INVALID')
-  const manifest = parseBackupManifest(manifestBytes, key, dump)
+  const manifest = parseBackupManifest(manifestBytes, key, dump, provenance)
 
   let target: string
   try {
