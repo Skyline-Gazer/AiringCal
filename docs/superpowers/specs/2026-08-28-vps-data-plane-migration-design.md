@@ -197,7 +197,7 @@ This condition is evaluated at the backup step, before the terminal run status i
 
 The task streams a dump through a bounded temporary directory, computes SHA-256 and byte count, uploads the dump, then uploads a JSON manifest containing database schema version, run ID, git SHA, creation time, object key, size, and checksum. Neither file contains connection details or application secrets outside the database's permitted business data.
 
-Retention selection is pure and testable: keep the newest 30 daily restore points and the chronologically last successful backup for every earlier calendar month. Cleanup lists an explicit backup prefix, validates each key against the backup-key grammar, and deletes only the computed set. Listing or parsing uncertainty disables deletion for that run.
+Retention selection is pure and testable: identify the newest 30 daily restore points and the chronologically last successful backup for every earlier calendar month. Listing validates each key against the backup-key grammar and returns only explicit deletion candidates. Listing or parsing uncertainty returns no candidates. This plan does not issue R2 delete requests; actual object deletion requires a separately approved OpenSpec change.
 
 `restore-verify` requires a separate target `DATABASE_URL`, proves the target is empty and not equal to production, restores one selected dump, runs schema/row-count/public-snapshot checks, and never publishes or sends user-facing data.
 

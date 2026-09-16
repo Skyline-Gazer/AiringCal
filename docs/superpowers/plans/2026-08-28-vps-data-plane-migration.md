@@ -197,11 +197,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 - Modify: `docs/runbook/vps-data-plane.md`
 
 **Interfaces:**
-- Produces: production CLI composition wires `createBackup` into `runOnce` for `published`/verified `no_change` outcomes; `selectBackupDeletions(entries): string[]` 保留最新 30 日及更早每月最后成功点；`restoreVerify(deps, key, targetUrl): Promise<RestoreReport>`。
+- Produces: production CLI composition wires `createBackup` into `runOnce` for `published`/verified `no_change` outcomes; `selectBackupDeletions(entries): string[]` 仅返回保留最新 30 日及更早每月最后成功点之后的候选 key，不执行 R2 删除；`restoreVerify(deps, key, targetUrl): Promise<RestoreReport>`。
 
-- [ ] **Step 1: RED tests** — 跨月/同日多份/非法 key/list uncertainty；CLI 将 `createBackup` 接入 `runOnce` 并覆盖 published/no_change 与 partial 失败语义；只删除显式 grammar keys；target 非空或等于 production URL 均在 pg_restore 前失败；恢复后校验 migration、row counts 与 regenerated snapshot hash。
+- [ ] **Step 1: RED tests** — 跨月/同日多份/非法 key/list uncertainty；CLI 将 `createBackup` 接入 `runOnce` 并覆盖 published/no_change 与 partial 失败语义；候选项只来自显式 backup-key grammar，list uncertainty 时不返回删除候选且不调用 R2 Delete；target 非空或等于 production URL 均在 pg_restore 前失败；恢复后校验 migration、row counts 与 regenerated snapshot hash。
 - [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- cli.test.ts retention.test.ts restore.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — retention 纯函数；CLI 组合 `runOnce` 与 `createBackup`；restore 下载并校验 checksum，再向明确空库执行 verified `pg_restore` flags，绝不 publish/notify user data。
+- [ ] **Step 3: GREEN** — retention 纯函数只返回待审查候选 key，不调用 R2 Delete；CLI 组合 `runOnce` 与 `createBackup`；restore 下载并校验 checksum，再向明确空库执行 verified `pg_restore` flags，绝不 publish/notify user data。任何实际 R2 对象删除需另行批准的 OpenSpec change。
 - [ ] **Step 4: REFACTOR/验证** — backup/CLI/restore suite、typecheck 与 build:check PASS；显式测试 production URL 规范化比较。
 - [ ] **Step 5: 文档、提交与推送** — 写完整 restore drill 命令与安全门；commit `feat(vps-sync): retain and verify PostgreSQL backups` 后 push。
 

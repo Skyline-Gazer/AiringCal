@@ -15,7 +15,11 @@
 - **THEN** 公开版本继续服务且通知明确报告 backup failed
 
 ### Requirement: 备份保留与恢复必须可验证
-系统 MUST 保留最近 30 个每日备份和每月最后一个归档，只删除显式枚举且确认过期的 key，并提供恢复到空数据库的校验流程。
+系统 MUST 提供纯函数保留策略，识别最近 30 个每日备份和更早每月最后一个归档之外的候选 key，并提供恢复到空数据库的校验流程。当前 change MUST NOT 自动发送 R2 Delete 请求；实际删除 R2 历史对象需要单独获批的 OpenSpec change。
+
+#### Scenario: 保留策略只返回候选项
+- **WHEN** retention 输入列表包含符合 backup-key grammar 的过期 key
+- **THEN** selector 返回候选 key 但不删除对象；若 list/key 解析不确定则不返回任何删除候选
 
 #### Scenario: 执行恢复演练
 - **WHEN** 运维下载一个保留中的 dump 并恢复到空库
