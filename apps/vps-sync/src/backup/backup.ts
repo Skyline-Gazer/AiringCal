@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createReadStream } from 'node:fs'
 import { join } from 'node:path'
 import type { Readable } from 'node:stream'
@@ -52,6 +52,7 @@ const SERVICE_PARAMETERS = new Set([
   'channel_binding',
   'client_encoding',
   'connect_timeout',
+  'dbname',
   'fallback_application_name',
   'gssdelegation',
   'gssencmode',
@@ -110,11 +111,45 @@ export interface BackupDependencies {
   runCommand?: CommandRunner
 }
 
+async function ensurePrivateTempRoot(path: string): Promise<void> {
+  try {
+    await mkdir(path, { mode: 0o700 })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+  }
+
+  const root = await lstat(path)
+  const currentUid = process.getuid?.()
+  if (
+    !root.isDirectory()
+    || root.isSymbolicLink()
+    || currentUid === undefined
+    || root.uid !== currentUid
+    || (root.mode & 0o700) !== 0o700
+    || (root.mode & 0o077) !== 0
+  ) {
+    throw new Error('BACKUP_FAILED')
+  }
+}
+
 function runCommand(command: string, args: readonly string[], options: CommandOptions): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, [...args], { env: options.env, stdio: 'ignore' })
     child.once('error', () => reject(new Error('BACKUP_FAILED')))
     child.once('exit', (code) => code === 0 ? resolve() : reject(new Error('BACKUP_FAILED')))
+  })
+}
+
+function parseUriQuery(search: string): [string, string][] {
+  const rawQuery = search.slice(1)
+  if (!rawQuery) return []
+
+  const entries = rawQuery.split('&')
+  if (entries.at(-1) === '') entries.pop()
+  return entries.map((entry) => {
+    const separator = entry.indexOf('=')
+    if (separator < 0 || entry.indexOf('=', separator + 1) >= 0) throw new Error('BACKUP_FAILED')
+    return [decodeURIComponent(entry.slice(0, separator)), decodeURIComponent(entry.slice(separator + 1))]
   })
 }
 
@@ -124,7 +159,7 @@ function createConnectionServiceFile(databaseUrl: string): string {
     throw new Error('BACKUP_FAILED')
   }
 
-  const queryEntries = [...url.searchParams]
+  const queryEntries = parseUriQuery(url.search)
   if (queryEntries.some(([key]) => key === 'ssl') && queryEntries.some(([key]) => key === 'sslmode')) {
     throw new Error('BACKUP_FAILED')
   }
@@ -143,13 +178,13 @@ function createConnectionServiceFile(databaseUrl: string): string {
   }
 
   const parameters = new Map<string, string>()
-  const queryOr = (key: string, fallback: string) => query.get(key) || fallback
+  const queryOr = (key: string, fallback: string) => query.has(key) ? query.get(key)! : fallback
   const hostFromUrl = decodeURIComponent(url.hostname.replace(/^\[|\]$/g, ''))
   const user = queryOr('user', decodeURIComponent(url.username))
   const password = queryOr('password', decodeURIComponent(url.password))
   const host = queryOr('host', hostFromUrl)
   const port = queryOr('port', url.port)
-  const database = decodeURI(url.pathname.slice(1))
+  const database = decodeURIComponent(url.pathname.slice(1))
 
   if (user) parameters.set('user', user)
   if (password) parameters.set('password', password)
@@ -187,8 +222,9 @@ export async function createBackup(deps: BackupDependencies, run: BackupRun): Pr
   let temporaryDirectory: string | undefined
 
   try {
-    await mkdir(deps.tempRoot ?? BACKUP_TEMP_ROOT, { recursive: true, mode: 0o700 })
-    temporaryDirectory = await mkdtemp(join(deps.tempRoot ?? BACKUP_TEMP_ROOT, 'backup-'))
+    const tempRoot = deps.tempRoot ?? BACKUP_TEMP_ROOT
+    await ensurePrivateTempRoot(tempRoot)
+    temporaryDirectory = await mkdtemp(join(tempRoot, 'backup-'))
     await chmod(temporaryDirectory, 0o700)
     const serviceFile = join(temporaryDirectory, 'pg_service.conf')
     await writeFile(serviceFile, createConnectionServiceFile(deps.databaseUrl), { flag: 'wx', mode: 0o600 })

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -51,6 +51,122 @@ function s3Port(options: { failAt?: number } = {}, events: string[] = []) {
     }, client as unknown as S3Client),
   }
 }
+
+async function connectionServiceConfig(databaseUrl: string) {
+  const testDirectory = await mkdtemp(join(tmpdir(), 'airing-cal-backup-test-'))
+  const tempRoot = join(testDirectory, 'private-root')
+  const { port } = s3Port()
+  let serviceConfig = ''
+
+  try {
+    await createBackup({
+      databaseUrl,
+      storage: port,
+      now: () => Date.parse(createdAt),
+      tempRoot,
+      runCommand: async (_command, args, options) => {
+        const serviceFile = options.env.PGSERVICEFILE
+        assert.ok(serviceFile)
+        serviceConfig = await readFile(serviceFile, 'utf8')
+        const output = args.find((arg) => arg.startsWith('--file='))?.slice('--file='.length)
+        assert.ok(output)
+        await writeFile(output, dumpBytes)
+      },
+    }, { runId: 'run-1', gitSha })
+
+    return { serviceConfig, tempRootMode: (await stat(tempRoot)).mode & 0o777 }
+  } finally {
+    await rm(testDirectory, { recursive: true, force: true })
+  }
+}
+
+test('accepts dbname in the URI query and lets it override the path', async () => {
+  const { serviceConfig, tempRootMode } = await connectionServiceConfig(
+    'postgresql://backup-user@db.example.test/path-db?dbname=query-db',
+  )
+
+  assert.match(serviceConfig, /^dbname=query-db$/m)
+  assert.equal(tempRootMode, 0o700)
+})
+
+test('percent-decodes URI user, password, and path components', async () => {
+  const { serviceConfig } = await connectionServiceConfig(
+    'postgresql://backup%2Buser:p%40ss%3Aword@db.example.test/archive%2Fdb%20backup',
+  )
+
+  assert.match(serviceConfig, /^user=backup\+user$/m)
+  assert.match(serviceConfig, /^password=p@ss:word$/m)
+  assert.match(serviceConfig, /^dbname=archive\/db backup$/m)
+})
+
+test('preserves literal plus signs in URI query values', async () => {
+  const { serviceConfig } = await connectionServiceConfig(
+    'postgresql://backup-user@db.example.test/bangumi?application_name=backup%20worker+blue',
+  )
+
+  assert.match(serviceConfig, /^application_name=backup worker\+blue$/m)
+})
+
+test('rejects an existing temp root with group or world access without changing it', async () => {
+  const testDirectory = await mkdtemp(join(tmpdir(), 'airing-cal-backup-test-'))
+  const tempRoot = join(testDirectory, 'shared-root')
+  await mkdir(tempRoot, { mode: 0o700 })
+  await chmod(tempRoot, 0o755)
+  const { port, uploads } = s3Port()
+  let commandCalls = 0
+
+  try {
+    await assert.rejects(() => createBackup({
+      databaseUrl,
+      storage: port,
+      tempRoot,
+      runCommand: async (_command, args) => {
+        commandCalls += 1
+        const output = args.find((arg) => arg.startsWith('--file='))?.slice('--file='.length)
+        assert.ok(output)
+        await writeFile(output, dumpBytes)
+      },
+    }, { runId: 'run-1', gitSha }), /BACKUP_FAILED/)
+
+    assert.equal(commandCalls, 0)
+    assert.deepEqual(uploads, [])
+    assert.equal((await stat(tempRoot)).mode & 0o777, 0o755)
+    assert.deepEqual(await readdir(tempRoot), [])
+  } finally {
+    await rm(testDirectory, { recursive: true, force: true })
+  }
+})
+
+test('rejects a symlink temp root before creating files', async () => {
+  const testDirectory = await mkdtemp(join(tmpdir(), 'airing-cal-backup-test-'))
+  const privateRoot = join(testDirectory, 'private-root')
+  const tempRoot = join(testDirectory, 'root-link')
+  await mkdir(privateRoot, { mode: 0o700 })
+  await symlink(privateRoot, tempRoot, 'dir')
+  const { port, uploads } = s3Port()
+  let commandCalls = 0
+
+  try {
+    await assert.rejects(() => createBackup({
+      databaseUrl,
+      storage: port,
+      tempRoot,
+      runCommand: async (_command, args) => {
+        commandCalls += 1
+        const output = args.find((arg) => arg.startsWith('--file='))?.slice('--file='.length)
+        assert.ok(output)
+        await writeFile(output, dumpBytes)
+      },
+    }, { runId: 'run-1', gitSha }), /BACKUP_FAILED/)
+
+    assert.equal(commandCalls, 0)
+    assert.deepEqual(uploads, [])
+    assert.equal((await lstat(tempRoot)).isSymbolicLink(), true)
+    assert.deepEqual(await readdir(privateRoot), [])
+  } finally {
+    await rm(testDirectory, { recursive: true, force: true })
+  }
+})
 
 test('dumps custom format, hashes and streams it before uploading a canonical manifest', async () => {
   const tempRoot = await mkdtemp(join(tmpdir(), 'airing-cal-backup-test-'))

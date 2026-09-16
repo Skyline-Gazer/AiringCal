@@ -45,3 +45,25 @@ node --import tsx/esm --test src/backup/backup.test.ts src/run.test.ts
 流式上传使用已安装 AWS SDK 类型声明支持的 Node `Readable` `Body` 与 `ContentLength`；R2 [上传文档](https://developers.cloudflare.com/r2/objects/upload-objects/)和[错误码文档](https://developers.cloudflare.com/r2/api/error-codes/)标明单次 PutObject 的 5 GiB 上限。本任务有意不实现 multipart；大备份需先完成 multipart 升级再提高该限制。测试只使用 fake runner / fake S3 client，未触碰生产服务。
 
 本次报告补充不修改计划、OpenSpec、实现代码或 `.comet/subagent-progress.md`。
+
+## 本轮评审修复
+
+- URI 解析支持 query 中的 `dbname`；query 值按 libpq 后写覆盖 path 的 `dbname`。path、query、user、password 均执行 percent decoding，query 中未编码的 `+` 保持字面加号。规则依据 PostgreSQL 17 [connection URI 文档](https://www.postgresql.org/docs/17/libpq-connect.html)和 [`fe-connect.c`](https://github.com/postgres/postgres/blob/REL_17_STABLE/src/interfaces/libpq/fe-connect.c) 核验。
+- 写临时文件前通过 `lstat` 验证 `/tmp/airing-cal`：不存在时以 `0700` 创建后再验证；已存在目录须非符号链接、由当前 UID 所有、owner 可访问且无 group/world 权限。验证失败时立即拒绝，不修改既有权限。新增覆盖 0700 新根、宽权限根与符号链接根。
+- Runbook 改为说明 dump“可由 `pg_restore` 恢复”，并描述临时根检查；目标镜像没有容器 runtime、未直接运行 `--help` 的一次性验证限制保留在本报告，不再出现在 runbook。本轮没有接入运行时 caller 或创建 CLI。
+
+TDD 证据（均在 `apps/vps-sync` 目录执行）：
+
+```sh
+node --import tsx/esm --test src/backup/backup.test.ts
+```
+
+RED：9 项中 4 pass、5 fail。5 个预期失败分别复现 query `dbname` 被拒绝、path `%2F` 未解码、query `+` 被当作空格、宽权限 root 被接受、symlink root 被接受。
+
+GREEN：同一命令 9/9 pass。之后的 focused 回归命令：
+
+```sh
+node --import tsx/esm --test src/backup/backup.test.ts src/run.test.ts
+```
+
+19/19 pass。`pnpm -F @airing-cal/vps-sync typecheck`、`pnpm -F @airing-cal/vps-sync build:check` 与 `git diff --check` 均通过。目标 `postgres:17-alpine` CLI help 未在容器内直接运行的验证限制仍如上文所述。
