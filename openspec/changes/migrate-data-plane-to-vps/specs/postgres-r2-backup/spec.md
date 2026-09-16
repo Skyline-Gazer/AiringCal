@@ -23,4 +23,4 @@
 
 #### Scenario: 执行恢复演练
 - **WHEN** 运维下载一个保留中的 dump 并恢复到空库
-- **THEN** schema、核心行数和重新生成的 snapshot hash 均通过校验；除 PostgreSQL 未保存的 weekday display labels 外，snapshot 字段均从恢复数据库重建。weekday labels 只能取自 restored `publications.verified` 指向、且通过 key、canonical bytes 和 content-hash 校验的 immutable R2 snapshot；baseline 缺失或不匹配时验证失败。
+- **THEN** schema、核心行数和重新生成的 snapshot hash 均通过校验；除 PostgreSQL 未保存的 weekday display labels 与历史数组 ordering/identity indexes 外，snapshot 字段均从恢复数据库重建。labels/order metadata 只能取自 restored `publications.verified` 指向、且通过 key、canonical bytes 和 content-hash 校验的 immutable R2 snapshot；baseline 业务值不得直接信任，身份缺失、额外或不匹配时验证失败。
