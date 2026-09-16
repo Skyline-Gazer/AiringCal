@@ -65,7 +65,7 @@ R2 失败时，已 claim pending 保持可重放，数据库 verified 不前移�
 
 ## PostgreSQL backup
 
-本节记录 Task 5.1 已实现的 `createBackup` adapter 与 `runOnce` backup-port contract，不表示生产 CLI 或定时备份已启用。调用方显式将 adapter 注入 `runOnce` 后，coordinator 仅在 publication 为 `published` 或 `no_change` 时调用；备份失败会使该次 run 进入 `partial`，但不会撤销已完成的 publication。生产 composition root `apps/vps-sync/src/cli.ts` 接入 adapter 属于 Task 5.2；Task 5.1 本身没有启用生产 CLI 或 host-cron 调用路径。
+本节记录已实现的 `createBackup` adapter 与 `apps/vps-sync/src/cli.ts` 注入式 composition，不表示生产 CLI 或定时备份已启用。调用方必须提供真实 `notify` port 和 backup 配置；coordinator 仅在 publication 为 `published` 或 `no_change` 时调用备份。备份失败会使该次 run 进入 `partial`，但不会撤销已完成的 publication。Task 5.2 不注册 executable `sync` 命令或 host-cron 调用路径。
 
 `pg_dump --format=custom --file=<private-temp-file>` 生成可由 `pg_restore` 恢复的 PostgreSQL custom archive。连接 URI 不传入子进程 argv 或日志；路径、query、用户名与密码按 libpq 规则解码 percent-encoding，query 中未编码的 `+` 保留为加号，query 的 `dbname` 覆盖 path 中的数据库名。实现将受支持的连接参数写入临时 `pg_service.conf`（0600），再通过 `PGSERVICEFILE` / `PGSERVICE` 选择该 service。子进程会清除继承的 libpq `PG*` 连接环境变量，避免宿主默认值覆盖或补充目标连接。service-file 和环境变量约定见 PostgreSQL [connection service file](https://www.postgresql.org/docs/17/libpq-pgservice.html) 与 [environment variables](https://www.postgresql.org/docs/17/libpq-envars.html)。实现先流式读取 archive 计算 SHA-256 与字节数，再以带 `ContentLength` 的流式 R2 PUT 写入 dump，成功后才写 manifest。上传使用单次 PutObject 而非 multipart；Cloudflare R2 单次 PutObject 上限为 5 GiB，接近该上限时应先实现 multipart 再提升该边界（见 [R2 upload limits](https://developers.cloudflare.com/r2/objects/upload-objects/)）。
 
@@ -79,6 +79,12 @@ backups/postgres/YYYY/MM/DD/YYYYMMDDTHHmmssSSSZ-<git-sha>.json
 ```
 
 manifest 是规范化 JSON，固定字段为 `schema_version`、`run_id`、`git_sha`、`created_at`、`object_key`、`size` 与 `sha256`。Dump 必须先成功上传，manifest 才可见；命令、dump 上传或 manifest 上传失败均记为 backup 失败；只有当调用方通过 `runOnce` backup port 执行该 adapter 时，coordinator 才会据此将 run 终态标为 `partial`。
+
+### Retention 与 restore verification
+
+`selectBackupDeletions` 是纯函数，只接收一次完整的 backup key 列表并返回待审查的成对 dump/manifest key：最近 30 个有完整 restore point 的 UTC 日期各保留最后一点，更早日期按每个日历月保留最后一点。`null`、列表不确定、非法或不成对 key 均返回空列表。本任务不会调用 R2 Delete；历史对象的实际删除需要另行批准的 OpenSpec change。
+
+`restoreVerify` 只提供注入式恢复校验流程：调用方注入备份 key、target URL 函数、S3 `get` 与数据库会话。流程先校验 key grammar、dump/manifest canonical bytes 与 SHA-256，再确认目标库为空且其规范化 host/hostaddr、端口和数据库名不等于 production identity，之后才用 `pg_restore --dbname=<private-service> --no-owner --no-privileges --single-transaction` 执行恢复。恢复后校验 migration checksums、核心表行数、`publications.verified` 与 immutable baseline snapshot 的 key/hash/canonical bytes；baseline 只提供 PostgreSQL 未保存的 weekday labels 及历史数组顺序/身份索引，collection、calendar、summary 和 item 值全部从恢复数据库投影重建。任何 baseline 缺失、身份集合不匹配或 hash 不一致都会 fail closed。该流程不 publish、不发送通知，也不定义可执行 restore 命令、凭据或 argv/env 输入；这些留给 Task 9.3。
 
 ## 上游完整抓取与重试
 
