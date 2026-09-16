@@ -21,7 +21,7 @@
 ## 5. Backup and Restore
 
 - [x] 5.1 Verify pg_dump/pg_restore and R2 client contracts, then implement custom-format backup upload, checksum manifest, partial-success semantics, and tests
-- [ ] 5.2 Add an injectable `runOnce` composition that wires `createBackup` and requires a notifier port; implement 30-UTC-day/monthly retention candidate selection without R2 deletes and a safe empty-database restore-verification flow. Defer the executable sync entrypoint to 6.2 and restore command/input syntax to 9.3.
+- [ ] 5.2 Add an injectable `runOnce` composition that wires `createBackup` and requires a notifier port; implement 30-UTC-day/monthly retention candidate selection without R2 deletes and a safe empty-database restore-verification flow. Rebuild database-backed snapshot fields from PostgreSQL, use only the verified immutable snapshot's weekday labels (not stored in PostgreSQL), and fail closed if that baseline is absent or mismatched. Defer executable sync to 6.2 and restore command/input syntax to 9.3.
 
 ## 6. Feishu Run Notifications
 
