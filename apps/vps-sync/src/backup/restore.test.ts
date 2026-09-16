@@ -231,7 +231,7 @@ test('downloads and verifies a dump, restores with PG17-safe flags, then validat
   assert.equal(fixture.calls.length, 1)
   assert.equal(fixture.calls[0]?.command, 'pg_restore')
   assert.deepEqual(fixture.calls[0]?.args, [
-    '--dbname=airing-cal-restore',
+    '--dbname=service=airing-cal-restore',
     '--no-owner',
     '--no-privileges',
     '--single-transaction',

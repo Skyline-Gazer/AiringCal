@@ -577,7 +577,7 @@ export async function restoreVerify(
     env.PGSERVICE = RESTORE_SERVICE_NAME
     env.PGSERVICEFILE = serviceFile
     await (deps.runCommand ?? defaultCommandRunner)('pg_restore', [
-      `--dbname=${RESTORE_SERVICE_NAME}`,
+      `--dbname=service=${RESTORE_SERVICE_NAME}`,
       '--no-owner',
       '--no-privileges',
       '--single-transaction',
