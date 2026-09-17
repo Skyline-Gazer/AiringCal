@@ -227,11 +227,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 - Modify: `apps/vps-sync/src/cli.ts`, `apps/vps-sync/src/cli.test.ts`
 
 **Interfaces:**
-- Produces: `deliverNotification(config, result): Promise<'sent'|'failed'>`；独立 `notification_failed` 状态和前次未投递摘要；将真实 Feishu notifier 注入 `cli.ts` 并在本 task 激活 executable `sync` entrypoint（不得使用 no-op notifier）。
+- Produces: `deliverNotification(config, result): Promise<'sent'|'failed'>`；独立 `notification_failed` 状态和前次未投递摘要；将真实 Feishu notifier 注入 `cli.ts` 并提供 process-facing、可注入的 executable `sync` entrypoint（不得使用 no-op notifier）。本仓库当前没有完整 PostgreSQL/BGM/R2 runtime composition；无注入 runtime 时入口必须 fail closed，完整生产 composition 留给部署/切换阶段。
 
 - [ ] **Step 1: RED tests** — bounded timeout/non-2xx/invalid success body 为 failed；业务终态先持久化；通知失败不改变 publication/backup；下一次成功消息含前次 compact summary；日志无 webhook/signature/DB URL。
 - [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- deliver.test.ts run.test.ts repositories.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — 注入 fetch/clock，投递一次且失败不抛过业务边界，repository 独立记录结果；用真实 `deliverNotification` 组合并激活 executable `sync` entrypoint。
+- [ ] **Step 3: GREEN** — 注入 fetch/clock，投递一次且失败不抛过业务边界，repository 独立记录结果；用真实 `deliverNotification` 组合并提供 process-facing、可注入的 executable `sync` entrypoint；无 runtime composition 时 fail closed，不实现 no-op 或越界重建生产适配器。
 - [ ] **Step 4: REFACTOR/验证** — notification/run suites/typecheck PASS。
 - [ ] **Step 5: 文档、提交与推送** — 同步 secret 与失败语义；commit `feat(vps-sync): deliver terminal Feishu notifications` 后 push。
 

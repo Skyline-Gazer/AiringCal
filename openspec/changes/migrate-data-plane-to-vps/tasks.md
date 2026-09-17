@@ -26,7 +26,7 @@
 ## 6. Feishu Run Notifications
 
 - [x] 6.1 Verify the official Feishu webhook/signature contract and implement success, no-change, partial, failure, and skipped notification payload tests
-- [ ] 6.2 Implement bounded notification delivery, notification_failed persistence, previous-failure summary, and credential/error redaction tests; inject the real Feishu notifier and activate the executable sync entrypoint.
+- [ ] 6.2 Implement bounded notification delivery, notification_failed persistence, previous-failure summary, and credential/error redaction tests; inject the real Feishu notifier and provide a process-facing, injectable executable sync entrypoint that fails closed without a runtime composition (full PostgreSQL/BGM/R2 composition is deferred to deployment/cutover stages).
 
 ## 7. Alpine Container and VPS Operation
 
