@@ -463,6 +463,27 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 
 这个顺序保证 additive D1 migration 先完成，内部 read/media/sync Worker 与 Workflow 控制面再更新，最后才更新公开入口 frontend Worker。部署不创建 live instance；业务同步由 schedule 或显式手动 trigger 独立执行。首次部署时 frontend 的 service binding 需要 read/sync Worker 已存在，所以 frontend 不放进并行 matrix。
 
+### VPS sync 镜像 CI
+
+`.github/workflows/vps-sync-image.yml` 在每次 push 上先运行
+`pnpm typecheck`、`pnpm test` 和 `pnpm build:check`，然后只构建
+`Dockerfile.vps-sync` 的 `production` target 并发布到
+`ghcr.io/skyline-gazer/airing-cal-sync`。镜像的权威引用是完整 40 位
+commit SHA，例如 `:<git-sha>`；`latest` 仅用于发现，VPS Compose 仍只接受
+完整 SHA。CI 在发布前检查这个 SHA tag 尚不存在，已有 tag 或无法确认 tag
+不存在时会 fail closed，因此不会覆盖已有版本。
+
+工作流只使用 `GITHUB_TOKEN` 的 `packages: write` 权限，不读取 VPS、数据库、
+R2、Bangumi 或 Feishu secret，也不执行 SSH 或部署。每次构建会把镜像 digest、
+Git SHA、pnpm、Node/Alpine 版本和 `node:alpine` manifest digest 写入 job summary
+并上传为 metadata artifact。
+
+截至 2026-09-17，官方 [Node image metadata](https://raw.githubusercontent.com/docker-library/official-images/master/library/node)
+核验结果为 Node 26.9.0 / Alpine 3.24，因此 CI 使用 Node 26；构建前会重新读取
+官方 metadata，并在 Node 大版本变化时停止发布，需要先更新并重新核验 workflow。
+镜像发布本身不触发 VPS 运行；人工 shadow/live 操作仍按
+[VPS runbook](deploy/vps/README.md) 执行。
+
 ### 正式回退 runbook
 
 1. 在 Cloudflare Dashboard 暂停 `airing-cal-sync` 的 Worker Cron trigger，防止回退期间创建新的 live instance。

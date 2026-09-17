@@ -1,0 +1,220 @@
+name: Publish VPS sync production image
+
+on:
+  push:
+
+concurrency:
+  group: vps-sync-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: skyline-gazer/airing-cal-sync
+  NODE_MAJOR: '26'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4
+        with:
+          version: 9.15.9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: 26
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build check
+        run: pnpm build:check
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Resolve Node.js and Alpine base metadata
+        id: base
+        env:
+          EXPECTED_NODE_MAJOR: ${{ env.NODE_MAJOR }}
+          OFFICIAL_METADATA_PATH: ${{ runner.temp }}/node-official-images.txt
+          MANIFEST_PATH: ${{ runner.temp }}/node-alpine-manifest.json
+          IMAGE_PATH: ${{ runner.temp }}/node-alpine-image.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error \
+            --output "$OFFICIAL_METADATA_PATH" \
+            https://raw.githubusercontent.com/docker-library/official-images/master/library/node
+          docker buildx imagetools inspect node:alpine --format '{{json .Manifest}}' > "$MANIFEST_PATH"
+          docker buildx imagetools inspect node:alpine --format '{{json .Image}}' > "$IMAGE_PATH"
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs'
+
+          const metadata = readFileSync(process.env.OFFICIAL_METADATA_PATH, 'utf8')
+          const manifest = JSON.parse(readFileSync(process.env.MANIFEST_PATH, 'utf8'))
+          const image = JSON.parse(readFileSync(process.env.IMAGE_PATH, 'utf8'))
+          const tagLine = metadata.split(/\r?\n/).find((line) => /^Tags: .*\balpine,/.test(line))
+          const nodeVersion = tagLine?.match(/\b(\d+\.\d+\.\d+)-alpine(?:3\.\d+)?\b/)?.[1]
+          const alpineVersion = tagLine?.match(/\b\d+\.\d+\.\d+-alpine(3\.\d+)\b/)?.[1]
+          const officialCommit = metadata.match(/^# this file is generated via .*\/([0-9a-f]{40})/m)?.[1]
+          const nodeDockerCommit = metadata.match(/^GitCommit: ([0-9a-f]{40})/m)?.[1]
+          const manifestDigest = manifest.digest
+
+          if (!nodeVersion || !alpineVersion || !officialCommit || !nodeDockerCommit) {
+            throw new Error('official node metadata did not contain a version, Alpine variant, or commit')
+          }
+          if (nodeVersion.split('.')[0] !== process.env.EXPECTED_NODE_MAJOR) {
+            throw new Error(`Node major ${nodeVersion.split('.')[0]} does not match setup-node ${process.env.EXPECTED_NODE_MAJOR}`)
+          }
+          if (!/^sha256:[0-9a-f]{64}$/.test(manifestDigest)) {
+            throw new Error(`node:alpine manifest digest is not a sha256 digest: ${manifestDigest}`)
+          }
+
+          const outputs = [
+            `node_version=${nodeVersion}`,
+            `alpine_version=${alpineVersion}`,
+            `manifest_digest=${manifestDigest}`,
+            `official_images_commit=${officialCommit}`,
+            `node_docker_commit=${nodeDockerCommit}`,
+          ]
+          appendFileSync(process.env.GITHUB_OUTPUT, `${outputs.join('\n')}\n`)
+          console.log(JSON.stringify({
+            reference: 'node:alpine',
+            nodeVersion,
+            alpineVersion: `Alpine ${alpineVersion}`,
+            manifestDigest,
+            officialCommit,
+            nodeDockerCommit,
+            architecture: image.architecture,
+            os: image.os,
+          }))
+          NODE
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse an existing full-SHA tag
+        env:
+          GHCR_ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository="${IMAGE_NAME}"
+          token_response="$(curl --fail-with-body --silent --show-error \
+            --user "${GHCR_ACTOR}:${GHCR_TOKEN}" \
+            --get \
+            --data-urlencode "service=${REGISTRY}" \
+            --data-urlencode "scope=repository:${repository}:pull" \
+            "https://${REGISTRY}/token")"
+          registry_token="$(node --input-type=module -e 'import { readFileSync } from "node:fs"; const body = JSON.parse(readFileSync(0, "utf8")); if (typeof body.token !== "string" || body.token.length === 0) process.exit(1); process.stdout.write(body.token)' <<<"$token_response")"
+          status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --head \
+            --header "Authorization: Bearer ${registry_token}" \
+            --header 'Accept: application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
+            "https://${REGISTRY}/v2/${repository}/manifests/${GITHUB_SHA}")"
+          case "$status" in
+            404) echo "Full SHA tag is absent; continuing" ;;
+            200) echo "Full SHA tag already exists; refusing to overwrite" >&2; exit 1 ;;
+            *) echo "Could not prove full SHA tag is absent (HTTP ${status}); refusing to push" >&2; exit 1 ;;
+          esac
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ github.sha }}
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.base.name=node:alpine
+            org.opencontainers.image.base.digest=${{ steps.base.outputs.manifest_digest }}
+
+      - name: Build and push production image
+        id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile.vps-sync
+          target: production
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Write image metadata
+        env:
+          METADATA_PATH: ${{ runner.temp }}/vps-sync-image-metadata.json
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          NODE_VERSION: ${{ steps.base.outputs.node_version }}
+          ALPINE_VERSION: ${{ steps.base.outputs.alpine_version }}
+          BASE_DIGEST: ${{ steps.base.outputs.manifest_digest }}
+          OFFICIAL_IMAGES_COMMIT: ${{ steps.base.outputs.official_images_commit }}
+          NODE_DOCKER_COMMIT: ${{ steps.base.outputs.node_docker_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$IMAGE_DIGEST"
+          test "${GITHUB_SHA}" = "$(git rev-parse HEAD)"
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
+
+          const metadata = {
+            git_sha: process.env.GITHUB_SHA,
+            image: `${process.env.REGISTRY}/${process.env.IMAGE_NAME}:${process.env.GITHUB_SHA}`,
+            discovery_tag: `${process.env.REGISTRY}/${process.env.IMAGE_NAME}:latest`,
+            image_digest: process.env.IMAGE_DIGEST,
+            base: {
+              reference: 'node:alpine',
+              node_version: process.env.NODE_VERSION,
+              alpine_version: process.env.ALPINE_VERSION,
+              manifest_digest: process.env.BASE_DIGEST,
+              official_images_commit: process.env.OFFICIAL_IMAGES_COMMIT,
+              node_docker_commit: process.env.NODE_DOCKER_COMMIT,
+            },
+            pnpm_version: '9.15.9',
+            dockerfile: 'Dockerfile.vps-sync',
+          }
+          writeFileSync(process.env.METADATA_PATH, `${JSON.stringify(metadata, null, 2)}\n`)
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, [
+            '## VPS sync production image',
+            '',
+            `- Immutable image: \`${metadata.image}\``,
+            `- Digest: \`${metadata.image_digest}\``,
+            `- Base: \`${metadata.base.reference}\` → Node ${metadata.base.node_version}, Alpine ${metadata.base.alpine_version}, ${metadata.base.manifest_digest}`,
+            `- pnpm: ${metadata.pnpm_version}`,
+            '',
+          ].join('\n'))
+          NODE
+
+      - name: Upload image metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vps-sync-image-metadata-${{ github.sha }}
+          path: ${{ runner.temp }}/vps-sync-image-metadata.json
+          if-no-files-found: error
+          overwrite: false
