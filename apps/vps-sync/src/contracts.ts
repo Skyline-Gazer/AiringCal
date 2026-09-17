@@ -5,6 +5,7 @@ import type {
   RunFinishInput,
   RunStart,
   RunStartInput,
+  NotificationFailureSummary,
 } from './postgres/repositories.js'
 
 export type RunRequest = { mode: 'shadow' | 'live'; source: 'scheduled' | 'manual' }
@@ -18,6 +19,7 @@ export type RunResult = RunFinishInput & {
   mode: RunRequest['mode']
   gitSha: string
   publication?: PublicationResult
+  previousNotificationFailure?: NotificationFailureSummary | null
 }
 export type RunContext = RunRequest & { runId: string; observedAt: string }
 
@@ -31,12 +33,13 @@ export interface RunDependencies {
     heartbeat(id: string, stage: string, at: string): Promise<void>
     commitCompleteState(input: CompleteState | CompleteStateInput): Promise<RunFinishInput['counts'] | void>
     finishRun(input: RunFinish | RunFinishInput | RunResult): Promise<void>
+    getPreviousNotificationFailure?(excludeRunId?: string): Promise<NotificationFailureSummary | null>
   }
   /** Returns only a validated, complete collection/calendar projection. */
   fetchComplete(context: RunContext): Promise<CompleteState | CompleteStateInput>
   media(context: RunContext): Promise<MediaSummary>
   publish(context: RunContext): Promise<PublicationResult>
   backup(context: RunContext, publication: Extract<PublicationResult, { generation: number }>): Promise<void>
-  notify(result: RunResult): Promise<void>
+  notify(result: RunResult): Promise<'sent' | 'failed' | void>
   close(): Promise<void>
 }

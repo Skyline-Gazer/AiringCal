@@ -406,6 +406,59 @@ test("normalized PostgreSQL authority", { skip: !enabled }, async (t) => {
         for (const { value } of values) for (const secret of secrets) assert.equal(value?.includes(secret) ?? false, false, `${table_name}.${column_name}`);
       }
     });
+
+    await t.test("notification failure is independent and the latest terminal summary is readable", async () => {
+      await start("notification-failed", 900);
+      await authority.finishRun("notification-failed", {
+        status: "success",
+        completed_at: 901,
+        publication: "verified",
+        backup: "success",
+        notification: "failed",
+        notification_failure: {
+          category: "notification",
+          code: "NOTIFICATION_FAILED",
+          stage: "notification",
+          attemptCount: 1,
+        },
+      });
+      assert.deepEqual(await authority.getPreviousNotificationFailure(), {
+        category: "notification",
+        code: "NOTIFICATION_FAILED",
+        stage: "notification",
+        attemptCount: 1,
+      });
+      const failedRow = (await pool.query("SELECT status, publication, backup, notification, notification_failed FROM sync_runs WHERE run_id = $1", ["notification-failed"])).rows[0];
+      assert.deepEqual(failedRow, {
+        status: "success",
+        publication: "verified",
+        backup: "success",
+        notification: "failed",
+        notification_failed: {
+          category: "notification",
+          code: "NOTIFICATION_FAILED",
+          stage: "notification",
+          attemptCount: 1,
+        },
+      });
+
+      await start("notification-success", 902);
+      assert.deepEqual(await authority.getPreviousNotificationFailure("notification-success"), {
+        category: "notification",
+        code: "NOTIFICATION_FAILED",
+        stage: "notification",
+        attemptCount: 1,
+      });
+      await authority.finishRun("notification-success", {
+        status: "success",
+        completed_at: 903,
+        publication: "verified",
+        backup: "success",
+        notification: "success",
+        notification_failure: null,
+      });
+      assert.equal(await authority.getPreviousNotificationFailure(), null);
+    });
   } finally {
     await pool.end();
     await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

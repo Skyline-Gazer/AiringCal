@@ -37,6 +37,7 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
     counts: {},
     stageDurations: {},
     sanitizedError: null,
+    notificationFailure: null,
     components: {
       collection: 'not_attempted',
       calendar: 'not_attempted',
@@ -143,12 +144,21 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
     result.finishedAt = result.heartbeatAt = at()
     await persist()
     try {
-      await stage('notification', () => deps.notify(structuredClone(result)))
-      components.notification = 'success'
-    } catch (error) {
-      components.notification = 'failed'
-      failure(error)
+      result.previousNotificationFailure = await deps.authority.getPreviousNotificationFailure?.(deps.runId) ?? null
+    } catch {
+      result.previousNotificationFailure = null
     }
+    let notification: 'sent' | 'failed' = 'failed'
+    try {
+      const delivered = await stage('notification', () => deps.notify(structuredClone(result)))
+      notification = delivered === 'failed' ? 'failed' : 'sent'
+    } catch {
+      notification = 'failed'
+    }
+    components.notification = notification === 'sent' ? 'success' : 'failed'
+    result.notificationFailure = notification === 'failed'
+      ? { category: 'notification', code: 'NOTIFICATION_FAILED', stage: 'notification', attemptCount: 1 }
+      : null
     result.stage = 'finished'
     result.heartbeatAt = at()
     result.counts = counts

@@ -20,7 +20,7 @@ DATABASE_URL=postgres://postgres:test@127.0.0.1:54329/postgres VPS_SYNC_TEST_DAT
 
 ## 规范化 authority
 
-`PostgresAuthority` 接收通过 `DATABASE_URL` 创建的 `pg.Pool` 和运行时 secret 值列表。`0001_initial.sql` 创建 `users`、`subjects`、`collection_items`、`subject_media`、`calendar_entries`、`sync_runs`、`publications`；`0002_media_component_state.sql` 为 `subject_media` 增加仅含 allow-listed component status、metadata 与 hash 的 JSONB 列。保持 `0001` 不变；旧媒体行继续从原聚合列推导组件状态。这些是尚未部署的 migrations；若开发数据库已应用旧占位版本，checksum 校验会拒绝它，测试应使用新的 disposable schema，不能修改数据库中的 checksum 绕过校验。
+`PostgresAuthority` 接收通过 `DATABASE_URL` 创建的 `pg.Pool` 和运行时 secret 值列表。`0001_initial.sql` 创建 `users`、`subjects`、`collection_items`、`subject_media`、`calendar_entries`、`sync_runs`、`publications`；`0002_media_component_state.sql` 为 `subject_media` 增加仅含 allow-listed component status、metadata 与 hash 的 JSONB 列；`0003_notification_failed.sql` 为 `sync_runs` 增加可空的独立通知失败摘要 JSONB 列。保持 `0001` 不变；旧媒体行继续从原聚合列推导组件状态。这些是尚未部署的 migrations；若开发数据库已应用旧占位版本，checksum 校验会拒绝它，测试应使用新的 disposable schema，不能修改数据库中的 checksum 绕过校验。
 
 `beginRun` 记录 run identity、source、mode、git SHA 和 Unix 秒观察时间。`commitCompleteState` 接受全部配置用户的完整结果和完整日历；用户缺失、重复 subject、重复收藏、非法日历或 incomplete 标记均会拒绝写入。调用方先完成分页与 upstream contract 校验，再提交已归一化数据。事务用 advisory lock 串行化，subjects/collections 的 upsert、日历替换及 run checkpoint 一起提交或回滚；未变化的 subject 与日历行不重写，collection 结果分别报告 inserted、updated、unchanged；事务期间仅访问 PostgreSQL。
 
@@ -32,7 +32,7 @@ DATABASE_URL=postgres://postgres:test@127.0.0.1:54329/postgres VPS_SYNC_TEST_DAT
 
 ## 一次性同步与媒体生命周期
 
-`runOnce` 通过端口注入依赖，按 lock → complete collection/calendar fetch → complete-state commit → media refresh → publication → backup → notification 顺序执行。每个阶段先更新 heartbeat；锁未取得时只记录并通知 `skipped`，不调用上游、媒体或发布写入。完整抓取失败不会提交 authority state；媒体的 detail、metadata 与 image 独立处理，瞬态失败保留最后成功引用并使本轮为 `partial`。只有明确的 detail `null` 才创建 24 小时 tombstone；detail 网络/服务端失败会清除已过期 tombstone 并在一小时后重试。图片 429、5xx 响应或 fetch 超时/网络错误也在一小时后重试；无效图片内容保留正常刷新调度。终态为 `success`、`no_change`、`skipped` 时进程退出码为 0，`partial` 与 `failed` 为非零。
+`runOnce` 通过端口注入依赖，按 lock → complete collection/calendar fetch → complete-state commit → media refresh → publication → backup → notification 顺序执行。每个阶段先更新 heartbeat；锁未取得时只记录并通知 `skipped`，不调用上游、媒体或发布写入。完整抓取失败不会提交 authority state；媒体的 detail、metadata 与 image 独立处理，瞬态失败保留最后成功引用并使本轮为 `partial`。只有明确的 detail `null` 才创建 24 小时 tombstone；detail 网络/服务端失败会清除已过期 tombstone 并在一小时后重试。图片 429、5xx 响应或 fetch 超时/网络错误也在一小时后重试；无效图片内容保留正常刷新调度。业务终态先写入 `sync_runs`，然后才投递通知；通知失败只更新独立的 `notification_failed` JSONB 摘要，不会把业务结果改成 `failed` 或撤销 publication/backup。下一轮会读取上一条已完成 run 的 compact `category/code/stage/attemptCount` 摘要。终态为 `success`、`no_change`、`skipped` 时进程退出码为 0，`partial` 与 `failed` 为非零。
 
 媒体刷新按 `new_or_changed → hot → cold → retry` 的稳定优先级和 subject ID 排序，cold 使用 UTC 星期分片，并固定最多四个并发 subject。每个 subject 的 PostgreSQL 行锁覆盖上游读取、图片校验、R2 PUT 与引用提交；图片只接受 HTTPS 白名单 host、200 与允许 MIME，限制 8 MiB 后计算 SHA-256，先写对象再保存引用。shadow 对象使用 `shadow/images/<sha256>/original`，相同 hash/key 复用对象。
 
@@ -65,7 +65,7 @@ R2 失败时，已 claim pending 保持可重放，数据库 verified 不前移�
 
 ## PostgreSQL backup
 
-本节记录已实现的 `createBackup` adapter 与 `apps/vps-sync/src/cli.ts` 注入式 composition，不表示生产 CLI 或定时备份已启用。调用方必须提供真实 `notify` port 和 backup 配置；coordinator 仅在 publication 为 `published` 或 `no_change` 时调用备份。备份失败会使该次 run 进入 `partial`，但不会撤销已完成的 publication。Task 5.2 不注册 executable `sync` 命令或 host-cron 调用路径。
+本节记录已实现的 `createBackup` adapter 与 `apps/vps-sync/src/cli.ts` 注入式 composition。`createSyncEntrypoint`/`sync` 会从配置安装真实 Feishu notifier，调用方仍须提供其余同步端口和 backup 配置；不会安装 no-op notifier。coordinator 仅在 publication 为 `published` 或 `no_change` 时调用备份。备份失败会使该次 run 进入 `partial`，但不会撤销已完成的 publication。`sync` 入口接受 `--mode=shadow|live` 与 `--source=scheduled|manual`；webhook 配置由调用方从 `FEISHU_WEBHOOK_URL`（必填）、`FEISHU_WEBHOOK_TOKEN`、`FEISHU_WEBHOOK_SECRET` 和可选 `FEISHU_TIMEOUT_MS` 读取，URL/token/secret 不进入 argv 或日志。实际生产运行仍须由部署层提供完整的 PostgreSQL、上游、R2 与同步端口 composition；本任务不执行生产切换。
 
 `pg_dump --format=custom --file=<private-temp-file>` 生成可由 `pg_restore` 恢复的 PostgreSQL custom archive。连接 URI 不传入子进程 argv 或日志；路径、query、用户名与密码按 libpq 规则解码 percent-encoding，query 中未编码的 `+` 保留为加号，query 的 `dbname` 覆盖 path 中的数据库名。实现将受支持的连接参数写入临时 `pg_service.conf`（0600），再通过 `PGSERVICEFILE` / `PGSERVICE` 选择该 service。子进程会清除继承的 libpq `PG*` 连接环境变量，避免宿主默认值覆盖或补充目标连接。service-file 和环境变量约定见 PostgreSQL [connection service file](https://www.postgresql.org/docs/17/libpq-pgservice.html) 与 [environment variables](https://www.postgresql.org/docs/17/libpq-envars.html)。实现先流式读取 archive 计算 SHA-256 与字节数，再以带 `ContentLength` 的流式 R2 PUT 写入 dump，成功后才写 manifest。上传使用单次 PutObject 而非 multipart；Cloudflare R2 单次 PutObject 上限为 5 GiB，接近该上限时应先实现 multipart 再提升该边界（见 [R2 upload limits](https://developers.cloudflare.com/r2/objects/upload-objects/)）。
 
@@ -101,11 +101,11 @@ VPS 适配器使用 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection �
 
 ## 飞书通知 payload 与签名
 
-Task 6.1 的 `buildFeishuMessage` 只构造文本消息，不读取 webhook、不发出网络请求，也不改变业务终态。每个终态（`success`、`no_change`、`partial`、`failed`、`skipped`）都包含 run ID、mode/source、Asia/Shanghai 时间、publication generation/hash、计数、阶段耗时、publication/backup/notification 结果，以及 Node/Alpine 字段。`runOnce` 将依赖注入的 `gitSha` 传入 sanitized `RunResult`，消息边界只输出严格 40 位小写 SHA，否则为 `unknown`；Alpine 明确为 `unknown`，Node 使用 `process.version`。只消费结构化、已脱敏的 `RunResult`。
+Task 6.1 的 `buildFeishuMessage` 只构造文本消息，不读取 webhook；Task 6.2 的 `deliverNotification` 负责单次真实 POST，不自动 retry。每个终态（`success`、`no_change`、`partial`、`failed`、`skipped`）都包含 run ID、mode/source、Asia/Shanghai 时间、publication generation/hash、计数、阶段耗时、publication/backup/notification 结果，以及 Node/Alpine 字段。`runOnce` 将依赖注入的 `gitSha` 传入 sanitized `RunResult`，消息边界只输出严格 40 位小写 SHA，否则为 `unknown`；Alpine 明确为 `unknown`，Node 使用 `process.version`。只消费结构化、已脱敏的 `RunResult`。
 
 飞书官方契约参考：[自定义机器人使用指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)（官方页面最后更新 2025-03-27；本次访问 2026-09-17）。已核验结论：请求为 HTTP POST JSON，基础 body 使用 `msg_type` 和 `content`；签名开启时再加入字符串秒级 `timestamp` 与 `sign`。`timestamp` 必须距当前不超过 1 小时（3600 秒），`sign` 为以 `timestamp + "\\n" + secret` 为 HMAC-SHA256 key、对空字符串计算后再 Base64 编码。成功响应的 `code` 为 `0`（`StatusCode`/`StatusMessage` 是兼容旧逻辑字段，不作为判断依据）；请求体上限为 20 KB。
 
-`signFeishu(timestamp, secret)` 仅实现上述纯签名计算。Webhook URL、token、header、secret、数据库/R2 credential 及 raw exception 不进入 payload；投递、超时/retry、成功响应校验和 `notification_failed` 持久化属于 Task 6.2。
+`signFeishu(timestamp, secret)` 实现上述纯签名计算；`deliverNotification` 使用注入的 `fetch`/clock，设置有界 timeout 和 `AbortController`，只发送一次，非 2xx、无效 JSON、`code !== 0` 或超时均返回 `failed`，官方成功语义只接受 `code === 0`。请求体限制为 20 KiB。Webhook URL、token、header、secret、数据库/R2 credential 及 raw exception 不进入 payload、日志或 `notification_failed`；失败只持久化稳定的 `category=notification`、失败 code、`stage=notification` 与 `attemptCount`。
 
 ## Secret 禁存与测试
 

@@ -106,6 +106,38 @@ test('no change still backs up and backup failure becomes partial', async () => 
   assert.equal(result.components.notification, 'failed')
 })
 
+test('notification failure keeps the business terminal result and persists independently', async () => {
+  const { deps, finished, notified } = fixture()
+  deps.notify = async (result) => {
+    notified.push(structuredClone(result))
+    return 'failed'
+  }
+
+  const result = await runOnce(deps, request)
+
+  assert.equal(result.status, 'success')
+  assert.equal(result.publication?.status, 'published')
+  assert.equal(result.components.publication, 'success')
+  assert.equal(result.components.backup, 'success')
+  assert.equal(result.components.notification, 'failed')
+  assert.equal(finished[0] && (finished[0] as RunResult).status, 'success')
+  assert.equal(finished.at(-1) && (finished.at(-1) as RunResult).status, 'success')
+  assert.equal((finished.at(-1) as RunResult).components.notification, 'failed')
+})
+
+test('passes the previous compact notification failure to the next notifier', async () => {
+  const { deps, notified } = fixture()
+  deps.authority.getPreviousNotificationFailure = async () => ({
+    category: 'notification', code: 'NOTIFICATION_FAILED', stage: 'notification', attemptCount: 1,
+  })
+
+  await runOnce(deps, request)
+
+  assert.deepEqual(notified.at(-1)?.previousNotificationFailure, {
+    category: 'notification', code: 'NOTIFICATION_FAILED', stage: 'notification', attemptCount: 1,
+  })
+})
+
 test('backup failure after publication or no change preserves publication and persists partial', async () => {
   for (const publication of [
     { status: 'published', generation: 2, contentHash: 'b'.repeat(64) },

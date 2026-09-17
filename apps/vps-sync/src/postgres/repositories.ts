@@ -99,6 +99,7 @@ export interface RunFinish {
   media_succeeded?: number;
   media_failed?: number;
   durations?: Partial<Record<"fetch" | "state" | "media" | "publication" | "backup" | "notification", number>>;
+  notification_failure?: NotificationFailureSummary | null;
 }
 
 /** Port DTOs used by the one-shot coordinator.  The snake_case rows above remain
@@ -166,6 +167,7 @@ export type RunStartInput = {
 };
 
 export type SanitizedError = { category: string; code: string; attemptCount: number; stage: string };
+export type NotificationFailureSummary = { category: string; code: string; attemptCount: number; stage: string };
 export type RunCounts = Partial<Record<
   | "users" | "collections" | "inserted" | "updated" | "unchanged" | "missing" | "deleted" | "restored"
   | "mediaSelected" | "mediaSucceeded" | "mediaFailed", number
@@ -185,6 +187,7 @@ export type RunFinishInput = {
   stageDurations: RunStageDurations;
   sanitizedError: SanitizedError | null;
   components: RunComponents;
+  notificationFailure?: NotificationFailureSummary | null;
 };
 
 export type MediaDetail = {
@@ -228,6 +231,7 @@ export type MediaResultInput = {
 export type MediaState = Omit<MediaResultInput, "observedAt" | "runId"> & { observedAt: string | null; runId: string | null };
 
 const ERROR_CODES = new Set(["UNKNOWN", "UPSTREAM_AUTH", "UPSTREAM_NOT_FOUND", "UPSTREAM_RATE_LIMIT", "UPSTREAM_TIMEOUT", "UPSTREAM_NETWORK", "UPSTREAM_SERVER", "UPSTREAM_CONTRACT", "DATABASE", "MEDIA_INVALID", "MEDIA_UPLOAD", "PUBLICATION", "BACKUP", "NOTIFICATION", "LOCK_UNAVAILABLE"]);
+const NOTIFICATION_FAILURE_CODES = new Set(["NOTIFICATION_FAILED"]);
 const code = (value?: string) => value === undefined ? null : ERROR_CODES.has(value) ? value : "UNKNOWN";
 const integer = (value: unknown, min = 0): value is number => Number.isSafeInteger(value) && (value as number) >= min;
 const sha256 = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -258,6 +262,22 @@ function isMediaMetadata(value: unknown): value is MediaMetadata | null {
 
 function requireValid(valid: boolean, error = "INVALID_COMPLETE_STATE"): asserts valid {
   if (!valid) throw new Error(error);
+}
+
+function notificationFailureValue(value: unknown): NotificationFailureSummary | null {
+  if (value === null || value === undefined) return null;
+  requireValid(typeof value === "object" && value !== null && !Array.isArray(value), "INVALID_NOTIFICATION_FAILURE");
+  const failure = value as Record<string, unknown>;
+  requireValid(typeof failure.category === "string" && failure.category === "notification"
+    && typeof failure.code === "string" && NOTIFICATION_FAILURE_CODES.has(failure.code)
+    && typeof failure.stage === "string" && failure.stage === "notification"
+    && integer(failure.attemptCount, 1) && failure.attemptCount <= 3, "INVALID_NOTIFICATION_FAILURE");
+  return {
+    category: "notification",
+    code: failure.code,
+    stage: "notification",
+    attemptCount: failure.attemptCount,
+  };
 }
 
 function subjectProjection(value: Subject): Subject {
@@ -423,6 +443,7 @@ function finishFromInput(input: RunFinishInput): { run_id: string; result: RunFi
         ...(input.stageDurations.backup === undefined ? {} : { backup: input.stageDurations.backup }),
         ...(input.stageDurations.notification === undefined ? {} : { notification: input.stageDurations.notification }),
       },
+      notification_failure: notificationFailureValue(input.notificationFailure),
     },
   };
 }
@@ -863,6 +884,7 @@ export class PostgresAuthority {
   async finishRun(runOrInput: string | RunFinishInput, supplied?: RunFinish): Promise<void> {
     const run_id = typeof runOrInput === "string" ? runOrInput : runOrInput.id;
     const result = typeof runOrInput === "string" ? supplied! : finishFromInput(runOrInput).result;
+    const notificationFailure = notificationFailureValue(result.notification_failure);
     requireValid(["success", "no_change", "partial", "failed", "skipped"].includes(result.status)
       && integer(result.completed_at) && ["not_attempted", "verified", "no_change", "failed"].includes(result.publication)
       && [result.backup, result.notification].every((value) => ["not_attempted", "success", "failed"].includes(value))
@@ -873,9 +895,17 @@ export class PostgresAuthority {
       if (value !== undefined) { requireValid(integer(value), "INVALID_RUN_RESULT"); durations[stage] = value; }
     }
     const updated = await this.pool.query(`UPDATE sync_runs SET stage='finished', status=$2, completed_at=$3, heartbeat_at=$3,
-      publication=$4, backup=$5, notification=$6, error_code=$7, media_succeeded=$8, media_failed=$9, durations=$10
+      publication=$4, backup=$5, notification=$6, error_code=$7, media_succeeded=$8, media_failed=$9, durations=$10, notification_failed=$11
       WHERE run_id=$1 AND observed_at <= $3 AND (status='running' OR (status=$2 AND publication=$4 AND backup=$5))`,
-    [run_id, result.status, result.completed_at, result.publication, result.backup, result.notification, code(result.error_code), result.media_succeeded ?? 0, result.media_failed ?? 0, durations]);
+    [run_id, result.status, result.completed_at, result.publication, result.backup, result.notification, code(result.error_code), result.media_succeeded ?? 0, result.media_failed ?? 0, durations, notificationFailure]);
     requireValid(updated.rowCount === 1, "RUN_CONFLICT");
+  }
+
+  async getPreviousNotificationFailure(excludeRunId?: string): Promise<NotificationFailureSummary | null> {
+    const params = excludeRunId === undefined ? [] : [excludeRunId];
+    const { rows } = await this.pool.query<{ notification_failed: unknown }>(`SELECT notification_failed
+      FROM sync_runs WHERE completed_at IS NOT NULL ${excludeRunId === undefined ? "" : "AND run_id <> $1"}
+      ORDER BY completed_at DESC, observed_at DESC, run_id DESC LIMIT 1`, params);
+    return notificationFailureValue(rows[0]?.notification_failed);
   }
 }
