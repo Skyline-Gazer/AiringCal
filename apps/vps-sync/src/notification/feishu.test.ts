@@ -60,7 +60,7 @@ test('redacts URL, token, header and raw exception-like text before it reaches a
   failed.sanitizedError = { category: unsafe, code: unsafe, attemptCount: 1, stage: unsafe }
   const text = buildFeishuMessage(failed, { category: unsafe, code: unsafe, stage: unsafe }).content.text
   for (const marker of ['hook.example', 'very-secret', 'Bearer abc.def', 'hidden', 'raw exception']) assert.doesNotMatch(text, new RegExp(marker.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')))
-  assert.match(text, /\[redacted\]/)
+  assert.match(text, /error=unknown\/unknown\/unknown\/attempt=1/)
   assert.equal(redactText(unsafe), '[redacted]')
 })
 
@@ -72,5 +72,31 @@ test('redacts database and R2 credentials from notification error fields', () =>
   failed.sanitizedError = { category: databaseUrl, code: accessKey, attemptCount: 1, stage: secretKey }
   const text = buildFeishuMessage(failed, { category: databaseUrl, code: accessKey, stage: secretKey }).content.text
   for (const secret of ['sync-user', 'database-secret', 'postgres.example', 'r2-access-secret', 'r2-secret']) assert.doesNotMatch(text, new RegExp(secret))
-  assert.match(text, /\[redacted\]/)
+  assert.match(text, /error=unknown\/unknown\/unknown\/attempt=1/)
+  assert.equal(redactText(`${databaseUrl} ${accessKey} ${secretKey}`), '[redacted]')
+})
+
+test('fails closed when structured error fields contain secrets or raw exception text', () => {
+  const unsafe = [
+    'DATABASE_URL=super-secret',
+    'Authorization=super-secret',
+    'WEBHOOK_URL=super-secret',
+    'R2_ENDPOINT=super-secret',
+    'raw exception: super-secret',
+  ]
+  const failed = result('failed')
+  failed.sanitizedError = { category: unsafe[0], code: unsafe[1], attemptCount: 1, stage: unsafe[2] }
+  const text = buildFeishuMessage(failed, { category: unsafe[3], code: unsafe[4], stage: unsafe[0] }).content.text
+  for (const value of unsafe) assert.doesNotMatch(text, new RegExp(value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')))
+  for (const value of unsafe) assert.equal(redactText(value), '[redacted]')
+  assert.match(text, /error=unknown\/unknown\/unknown\/attempt=1/)
+  assert.match(text, /previous_failure=unknown\/unknown\/unknown/)
+})
+
+test('uses not_attempted for omitted component statuses', () => {
+  const incomplete = result('success')
+  incomplete.components = {}
+  const text = buildFeishuMessage(incomplete).content.text
+  assert.match(text, /publication=not_attempted backup=not_attempted notification=not_attempted/)
+  assert.doesNotMatch(text, /publication=undefined|backup=undefined|notification=undefined/)
 })

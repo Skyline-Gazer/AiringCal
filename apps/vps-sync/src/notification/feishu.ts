@@ -12,14 +12,34 @@ export function signFeishu(timestamp: string, secret: string): string {
 
 const COUNT_FIELDS = ['users', 'collections', 'inserted', 'updated', 'unchanged', 'missing', 'deleted', 'mediaSelected', 'mediaSucceeded', 'mediaFailed'] as const
 const DURATION_FIELDS = ['fetch', 'collection', 'calendar', 'state', 'completeState', 'media', 'publication', 'backup', 'notification'] as const
+const CATEGORIES = new Set([
+  'auth', 'not_found', 'rate_limited', 'upstream', 'timeout', 'network', 'contract', 'runtime', 'database', 'media', 'publication', 'backup', 'notification', 'lock', 'unknown',
+])
+const CODES = new Set([
+  'UNKNOWN', 'UPSTREAM_UNAUTHORIZED', 'UPSTREAM_FORBIDDEN', 'UPSTREAM_NOT_FOUND', 'UPSTREAM_RATE_LIMITED', 'UPSTREAM_5XX', 'UPSTREAM_HTTP', 'UPSTREAM_TIMEOUT', 'UPSTREAM_NETWORK', 'UPSTREAM_CONTRACT',
+  'UPSTREAM_AUTH', 'UPSTREAM_RATE_LIMIT', 'UPSTREAM_SERVER', 'INVALID_RETRY_POLICY', 'RETRY_DELAY_FAILED', 'UNREACHABLE_RETRY', 'STAGE_FAILED', 'MEDIA_INVALID', 'MEDIA_UPLOAD', 'PUBLICATION', 'BACKUP', 'NOTIFICATION', 'NOTIFICATION_FAILED', 'DATABASE', 'LOCK_UNAVAILABLE',
+])
+const STAGES = new Set([
+  'config', 'collections', 'calendar', 'complete', 'lock', 'collection', 'completeState', 'fetch', 'state', 'media', 'publication', 'backup', 'notification', 'finished', 'unknown',
+])
 
 function count(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0
 }
 
 function safeText(value: unknown, fallback = 'unknown'): string {
+  if (value === null || value === undefined) return fallback
   const text = redactText(typeof value === 'string' ? value : String(value))
   return text || fallback
+}
+
+function canonical(value: unknown, allowed: ReadonlySet<string>): string {
+  return typeof value === 'string' && allowed.has(value) ? value : 'unknown'
+}
+
+function errorSummary(error: { category: string; code: string; stage: string }, attemptCount?: unknown): string {
+  const summary = `${canonical(error.category, CATEGORIES)}/${canonical(error.code, CODES)}/${canonical(error.stage, STAGES)}`
+  return attemptCount === undefined ? summary : `${summary}/attempt=${count(attemptCount)}`
 }
 
 function safeHash(value: unknown): string {
@@ -60,8 +80,8 @@ export function buildFeishuMessage(result: RunResult, previousFailure?: Previous
     ...durations,
     `publication=${safeText(result.components.publication, 'not_attempted')} backup=${safeText(result.components.backup, 'not_attempted')} notification=${safeText(result.components.notification, 'not_attempted')}`,
     'git_sha=unknown node=' + safeText(process.version) + ' alpine=unknown',
-    ...(result.sanitizedError ? [`error=${redactText(`${safeText(result.sanitizedError.category)}/${safeText(result.sanitizedError.code)}/${safeText(result.sanitizedError.stage)}/attempt=${count(result.sanitizedError.attemptCount)}`)}`] : []),
-    ...(previousFailure ? [`previous_failure=${redactText(`${safeText(previousFailure.category)}/${safeText(previousFailure.code)}/${safeText(previousFailure.stage)}`)}`] : []),
+    ...(result.sanitizedError ? [`error=${errorSummary(result.sanitizedError, result.sanitizedError.attemptCount)}`] : []),
+    ...(previousFailure ? [`previous_failure=${errorSummary(previousFailure)}`] : []),
   ]
   return { msg_type: 'text', content: { text: lines.join('\n') } }
 }

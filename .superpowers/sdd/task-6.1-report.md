@@ -44,12 +44,30 @@ node --import tsx/esm --test src/**/*.test.ts
 
 随后为“所有终态始终有 duration 字段”补充回归：旧实现为 4 pass / 1 fail（缺少 `duration=10200ms`），加入最小总耗时映射后 focused suite 回到 5/5 GREEN。
 
+## 第 1 轮复审修复
+
+复审发现原有正则脱敏不是 fail-closed：`DATABASE_URL=...`、`Authorization=...`、`WEBHOOK_URL=...`、`R2_ENDPOINT=...` 与 `raw exception: ...` 仍可能留下自由字符串；`SanitizedError` 和 `PreviousNotificationFailure` 也仍是普通 `string`。本轮在消息边界为 `category`、`code`、`stage` 增加严格 canonical allow-list，任何未知值整体输出 `unknown`，并补齐上述键值形态的 `redactText` 回归。另修复合法 `components: {}` 经过 `safeText(undefined)` 产生 `"undefined"` 的问题，统一输出 `not_attempted`。
+
+TDD 修复循环：
+
+```sh
+node --import tsx/esm --test src/notification/feishu.test.ts
+# RED：7 tests，5 pass、2 fail；分别暴露自由错误字段泄漏与 omitted component 输出 undefined
+
+node --import tsx/esm --test src/notification/feishu.test.ts
+# GREEN：7 pass、0 fail、0 skip
+```
+
+新增回归覆盖五个具体敏感输入、canonical unknown 输出、直接 `redactText` 结果以及空 `RunComponents` fallback。
+
 ## 最终验证
 
 - `pnpm -F @airing-cal/vps-sync typecheck` — PASS。
 - `pnpm -F @airing-cal/vps-sync build:check` — PASS。
 - `git diff --check` — PASS。
 - 直接 `node --import tsx/esm` runner 用于绕过本机 sandbox 对 `tsx` IPC socket 的限制；未把包脚本的 `EPERM` 误报为测试断言失败。
+
+复审修复后的完整 vps-sync runner：`node --import tsx/esm --test src/**/*.test.ts` — 136 tests：129 pass、0 fail、7 skip；skip 均为需要 disposable PostgreSQL 的集成测试。包级 `pnpm -F @airing-cal/vps-sync test -- feishu.test.ts` 仍受本机 `tsx` IPC `listen EPERM` 限制，原生 runner 已通过同一套测试文件。
 
 ## 限制与范围
 
