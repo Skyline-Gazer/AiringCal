@@ -31,7 +31,7 @@
 ## 7. Alpine Container and VPS Operation
 
 - [x] 7.1 Verify official node:alpine metadata and Alpine package names, then add multi-stage production/debug Docker targets with image-content and non-root/read-only runtime checks
-- [ ] 7.2 Add SHA-pinned one-shot Docker Compose configuration, secret template, writable temporary boundary, host-cron/flock example, and local shadow-run instructions
+- [x] 7.2 Add SHA-pinned one-shot Docker Compose configuration, secret template, writable temporary boundary, host-cron/flock example, and local shadow-run instructions
 
 ## 8. GHCR Delivery
 

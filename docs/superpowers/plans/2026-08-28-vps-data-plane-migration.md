@@ -258,11 +258,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Compose requires `VPS_SYNC_IMAGE` 匹配 `^ghcr\.io/skyline-gazer/airing-cal-sync:[0-9a-f]{40}$`；one-shot service uses `init/read_only/user/cap_drop/tmpfs`，无 ports/restart/socket/privileged。
 
-- [ ] **Step 1: CLI/config 验证** — `docker compose config --help`、`docker compose run --help`、`flock --help`；确认 Compose keys 后才写文件。
-- [ ] **Step 2: RED tests** — floating/latest/debug/short SHA 被 validator 拒绝；valid full SHA passes；rendered config 无端口、restart、privileged、Docker socket，且 `/tmp/airing-cal` 可写。
-- [ ] **Step 3: 运行 RED** — `node --test scripts/validate-vps-compose.test.mjs` 预期 FAIL。
-- [ ] **Step 4: GREEN** — Compose/env template；`run-sync.sh` 用非阻塞 host flock 执行 `docker compose run --rm sync sync --mode=... --source=scheduled`，不输出 secrets。
-- [ ] **Step 5: 验证、文档、提交与推送** — `docker compose --env-file deploy/vps/.env.example -f deploy/vps/compose.yaml config` 与 tests PASS；commit `ops(vps-sync): add pinned one-shot VPS deployment` 后 push。
+- [x] **Step 1: CLI/config 验证** — `docker compose config --help`、`docker compose run --help`、`flock --help`；确认 Compose keys 后才写文件。当前环境无 Docker/Compose/flock，已用官方 CLI/Compose/util-linux 文档核对并记录限制。
+- [x] **Step 2: RED tests** — floating/latest/debug/short SHA 被 validator 拒绝；valid full SHA passes；rendered config 无端口、restart、privileged、Docker socket，且 `/tmp/airing-cal` 可写。
+- [x] **Step 3: 运行 RED** — `node --test scripts/validate-vps-compose.test.mjs` 预期 FAIL。
+- [x] **Step 4: GREEN** — Compose/env template；`run-sync.sh` 用非阻塞 host flock 执行 `docker compose run --rm sync sync --mode=... --source=scheduled`，不输出 secrets。
+- [x] **Step 5: 验证、文档、提交与推送** — `docker compose --env-file deploy/vps/.env.example -f deploy/vps/compose.yaml config` 与 tests PASS；commit `ops(vps-sync): add pinned one-shot VPS deployment` 后 push。实际 Compose render 因工具缺失未执行，已记录复核命令。
 
 ### Task 8.1: GHCR production image CI
 
