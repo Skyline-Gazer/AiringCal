@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import test from 'node:test'
 import { validateImageReference, validateVpsCompose } from './validate-vps-compose.mjs'
@@ -49,6 +52,35 @@ test('run wrapper takes a non-blocking host lock and never echoes secret values'
   assert.match(script, /--source=scheduled/)
   assert.doesNotMatch(script, /set\s+-x/)
   assert.doesNotMatch(script, /echo[^\n]*(?:DATABASE_URL|FEISHU_WEBHOOK|R2_SECRET|BANGUMI_TOKEN)/)
+})
+
+test('run wrapper rejects an explicitly empty mode instead of defaulting to shadow', () => {
+  const result = spawnSync('sh', [resolve(root, 'deploy/vps/run-sync.sh'), ''], { encoding: 'utf8' })
+
+  assert.equal(result.status, 2)
+  assert.match(result.stderr, /usage: .*run-sync\.sh \[shadow\|live\]/)
+})
+
+test('Compose validator rejects fallback syntax for required environment values', async () => {
+  const temporaryRoot = await mkdtemp(resolve(tmpdir(), 'vps-compose-validator-'))
+  try {
+    await cp(resolve(root, 'deploy'), resolve(temporaryRoot, 'deploy'), { recursive: true })
+    const composePath = resolve(temporaryRoot, 'deploy/vps/compose.yaml')
+    const compose = await readFile(composePath, 'utf8')
+    await writeFile(
+      composePath,
+      compose.replace(
+        'DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}',
+        'DATABASE_URL: ${DATABASE_URL:-fallback}',
+      ),
+    )
+
+    const result = validateVpsCompose({ root: temporaryRoot, env: { VPS_SYNC_IMAGE: validImage } })
+    assert.equal(result.ok, false)
+    assert.match(result.errors.join('\n'), /DATABASE_URL/)
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true })
+  }
 })
 
 test('secret template and operator guide require a private env file and shadow-first run', () => {

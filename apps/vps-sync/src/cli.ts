@@ -18,13 +18,14 @@ const HELP = `Usage: sync [--mode=shadow|live] [--source=scheduled|manual]`
 export function feishuConfigFromEnv(env: NodeJS.ProcessEnv = process.env): NotificationDeliveryConfig {
   const webhookUrl = env.FEISHU_WEBHOOK_URL
   if (!webhookUrl) throw new Error('FEISHU_WEBHOOK_URL_REQUIRED')
+  const token = env.FEISHU_WEBHOOK_TOKEN?.trim() ? env.FEISHU_WEBHOOK_TOKEN : undefined
   const timeoutMs = env.FEISHU_TIMEOUT_MS === undefined ? undefined : Number(env.FEISHU_TIMEOUT_MS)
   if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 60_000)) {
     throw new Error('FEISHU_TIMEOUT_INVALID')
   }
   return {
     webhookUrl,
-    ...(env.FEISHU_WEBHOOK_TOKEN === undefined ? {} : { token: env.FEISHU_WEBHOOK_TOKEN }),
+    ...(token === undefined ? {} : { token }),
     ...(env.FEISHU_WEBHOOK_SECRET === undefined ? {} : { secret: env.FEISHU_WEBHOOK_SECRET }),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
   }

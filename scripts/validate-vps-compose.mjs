@@ -69,7 +69,7 @@ function validateFiles(workspaceRoot) {
   requireMatch(errors, service, /^    tmpfs:\s*\n\s+-\s+\/tmp\/airing-cal:mode=1777\s*$/m, 'sync service must provide writable /tmp/airing-cal tmpfs')
 
   for (const key of requiredEnvironment) {
-    requireMatch(errors, service, new RegExp(`^      ${key}:\\s+\\$\\{${key}:(?:\\?|-)`,'m'), `sync service must pass ${key} from the environment`)
+    requireMatch(errors, service, new RegExp(`^      ${key}:\\s+\\$\\{${key}:\\?[^}]+\\}\\s*$`, 'm'), `sync service must require ${key} through Compose`)
   }
   requireMatch(errors, service, /^      FEISHU_WEBHOOK_TOKEN:\s+\$\{FEISHU_WEBHOOK_TOKEN:-\}\s*$/m, 'sync service must pass the optional Feishu token')
   requireMatch(errors, service, /^      FEISHU_WEBHOOK_SECRET:\s+\$\{FEISHU_WEBHOOK_SECRET:-\}\s*$/m, 'sync service must pass the optional Feishu secret')

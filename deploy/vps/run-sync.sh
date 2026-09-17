@@ -5,7 +5,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 COMPOSE_FILE=${COMPOSE_FILE:-$SCRIPT_DIR/compose.yaml}
 ENV_FILE=${ENV_FILE:-$SCRIPT_DIR/.env}
 LOCK_FILE=${VPS_SYNC_LOCK_FILE:-/var/lock/airing-cal-sync.lock}
-MODE=${1:-shadow}
+MODE=${1-shadow}
 
 case "$MODE" in
   shadow|live) ;;

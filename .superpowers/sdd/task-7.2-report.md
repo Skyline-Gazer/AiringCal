@@ -70,3 +70,18 @@ runtime composition in the executable CLI; Task 6.2 made the process-facing
 entrypoint fail closed without injected runtime ports. This task only supplies
 the deployment contract and does not pretend that `run-sync.sh` is a completed
 production sync composition.
+
+## Review-fix evidence
+
+- `feishuConfigFromEnv` now omits empty or whitespace-only
+  `FEISHU_WEBHOOK_TOKEN` values while preserving non-empty tokens; covered by
+  `apps/vps-sync/src/cli.test.ts`.
+- `run-sync.sh` now distinguishes an omitted mode from an explicitly empty
+  mode; the latter is rejected by the wrapper regression test.
+- Required Compose environment values now accept only `${KEY:?message}`;
+  fallback syntax such as `${KEY:-fallback}` is rejected by the validator
+  regression test.
+- Verification: `node --import tsx/esm --test apps/vps-sync/src/cli.test.ts`
+  passed 3/3; `node --test scripts/validate-vps-compose.test.mjs` passed 8/8;
+  `sh -n deploy/vps/run-sync.sh`, scoped `typecheck`/`build:check`, the
+  SHA-pinned validator invocation, and `git diff --check` all passed.

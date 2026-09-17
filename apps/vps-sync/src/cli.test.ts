@@ -173,6 +173,10 @@ test('injects the real Feishu notifier into the executable sync entrypoint', asy
   }), {
     webhookUrl: 'https://feishu.test/hook', token: 'query-token', secret: 'signing-secret', timeoutMs: 25,
   })
+  assert.deepEqual(feishuConfigFromEnv({
+    FEISHU_WEBHOOK_URL: 'https://feishu.test/hook',
+    FEISHU_WEBHOOK_TOKEN: '  ',
+  }), { webhookUrl: 'https://feishu.test/hook' })
   assert.throws(() => feishuConfigFromEnv({}), /FEISHU_WEBHOOK_URL_REQUIRED/)
   assert.throws(() => feishuConfigFromEnv({ FEISHU_WEBHOOK_URL: 'https://feishu.test/hook', FEISHU_TIMEOUT_MS: '60001' }), /FEISHU_TIMEOUT_INVALID/)
   assert.equal(await main(undefined, undefined, ['--help']), 0)
