@@ -4,6 +4,26 @@
 
 PASS（实现与本机可执行验证完成；未发送真实 Feishu 请求、未执行生产切换）。`runOnce` 先持久化业务终态，再进行通知；通知失败只写独立的 `notification_failed` 摘要，不改变业务 `status`、publication 或 backup。
 
+## 独立复审修复：run boundary 与 notification heartbeat
+
+复审发现锁、`beginRun`、首次 notification heartbeat 和 cleanup 的异常可能越过终态路径。先加入四个回归场景并运行 RED：
+
+```sh
+node --import tsx/esm --test src/run.test.ts
+# 17 tests：13 pass、4 fail；失败分别复现 lock/begin 原始异常泄漏、clock 初始化直接 reject、cleanup 覆盖业务结果、notification heartbeat 跳过 notifier
+```
+
+GREEN 将边界异常统一映射为稳定的 `runtime/STAGE_FAILED` 摘要；`finishRun`、previous-failure 读取、lock release 和 pool close 均 best-effort 且吞掉底层异常。没有成功 `beginRun` 时仍尝试一次终态通知；notification heartbeat 失败只标记 `notification_failed`，仍调用真实 notifier 一次，并保留业务 `status`、publication 与 backup。notifier 没有 retry/循环，旧的 `Promise<void>` callers 仍按非 `failed` 结果视为已投递。
+
+复审修复 GREEN：
+
+```sh
+node --import tsx/esm --test src/run.test.ts
+# 17/17 pass
+```
+
+新增测试不把底层 `postgres://...` 异常放入结果、通知或 cleanup 路径；cleanup 失败只产生稳定摘要，不改变业务终态字段。
+
 ## 官方契约与配置核验
 
 官方来源：[飞书开放平台《自定义机器人使用指南》](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)。访问日期：2026-09-17；页面标注最后更新：2025-03-27。Task 6.1 report 已记录同一来源，本任务复核后沿用其结论：

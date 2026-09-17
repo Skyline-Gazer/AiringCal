@@ -191,3 +191,71 @@ test('continues heartbeat during long stages and drains its timer', async (t) =>
   await Promise.resolve()
   assert.equal(events.length, count)
 })
+
+test('still attempts one sanitized notification when lock or begin fails', async () => {
+  for (const boundary of ['acquire', 'begin'] as const) {
+    const { deps, events, notified } = fixture()
+    if (boundary === 'acquire') deps.lock.acquire = async () => { throw new Error('postgres://secret') }
+    else deps.authority.beginRun = async () => { throw new Error('postgres://secret') }
+    deps.authority.finishRun = async () => { throw new Error('postgres://secret') }
+    deps.notify = async (result) => { notified.push(structuredClone(result)); return 'sent' }
+
+    const result = await runOnce(deps, request)
+
+    assert.equal(result.status, 'failed')
+    assert.equal(notified.length, 1)
+    assert.deepEqual(result.sanitizedError, {
+      category: 'runtime', code: 'STAGE_FAILED', attemptCount: 1, stage: 'lock',
+    })
+    assert.doesNotMatch(JSON.stringify(result), /postgres:\/\/secret/)
+    assert.doesNotMatch(JSON.stringify(notified[0]), /postgres:\/\/secret/)
+    assert.ok(events.includes('close'))
+  }
+})
+
+test('a clock initialization failure is sanitized and still reaches notification', async () => {
+  const { deps, notified } = fixture()
+  deps.now = () => { throw new Error('postgres://secret') }
+
+  const result = await runOnce(deps, request)
+
+  assert.equal(result.status, 'failed')
+  assert.equal(notified.length, 1)
+  assert.deepEqual(result.sanitizedError, {
+    category: 'runtime', code: 'STAGE_FAILED', attemptCount: 1, stage: 'lock',
+  })
+  assert.doesNotMatch(JSON.stringify(result), /postgres:\/\/secret/)
+})
+
+test('cleanup failures do not reject or replace the business terminal outcome', async () => {
+  const { deps } = fixture()
+  deps.lock.release = async () => { throw new Error('postgres://release-secret') }
+  deps.close = async () => { throw new Error('postgres://close-secret') }
+
+  const result = await runOnce(deps, request)
+
+  assert.equal(result.status, 'success')
+  assert.equal(result.publication?.status, 'published')
+  assert.equal(result.components.publication, 'success')
+  assert.equal(result.components.backup, 'success')
+  assert.doesNotMatch(JSON.stringify(result), /postgres:\/\/(release|close)-secret/)
+})
+
+test('notification heartbeat failure still invokes the notifier once and records a stable failure', async () => {
+  const { deps, notified } = fixture()
+  deps.authority.heartbeat = async (_id, stage) => {
+    if (stage === 'notification') throw new Error('postgres://heartbeat-secret')
+  }
+
+  const result = await runOnce(deps, request)
+
+  assert.equal(result.status, 'success')
+  assert.equal(result.publication?.status, 'published')
+  assert.equal(result.components.notification, 'failed')
+  assert.deepEqual(result.notificationFailure, {
+    category: 'notification', code: 'NOTIFICATION_FAILED', stage: 'notification', attemptCount: 1,
+  })
+  assert.equal(notified.length, 1)
+  assert.doesNotMatch(JSON.stringify(result), /postgres:\/\/heartbeat-secret/)
+  assert.doesNotMatch(JSON.stringify(notified[0]), /postgres:\/\/heartbeat-secret/)
+})

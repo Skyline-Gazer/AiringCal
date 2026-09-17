@@ -13,14 +13,22 @@ export function terminalStatus(components: RunFinishInput['components']): RunSta
   return components.publication === 'no_change' ? 'no_change' : 'success'
 }
 
-function safeNow(deps: RunDependencies): number {
-  const now = deps.now()
-  if (!Number.isFinite(now)) throw new Error('INVALID_CLOCK')
-  return now
+function safeFailure(stage: string): NonNullable<RunResult['sanitizedError']> {
+  return { category: 'runtime', code: 'STAGE_FAILED', attemptCount: 1, stage }
 }
 
 export async function runOnce(deps: RunDependencies, request: RunRequest): Promise<RunResult> {
-  const startedAt = new Date(safeNow(deps)).toISOString()
+  const fallbackNow = Date.now()
+  let clockFailed = false
+  const safeNow = (): number => {
+    try {
+      const now = deps.now()
+      if (Number.isFinite(now) && !Number.isNaN(new Date(now).getTime())) return now
+    } catch { /* map the clock boundary to a stable run error */ }
+    clockFailed = true
+    return fallbackNow
+  }
+  const startedAt = new Date(safeNow()).toISOString()
   const context: RunContext = {
     ...request,
     runId: deps.runId,
@@ -50,30 +58,60 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
   const counts: Record<string, number> = {}
   const durations: Record<string, number> = {}
   const components = { ...result.components }
-  let heartbeatFailed = false
-  const persist = async () => deps.authority.finishRun(result)
-  const at = () => new Date(safeNow(deps)).toISOString()
-  const stage = async <T>(name: keyof RunFinishInput['stageDurations'], operation: () => Promise<T>): Promise<T> => {
+  let boundaryFailed = clockFailed
+  const boundaryFailure = (stage: string) => {
+    boundaryFailed = true
+    if (!result.sanitizedError) result.sanitizedError = safeFailure(stage)
+  }
+  const at = () => new Date(safeNow()).toISOString()
+  const syncResult = () => {
+    result.counts = counts
+    result.stageDurations = durations
+    result.components = components
+  }
+  const persist = async () => {
+    try {
+      await deps.authority.finishRun(result)
+    } catch {
+      boundaryFailure('finished')
+    }
+  }
+  const stage = async <T>(
+    name: keyof RunFinishInput['stageDurations'],
+    operation: () => Promise<T>,
+    options: { continueOnHeartbeatFailure?: boolean; onHeartbeatFailure?: () => void } = {},
+  ): Promise<T> => {
     result.stage = name
-    await deps.authority.heartbeat(deps.runId, name, at())
-    const started = safeNow(deps)
+    let heartbeatFailed = false
+    const markHeartbeatFailure = () => {
+      heartbeatFailed = true
+      try { options.onHeartbeatFailure?.() } catch { /* callback cannot cross the stage boundary */ }
+    }
+    const heartbeat = () => Promise.resolve().then(() => deps.authority.heartbeat(deps.runId, name, at()))
+    try {
+      await heartbeat()
+    } catch {
+      markHeartbeatFailure()
+      if (!options.continueOnHeartbeatFailure) throw new Error('HEARTBEAT_FAILED')
+    }
+    const started = safeNow()
     let pending: Promise<void> | undefined
     const timer = setInterval(() => {
       if (!pending) {
-        pending = deps.authority.heartbeat(deps.runId, name, at())
-          .catch(() => { heartbeatFailed = true })
+        pending = heartbeat()
+          .catch(() => { markHeartbeatFailure() })
           .finally(() => { pending = undefined })
       }
     }, 30_000)
     try {
       const value = await operation()
       await pending
-      if (heartbeatFailed) throw new Error('HEARTBEAT_FAILED')
+      if (heartbeatFailed && !options.continueOnHeartbeatFailure) throw new Error('HEARTBEAT_FAILED')
       return value
     } finally {
       clearInterval(timer)
       await pending
-      durations[name] = Math.max(0, safeNow(deps) - started)
+      durations[name] = Math.max(0, safeNow() - started)
     }
   }
   const failure = (error: unknown) => {
@@ -84,18 +122,39 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
   }
   let locked = false
   try {
-    locked = await deps.lock.acquire()
-    await deps.authority.beginRun({
-      id: deps.runId,
-      source: request.source,
-      mode: request.mode,
-      stage: 'lock',
-      status: locked ? 'running' : 'skipped',
-      startedAt,
-      heartbeatAt: startedAt,
-      gitSha: deps.gitSha,
-    })
-    if (locked) {
+    let acquireFailed = false
+    if (clockFailed) {
+      acquireFailed = true
+      boundaryFailure('lock')
+    } else {
+      try {
+        locked = await deps.lock.acquire()
+      } catch {
+        acquireFailed = true
+        boundaryFailure('lock')
+      }
+    }
+    let began = false
+    if (!acquireFailed) {
+      try {
+        await deps.authority.beginRun({
+          id: deps.runId,
+          source: request.source,
+          mode: request.mode,
+          stage: 'lock',
+          status: locked ? 'running' : 'skipped',
+          startedAt,
+          heartbeatAt: startedAt,
+          gitSha: deps.gitSha,
+        })
+        began = true
+      } catch {
+        boundaryFailure('lock')
+      }
+    }
+    if (acquireFailed || !began) {
+      result.status = 'failed'
+    } else if (locked) {
       try {
         const input = await stage('collection', () => deps.fetchComplete(context))
         const inputObservedAt = 'observedAt' in input ? input.observedAt : input.observed_at
@@ -138,36 +197,70 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
     } else {
       result.status = 'skipped'
     }
-    result.counts = counts
-    result.stageDurations = durations
-    result.components = components
-    result.finishedAt = result.heartbeatAt = at()
-    await persist()
-    try {
-      result.previousNotificationFailure = await deps.authority.getPreviousNotificationFailure?.(deps.runId) ?? null
-    } catch {
-      result.previousNotificationFailure = null
-    }
-    let notification: 'sent' | 'failed' = 'failed'
-    try {
-      const delivered = await stage('notification', () => deps.notify(structuredClone(result)))
-      notification = delivered === 'failed' ? 'failed' : 'sent'
-    } catch {
-      notification = 'failed'
-    }
-    components.notification = notification === 'sent' ? 'success' : 'failed'
-    result.notificationFailure = notification === 'failed'
-      ? { category: 'notification', code: 'NOTIFICATION_FAILED', stage: 'notification', attemptCount: 1 }
-      : null
-    result.stage = 'finished'
-    result.heartbeatAt = at()
-    result.counts = counts
-    result.stageDurations = durations
-    result.components = components
-    await persist()
-    return result
-  } finally {
-    if (locked) await deps.lock.release()
-    await deps.close()
+  } catch {
+    boundaryFailure(result.stage)
+    result.status = 'failed'
   }
+
+  syncResult()
+  if (clockFailed || boundaryFailed) boundaryFailure(result.stage)
+  const finishedAt = at()
+  if (clockFailed) boundaryFailure(result.stage)
+  result.finishedAt = result.heartbeatAt = finishedAt
+  syncResult()
+  await persist()
+
+  try {
+    const previous = await deps.authority.getPreviousNotificationFailure?.(deps.runId)
+    result.previousNotificationFailure = previous
+      && previous.category === 'notification'
+      && previous.code === 'NOTIFICATION_FAILED'
+      && previous.stage === 'notification'
+      && Number.isSafeInteger(previous.attemptCount)
+      && previous.attemptCount >= 1
+      && previous.attemptCount <= 3
+      ? { category: 'notification', code: 'NOTIFICATION_FAILED', stage: 'notification', attemptCount: previous.attemptCount }
+      : null
+  } catch {
+    result.previousNotificationFailure = null
+    boundaryFailure('notification')
+  }
+
+  let notificationHeartbeatFailed = false
+  let delivered: 'sent' | 'failed' = 'failed'
+  try {
+    const outcome = await stage('notification', () => deps.notify(structuredClone(result)), {
+      continueOnHeartbeatFailure: true,
+      onHeartbeatFailure: () => {
+        notificationHeartbeatFailed = true
+        boundaryFailure('notification')
+      },
+    })
+    delivered = outcome === 'failed' ? 'failed' : 'sent'
+  } catch {
+    boundaryFailure('notification')
+  }
+  const notificationFailed = notificationHeartbeatFailed || delivered === 'failed'
+  components.notification = notificationFailed ? 'failed' : 'success'
+  result.notificationFailure = notificationFailed
+    ? { category: 'notification', code: 'NOTIFICATION_FAILED', stage: 'notification', attemptCount: 1 }
+    : null
+  result.stage = 'finished'
+  const terminalHeartbeatAt = at()
+  if (clockFailed) boundaryFailure('finished')
+  result.heartbeatAt = terminalHeartbeatAt
+  syncResult()
+  await persist()
+
+  try {
+    if (locked) await deps.lock.release()
+  } catch {
+    boundaryFailure('finished')
+  }
+  try {
+    await deps.close()
+  } catch {
+    boundaryFailure('finished')
+  }
+  return result
 }
