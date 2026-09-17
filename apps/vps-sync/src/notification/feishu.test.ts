@@ -13,7 +13,7 @@ function result(status: RunResult['status']): RunResult {
         ? { status: 'published' as const, generation: 7, contentHash: 'a'.repeat(64) }
         : { status: status === 'failed' ? 'failed' as const : 'skipped' as const }
   return {
-    id: 'run-123', mode: 'live', source: 'scheduled', stage: 'finished', status,
+    id: 'run-123', mode: 'live', source: 'scheduled', gitSha: 'b'.repeat(40), stage: 'finished', status,
     heartbeatAt: '2026-09-10T02:03:04.000Z', finishedAt: '2026-09-10T02:03:04.000Z',
     counts: { users: 2, collections: 3, inserted: 4, updated: 5, mediaSelected: 6, mediaSucceeded: 5, mediaFailed: 1 },
     stageDurations: { collection: 1200, publication: 3400, backup: 5600 },
@@ -36,16 +36,28 @@ test('signs the empty body with timestamp and secret per the official custom-bot
 
 test('builds a sanitized Feishu text payload for every terminal run status', () => {
   for (const status of ['success', 'no_change', 'partial', 'failed', 'skipped'] as const) {
-    const body = buildFeishuMessage(result(status), { category: 'runtime', code: 'NOTIFICATION_FAILED', stage: 'notification' })
+    const run = result(status)
+    run.gitSha = 'b'.repeat(40)
+    const body = buildFeishuMessage(run, { category: 'runtime', code: 'NOTIFICATION_FAILED', stage: 'notification' })
     assert.deepEqual(Object.keys(body).sort(), ['content', 'msg_type'])
     assert.equal(body.msg_type, 'text')
     const text = body.content.text
     for (const value of [
       status, 'run-123', 'live', 'scheduled', '2026', 'users=2', 'collections=3', 'inserted=4', 'updated=5',
       'mediaSelected=6', 'mediaSucceeded=5', 'mediaFailed=1', 'collection=1200ms', 'publication=3400ms', 'backup=5600ms',
-      'duration=10200ms', 'backup=', 'git_sha=unknown', `node=${process.version}`, 'alpine=unknown', 'previous_failure=runtime/NOTIFICATION_FAILED/notification',
+      'duration=10200ms', 'backup=', `git_sha=${'b'.repeat(40)}`, `node=${process.version}`, 'alpine=unknown', 'previous_failure=runtime/NOTIFICATION_FAILED/notification',
     ]) assert.match(text, new RegExp(value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')))
     assert.match(text, /generation=(?:7|none) hash=(?:a{64}|none)/)
+  }
+})
+
+test('includes only a strict 40-character lowercase Git SHA in the payload', () => {
+  const run = result('success')
+  run.gitSha = 'c'.repeat(40)
+  assert.match(buildFeishuMessage(run).content.text, new RegExp(`git_sha=${'c'.repeat(40)}`))
+  for (const invalid of ['C'.repeat(40), 'd'.repeat(39), 'e'.repeat(41), 'not-a-sha']) {
+    run.gitSha = invalid
+    assert.match(buildFeishuMessage(run).content.text, /git_sha=unknown/)
   }
 })
 

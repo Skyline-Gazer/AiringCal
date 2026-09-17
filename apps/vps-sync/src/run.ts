@@ -29,6 +29,7 @@ export async function runOnce(deps: RunDependencies, request: RunRequest): Promi
   const result: RunResult = {
     ...request,
     id: deps.runId,
+    gitSha: deps.gitSha,
     stage: 'lock',
     status: 'failed',
     heartbeatAt: startedAt,

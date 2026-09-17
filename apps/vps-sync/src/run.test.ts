@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { exitCode, runOnce } from './run.js'
-import type { RunDependencies } from './contracts.js'
+import type { RunDependencies, RunResult } from './contracts.js'
 import { UpstreamFetchError } from './upstream/retry.js'
 
 function fixture() {
   const events: string[] = []
   const finished: unknown[] = []
+  const notified: RunResult[] = []
   const deps: RunDependencies = {
     runId: 'run-1',
     gitSha: 'a'.repeat(40),
@@ -33,10 +34,10 @@ function fixture() {
     media: async () => { events.push('media'); return { selected: 0, succeeded: 0, failed: 0 } },
     publish: async () => { events.push('publish'); return { status: 'published', generation: 1, contentHash: 'a'.repeat(64) } },
     backup: async () => { events.push('backup') },
-    notify: async () => { events.push('notify') },
+    notify: async (result) => { events.push('notify'); notified.push(structuredClone(result)) },
     close: async () => { events.push('close') },
   }
-  return { deps, events, finished }
+  return { deps, events, finished, notified }
 }
 
 const request = { mode: 'shadow', source: 'manual' } as const
@@ -50,6 +51,14 @@ test('coordinates complete input, heartbeat, publication, backup and notificatio
   ])
   assert.ok(events.includes('heartbeat:collection'))
   assert.ok(events.includes('heartbeat:media'))
+})
+
+test('propagates the dependency Git SHA through the terminal result and notifier input', async () => {
+  const { deps, finished, notified } = fixture()
+  const result = await runOnce(deps, request)
+  assert.equal(result.gitSha, deps.gitSha)
+  assert.equal(finished[0] && (finished[0] as RunResult).gitSha, deps.gitSha)
+  assert.equal(notified[0]?.gitSha, deps.gitSha)
 })
 
 test('lock miss persists and notifies skipped without upstream or object writes', async () => {

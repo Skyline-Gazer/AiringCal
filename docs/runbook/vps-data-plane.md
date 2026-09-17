@@ -101,7 +101,7 @@ VPS 适配器使用 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection �
 
 ## 飞书通知 payload 与签名
 
-Task 6.1 的 `buildFeishuMessage` 只构造文本消息，不读取 webhook、不发出网络请求，也不改变业务终态。每个终态（`success`、`no_change`、`partial`、`failed`、`skipped`）都包含 run ID、mode/source、Asia/Shanghai 时间、publication generation/hash、计数、阶段耗时、publication/backup/notification 结果，以及 Node/Alpine 字段。当前 `RunResult` 没有 build metadata，因此 git SHA 与 Alpine 明确为 `unknown`，Node 使用 `process.version`；只消费结构化、已脱敏的 `RunResult`。
+Task 6.1 的 `buildFeishuMessage` 只构造文本消息，不读取 webhook、不发出网络请求，也不改变业务终态。每个终态（`success`、`no_change`、`partial`、`failed`、`skipped`）都包含 run ID、mode/source、Asia/Shanghai 时间、publication generation/hash、计数、阶段耗时、publication/backup/notification 结果，以及 Node/Alpine 字段。`runOnce` 将依赖注入的 `gitSha` 传入 sanitized `RunResult`，消息边界只输出严格 40 位小写 SHA，否则为 `unknown`；Alpine 明确为 `unknown`，Node 使用 `process.version`。只消费结构化、已脱敏的 `RunResult`。
 
 飞书官方契约参考：[自定义机器人使用指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)（官方页面最后更新 2025-03-27；本次访问 2026-09-17）。已核验结论：请求为 HTTP POST JSON，基础 body 使用 `msg_type` 和 `content`；签名开启时再加入字符串秒级 `timestamp` 与 `sign`。`timestamp` 必须距当前不超过 1 小时（3600 秒），`sign` 为以 `timestamp + "\\n" + secret` 为 HMAC-SHA256 key、对空字符串计算后再 Base64 编码。成功响应的 `code` 为 `0`（`StatusCode`/`StatusMessage` 是兼容旧逻辑字段，不作为判断依据）；请求体上限为 20 KB。
 

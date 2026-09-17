@@ -18,7 +18,7 @@ PASS — 已实现纯 Feishu 自定义机器人消息构造、官方签名算法
 
 ## 实现与测试
 
-- `feishu.ts` 输出 text-only payload，覆盖 `success`、`no_change`、`partial`、`failed`、`skipped`；映射 run/mode/source/time、generation/hash、counts、stage durations、publication/backup/notification、git/node/alpine 字段。当前 `RunResult` 没有 build metadata，因此 git/alpine 明确输出 `unknown`，Node 使用 `process.version`。
+- `feishu.ts` 输出 text-only payload，覆盖 `success`、`no_change`、`partial`、`failed`、`skipped`；映射 run/mode/source/time、generation/hash、counts、stage durations、publication/backup/notification、git/node/alpine 字段。`runOnce` 将依赖注入的 Git SHA 复制到 `RunResult.gitSha`；消息边界只接受严格 40 位小写 hex，否则输出 `unknown`。Alpine 仍明确为 `unknown`，Node 使用 `process.version`。
 - `redact.ts` 替换 URL、Bearer/Basic 与授权 header、token/key/secret/password/credential 形式、数据库/R2 credential 和 raw exception 文本。消息只读取 allow-listed 结构化字段，不复制未知对象属性。
 - 时间格式使用 `Intl.DateTimeFormat` 的 `Asia/Shanghai`，不安装或依赖 tzdata。
 
@@ -60,6 +60,24 @@ node --import tsx/esm --test src/notification/feishu.test.ts
 
 新增回归覆盖五个具体敏感输入、canonical unknown 输出、直接 `redactText` 结果以及空 `RunComponents` fallback。
 
+## 第 2 轮复审修复：Git provenance
+
+复审发现 `RunDependencies.gitSha` 虽已传给 coordinator/backup/publication，但 `RunResult` 没有携带它，Feishu message 因而始终输出 `git_sha=unknown`。本轮仅把 SHA 加入 sanitized `RunResult` 调用链；`authority.finishRun` 仍接收既有 `RunFinishInput` 字段并忽略该额外通知元数据，数据库持久化形状不变。
+
+按 TDD 先写回归并观察 RED：
+
+```sh
+node --import tsx/esm --test src/notification/feishu.test.ts src/run.test.ts
+# RED：19 tests，16 pass、3 fail；Feishu 实际仍为 git_sha=unknown，runOnce 与 notifier 输入的 gitSha 为 undefined
+```
+
+最小 GREEN 为 `RunResult.gitSha`、`runOnce` 初始化和严格 Feishu SHA 校验；新增回归覆盖实际 40 位小写 SHA 以及大写/长度错误/自由字符串的 fail-closed fallback：
+
+```sh
+node --import tsx/esm --test src/notification/feishu.test.ts src/run.test.ts
+# GREEN：19 pass、0 fail、0 skip
+```
+
 ## 最终验证
 
 - `pnpm -F @airing-cal/vps-sync typecheck` — PASS。
@@ -67,7 +85,7 @@ node --import tsx/esm --test src/notification/feishu.test.ts
 - `git diff --check` — PASS。
 - 直接 `node --import tsx/esm` runner 用于绕过本机 sandbox 对 `tsx` IPC socket 的限制；未把包脚本的 `EPERM` 误报为测试断言失败。
 
-复审修复后的完整 vps-sync runner：`node --import tsx/esm --test src/**/*.test.ts` — 136 tests：129 pass、0 fail、7 skip；skip 均为需要 disposable PostgreSQL 的集成测试。包级 `pnpm -F @airing-cal/vps-sync test -- feishu.test.ts` 仍受本机 `tsx` IPC `listen EPERM` 限制，原生 runner 已通过同一套测试文件。
+复审修复后的完整 vps-sync runner：`node --import tsx/esm --test src/**/*.test.ts` — 138 tests：131 pass、0 fail、7 skip；skip 均为需要 disposable PostgreSQL 的集成测试。包级 `pnpm -F @airing-cal/vps-sync test -- feishu.test.ts run.test.ts` 仍受本机 `tsx` IPC `listen EPERM` 限制，原生 runner 已通过同一套测试文件。
 
 ## 限制与范围
 

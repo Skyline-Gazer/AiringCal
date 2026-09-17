@@ -46,6 +46,10 @@ function safeHash(value: unknown): string {
   return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : 'none'
 }
 
+function safeGitSha(value: unknown): string {
+  return typeof value === 'string' && /^[a-f0-9]{40}$/.test(value) ? value : 'unknown'
+}
+
 function safeGeneration(value: unknown): number | 'none' {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 'none'
 }
@@ -79,7 +83,7 @@ export function buildFeishuMessage(result: RunResult, previousFailure?: Previous
     `duration=${totalDuration}ms`,
     ...durations,
     `publication=${safeText(result.components.publication, 'not_attempted')} backup=${safeText(result.components.backup, 'not_attempted')} notification=${safeText(result.components.notification, 'not_attempted')}`,
-    'git_sha=unknown node=' + safeText(process.version) + ' alpine=unknown',
+    `git_sha=${safeGitSha(result.gitSha)} node=${safeText(process.version)} alpine=unknown`,
     ...(result.sanitizedError ? [`error=${errorSummary(result.sanitizedError, result.sanitizedError.attemptCount)}`] : []),
     ...(previousFailure ? [`previous_failure=${errorSummary(previousFailure)}`] : []),
   ]

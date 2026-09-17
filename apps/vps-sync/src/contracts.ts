@@ -16,6 +16,7 @@ export type MediaSummary = { selected: number; succeeded: number; failed: number
 export type RunResult = RunFinishInput & {
   source: RunRequest['source']
   mode: RunRequest['mode']
+  gitSha: string
   publication?: PublicationResult
 }
 export type RunContext = RunRequest & { runId: string; observedAt: string }
