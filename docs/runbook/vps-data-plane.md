@@ -2,7 +2,7 @@
 
 ## vps-sync Alpine 镜像
 
-`Dockerfile.vps-sync` 提供 `production` 与 `debug` 两个目标。构建阶段使用仓库锁文件和 `pnpm@9.15.9`，调用 `pnpm -F @airing-cal/vps-sync build`；production 只带编译后的 `dist/`、production dependencies、`ca-certificates` 和 `postgresql17-client`，以 `node` 用户执行 `node dist/cli.js`，不声明监听端口。debug 从 production 继承并额外安装已核验的 `curl`、`bind-tools`、`netcat-openbsd`、`procps-ng`、`iproute2` 与 `jq`。read-only root filesystem、capability drop、tmpfs 和无端口映射由 Task 7.2 Compose 约束。
+`Dockerfile.vps-sync` 提供 `production` 与 `debug` 两个目标。构建阶段使用仓库锁文件和 `pnpm@9.15.9`，调用 `pnpm -F @airing-cal/vps-sync build`；production 只带编译后的 `dist/`、production dependencies、`ca-certificates` 和 `postgresql17-client`，以 `node` 用户执行 `node dist/cli.js`，不声明监听端口。debug 从 production 继承并额外安装 `curl`、`bind-tools`、`netcat-openbsd`、`procps-ng`、`iproute2` 与 `jq`；这些目标包名待 Docker 环境用 `apk search` 重跑确认。read-only root filesystem、capability drop、tmpfs 和无端口映射由 Task 7.2 Compose 约束。
 
 静态契约检查：
 

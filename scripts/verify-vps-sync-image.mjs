@@ -87,6 +87,18 @@ function checkStaticFiles(workspaceRoot) {
   requireMatch(errors, production, /ENTRYPOINT\s*\[\s*["']node["'],\s*["']dist\/cli\.js["']\s*\]/, 'production must execute the compiled CLI')
   requireMatch(errors, production, /COPY\s+--from=build\s+\/workspace\/apps\/vps-sync\/dist\/\s+\.\/dist\//, 'production must copy the compiled vps-sync dist directory')
   requireMatch(errors, production, /COPY\s+--from=build\s+\/prod\/node_modules\s+\.\/node_modules/, 'production must copy only deployed production dependencies')
+  requireMatch(
+    errors,
+    production,
+    /find\s+node_modules\/\.pnpm[\s\S]*-mindepth\s+1[\s\S]*-maxdepth\s+1[\s\S]*-name\s+['"]@airing-cal\+\*['"][\s\S]*-exec\s+rm\s+-rf/i,
+    'production must remove versioned workspace packages from the pnpm virtual store',
+  )
+  requireMatch(
+    errors,
+    production,
+    /find\s+node_modules\/\.pnpm[\s\S]*\.test\.ts[\s\S]*exit\s+1/i,
+    'production must fail closed if workspace source or test payload remains',
+  )
   requireMatch(errors, production, /rm\s+-rf\s+[^\n]*\/npm\s+[^\n]*\/npx\s+[^\n]*\/corepack/, 'production must remove the package-manager executables')
   requireAbsent(errors, production, /EXPOSE\s+/i, 'production must not expose a listening port')
   requireAbsent(errors, production, /COPY\s+\.\s+\./i, 'production must not copy the source context')
@@ -120,7 +132,7 @@ function checkStaticFiles(workspaceRoot) {
 }
 
 function inspectImageConfig(image) {
-  if (!image) return { status: 'skipped', reason: 'no image reference supplied' }
+  if (!image?.trim()) return { status: 'skipped', reason: 'no image reference supplied' }
   try {
     const output = execFileSync('docker', ['image', 'inspect', image], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
     const [metadata] = JSON.parse(output)
@@ -132,14 +144,19 @@ function inspectImageConfig(image) {
     if (JSON.stringify(config.Entrypoint) !== JSON.stringify(['node', 'dist/cli.js'])) errors.push('image config entrypoint is not node dist/cli.js')
     return { status: errors.length === 0 ? 'pass' : 'fail', errors, config }
   } catch (error) {
-    return { status: 'skipped', reason: `docker image inspect unavailable: ${error instanceof Error ? error.message : String(error)}` }
+    return { status: 'error', reason: `docker image inspect failed: ${error instanceof Error ? error.message : String(error)}` }
   }
 }
 
 export function verifyVpsSyncImage({ root: workspaceRoot = root, image } = {}) {
   const staticResult = checkStaticFiles(workspaceRoot)
   const imageResult = inspectImageConfig(image)
-  const errors = [...staticResult.errors, ...(imageResult.errors ?? [])]
+  const imageErrors = imageResult.status === 'pass' || imageResult.status === 'skipped'
+    ? []
+    : imageResult.errors?.length
+      ? imageResult.errors
+      : [imageResult.reason ?? 'image inspection failed']
+  const errors = [...staticResult.errors, ...imageErrors]
   return {
     ok: errors.length === 0,
     errors,

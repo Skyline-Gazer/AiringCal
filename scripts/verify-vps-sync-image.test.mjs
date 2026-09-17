@@ -31,6 +31,22 @@ test('production target keeps runtime-only image boundaries', () => {
   }
 })
 
+test('production target removes versioned workspace payloads from the virtual store', () => {
+  const dockerfile = readFileSync(resolve(root, 'Dockerfile.vps-sync'), 'utf8')
+  const production = dockerfile.split(/FROM\s+node:alpine\s+AS\s+production/i)[1]?.split(/FROM\s+production\s+AS\s+debug/i, 1)[0] ?? ''
+
+  assert.match(
+    production,
+    /find\s+node_modules\/\.pnpm\s+-mindepth\s+1\s+-maxdepth\s+1[\s\S]*-name\s+['"]@airing-cal\+\*['"][\s\S]*-exec\s+rm\s+-rf/i,
+    'production must remove versioned workspace packages from the pnpm virtual store',
+  )
+  assert.match(
+    production,
+    /find\s+node_modules\/\.pnpm[\s\S]*node_modules\/\@airing-cal[\s\S]*\.test\.ts[\s\S]*exit\s+1/i,
+    'production must fail closed if workspace source or test payload remains',
+  )
+})
+
 test('debug target includes only verified diagnosis packages', () => {
   const dockerfile = readFileSync(resolve(root, 'Dockerfile.vps-sync'), 'utf8')
   const debug = dockerfile.split(/FROM\s+production\s+AS\s+debug/i)[1] ?? ''
@@ -45,4 +61,12 @@ test('static verifier enforces image and package contracts', () => {
 
   assert.equal(result.ok, true, result.errors.join('\n'))
   assert.deepEqual(result.errors, [])
+})
+
+test('image inspection failures are fatal when an image reference is supplied', () => {
+  const result = verifyVpsSyncImage({ root, image: `vps-sync-review-missing-${process.pid}` })
+
+  assert.notEqual(result.image.status, 'pass')
+  assert.equal(result.ok, false)
+  assert.notEqual(result.errors.length, 0)
 })

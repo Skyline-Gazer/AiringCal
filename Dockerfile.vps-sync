@@ -53,8 +53,10 @@ RUN apk add --no-cache ca-certificates postgresql17-client \
 COPY --from=build /prod/node_modules ./node_modules
 COPY --from=build /workspace/apps/vps-sync/dist/ ./dist/
 
-# Replace workspace package links with the compiled production-only copies.
+# Replace workspace package links and versioned virtual-store payloads with the
+# compiled production-only copies.
 RUN rm -rf node_modules/@airing-cal node_modules/.pnpm/node_modules/@airing-cal \
+  && find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -name '@airing-cal+*' -exec rm -rf {} \; \
   && mkdir -p node_modules/@airing-cal/bgm-api/src node_modules/@airing-cal/domain/src node_modules/@airing-cal/storage/src
 COPY --from=runtime-compile /runtime/packages/bgm-api/src/ ./node_modules/@airing-cal/bgm-api/src/
 COPY --from=runtime-compile /runtime/packages/domain/src/ ./node_modules/@airing-cal/domain/src/
@@ -62,7 +64,13 @@ COPY --from=runtime-compile /runtime/packages/storage/src/ ./node_modules/@airin
 COPY --from=build /workspace/packages/bgm-api/package.json ./node_modules/@airing-cal/bgm-api/package.json
 COPY --from=build /workspace/packages/domain/package.json ./node_modules/@airing-cal/domain/package.json
 COPY --from=build /workspace/packages/storage/package.json ./node_modules/@airing-cal/storage/package.json
-RUN sed -i 's#\./src/index\.ts#./src/index.js#g' \
+RUN set -eu; \
+  workspace_payload="$(find node_modules/.pnpm node_modules/@airing-cal -type f \( -name '*.ts' -o -name '*.test.ts' \) -path '*airing-cal*' -print -quit)"; \
+  if [ -n "$workspace_payload" ]; then \
+    echo "workspace source/test payload remains: $workspace_payload" >&2; \
+    exit 1; \
+  fi; \
+  sed -i 's#\./src/index\.ts#./src/index.js#g' \
   node_modules/@airing-cal/bgm-api/package.json \
   node_modules/@airing-cal/domain/package.json \
   node_modules/@airing-cal/storage/package.json
