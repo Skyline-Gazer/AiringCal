@@ -99,6 +99,14 @@ VPS 适配器使用 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection �
 
 持久化/通知只使用稳定的 `category`、`code`、`stage` 和 `attempt`，不携带 token、URL、响应 body 或底层异常消息。
 
+## 飞书通知 payload 与签名
+
+Task 6.1 的 `buildFeishuMessage` 只构造文本消息，不读取 webhook、不发出网络请求，也不改变业务终态。每个终态（`success`、`no_change`、`partial`、`failed`、`skipped`）都包含 run ID、mode/source、Asia/Shanghai 时间、publication generation/hash、计数、阶段耗时、publication/backup/notification 结果，以及 Node/Alpine 字段。当前 `RunResult` 没有 build metadata，因此 git SHA 与 Alpine 明确为 `unknown`，Node 使用 `process.version`；只消费结构化、已脱敏的 `RunResult`。
+
+飞书官方契约参考：[自定义机器人使用指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot)（官方页面最后更新 2025-03-27；本次访问 2026-09-17）。已核验结论：请求为 HTTP POST JSON，基础 body 使用 `msg_type` 和 `content`；签名开启时再加入字符串秒级 `timestamp` 与 `sign`。`timestamp` 必须距当前不超过 1 小时（3600 秒），`sign` 为以 `timestamp + "\\n" + secret` 为 HMAC-SHA256 key、对空字符串计算后再 Base64 编码。成功响应的 `code` 为 `0`（`StatusCode`/`StatusMessage` 是兼容旧逻辑字段，不作为判断依据）；请求体上限为 20 KB。
+
+`signFeishu(timestamp, secret)` 仅实现上述纯签名计算。Webhook URL、token、header、secret、数据库/R2 credential 及 raw exception 不进入 payload；投递、超时/retry、成功响应校验和 `notification_failed` 持久化属于 Task 6.2。
+
 ## Secret 禁存与测试
 
 数据库只保存明确列出的业务字段；额外 upstream 属性、raw response、authorization、token、webhook 和连接配置不写入 JSON。初始化 authority 时必须传入运行时凭据值列表，所有可持久化自由文本/JSON 都会检查这些值；发现匹配即在写入前拒绝。通用 PostgreSQL URL、Bearer header、带密码 URL 也会被拒绝。错误持久化只接受稳定类别，未知错误映射为 `UNKNOWN`，不会存异常消息。`finishRun` 通过固定字段记录终态、组件结果、媒体计数与阶段耗时；通知结果可更新，但不能改写已结束 run 的业务状态、publication 或 backup 结果。
