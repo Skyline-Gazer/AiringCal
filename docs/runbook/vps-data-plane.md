@@ -1,5 +1,18 @@
 # VPS 数据平面运行手册
 
+## vps-sync Alpine 镜像
+
+`Dockerfile.vps-sync` 提供 `production` 与 `debug` 两个目标。构建阶段使用仓库锁文件和 `pnpm@9.15.9`，调用 `pnpm -F @airing-cal/vps-sync build`；production 只带编译后的 `dist/`、production dependencies、`ca-certificates` 和 `postgresql17-client`，以 `node` 用户执行 `node dist/cli.js`，不声明监听端口。debug 从 production 继承并额外安装已核验的 `curl`、`bind-tools`、`netcat-openbsd`、`procps-ng`、`iproute2` 与 `jq`。read-only root filesystem、capability drop、tmpfs 和无端口映射由 Task 7.2 Compose 约束。
+
+静态契约检查：
+
+```sh
+node --test scripts/verify-vps-sync-image.test.mjs
+node scripts/verify-vps-sync-image.mjs
+```
+
+具备 Docker 的环境还应先运行 `docker buildx imagetools inspect node:alpine`、在临时 `node:alpine` 容器中运行 `apk search` 核验包名，再运行 `docker buildx build --help` 核验构建参数；构建后将实际 Node/Alpine 版本与 base digest 记录到 CI 审计元数据。Task 7.1 执行环境没有 Docker CLI（上述三类命令均为 `command not found`），因此本任务没有声称完成镜像拉取、构建或运行时检查。fallback 依据 Docker 官方 [`node` 镜像说明](https://hub.docker.com/_/node) 与 Alpine 官方 [`postgresql17-client` 包索引](https://pkgs.alpinelinux.org/package/v3.24/main/x86_64/postgresql17-client)核对基础镜像/最小 PostgreSQL 客户端名称；debug 包名仍需在具备 Docker 的环境中用目标 `node:alpine` 的 `apk search` 重跑确认。
+
 ## PostgreSQL migration
 
 `@airing-cal/vps-sync` 使用标准 `DATABASE_URL` 连接 PostgreSQL。migration 按文件名顺序前向执行；已记录 migration 的 SHA-256 必须与 SQL 文件一致。发现 checksum 不一致、数据库包含应用不认识的 migration，或 migration 历史缺口时会拒绝继续。migration 不提供回滚或删除已应用 schema 的操作。

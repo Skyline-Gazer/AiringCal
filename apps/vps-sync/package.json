@@ -6,6 +6,7 @@
   "scripts": {
     "build": "tsc && cp -R src/postgres/migrations/. dist/postgres/migrations/",
     "build:check": "tsc --noEmit",
+    "start": "node dist/cli.js",
     "test": "tsx --test src/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
