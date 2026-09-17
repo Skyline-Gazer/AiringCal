@@ -259,6 +259,12 @@ test('rejects hostaddr-selected production and ambiguous multi-host targets befo
       targetUrl: 'postgresql:///bangumi?hostaddr=203.0.113.10,198.51.100.20',
       error: /RESTORE_TARGET_INVALID/,
     },
+    {
+      label: 'multi-port parameter',
+      productionUrl,
+      targetUrl: 'postgresql:///bangumi?host=restore.example.test&port=5432,5433',
+      error: /RESTORE_TARGET_INVALID/,
+    },
   ] as const
 
   for (const { label, productionUrl: configuredProductionUrl, targetUrl, error } of cases) {
@@ -299,6 +305,22 @@ test('rejects a hostaddr-only target matching the production endpoint before pg_
       fixture.deps,
       dumpKey,
       () => 'postgresql:///?hostaddr=203.0.113.10&dbname=bangumi',
+    ),
+    /RESTORE_TARGET_IS_PRODUCTION/,
+  )
+  assert.equal(fixture.calls.length, 0)
+})
+
+test('rejects an equivalent expanded IPv6 production hostaddr before pg_restore', async () => {
+  const { restoreVerify } = await restoreApi()
+  const fixture = await makeFixture()
+  fixture.deps.productionUrl = 'postgresql://prod-user:prod-password@db.example.test:5432/bangumi?hostaddr=2001:db8::1'
+
+  await assert.rejects(
+    () => restoreVerify(
+      fixture.deps,
+      dumpKey,
+      () => 'postgresql:///?hostaddr=2001:0db8:0:0:0:0:0:1&dbname=bangumi',
     ),
     /RESTORE_TARGET_IS_PRODUCTION/,
   )

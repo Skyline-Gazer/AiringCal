@@ -265,6 +265,21 @@ type ConnectionParts = {
   query: Map<string, string>
 }
 
+function normalizeHostaddr(value: string): string {
+  const version = isIP(value)
+  if (version === 4) return value
+  if (version !== 6) fail('RESTORE_TARGET_INVALID')
+  try {
+    const hostname = new URL(`postgresql://[${value}]/`).hostname
+    if (!hostname.startsWith('[') || !hostname.endsWith(']')) fail('RESTORE_TARGET_INVALID')
+    const normalized = hostname.slice(1, -1)
+    if (isIP(normalized) !== 6) fail('RESTORE_TARGET_INVALID')
+    return normalized
+  } catch {
+    fail('RESTORE_TARGET_INVALID')
+  }
+}
+
 function connectionParts(databaseUrl: string): ConnectionParts {
   let url: URL
   try {
@@ -293,10 +308,11 @@ function connectionParts(databaseUrl: string): ConnectionParts {
   const dbname = query.get('dbname') ?? (decode(url.pathname.slice(1)) || query.get('user') || '')
   const user = query.get('user') ?? decode(url.username)
   const password = query.get('password') ?? decode(url.password)
-  if ((!host && !hostaddr) || !port || !dbname || host.includes(',') || hostaddr.includes(',') || port.includes(',') || (hostaddr && isIP(hostaddr) === 0)) {
+  const normalizedHostaddr = hostaddr ? normalizeHostaddr(hostaddr) : ''
+  if ((!host && !normalizedHostaddr) || !port || !dbname || host.includes(',') || normalizedHostaddr.includes(',') || port.includes(',')) {
     fail('RESTORE_TARGET_INVALID')
   }
-  return { host, hostaddr, port, dbname, user, password, query }
+  return { host, hostaddr: normalizedHostaddr, port, dbname, user, password, query }
 }
 
 function databaseIdentity(databaseUrl: string): string {

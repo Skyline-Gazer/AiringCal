@@ -118,3 +118,11 @@ PostgreSQL 17 连接形式证据：本机 `pg_restore --version` 为 18.6，`pg_
 - GREEN：仅当 `host` 与 `hostaddr` 都为空时拒绝；保留逗号多 host、端口列表和无效 IP 拒绝。hostaddr-only 非生产目标调用注入的 `pg_restore` 并通过 restore 验证；hostaddr-only 生产 endpoint 返回 `RESTORE_TARGET_IS_PRODUCTION`，调用 `pg_restore` 次数为 0。相同 focused 命令现为 22 pass、0 fail、0 skip。
 - 本轮完整要求验证：`pnpm -F @airing-cal/vps-sync typecheck`、`pnpm -F @airing-cal/vps-sync build:check`、`pnpm -F @airing-cal/vps-sync build` 与 `git diff --check` 均 PASS。
 - 测试通过注入的 fake database 与 command runner 验证流程，没有连接 PostgreSQL 17 实例；之前记录的本机缺少容器 runtime 的限制仍适用。本轮未修改计划、OpenSpec checkbox 或 `.comet/subagent-progress.md`。
+
+## 用户授权的额外修复轮（2026-09-17，round 4）
+
+- 根因：`databaseIdentity` 对 `hostaddr` 只做 lowercase；有效 IPv6 的展开写法与压缩写法因此可产生不同 identity，可能绕过 production gate。Node `v26.7.0` 的 `URL.hostname` 已现场验证会对 IPv6 做小写、压缩和数值规范化，`@types/node` 的 `net.isIP(input: string): number` 仅用于版本/合法性校验。
+- RED：先新增等价 IPv6 production identity 回归和 port 逗号列表回归，在旧实现上运行 `node --import tsx/esm --test apps/vps-sync/src/backup/restore.test.ts`；结果 23 项中 22 pass、1 fail。失败为 IPv6 case 未在 `pg_restore` 前拒绝；port case 已证明现有列表拒绝 guard 生效。
+- GREEN：新增 `normalizeHostaddr`；IPv4 原样保留，IPv6 经 Node 标准 `URL.hostname` 归一化后参与 identity 与 service file，host/hostaddr/port 多列表和非法 IP 仍 fail closed。focused restore suite 23/23 pass，等价 IPv6 target 在 `pg_restore` 前返回 `RESTORE_TARGET_IS_PRODUCTION`。
+- 验证：`node --import tsx/esm --test apps/vps-sync/src/backup/restore.test.ts` PASS（23/23）；`pnpm -F @airing-cal/vps-sync typecheck`、`build:check`、`build` PASS；`git diff --check` PASS。
+- 限制：测试仍使用注入的 fake database/command runner；本机没有可用 PostgreSQL 17 实例或容器 runtime，未执行真实 PG17 restore drill。未修改 plan、OpenSpec checkbox 或 `.comet/subagent-progress.md`。
