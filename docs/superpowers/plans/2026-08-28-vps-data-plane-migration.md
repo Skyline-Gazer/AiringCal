@@ -213,11 +213,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `buildFeishuMessage(result, previousFailure?)`；`signFeishu(timestamp, secret)`；五种 status payload，无 raw exception/secrets。
 
-- [ ] **Step 1: 官方契约验证** — 查飞书自定义机器人官方文档，确认 webhook body、timestamp/sign 算法、有效时间窗和成功 response；将链接/访问日期写入 runbook reference。
-- [ ] **Step 2: RED tests** — success/no_change/partial/failed/skipped 都含 run/mode/source/time/generation/hash/count/duration/backup/git/node/alpine；固定 timestamp/secret 的签名 golden；错误串中的 URL/token/header 被替换。
-- [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- feishu.test.ts` 预期 FAIL。
-- [ ] **Step 4: GREEN/REFACTOR** — 只接收 sanitized `RunResult`，Asia/Shanghai 使用 `Intl.DateTimeFormat`，不安装 tzdata；tests/typecheck PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步消息字段；commit `feat(vps-sync): build signed Feishu run messages` 后 push。
+- [x] **Step 1: 官方契约验证** — 查飞书自定义机器人官方文档，确认 webhook body、timestamp/sign 算法、有效时间窗和成功 response；将链接/访问日期写入 runbook reference。
+- [x] **Step 2: RED tests** — success/no_change/partial/failed/skipped 都含 run/mode/source/time/generation/hash/count/duration/backup/git/node/alpine；固定 timestamp/secret 的签名 golden；错误串中的 URL/token/header 被替换。
+- [x] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- feishu.test.ts` 预期 FAIL。
+- [x] **Step 4: GREEN/REFACTOR** — 只接收 sanitized `RunResult`，Asia/Shanghai 使用 `Intl.DateTimeFormat`，不安装 tzdata；tests/typecheck PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步消息字段；commit `feat(vps-sync): build signed Feishu run messages` 后 push。
 
 ### Task 6.2: 飞书投递与 notification_failed persistence
 
