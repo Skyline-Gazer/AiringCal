@@ -126,3 +126,11 @@ PostgreSQL 17 连接形式证据：本机 `pg_restore --version` 为 18.6，`pg_
 - GREEN：新增 `normalizeHostaddr`；IPv4 原样保留，IPv6 经 Node 标准 `URL.hostname` 归一化后参与 identity 与 service file，host/hostaddr/port 多列表和非法 IP 仍 fail closed。focused restore suite 23/23 pass，等价 IPv6 target 在 `pg_restore` 前返回 `RESTORE_TARGET_IS_PRODUCTION`。
 - 验证：`node --import tsx/esm --test apps/vps-sync/src/backup/restore.test.ts` PASS（23/23）；`pnpm -F @airing-cal/vps-sync typecheck`、`build:check`、`build` PASS；`git diff --check` PASS。
 - 限制：测试仍使用注入的 fake database/command runner；本机没有可用 PostgreSQL 17 实例或容器 runtime，未执行真实 PG17 restore drill。未修改 plan、OpenSpec checkbox 或 `.comet/subagent-progress.md`。
+
+## 用户授权的额外修复轮（2026-09-17，round 5）
+
+- 根因核验：PG17 `REL_17_STABLE` 的 `pqParseIntParam` 使用十进制 `strtol`，接受前导/后缀空白及前导零后按整数解释；因此 `5432`、`0005432` 与 `%205432%20` 是同一有效端口。生产 identity 若保留原始字符串，会让等价 target 绕过 production fail-closed。PG17 官方 [libpq connection 文档](https://www.postgresql.org/docs/17/libpq-connect.html)定义 `port` connection parameter；官方 [libpq-envars 文档](https://www.postgresql.org/docs/17/libpq-envars.html)列出 `PGSSLNEGOTIATION`、`PGREQUIRESSL` 和 `PGSSLCOMPRESSION`，PG17 `REL_17_STABLE` [`fe-connect.c`](https://github.com/postgres/postgres/blob/REL_17_STABLE/src/interfaces/libpq/fe-connect.c)的 `PQconninfoOptions` 将其作为 libpq fallback 环境变量。
+- RED：先加入等价端口 production 回归（`0005432`、`%205432%20`，均断言 pg_restore 次数为 0）与三项环境隔离断言；旧实现运行 `node --import tsx/esm --test apps/vps-sync/src/backup/restore.test.ts` 为 25 项 23 pass、2 fail，失败均在新增断言层。
+- GREEN：`connectionParts` 新增最小端口规范化/验证（trim 后仅接受十进制整数 1..65535，并返回 canonical string），保留逗号多端口的 fail-closed 行为；`LIBPQ_CONNECTION_ENV` 补齐三项 PG17 变量。focused restore suite 25/25 pass，生产等价端口在 pg_restore 前返回 `RESTORE_TARGET_IS_PRODUCTION`。
+- 验证：`pnpm -F @airing-cal/vps-sync typecheck`、`build:check`、`build` 与 `git diff --check` 均 PASS。仅修改 `apps/vps-sync/src/backup/restore.ts`、`apps/vps-sync/src/backup/restore.test.ts` 与本报告；未 stage 未跟踪的 `.comet/subagent-progress.md`。
+- 限制不变：测试使用注入的 fake database/command runner；本机没有 PostgreSQL 17 容器 runtime，未执行真实 PG17 restore drill。未修改 plan/OpenSpec checkbox 或 `.comet/subagent-progress.md`。

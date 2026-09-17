@@ -23,6 +23,7 @@ const REQUIRED_ROW_TABLES = [
 const LIBPQ_CONNECTION_ENV = [
   'PGHOST',
   'PGSSLMODE',
+  'PGSSLNEGOTIATION',
   'PGHOSTADDR',
   'PGPORT',
   'PGDATABASE',
@@ -30,6 +31,7 @@ const LIBPQ_CONNECTION_ENV = [
   'PGPASSWORD',
   'PGPASSFILE',
   'PGREQUIREAUTH',
+  'PGREQUIRESSL',
   'PGCHANNELBINDING',
   'PGSERVICE',
   'PGSERVICEFILE',
@@ -38,6 +40,7 @@ const LIBPQ_CONNECTION_ENV = [
   'PGSSLCERT',
   'PGSSLKEY',
   'PGSSLCERTMODE',
+  'PGSSLCOMPRESSION',
   'PGSSLROOTCERT',
   'PGSSLCRL',
   'PGSSLCRLDIR',
@@ -280,6 +283,14 @@ function normalizeHostaddr(value: string): string {
   }
 }
 
+function normalizePort(value: string): string {
+  const trimmed = value.trim()
+  if (!/^\d+$/.test(trimmed)) fail('RESTORE_TARGET_INVALID')
+  const port = Number(trimmed)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) fail('RESTORE_TARGET_INVALID')
+  return String(port)
+}
+
 function connectionParts(databaseUrl: string): ConnectionParts {
   let url: URL
   try {
@@ -304,12 +315,12 @@ function connectionParts(databaseUrl: string): ConnectionParts {
   }
   const host = query.get('host') ?? decode(url.hostname.replace(/^\[|\]$/g, ''))
   const hostaddr = query.get('hostaddr') ?? ''
-  const port = query.get('port') ?? (url.port || '5432')
+  const port = normalizePort(query.get('port') ?? (url.port || '5432'))
   const dbname = query.get('dbname') ?? (decode(url.pathname.slice(1)) || query.get('user') || '')
   const user = query.get('user') ?? decode(url.username)
   const password = query.get('password') ?? decode(url.password)
   const normalizedHostaddr = hostaddr ? normalizeHostaddr(hostaddr) : ''
-  if ((!host && !normalizedHostaddr) || !port || !dbname || host.includes(',') || normalizedHostaddr.includes(',') || port.includes(',')) {
+  if ((!host && !normalizedHostaddr) || !dbname || host.includes(',') || normalizedHostaddr.includes(',')) {
     fail('RESTORE_TARGET_INVALID')
   }
   return { host, hostaddr: normalizedHostaddr, port, dbname, user, password, query }

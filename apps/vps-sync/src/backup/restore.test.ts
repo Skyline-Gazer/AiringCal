@@ -232,6 +232,23 @@ test('rejects a non-empty target and a target with the production database ident
   }
 })
 
+test('rejects production targets with equivalent canonical port spellings before pg_restore', async () => {
+  const { restoreVerify } = await restoreApi()
+  for (const port of ['0005432', '%205432%20']) {
+    const fixture = await makeFixture()
+    await assert.rejects(
+      () => restoreVerify(
+        fixture.deps,
+        dumpKey,
+        () => `postgresql:///bangumi?host=db.example.test&port=${port}`,
+      ),
+      /RESTORE_TARGET_IS_PRODUCTION/,
+      `port spelling ${port} must match production identity`,
+    )
+    assert.equal(fixture.calls.length, 0, `port spelling ${port} must fail before pg_restore`)
+  }
+})
+
 test('rejects hostaddr-selected production and ambiguous multi-host targets before pg_restore', async () => {
   const { restoreVerify } = await restoreApi()
   const cases = [
@@ -361,6 +378,35 @@ test('downloads and verifies a dump, restores with PG17-safe flags, then validat
   assert.deepEqual(report.migrations, migrations)
   assert.deepEqual(report.rowCounts, rowCounts)
   assert.equal(report.snapshotHash, fixture.base.baseline.content_hash)
+})
+
+test('removes every PG17 libpq connection environment override before pg_restore', async () => {
+  const { restoreVerify } = await restoreApi()
+  const fixture = await makeFixture()
+  const variables = {
+    PGSSLNEGOTIATION: 'direct',
+    PGREQUIRESSL: '1',
+    PGSSLCOMPRESSION: '1',
+  } as const
+  const previous = new Map<string, string | undefined>()
+  try {
+    for (const [name, value] of Object.entries(variables)) {
+      previous.set(name, process.env[name])
+      process.env[name] = value
+    }
+
+    await restoreVerify(fixture.deps, dumpKey, () => targetUrlValue)
+
+    for (const name of Object.keys(variables)) {
+      assert.equal(fixture.calls[0]?.env[name], undefined, `${name} must not reach pg_restore`)
+    }
+  } finally {
+    for (const name of Object.keys(variables)) {
+      const value = previous.get(name)
+      if (value === undefined) delete process.env[name]
+      else process.env[name] = value
+    }
+  }
 })
 
 test('uses baseline only for calendar labels and historical ordering, never for DB-backed values', async () => {
