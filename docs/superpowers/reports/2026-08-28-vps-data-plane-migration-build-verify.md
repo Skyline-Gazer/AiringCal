@@ -6,11 +6,12 @@ Base: `2cabe20` (`docs(vps-sync): check off documentation sync`)
 
 ## Result
 
-The repository and static delivery gates pass locally. No implementation fix
-was required, so this task adds only this report. PostgreSQL service tests,
-container build/runtime checks, GHCR registry checks, network checks, and
-production shadow/restore/cutover were not claimed as passed because the
-current environment has no Docker CLI or disposable PostgreSQL service.
+The repository and static delivery gates pass locally. Task 9.3 adds guarded,
+injectable migration operations and evidence templates; they were exercised
+only against fake ports and dry-run inputs. PostgreSQL service tests, container
+build/runtime checks, GHCR registry checks, network checks, and production
+shadow/restore/cutover were not claimed as passed because the current
+environment has no Docker CLI or disposable PostgreSQL service.
 
 ## Fresh command evidence
 
@@ -158,6 +159,15 @@ verifier cover the checked-in README/config/API-facing delivery claims.
 
 ## Explicitly unexecuted gates
 
+### Task 9.3 operation evidence
+
+- `node --import tsx/esm --test apps/vps-sync/src/operations/migration.test.ts` — exit 0; 7 passed. This includes three fake shadow rounds, field-level JSON-pointer diffs, restore dry-run, cutover approval-token rejection, and verified-manifest-only rollback.
+- `node --import tsx/esm --test src/**/*.test.ts` from `apps/vps-sync` — exit 0; 161 tests, 154 passed, 7 PostgreSQL integration tests skipped because no disposable service/credentials were configured.
+- `pnpm -F @airing-cal/vps-sync typecheck` and `pnpm -F @airing-cal/vps-sync build:check` — exit 0.
+- `CI=true pnpm build:check` — exit 0; workspace checks completed. Wrangler emitted the existing sandbox `EPERM` log-file diagnostics while dry-run builds still completed; no VPS operation connects to a production service.
+- CLI help was run for `shadow-compare`, `restore-verify`, `cutover`, and `rollback`; each exited 0 and printed the checked-in command contract. The new parser accepts environment variable names, never database URLs or approval secrets, and missing injected runtime ports fail closed.
+- `git diff --check` — exit 0.
+
 - `docker --version` returned `command not found`; therefore no
   `docker buildx imagetools inspect node:alpine`, `apk search`, Dockerfile
   build, container run, read-only/non-root runtime inspection, or Compose
@@ -172,4 +182,6 @@ verifier cover the checked-in README/config/API-facing delivery claims.
 - No external BGM/R2/Feishu network call was made by this verification.
 - No production shadow run, restore drill, seven-day observation, cutover,
   rollback, or legacy-resource retention action was performed. Those remain
-  explicit follow-up/production gates for Tasks 9.3/9.4 and deployment.
+  explicit follow-up/production gates for Task 9.4 and deployment; Task 9.3
+  intentionally provides only the fake/dry-run gate and injected operation
+  boundary.

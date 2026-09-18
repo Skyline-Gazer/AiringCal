@@ -7,15 +7,35 @@ cutover 已执行。`deploy/vps/run-sync.sh` 只在宿主机取得非阻塞 `flo
 一次 Compose `sync`；它不发布镜像、不部署 VPS、不切换公开 manifest，也不自动
 清理旧 Cloudflare 资源。live 运行需要单独的人工批准和后续迁移门禁。
 
-`apps/vps-sync/src/cli.ts` 当前只有 process-facing `sync` 入口：
+`apps/vps-sync/src/cli.ts` 提供 process-facing `sync` 入口和四个带门禁的迁移操作：
 
 ```text
 Usage: sync [--mode=shadow|live] [--source=scheduled|manual]
 ```
 
 `applyMigrations(pool)`、`createBackup(deps, run)` 和
-`restoreVerify(deps, key, targetUrl)` 已实现为注入式 API；`migrate`、`backup`、
-`restore-verify` 尚未提供独立 CLI，restore 命令及凭据入口留给 Task 9.3。
+`restoreVerify(deps, key, targetUrl)` 仍是注入式 API；`migrate`、`backup` 尚无独立
+CLI。Task 9.3 的操作入口只接受已验证的非 secret 参数，实际 PostgreSQL、R2 和
+Cloudflare control-plane port 必须由部署 adapter 注入；没有 runner 时进程直接
+fail closed，不会连接生产服务。
+
+```text
+Usage: shadow-compare --mode=shadow [--dry-run]
+Usage: restore-verify --backup-key=<r2-key> --target-env=<env-name> [--dry-run]
+Usage: cutover --mode=live --approval-token-env=<env-name> [--dry-run]
+Usage: rollback --mode=live --manifest-key=<r2-key> [--dry-run]
+```
+
+`shadow-compare` 只把 immutable snapshot 和 manifest 写入
+`shadow/<snapshot-key>`、`shadow/manifest.json`，并返回 JSON-pointer 字段级 diff；
+`--dry-run` 只验证 manifest/snapshot pair 和比较输入，不写 R2。`restore-verify`
+的 `--backup-key` 是 R2 key，`--target-env` 是环境变量名（例如
+`RESTORE_DATABASE_URL`），不是数据库 URL；目标 URL 只能由注入式 adapter 读入内存，
+并继续经过空库、非 production identity 和 `pg_restore` 校验。cutover 必须使用
+`--approval-token-env` 指向环境变量名且 token 非空；rollback 只能使用已验证的
+manifest/snapshot envelope。两者的 `--dry-run` 都只产出证据模板，不写
+`public/manifest.json`。操作不会停止 scheduler、修改数据库 schema、删除 R2/Cloudflare
+资源或执行真实生产切流。
 
 Compose 使用的环境变量如下；`.env.example` 只是占位模板，真实 `.env` 必须
 由 cron 用户私有保存并设置 `chmod 600`：
@@ -132,7 +152,40 @@ manifest 是规范化 JSON，固定字段为 `schema_version`、`run_id`、`git_
 
 `selectBackupDeletions` 是纯函数，只接收一次完整的 backup key 列表并返回待审查的成对 dump/manifest key：最近 30 个有完整 restore point 的 UTC 日期各保留最后一点，更早日期按每个日历月保留最后一点。`null`、列表不确定、非法或不成对 key 均返回空列表。本任务不会调用 R2 Delete；历史对象的实际删除需要另行批准的 OpenSpec change。
 
-`restoreVerify` 只提供注入式恢复校验流程：调用方注入备份 key、target URL 函数、S3 `get` 与数据库会话。流程先校验 key grammar、dump/manifest canonical bytes 与 SHA-256，再用同一 target session 的 `withSessionLock` 回调覆盖“空库检查 → `pg_restore` → 恢复校验”；锁不可取得时回调不会执行，因而不会启动 `pg_restore`。恢复目标遵循 PG17 libpq 的单 endpoint 语义：`host`、`hostaddr` 或 `port` 的逗号列表一律 fail closed；存在 `hostaddr` 时以它作为有效网络 endpoint，与端口和数据库名组成 production identity，避免通过不同 `host` 或凭据绕过生产库门禁。该有效 endpoint 必须不等于 production identity，命令使用 `pg_restore --dbname=service=<private-service> --no-owner --no-privileges --single-transaction`。该锁边界只约束遵守同一 advisory-session-lock 协议的写者；不遵守协议的外部连接或超级用户写入不在此保证内，调用方仍须提供隔离的 disposable target。注入的 expected 与恢复后实际 migrations 都必须是非空的严格 `{name, checksum}` 列表，checksum 必须是 64 位小写 SHA-256；空列表、字符串条目和空/畸形 checksum 均 fail closed。恢复后校验 migration checksums、核心表行数、`publications.verified` 与 immutable baseline snapshot 的 key/hash/canonical bytes；baseline 只提供 PostgreSQL 未保存的 weekday labels 及历史数组顺序/身份索引，collection、calendar、summary 和 item 值全部从恢复数据库投影重建。任何 baseline 缺失、身份集合不匹配或 hash 不一致都会 fail closed。该流程不 publish、不发送通知，也不定义可执行 restore 命令、凭据或 argv/env 输入；这些留给 Task 9.3。
+`restoreVerify` 只提供注入式恢复校验流程：调用方注入备份 key、target URL 函数、S3 `get` 与数据库会话。流程先校验 key grammar、dump/manifest canonical bytes 与 SHA-256，再用同一 target session 的 `withSessionLock` 回调覆盖“空库检查 → `pg_restore` → 恢复校验”；锁不可取得时回调不会执行，因而不会启动 `pg_restore`。恢复目标遵循 PG17 libpq 的单 endpoint 语义：`host`、`hostaddr` 或 `port` 的逗号列表一律 fail closed；存在 `hostaddr` 时以它作为有效网络 endpoint，与端口和数据库名组成 production identity，避免通过不同 `host` 或凭据绕过生产库门禁。该有效 endpoint 必须不等于 production identity，命令使用 `pg_restore --dbname=service=<private-service> --no-owner --no-privileges --single-transaction`。该锁边界只约束遵守同一 advisory-session-lock 协议的写者；不遵守协议的外部连接或超级用户写入不在此保证内，调用方仍须提供隔离的 disposable target。注入的 expected 与恢复后实际 migrations 都必须是非空的严格 `{name, checksum}` 列表，checksum 必须是 64 位小写 SHA-256；空列表、字符串条目和空/畸形 checksum 均 fail closed。恢复后校验 migration checksums、核心表行数、`publications.verified` 与 immutable baseline snapshot 的 key/hash/canonical bytes；baseline 只提供 PostgreSQL 未保存的 weekday labels 及历史数组顺序/身份索引，collection、calendar、summary 和 item 值全部从恢复数据库投影重建。任何 baseline 缺失、身份集合不匹配或 hash 不一致都会 fail closed。该流程本身不 publish、不发送通知；下方 process-facing wrapper 只接收 backup key 与目标环境变量名，仍需注入 runtime ports。
+
+### Shadow / restore / cutover / rollback 证据
+
+每次人工演练把以下最小 JSON 证据保存到变更记录；token、数据库 URL、R2
+credential 和原始异常不得写入证据：
+
+```json
+{
+  "operation": "shadow-compare",
+  "status": "executed",
+  "mode": "shadow",
+  "run_ids": ["<run-id-1>", "<run-id-2>", "<run-id-3>"],
+  "field_diff_count": 0,
+  "manifest_key": "shadow/manifest.json",
+  "restore_key": "<backup-key>",
+  "dry_run": false
+}
+```
+
+Build 阶段只在 fake ports 上运行三轮 shadow compare 和一次 restore dry-run：
+
+```sh
+node --import tsx/esm --test apps/vps-sync/src/operations/migration.test.ts
+node --import tsx/esm apps/vps-sync/src/cli.ts shadow-compare --help
+node --import tsx/esm apps/vps-sync/src/cli.ts restore-verify --help
+node --import tsx/esm apps/vps-sync/src/cli.ts cutover --help
+node --import tsx/esm apps/vps-sync/src/cli.ts rollback --help
+```
+
+真实生产三次 shadow、一次 restore drill、七日观察和 cutover 属于 Archive
+之后的人工 rollout gate；Build 不读取生产 manifest、scheduler 或数据库，也不执行
+rollback。rollback 只能提交由 manifest/snapshot readback 重新验证的 envelope，并且
+只恢复 `public/manifest.json`，不反向 migration、不删除 PostgreSQL 行或 R2 对象。
 
 ## 上游完整抓取与重试
 
