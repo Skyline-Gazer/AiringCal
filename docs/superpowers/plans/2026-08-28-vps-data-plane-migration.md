@@ -302,11 +302,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Documents implemented CLI `sync|migrate|backup|restore-verify`、env、schema、R2 keys、backup/notification、部署/回滚和旧 changes supersession。
 
-- [ ] **Step 1: 文档事实审计** — 从 `cli.ts` config parser、Compose、workflow、SQL migrations、Read Worker routes/log events 提取实际字段；逐项对照 `docs/rules/docs-sync.md`。
-- [ ] **Step 2: 写文档契约测试/扫描** — 扩展现有 scripts test 或新增 `scripts/vps-docs.test.mjs`，断言所有 env/commands/events 都在文档且没有未实现内容。
-- [ ] **Step 3: 运行 RED** — `node --test scripts/vps-docs.test.mjs` 预期缺文档项 FAIL。
-- [ ] **Step 4: GREEN** — 更新四份文档，明确旧 CF changes frozen/superseded、无自动清理/部署；docs test 与 `git diff --check` PASS。
-- [ ] **Step 5: 提交与推送** — commit `docs: document VPS data plane operations` 后 push。
+- [x] **Step 1: 文档事实审计** — 从 `cli.ts` config parser、Compose、workflow、SQL migrations、Read Worker routes/log events 提取实际字段；逐项对照 `docs/rules/docs-sync.md`。
+- [x] **Step 2: 写文档契约测试/扫描** — 扩展现有 scripts test 或新增 `scripts/vps-docs.test.mjs`，断言所有 env/commands/events 都在文档且没有未实现内容。
+- [x] **Step 3: 运行 RED** — `node --test scripts/vps-docs.test.mjs` 预期缺文档项 FAIL。
+- [x] **Step 4: GREEN** — 更新四份文档，明确旧 CF changes frozen/superseded、无自动清理/部署；docs test 与 `git diff --check` PASS。
+- [x] **Step 5: 提交与推送** — commit `docs: document VPS data plane operations` 后 push。
 
 ### Task 9.2: 全仓验证与 verification report
 

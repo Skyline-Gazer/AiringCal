@@ -40,7 +40,7 @@
 
 ## 9. Documentation, Verification, and Cutover
 
-- [ ] 9.1 Synchronize README, architecture, environment variables, database migrations, snapshot/backup/notification, VPS deployment, restore, rollback, and old-change supersession documentation with each code task
+- [x] 9.1 Synchronize README, architecture, environment variables, database migrations, snapshot/backup/notification, VPS deployment, restore, rollback, and old-change supersession documentation with each code task
 - [ ] 9.2 Run full repository, PostgreSQL integration, R2 failure-injection, container, Compose, GHCR-equivalent, OpenSpec strict, and documentation audit gates and record a verification report
 - [ ] 9.3 Implement and test shadow comparison, restore-drill, cutover, rollback, and observation commands/runbooks without executing production cutover during Build
 - [ ] 9.4 Implement and document a 30-day legacy-resource retention and separate-change approval gate; do not delete or wait on production resources during Build
