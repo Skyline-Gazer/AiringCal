@@ -317,11 +317,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Report records command、exit code、关键输出、环境边界与未执行的生产 gates；不得把未运行项写成通过。
 
-- [ ] **Step 1: 运行 package/full gates** — `CI=true pnpm test`、`CI=true pnpm typecheck`、`CI=true pnpm build:check`、PostgreSQL integration suite、R2 failure suite、image/Compose/workflow validators。
-- [ ] **Step 2: 运行协议/文档 gates** — `pnpm exec openspec validate migrate-data-plane-to-vps --strict`、`git diff --check`、secret scan、README/config/API audit。
-- [ ] **Step 3: 修复失败** — 每个失败先添加/保留回归测试，再最小修复、重跑相关与全局 gate，并以独立 conventional commit + push 交付。
-- [ ] **Step 4: 写 verification report** — 仅记录新鲜证据；production shadow/restore/cutover 标为需显式环境执行的后续 gate，而非完成。
-- [ ] **Step 5: 提交与推送** — commit `docs: record VPS data plane build verification` 后 push。
+- [x] **Step 1: 运行 package/full gates** — `CI=true pnpm test`、`CI=true pnpm typecheck`、`CI=true pnpm build:check`、PostgreSQL integration suite、R2 failure suite、image/Compose/workflow validators。
+- [x] **Step 2: 运行协议/文档 gates** — `pnpm exec openspec validate migrate-data-plane-to-vps --strict`、`git diff --check`、secret scan、README/config/API audit。
+- [x] **Step 3: 修复失败** — 每个失败先添加/保留回归测试，再最小修复、重跑相关与全局 gate，并以独立 conventional commit + push 交付。本轮仅发现报告证据可复现性问题，已 report-only 修复并复核。
+- [x] **Step 4: 写 verification report** — 仅记录新鲜证据；production shadow/restore/cutover 标为需显式环境执行的后续 gate，而非完成。
+- [x] **Step 5: 提交与推送** — commit `docs: record VPS data-plane build verification` 后 push。
 
 ### Task 9.3: Shadow、restore、cutover 与 rollback 工具门禁
 
