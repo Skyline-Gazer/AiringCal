@@ -484,6 +484,44 @@ Git SHA、pnpm、Node/Alpine 版本和 `node:alpine` manifest digest 写入 job 
 镜像发布本身不触发 VPS 运行；人工 shadow/live 操作仍按
 [VPS runbook](deploy/vps/README.md) 执行。
 
+### VPS 数据平面（当前 Build 边界）
+
+VPS 运行时由宿主机 cron 通过 `deploy/vps/run-sync.sh` 启动一次性的 Compose
+`sync` service。它使用完整 40 位 git SHA 镜像、`node` 用户、只读 rootfs 和
+`/tmp/airing-cal` tmpfs；host `flock` 与 PostgreSQL advisory lock 共同防止
+重叠运行。完整链路、schema、R2 key 和 rollback 约束见
+[VPS 架构文档](docs/architecture/vps-data-plane.md) 与
+[VPS 运行手册](docs/runbook/vps-data-plane.md)。
+
+`.env` 只在 VPS 私有保存，必须 `chmod 600`。Compose 当前读取这些变量：
+
+| 变量 | 说明 |
+| --- | --- |
+| `VPS_SYNC_IMAGE` | `ghcr.io/skyline-gazer/airing-cal-sync:<40 lowercase hex SHA>`；禁止 `latest`、短 SHA、`-debug` |
+| `DATABASE_URL` | PostgreSQL connection URI |
+| `BANGUMI_TOKEN` / `BANGUMI_USERS` | bgm.tv access token / 逗号分隔用户名 |
+| `R2_ENDPOINT` / `R2_BUCKET` | R2 S3 endpoint / data bucket |
+| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | R2 最小权限凭据 |
+| `FEISHU_WEBHOOK_URL` | 必填的 HTTPS custom-bot webhook |
+| `FEISHU_WEBHOOK_TOKEN` / `FEISHU_WEBHOOK_SECRET` | 可选 query token / HMAC secret |
+| `FEISHU_TIMEOUT_MS` | 可选 bounded timeout，默认 `10000`，最大 `60000` |
+
+当前可执行入口只有 `sync`：
+
+```text
+Usage: sync [--mode=shadow|live] [--source=scheduled|manual]
+```
+
+`applyMigrations(pool)`、`createBackup(deps, run)` 和
+`restoreVerify(deps, key, targetUrl)` 是已实现的注入式 API；`migrate`、`backup`
+与 `restore-verify` 的独立 CLI 尚未提供，restore 命令/凭据包装留给 Task 9.3。
+当前 Build 不执行生产切换；镜像 workflow 不部署 VPS、不触发同步，旧
+Cloudflare 资源也不会自动清理。
+
+旧 changes `harden-workflow-request-budget`、`adopt-d1-r2-incremental-sync` 和
+`migrate-public-reads-from-kv` 已 frozen/superseded。它们保留为现有 Read Worker
+兼容行为的实现证据，不代表 VPS 已完成 cutover。
+
 ### 正式回退 runbook
 
 1. 在 Cloudflare Dashboard 暂停 `airing-cal-sync` 的 Worker Cron trigger，防止回退期间创建新的 live instance。

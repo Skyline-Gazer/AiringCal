@@ -19,6 +19,20 @@ floating, short-SHA, and `-debug` tags are rejected by the validator. The env
 file contains PostgreSQL, Bangumi, R2, and Feishu credentials; do not commit it
 or pass those values on the command line.
 
+The Compose contract is:
+
+| Required | Optional |
+| --- | --- |
+| `VPS_SYNC_IMAGE`, `DATABASE_URL`, `BANGUMI_TOKEN`, `BANGUMI_USERS`, `R2_ENDPOINT`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `FEISHU_WEBHOOK_URL` | `FEISHU_WEBHOOK_TOKEN`, `FEISHU_WEBHOOK_SECRET`, `FEISHU_TIMEOUT_MS` (default `10000`, max `60000`) |
+
+The image executes only the checked-in `sync` entrypoint:
+`sync --mode=shadow|live --source=scheduled|manual`. The repository also exposes
+`applyMigrations(pool)`, `createBackup(deps, run)`, and
+`restoreVerify(deps, key, targetUrl)` as injected APIs; `migrate`, `backup`, and
+`restore-verify` are not standalone CLI commands yet. Follow the migration,
+backup, restore verification, R2 key, and status contracts in
+[`docs/runbook/vps-data-plane.md`](../../docs/runbook/vps-data-plane.md).
+
 ## Manual debug image
 
 The `Publish VPS sync production image` workflow also exposes a required

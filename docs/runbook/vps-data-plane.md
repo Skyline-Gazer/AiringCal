@@ -1,5 +1,40 @@
 # VPS 数据平面运行手册
 
+## 当前运行边界
+
+本手册描述已提交并可审计的 VPS 组件，不代表生产 shadow、restore drill 或
+cutover 已执行。`deploy/vps/run-sync.sh` 只在宿主机取得非阻塞 `flock` 后启动
+一次 Compose `sync`；它不发布镜像、不部署 VPS、不切换公开 manifest，也不自动
+清理旧 Cloudflare 资源。live 运行需要单独的人工批准和后续迁移门禁。
+
+`apps/vps-sync/src/cli.ts` 当前只有 process-facing `sync` 入口：
+
+```text
+Usage: sync [--mode=shadow|live] [--source=scheduled|manual]
+```
+
+`applyMigrations(pool)`、`createBackup(deps, run)` 和
+`restoreVerify(deps, key, targetUrl)` 已实现为注入式 API；`migrate`、`backup`、
+`restore-verify` 尚未提供独立 CLI，restore 命令及凭据入口留给 Task 9.3。
+
+Compose 使用的环境变量如下；`.env.example` 只是占位模板，真实 `.env` 必须
+由 cron 用户私有保存并设置 `chmod 600`：
+
+| 变量 | 必填 | 语义 |
+| --- | --- | --- |
+| `VPS_SYNC_IMAGE` | 是 | 完整 40 位 git SHA production image |
+| `DATABASE_URL` | 是 | PostgreSQL connection URI |
+| `BANGUMI_TOKEN` / `BANGUMI_USERS` | 是 | bgm.tv token / 逗号分隔用户名 |
+| `R2_ENDPOINT` / `R2_BUCKET` | 是 | R2 S3 endpoint / bucket |
+| `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` | 是 | R2 凭据 |
+| `FEISHU_WEBHOOK_URL` | 是 | HTTPS Feishu custom-bot webhook |
+| `FEISHU_WEBHOOK_TOKEN` / `FEISHU_WEBHOOK_SECRET` | 否 | query token / HMAC secret |
+| `FEISHU_TIMEOUT_MS` | 否 | 默认 `10000`，最大 `60000` |
+
+`FEISHU_WEBHOOK_URL`、token、secret、数据库 URI 与 R2 凭据不会进入 argv、日志、
+backup manifest 或通知正文。完整组件边界见
+[VPS 架构文档](../architecture/vps-data-plane.md)。
+
 ## vps-sync Alpine 镜像
 
 `Dockerfile.vps-sync` 提供 `production` 与 `debug` 两个目标。构建阶段使用仓库锁文件和 `pnpm@9.15.9`，调用 `pnpm -F @airing-cal/vps-sync build`；production 只带编译后的 `dist/`、production dependencies、`ca-certificates` 和 `postgresql17-client`，以 `node` 用户执行 `node dist/cli.js`，不声明监听端口。debug 从 production 继承并额外安装 `curl`、`bind-tools`、`netcat-openbsd`、`procps-ng`、`iproute2` 与 `jq`；这些目标包名待 Docker 环境用 `apk search` 重跑确认。read-only root filesystem、capability drop、tmpfs 和无端口映射由 Task 7.2 Compose 约束。
