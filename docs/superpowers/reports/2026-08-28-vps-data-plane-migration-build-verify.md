@@ -203,3 +203,18 @@ verifier cover the checked-in README/config/API-facing delivery claims.
   explicit follow-up/production gates for Task 9.4 and deployment; Task 9.3
   intentionally provides only the fake/dry-run gate and injected operation
   boundary.
+
+## Final acceptance mapping
+
+This table separates repository evidence from environment-dependent gates.
+`Deferred` is intentional and is not a passing result.
+
+| Acceptance item | Evidence / status |
+| --- | --- |
+| OpenSpec task coverage | **20/20 tasks** are implemented and checked off with corresponding atomic commits and pushes. This records repository scope completion; it does not turn deferred runtime gates into passes. |
+| Public read boundary | **Retained.** Public reads do not access VPS/PostgreSQL. The existing Frontend/Read Worker → data R2/Cache API path and complete legacy KV fallback remain; D1/KV health and migration metadata remain exposed by the health contract. No live VPS/PG request was made during this verification. |
+| Fake/injected contract tests | **Pass.** VPS native suite: 170 tests, 163 passed, 7 PostgreSQL integration tests skipped; repository `scripts/*.test.mjs`: 51 passed; documentation contract: 4 passed. These are fake, injected, static, or local contract checks. |
+| Real PostgreSQL restore | **Deferred.** No disposable PostgreSQL service or credentials were available; the 7 PostgreSQL integration tests remain skipped. No real restore round-trip is claimed. |
+| Docker image runtime | **Deferred.** Docker is unavailable in this environment, so image build, container run, non-root/read-only inspection, and runtime package/network checks were not executed. Static image validation does not substitute for them. |
+| GHCR authenticated preflight/push | **Deferred.** No authenticated GHCR request or image push was performed. Workflow/static validation does not prove registry authentication, immutability, or published-image metadata. |
+| Fresh repository gates | **Pass where executed:** `CI=true pnpm test`, `CI=true pnpm typecheck`, and `CI=true pnpm build:check` exited 0; `pnpm exec openspec validate migrate-data-plane-to-vps --strict` and `git diff --check` exited 0; the tracked-file secret scan covered 553 files and found 0 matches. |
