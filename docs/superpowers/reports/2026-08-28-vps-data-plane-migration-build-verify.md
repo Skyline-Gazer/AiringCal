@@ -21,7 +21,7 @@ environment has no Docker CLI or disposable PostgreSQL service.
 | Full typecheck | `CI=true pnpm typecheck` | exit 0; all 10 checked workspace packages passed |
 | Full build check | `CI=true pnpm build:check` | exit 0; all worker dry-run/type checks and VPS typecheck passed |
 | VPS package wrapper | `CI=true pnpm -F @airing-cal/vps-sync test` | exit 1 because `tsx` could not create its IPC pipe (`listen EPERM`) in the sandbox |
-| VPS native fallback | `node --import tsx/esm --test src/**/*.test.ts` from `apps/vps-sync` | exit 0; 154 tests, 147 passed, 7 PostgreSQL integration tests skipped |
+| VPS native fallback | `node --import tsx/esm --test src/**/*.test.ts` from `apps/vps-sync` | exit 0; 162 tests, 155 passed, 7 PostgreSQL integration tests skipped |
 | PostgreSQL integration selection | `node --import tsx/esm --test src/postgres/migrate.test.ts src/postgres/repositories.test.ts` | exit 0; 7 passed, 7 skipped because `DATABASE_URL`/`VPS_SYNC_TEST_DATABASE=1` were not configured |
 | R2 failure-injection suite | `node --import tsx/esm --test apps/vps-sync/src/publication/publish.test.ts apps/read-worker/src/r2-snapshot.test.ts apps/sync-worker/src/r2-publication.test.ts` | exit 0; 90 passed |
 | Image/Compose/workflow validators | `node --test scripts/verify-vps-sync-image.test.mjs scripts/validate-vps-compose.test.mjs scripts/validate-vps-image-workflow.test.mjs` | exit 0; 24 passed |
@@ -161,8 +161,8 @@ verifier cover the checked-in README/config/API-facing delivery claims.
 
 ### Task 9.3 operation evidence
 
-- `node --import tsx/esm --test apps/vps-sync/src/operations/migration.test.ts` — exit 0; 7 passed. This includes three fake shadow rounds, field-level JSON-pointer diffs, restore dry-run, cutover approval-token rejection, and verified-manifest-only rollback.
-- `node --import tsx/esm --test src/**/*.test.ts` from `apps/vps-sync` — exit 0; 161 tests, 154 passed, 7 PostgreSQL integration tests skipped because no disposable service/credentials were configured.
+- `node --import tsx/esm --test apps/vps-sync/src/operations/migration.test.ts` — exit 0; 8 tests, 8 passed. This includes three fake shadow rounds, field-level JSON-pointer diffs, restore dry-run, cutover approval-token rejection, and verified-manifest-only rollback.
+- `node --import tsx/esm --test src/**/*.test.ts` from `apps/vps-sync` — exit 0; 162 tests, 155 passed, 7 PostgreSQL integration tests skipped because no disposable service/credentials were configured.
 - `pnpm -F @airing-cal/vps-sync typecheck` and `pnpm -F @airing-cal/vps-sync build:check` — exit 0.
 - `CI=true pnpm build:check` — exit 0; workspace checks completed. Wrangler emitted the existing sandbox `EPERM` log-file diagnostics while dry-run builds still completed; no VPS operation connects to a production service.
 - CLI help was run for `shadow-compare`, `restore-verify`, `cutover`, and `rollback`; each exited 0 and printed the checked-in command contract. The new parser accepts environment variable names, never database URLs or approval secrets, and missing injected runtime ports fail closed.
