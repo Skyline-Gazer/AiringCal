@@ -11,6 +11,17 @@ VPS 同步运行时 MUST 是 detail、metadata、image 与 R2 图片对象的唯
 - **WHEN** VPS shadow 验证通过并准备成为正式媒体生产者
 - **THEN** 旧 Cloudflare Media Queue consumer 在 live 切换前停止，避免出现两个正式写者
 
+### Requirement: 媒体失败原因必须使用可恢复的稳定代码
+媒体刷新 MUST 只持久化 allow-listed 稳定 `error_code`，并在读取媒体状态时还原该代码；原始异常文本 MUST NOT 写入 PostgreSQL。
+
+#### Scenario: 上游图片请求失败
+- **WHEN** 图片上游返回 503、429 或网络请求抛出 TypeError
+- **THEN** PostgreSQL 分别保存 `UPSTREAM_SERVER`、`UPSTREAM_RATE_LIMIT` 或 `UPSTREAM_NETWORK`，并在读取状态时返回相同代码
+
+#### Scenario: 图片内容无效或 R2 上传失败
+- **WHEN** 图片响应 MIME 无效或 R2 PUT 抛错
+- **THEN** PostgreSQL 分别保存 `MEDIA_INVALID` 或 `MEDIA_UPLOAD`，且不保存异常文本
+
 ## MODIFIED Requirements
 
 ### Requirement: subject 缓存必须支持过期继续服务
@@ -34,8 +45,8 @@ subject detail、metadata 或 image 到期时，公开读取 MUST 继续服务 P
 ### Requirement: Media Queue 消息必须可去重
 每个媒体刷新 MUST 由稳定 run ID、subject ID 与观察时间标识；PostgreSQL 唯一约束和状态转换 MUST 阻止重放产生重复下载或 R2 写入。
 
-#### Scenario: 同一 run 重放
-- **WHEN** 同一 subject 的媒体阶段因任务恢复再次执行
+#### Scenario: enqueue step 重放
+- **WHEN** 同一 enqueue step 因任务恢复再次投递相同 job
 - **THEN** 已完成状态被复用且不重复下载或覆盖图片
 
 ### Requirement: 刷新状态与图片结果必须分离
@@ -56,25 +67,14 @@ VPS 媒体刷新 MUST 区分可重试网络/上游错误与 404 等终态，并�
 - **WHEN** bgm.tv 明确返回 404
 - **THEN** 系统记录保守 tombstone 且不按瞬态错误立即重试
 
-### Requirement: 媒体失败原因必须使用可恢复的稳定代码
-媒体刷新 MUST 只持久化 allow-listed 稳定 `error_code`，并在读取媒体状态时还原该代码；原始异常文本 MUST NOT 写入 PostgreSQL。
-
-#### Scenario: 上游图片请求失败
-- **WHEN** 图片上游返回 503、429 或网络请求抛出 TypeError
-- **THEN** PostgreSQL 分别保存 `UPSTREAM_SERVER`、`UPSTREAM_RATE_LIMIT` 或 `UPSTREAM_NETWORK`，并在读取状态时返回相同代码
-
-#### Scenario: 图片内容无效或 R2 上传失败
-- **WHEN** 图片响应 MIME 无效或 R2 PUT 抛错
-- **THEN** PostgreSQL 分别保存 `MEDIA_INVALID` 或 `MEDIA_UPLOAD`，且不保存异常文本
-
 ### Requirement: subject 副作用必须按 generation 串行
 系统 MUST 使用 PostgreSQL advisory/row lock 和观察时间围栏串行执行同一 subject 的 detail、metadata、image 与 refresh 副作用，并拒绝过期写入。
 
-#### Scenario: 旧刷新晚完成
+#### Scenario: 旧 job 晚到达
 - **WHEN** 较旧 observed_at 的刷新在较新状态提交后返回
 - **THEN** 旧结果标记 obsolete 且不得覆盖 PostgreSQL 或 R2
 
-#### Scenario: 迁移期旧 Worker 与 VPS 共存
+#### Scenario: legacy job 与 V3 共存
 - **WHEN** shadow 期间旧媒体 Worker 仍可能运行
 - **THEN** VPS shadow 不切换公开 manifest，切流前停止旧 consumer 以建立单一写者
 
@@ -85,7 +85,7 @@ VPS 媒体刷新 MUST 区分可重试网络/上游错误与 404 等终态，并�
 - **WHEN** 权威详情接口明确返回 404
 - **THEN** 系统保留最后成功公开数据并记录 tombstone 到期时间
 
-#### Scenario: tombstone TTL 内再次同步
+#### Scenario: tombstone TTL 内再次刷新
 - **WHEN** 下一轮任务发生在 tombstone 到期前
 - **THEN** 系统不重复请求该 subject 详情
 
@@ -96,6 +96,6 @@ VPS 媒体刷新 MUST 区分可重试网络/上游错误与 404 等终态，并�
 ### Requirement: 相同媒体状态不得重复写入
 系统 MUST 在写 PostgreSQL 或 R2 前比较规范媒体内容；可复用且未变化时不得执行对应 UPDATE 或 object PUT。
 
-#### Scenario: 图片与 metadata 均可复用
+#### Scenario: 两种图片均可复用
 - **WHEN** hash、来源和刷新状态与权威记录相同
 - **THEN** 本轮不产生媒体行更新或图片 PUT

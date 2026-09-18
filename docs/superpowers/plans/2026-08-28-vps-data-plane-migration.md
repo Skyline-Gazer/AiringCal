@@ -2,6 +2,7 @@
 change: migrate-data-plane-to-vps
 design-doc: docs/superpowers/specs/2026-08-28-vps-data-plane-migration-design.md
 base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
+archived-with: 2026-09-18-migrate-data-plane-to-vps
 ---
 
 # VPS Data Plane Migration Implementation Plan
@@ -41,6 +42,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 - Create `deploy/vps/` — SHA-pinned Compose、secret template、cron/flock 和操作说明。
 - Create `Dockerfile.vps-sync` and `.github/workflows/vps-sync-image.yml` — Alpine production/debug images 与 GHCR 交付。
 
+archived-with: 2026-09-18-migrate-data-plane-to-vps
 ---
 
 ### Task 1.1: PostgreSQL package、migration 与 advisory locks

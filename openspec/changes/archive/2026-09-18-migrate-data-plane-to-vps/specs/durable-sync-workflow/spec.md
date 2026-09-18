@@ -25,18 +25,18 @@ collections 或 calendar 获取最终失败时，VPS 同步任务 MUST 记录失
 - **WHEN** running run 超过约定窗口未更新 heartbeat
 - **THEN** health 将其标记 stale 且保留 run ID 供 VPS 日志核对
 
-#### Scenario: 初始化后尚未完成
+#### Scenario: initialize 后尚未 finalize
 - **WHEN** run 已获得 advisory lock 但尚未 finalize
 - **THEN** health 可定位该 run 并返回其最后持久化阶段
 
 ### Requirement: live generation 必须单调提交
 系统 MUST 使用 PostgreSQL 锁和 publication 状态单调分配 generation；只有完成 R2 snapshot 上传与回读验证的 run 才能切换 manifest。
 
-#### Scenario: 较旧运行晚完成
+#### Scenario: 较旧 Workflow 晚完成
 - **WHEN** generation 1 在 generation 2 已切换后尝试发布
 - **THEN** generation 1 返回 obsolete 且 manifest 仍指向 generation 2
 
-#### Scenario: publication 中途失败
+#### Scenario: enqueue 中途失败
 - **WHEN** snapshot 上传或回读校验失败
 - **THEN** 本次 generation 不得成为公开 manifest
 
@@ -50,12 +50,20 @@ collections 或 calendar 获取最终失败时，VPS 同步任务 MUST 记录失
 ### Requirement: 未变化同步不得产生逐 subject 副作用
 同步任务 MUST 在写入和媒体获取前筛除规范状态未变化且未到刷新时间的 subject；仅 run 状态与必要备份可更新。
 
-#### Scenario: 所有 subject 稳定且未到期
+#### Scenario: 659 个 subject 均未变化且未到期
 - **WHEN** 每日任务完成 collections 与 calendar 抓取
 - **THEN** 不产生逐 subject 数据更新或重复 R2 图片写入，公开 manifest 保持不变
 
-### Requirement: 同步运行指标必须闭合
+### Requirement: 同步运行指标必须可闭合且不得冒充实际 KV 写入
 系统 MUST 分别记录 fetched、inserted、updated、confirmed_deleted、unchanged、media refreshed/failed、publication、backup 与 notification 结果；不得把计划数量标记为已完成副作用。
+
+#### Scenario: 当日预算已部分消耗
+- **WHEN** 当日同步预算在处理部分输入后已被消耗
+- **THEN** run 聚合计数只记录实际完成值并以 partial 终态结束
+
+#### Scenario: Queue 确认结果不确定
+- **WHEN** 业务数据与 snapshot 成功但队列或通知确认结果不确定
+- **THEN** run 保留实际计数并记录可恢复的 partial 终态
 
 #### Scenario: backup 失败
 - **WHEN** 数据与 snapshot 成功而 backup 失败

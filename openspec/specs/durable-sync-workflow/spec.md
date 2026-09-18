@@ -3,89 +3,72 @@
 ## Purpose
 TBD - created by archiving change adopt-free-plan-sync-workflow. Update Purpose after archive.
 ## Requirements
-### Requirement: 同步必须由可恢复 Workflow 编排
-系统 MUST 使用 Cloudflare Workflow 编排收藏、calendar、快照发布与刷新规划，并为每次 instance 持久化可观测运行状态。
-
-#### Scenario: instance 在中途恢复
-- **WHEN** Workflow 在已完成若干分页 step 后恢复
-- **THEN** 系统从持久化 step 继续且不重复已完成的外部副作用
-
-### Requirement: Workflow step 必须确定且有界
-系统 MUST 使用由阶段、页码、收藏类型或 chunk index 决定的 step 名，并确保每个 step 的外部请求数、CPU 与输出满足 Free Plan 限额。
-
-#### Scenario: 549 条收藏分页
-- **WHEN** 收藏接口报告 549 条记录且每页上限为 50
-- **THEN** Workflow 只创建 11 个收藏获取 step 且每个 step 输出仅包含 key、数量和摘要
-
-### Requirement: shadow 与 live 发布必须隔离
-手动 Workflow MUST 明确选择 `shadow` 或 `live`；shadow 不得覆盖正式 snapshot 或投递 Media Queue，schedule MUST 以 live 模式运行。
-
-#### Scenario: shadow 验证
-- **WHEN** 运维创建 shadow instance
-- **THEN** 系统只写该 instance 的 shadow snapshot 与审计结果且正式 snapshot 保持不变
-
 ### Requirement: 获取失败必须保留上一版正式快照
-collections 或 calendar 获取最终失败时，系统 MUST 记录错误状态并保留上一版完整正式 snapshot。
+collections 或 calendar 获取最终失败时，VPS 同步任务 MUST 记录失败终态并保留上一版 PostgreSQL 权威数据和 R2 manifest。
 
 #### Scenario: calendar 重试耗尽
-- **WHEN** calendar 请求在允许的重试后仍失败
-- **THEN** Workflow 以 error 结束且不发布本次正式收藏或 calendar
+- **WHEN** 收藏已完整获取但 calendar 最终失败
+- **THEN** 任务以 failed 退出且不提交权威事务或公开 snapshot
 
 ### Requirement: Workflow 网络错误必须分类重试
-系统 MUST 将 401/403 视为不可重试错误，并对 429、5xx、timeout 与 network error 执行有界指数退避。
+同步运行时 MUST 将 401/403 视为终态认证错误，将 429、5xx、timeout 与网络错误按有界策略重试，并在耗尽后保留上一版公开数据。
 
 #### Scenario: 上游鉴权失败
-- **WHEN** 收藏请求返回 401 或 403
-- **THEN** 当前 step 不再重试并以脱敏错误结束 instance
+- **WHEN** bgm.tv 返回 401 或 403
+- **THEN** 当前网络操作不重试且 run 记录脱敏认证错误
 
 #### Scenario: 上游限流
-- **WHEN** 收藏请求返回 429
-- **THEN** 当前 step 按配置重试且不会覆盖上一版正式 snapshot
+- **WHEN** bgm.tv 返回 429
+- **THEN** 当前网络操作按配置重试且不得覆盖上一版 manifest
 
 ### Requirement: Workflow 状态必须可观测
-系统 MUST 保存 instance ID、mode、source、status、stage、heartbeat、完成时间、页数、subject 数量、刷新任务数与脱敏错误，并在健康 API 暴露最近运行摘要。
+系统 MUST 在 PostgreSQL 持久化当前和最近同步 run 的阶段、心跳、终态、计数、耗时、git SHA 与脱敏错误，并由 health API 以兼容结构暴露应用状态。
 
 #### Scenario: heartbeat 过期
-- **WHEN** 应用记录超过 20 分钟没有 heartbeat 且未完成
-- **THEN** 健康 API 将应用状态标记为 stale 并保留 Cloudflare instance ID 供控制面核对
+- **WHEN** running run 超过约定窗口未更新 heartbeat
+- **THEN** health 将其标记 stale 且保留 run ID 供 VPS 日志核对
 
 #### Scenario: initialize 后尚未 finalize
-- **WHEN** Workflow 已完成 initialize 但尚未写最终 `sync:meta`
-- **THEN** 健康 API 通过 `sync:current` 定位该 instance，且 Workflow 与兼容 cron 状态使用同一 effective status
+- **WHEN** run 已获得 advisory lock 但尚未 finalize
+- **THEN** health 可定位该 run 并返回其最后持久化阶段
 
 ### Requirement: live generation 必须单调提交
-系统 MUST 通过 SQLite Durable Object 原子分配 generation 并串行提交 active manifest；较旧 generation 不得覆盖较新的已提交快照。
+系统 MUST 使用 PostgreSQL 锁和 publication 状态单调分配 generation；只有完成 R2 snapshot 上传与回读验证的 run 才能切换 manifest。
 
 #### Scenario: 较旧 Workflow 晚完成
-- **WHEN** generation 2 先提交而 generation 1 随后请求提交
-- **THEN** generation 1 返回 obsolete，`snapshot:active` 仍指向 generation 2
+- **WHEN** generation 1 在 generation 2 已切换后尝试发布
+- **THEN** generation 1 返回 obsolete 且 manifest 仍指向 generation 2
 
 #### Scenario: enqueue 中途失败
-- **WHEN** 任一 V3 refresh job 未成功入队
-- **THEN** 本次 generation 不得成为 active snapshot
+- **WHEN** snapshot 上传或回读校验失败
+- **THEN** 本次 generation 不得成为公开 manifest
 
 ### Requirement: 定时同步必须按日运行
-系统 MUST 使用 Worker Cron 在每天 04:00 Asia/Shanghai 创建一个 live Workflow instance，且不得保留每四小时业务同步 schedule。
+系统 MUST 使用 VPS 宿主机 cron 在每天 04:00 Asia/Shanghai 启动一次 Compose sync 任务，且不得保留 Cloudflare Worker Cron 作为常规业务调度源。
 
 #### Scenario: 一个完整自然日
-- **WHEN** 生产 Cron 正常启用且没有手动触发
-- **THEN** 系统只创建一个 scheduled live Workflow instance
+- **WHEN** VPS cron 正常运行
+- **THEN** 系统只尝试一个 scheduled sync run，重叠触发由双层锁跳过
 
 ### Requirement: 未变化同步不得产生逐 subject 副作用
-Workflow MUST 在 enqueue 前筛除未到期且缓存完整的 subject，不得仅因 instance ID 变化而投递全组件媒体任务。
+同步任务 MUST 在写入和媒体获取前筛除规范状态未变化且未到刷新时间的 subject；仅 run 状态与必要备份可更新。
 
 #### Scenario: 659 个 subject 均未变化且未到期
-- **WHEN** 每日 Workflow 完成 collections 与 calendar 抓取
-- **THEN** Media Queue 收到零个任务且没有逐 subject KV 写入
+- **WHEN** 每日任务完成 collections 与 calendar 抓取
+- **THEN** 不产生逐 subject 数据更新或重复 R2 图片写入，公开 manifest 保持不变
 
 ### Requirement: 同步运行指标必须可闭合且不得冒充实际 KV 写入
-系统 MUST 分别记录 eligible candidates（含优先级分布）、planner selected、logical granted、budget deferred、confirmed/uncertain producer outcome 与 skipped subjects。`refresh_jobs` 若为兼容保留 MUST 明确定义为 logical granted；Workflow MUST NOT 将异步 consumer 的估计值标记为实际 KV writes。失败 run MUST 保留失败前已到达的最新聚合值。
+系统 MUST 分别记录 fetched、inserted、updated、confirmed_deleted、unchanged、media refreshed/failed、publication、backup 与 notification 结果；不得把计划数量标记为已完成副作用。
 
 #### Scenario: 当日预算已部分消耗
-- **WHEN** planner selected 大于 coordinator logical grant
-- **THEN** budget deferred 等于 candidates 减 logical grant，且 selected、granted、confirmed/uncertain 分别报告
+- **WHEN** 当日同步预算在处理部分输入后已被消耗
+- **THEN** run 聚合计数只记录实际完成值并以 partial 终态结束
 
 #### Scenario: Queue 确认结果不确定
-- **WHEN** fail-closed reservation 返回 uncertain outcome
-- **THEN** logical grant 计入当日预算、uncertain 数量增加、confirmed 不增加，snapshot 仍可发布
+- **WHEN** 业务数据与 snapshot 成功但队列或通知确认结果不确定
+- **THEN** run 保留实际计数并记录可恢复的 partial 终态
+
+#### Scenario: backup 失败
+- **WHEN** 数据与 snapshot 成功而 backup 失败
+- **THEN** run 聚合计数保持实际完成值并以 partial 终态结束
 

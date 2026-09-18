@@ -2,6 +2,8 @@
 comet_change: migrate-data-plane-to-vps
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-09-18-migrate-data-plane-to-vps
+status: final
 ---
 
 # VPS Data Plane Migration Design
