@@ -333,11 +333,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces 可测试的 `shadow-compare`、`restore-verify`、`cutover`、`rollback` 运维命令/脚本与证据模板；Build 只验证 dry-run/fake 环境，不操作 production manifest、scheduler 或数据库。
 
-- [ ] **Step 1: CLI 契约验证** — 对新增命令和包装脚本逐一运行 `--help`，确认 shadow/live、备份 key、目标数据库和 dry-run 参数；不得写未验证 flag。
-- [ ] **Step 2: RED tests** — fake PostgreSQL/R2/Cloudflare control-plane ports 验证 shadow 只写 shadow namespace、compare 输出字段级 diff、restore 拒绝 production/non-empty target、cutover 无 approval token 时拒绝、rollback 只恢复已验证 manifest。
-- [ ] **Step 3: 运行 RED** — 运行新增运维命令测试，预期因 command/approval gate 不存在而 FAIL。
-- [ ] **Step 4: GREEN/REFACTOR** — 实现命令、证据模板与 runbook；在本地 fake 环境完成三轮 shadow 模拟和一次 restore 模拟，明确真实生产三次运行/七日观察属于 Archive 后的人工 rollout。
-- [ ] **Step 5: 提交与推送** — 局部测试、typecheck、`git diff --check` PASS；commit `ops(vps-sync): add guarded migration operations` 后 push。
+- [x] **Step 1: CLI 契约验证** — 对新增命令和包装脚本逐一运行 `--help`，确认 shadow/live、备份 key、目标数据库和 dry-run 参数；不得写未验证 flag。
+- [x] **Step 2: RED tests** — fake PostgreSQL/R2/Cloudflare control-plane ports 验证 shadow 只写 shadow namespace、compare 输出字段级 diff、restore 拒绝 production/non-empty target、cutover 无 approval token 时拒绝、rollback 只恢复已验证 manifest。
+- [x] **Step 3: 运行 RED** — 运行新增运维命令测试，预期因 command/approval gate 不存在而 FAIL。
+- [x] **Step 4: GREEN/REFACTOR** — 实现命令、证据模板与 runbook；在本地 fake 环境完成三轮 shadow 模拟和一次 restore 模拟，明确真实生产三次运行/七日观察属于 Archive 后的人工 rollout。
+- [x] **Step 5: 提交与推送** — 局部测试、typecheck、`git diff --check` PASS；commit `ops(vps-sync): add guarded migration operations` 后 push。
 
 ### Task 9.4: 30 日 legacy 保留与独立清理门禁实现
 
