@@ -24,6 +24,21 @@ function requireBefore(errors, source, first, second, message) {
   if (firstIndex < 0 || secondIndex < 0 || firstIndex >= secondIndex) errors.push(message)
 }
 
+function stepBlock(source, name) {
+  const marker = `      - name: ${name}\n`
+  const start = source.indexOf(marker)
+  if (start < 0) return ''
+  const body = source.slice(start + marker.length)
+  const next = body.search(/^      - name:/m)
+  return next < 0 ? body : body.slice(0, next)
+}
+
+function requireStepMatch(errors, source, name, pattern, message) {
+  const block = stepBlock(source, name)
+  if (!block || !pattern.test(block)) errors.push(message)
+  return block
+}
+
 function validateActions(errors, source) {
   const uses = [...source.matchAll(/^\s*uses:\s*([^\s@]+)@([^\s#]+)(?:\s+#.*)?$/gm)]
   if (uses.length === 0) errors.push('workflow must pin every action to a commit SHA')
@@ -52,8 +67,13 @@ export function validateVpsImageWorkflow({ text, workspaceRoot = root } = {}) {
   if (!source) return { ok: false, errors: ['.github/workflows/vps-sync-image.yml is missing'], warnings: [] }
 
   requireText(errors, source, /^name:\s+Publish VPS sync production image\s*$/m, 'workflow name must identify the production image')
-  requireText(errors, source, /^on:\s*\n\s+push:\s*$/m, 'workflow must publish on push')
-  if (/^\s+workflow_dispatch:\s*$/m.test(source)) errors.push('workflow_dispatch belongs to the separate debug-image task')
+  requireText(errors, source, /^on:\s*$/m, 'workflow must declare its triggers')
+  requireText(errors, source, /^  push:\s*$/m, 'workflow must publish on push')
+  requireText(errors, source, /^  workflow_dispatch:\s*$/m, 'workflow must expose a manual debug trigger')
+  requireText(errors, source, /^    inputs:\s*$/m, 'manual debug trigger must declare inputs')
+  requireText(errors, source, /^      debug:\s*$/m, 'manual trigger must expose an explicit debug input')
+  requireText(errors, source, /^        required:\s+true\s*$/m, 'debug input must be explicit')
+  requireText(errors, source, /^        type:\s+boolean\s*$/m, 'debug input must be boolean')
   requireText(errors, source, /^concurrency:\s*\n\s+group:\s+vps-sync-image-\$\{\{ github\.ref \}\}\s*\n\s+cancel-in-progress:\s+false\s*$/m, 'workflow must define non-cancelling concurrency')
   requireText(errors, source, /^      contents:\s+read\s*$/m, 'job must grant contents: read')
   requireText(errors, source, /^      packages:\s+write\s*$/m, 'job must grant packages: write')
@@ -63,12 +83,25 @@ export function validateVpsImageWorkflow({ text, workspaceRoot = root } = {}) {
   requireBefore(errors, source, 'run: pnpm typecheck', 'push: true', 'pnpm typecheck must run before the registry push')
   requireBefore(errors, source, 'run: pnpm test', 'push: true', 'pnpm test must run before the registry push')
   requireBefore(errors, source, 'run: pnpm build:check', 'push: true', 'pnpm build:check must run before the registry push')
-  requireText(errors, source, /^\s+target:\s+production\s*$/m, 'production image push must target the production stage')
-  requireText(errors, source, /^\s+push:\s+true\s*$/m, 'production image build must push to the registry')
-  requireText(errors, source, /^\s+tags:\s+\$\{\{ steps\.meta\.outputs\.tags \}\}\s*$/m, 'build-push must consume metadata tags')
 
-  requireText(errors, source, /type=raw,value=\$\{\{ github\.sha \}\}/, 'image tags must include the full SHA')
-  requireText(errors, source, /type=raw,value=latest,enable=\{\{is_default_branch\}\}/, 'image tags must include a non-authoritative discovery tag')
+  const productionGuard = requireStepMatch(errors, source, 'Refuse an existing full-SHA tag', /^        if:\s+github\.event_name == 'push'\s*$/m, 'full-SHA preflight must run only for push production publishing')
+  const productionMetadata = requireStepMatch(errors, source, 'Extract image metadata', /^        if:\s+github\.event_name == 'push'\s*$/m, 'production metadata must run only for push production publishing')
+  requireStepMatch(errors, source, 'Build and push production image', /^        if:\s+github\.event_name == 'push'\s*$/m, 'production image push must run only for push production publishing')
+  requireStepMatch(errors, source, 'Write image metadata', /^        if:\s+github\.event_name == 'push'\s*$/m, 'production metadata writing must run only for push production publishing')
+  requireStepMatch(errors, source, 'Upload image metadata', /^        if:\s+github\.event_name == 'push'\s*$/m, 'production metadata upload must run only for push production publishing')
+  requireStepMatch(errors, source, 'Build and push production image', /^          target:\s+production\s*$/m, 'production image push must target the production stage')
+  requireStepMatch(errors, source, 'Build and push production image', /^          push:\s+true\s*$/m, 'production image build must push to the registry')
+  requireStepMatch(errors, source, 'Build and push production image', /^          tags:\s+\$\{\{ steps\.meta\.outputs\.tags \}\}\s*$/m, 'production build-push must consume production metadata tags')
+
+  const debugMetadata = requireStepMatch(errors, source, 'Extract debug image metadata', /^        if:\s+github\.event_name == 'workflow_dispatch' && inputs\.debug == true\s*$/m, 'debug metadata must require the explicit manual debug input')
+  const debugBuild = requireStepMatch(errors, source, 'Build and push debug image', /^        if:\s+github\.event_name == 'workflow_dispatch' && inputs\.debug == true\s*$/m, 'debug image push must require the explicit manual debug input')
+  requireStepMatch(errors, source, 'Build and push debug image', /^          target:\s+debug\s*$/m, 'debug image push must target the debug stage')
+  requireStepMatch(errors, source, 'Build and push debug image', /^          push:\s+true\s*$/m, 'debug image build must push to the registry')
+  requireStepMatch(errors, source, 'Build and push debug image', /^          tags:\s+\$\{\{ steps\.debug-meta\.outputs\.tags \}\}\s*$/m, 'debug build-push must consume debug metadata tags')
+
+  requireText(errors, productionMetadata, /type=raw,value=\$\{\{ github\.sha \}\}\s*$/m, 'production image tags must include the full SHA')
+  requireText(errors, productionMetadata, /type=raw,value=latest,enable=\{\{is_default_branch\}\}/, 'production image tags must include a non-authoritative discovery tag')
+  requireText(errors, debugMetadata, /type=raw,value=\$\{\{ github\.sha \}\}-debug\s*$/m, 'debug image tags must be exactly the full SHA followed by -debug')
   if (/type=sha(?:,|\s|$)/.test(source)) errors.push('short metadata-action SHA tags are not allowed; use the full SHA')
   requireText(errors, source, /^\s+IMAGE_NAME:\s+skyline-gazer\/airing-cal-sync\s*$/m, 'workflow must publish the Compose image name')
 
@@ -80,10 +113,10 @@ export function validateVpsImageWorkflow({ text, workspaceRoot = root } = {}) {
   requireText(errors, source, /manifest_digest=/, 'workflow must export the resolved base manifest digest')
   requireText(errors, source, /org\.opencontainers\.image\.base\.digest=/, 'image labels must include the resolved base digest')
 
-  requireText(errors, source, /\/v2\/\$\{repository\}\/manifests\/\$\{GITHUB_SHA\}/, 'full-SHA preflight must inspect the exact immutable tag')
-  requireText(errors, source, /404\).*Full SHA tag is absent/, 'full-SHA preflight must allow only a not-found response')
-  requireText(errors, source, /200\).*Full SHA tag already exists/, 'full-SHA preflight must reject an existing tag')
-  requireText(errors, source, /Could not prove full SHA tag is absent/, 'full-SHA preflight must fail closed on unknown registry responses')
+  requireText(errors, productionGuard, /\/v2\/\$\{repository\}\/manifests\/\$\{GITHUB_SHA\}/, 'full-SHA preflight must inspect the exact immutable tag')
+  requireText(errors, productionGuard, /404\).*Full SHA tag is absent/, 'full-SHA preflight must allow only a not-found response')
+  requireText(errors, productionGuard, /200\).*Full SHA tag already exists/, 'full-SHA preflight must reject an existing tag')
+  requireText(errors, productionGuard, /Could not prove full SHA tag is absent/, 'full-SHA preflight must fail closed on unknown registry responses')
 
   requireText(errors, source, /GITHUB_STEP_SUMMARY/, 'workflow must write an image metadata job summary')
   requireText(errors, source, /actions\/upload-artifact@/, 'workflow must upload image metadata')
@@ -95,7 +128,6 @@ export function validateVpsImageWorkflow({ text, workspaceRoot = root } = {}) {
     [/docker\.sock|\/var\/run\/docker/, 'Docker socket'],
     [/^\s*(?:ssh|scp):/im, 'SSH'],
     [/\b(?:DATABASE_URL|BANGUMI_TOKEN|R2_SECRET_ACCESS_KEY|FEISHU_WEBHOOK_URL)\b/, 'VPS secret'],
-    [/target:\s+debug|-[dD]ebug\b/, 'debug'],
     [/\b(?:wrangler|docker compose)\b/, 'deployment'],
   ]
   for (const [pattern, label] of forbidden) {

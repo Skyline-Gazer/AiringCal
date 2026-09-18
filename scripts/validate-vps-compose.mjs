@@ -38,7 +38,7 @@ function requireAbsent(errors, text, pattern, message) {
 export function validateImageReference(image) {
   const errors = []
   if (typeof image !== 'string' || !IMAGE_PATTERN.test(image)) {
-    errors.push('VPS_SYNC_IMAGE must be a full production git SHA reference: ghcr.io/skyline-gazer/airing-cal-sync:<40 lowercase hex>')
+    errors.push('VPS_SYNC_IMAGE must be a full production git SHA reference (not a floating or -debug tag): ghcr.io/skyline-gazer/airing-cal-sync:<40 lowercase hex>')
   }
   return { ok: errors.length === 0, errors }
 }

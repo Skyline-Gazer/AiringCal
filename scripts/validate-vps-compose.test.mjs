@@ -14,11 +14,19 @@ test('rejects floating, debug, and short image references', () => {
   for (const image of [
     'ghcr.io/skyline-gazer/airing-cal-sync:latest',
     'ghcr.io/skyline-gazer/airing-cal-sync:debug',
+    `ghcr.io/skyline-gazer/airing-cal-sync:${'a'.repeat(40)}-debug`,
     'ghcr.io/skyline-gazer/airing-cal-sync:abcdef0',
     'docker.io/skyline-gazer/airing-cal-sync:' + 'a'.repeat(40),
   ]) {
     assert.equal(validateImageReference(image).ok, false, image)
   }
+})
+
+test('explains that the manual debug tag is not a production image', () => {
+  const result = validateImageReference(`ghcr.io/skyline-gazer/airing-cal-sync:${'a'.repeat(40)}-debug`)
+
+  assert.equal(result.ok, false)
+  assert.match(result.errors.join('\n'), /debug/)
 })
 
 test('accepts only the full production git SHA image reference', () => {

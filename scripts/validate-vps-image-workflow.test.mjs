@@ -16,6 +16,15 @@ function assertInvalid(source, expected) {
   assert.ok(result.errors.some((error) => error.includes(expected)), result.errors.join('\n'))
 }
 
+function step(source, name) {
+  const marker = `      - name: ${name}\n`
+  const start = source.indexOf(marker)
+  assert.notEqual(start, -1, `${name} step is missing`)
+  const body = source.slice(start + marker.length)
+  const next = body.search(/^      - name:/m)
+  return next < 0 ? body : body.slice(0, next)
+}
+
 test('accepts the checked-in production image workflow', () => {
   const result = validateVpsImageWorkflow({ text: workflow() })
   assert.deepEqual(result.errors, [])
@@ -54,11 +63,30 @@ test('requires GHCR permissions, concurrency, metadata, and non-overwrite guard'
   assertInvalid(workflow().replace('https://${REGISTRY}/v2/${repository}/manifests/${GITHUB_SHA}', 'https://${REGISTRY}/v2/${repository}/manifests/latest'), 'full-SHA preflight')
 })
 
-test('rejects VPS credentials, SSH, and debug-image behavior', () => {
+test('rejects VPS credentials and SSH', () => {
   assertInvalid(workflow() + '\n      DATABASE_URL: ${{ secrets.DATABASE_URL }}\n', 'VPS secret')
   assertInvalid(workflow() + '\n      ssh: default\n', 'SSH')
-  assertInvalid(workflow().replace('on:\n  push:', 'on:\n  workflow_dispatch:\n  push:'), 'workflow_dispatch')
-  assertInvalid(workflow() + '\n      target: debug\n', 'debug')
+})
+
+test('isolates the explicit manual debug build from push production publishing', () => {
+  const source = workflow()
+  assert.match(source, /^  workflow_dispatch:\s*$/m)
+  assert.match(source, /^      debug:\s*$/m)
+  assert.match(source, /^        type:\s+boolean\s*$/m)
+
+  const productionGuard = step(source, 'Refuse an existing full-SHA tag')
+  assert.match(productionGuard, /^        if:\s+github\.event_name == 'push'\s*$/m)
+
+  const productionBuild = step(source, 'Build and push production image')
+  assert.match(productionBuild, /^        if:\s+github\.event_name == 'push'\s*$/m)
+  assert.match(productionBuild, /^          target:\s+production\s*$/m)
+
+  const debugBuild = step(source, 'Build and push debug image')
+  assert.match(debugBuild, /^        if:\s+github\.event_name == 'workflow_dispatch' && inputs\.debug == true\s*$/m)
+  assert.match(debugBuild, /^          target:\s+debug\s*$/m)
+  const debugMetadata = step(source, 'Extract debug image metadata')
+  assert.match(debugMetadata, /type=raw,value=\$\{\{ github\.sha \}\}-debug/)
+  assert.doesNotMatch(debugBuild, /^          target:\s+production\s*$/m)
 })
 
 test('fails closed when the setup-node major no longer matches node:alpine metadata', () => {

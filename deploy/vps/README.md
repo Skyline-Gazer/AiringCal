@@ -19,6 +19,14 @@ floating, short-SHA, and `-debug` tags are rejected by the validator. The env
 file contains PostgreSQL, Bangumi, R2, and Feishu credentials; do not commit it
 or pass those values on the command line.
 
+## Manual debug image
+
+The `Publish VPS sync production image` workflow also exposes a required
+`debug` boolean under `workflow_dispatch`. Run it manually with `debug` set to
+`true` only when inspecting the image; it builds the Dockerfile `debug` target
+and publishes `<full-git-sha>-debug`. Push events never build that target, and
+the resulting tag is not a valid production Compose image.
+
 The Compose service is one-shot and has no ports, restart policy, privileged
 mode, or Docker socket. It runs as `node` with all capabilities dropped and a
 read-only root filesystem. `/tmp/airing-cal` is the only writable path and is

@@ -2,6 +2,13 @@ name: Publish VPS sync production image
 
 on:
   push:
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: Build and publish the debug image only
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: vps-sync-image-${{ github.ref }}
@@ -117,6 +124,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Refuse an existing full-SHA tag
+        if: github.event_name == 'push'
         env:
           GHCR_ACTOR: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -143,6 +151,7 @@ jobs:
 
       - name: Extract image metadata
         id: meta
+        if: github.event_name == 'push'
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
@@ -155,8 +164,23 @@ jobs:
             org.opencontainers.image.base.name=node:alpine
             org.opencontainers.image.base.digest=${{ steps.base.outputs.manifest_digest }}
 
+      - name: Extract debug image metadata
+        id: debug-meta
+        if: github.event_name == 'workflow_dispatch' && inputs.debug == true
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ github.sha }}-debug
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.base.name=node:alpine
+            org.opencontainers.image.base.digest=${{ steps.base.outputs.manifest_digest }}
+
       - name: Build and push production image
         id: push
+        if: github.event_name == 'push'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -166,7 +190,20 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
+      - name: Build and push debug image
+        id: debug-push
+        if: github.event_name == 'workflow_dispatch' && inputs.debug == true
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile.vps-sync
+          target: debug
+          push: true
+          tags: ${{ steps.debug-meta.outputs.tags }}
+          labels: ${{ steps.debug-meta.outputs.labels }}
+
       - name: Write image metadata
+        if: github.event_name == 'push'
         env:
           METADATA_PATH: ${{ runner.temp }}/vps-sync-image-metadata.json
           IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
@@ -212,6 +249,7 @@ jobs:
           NODE
 
       - name: Upload image metadata
+        if: github.event_name == 'push'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: vps-sync-image-metadata-${{ github.sha }}
