@@ -348,11 +348,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces pure `evaluateLegacyCleanupGate(cutoverAt, now, evidence)` 与只读资源清单模板；resource deletion belongs to a separately approved OpenSpec change。
 
-- [ ] **Step 1: RED tests** — 未满 30 日、七日观察缺失、restore evidence 缺失、rollback dependency 未记录或无独立 change approval 时 gate 必须返回 blocked。
-- [ ] **Step 2: 运行 RED** — 运行 cleanup gate tests，预期 evaluator 不存在而 FAIL。
-- [ ] **Step 3: GREEN** — 实现纯 gate evaluator 和无 credentials 的 D1/KV/Queue/Workflow/DO/R2 清单 schema；不得实现 delete 调用。
-- [ ] **Step 4: 文档/验证** — runbook 明确实际 30 日等待发生在 Archive 后，清理必须新建 OpenSpec change 并重新验证每条删除命令；tests 与 `git diff --check` PASS。
-- [ ] **Step 5: 提交与推送** — commit `docs: gate legacy Cloudflare resource cleanup` 后 push。
+- [x] **Step 1: RED tests** — 未满 30 日、七日观察缺失、restore evidence 缺失、rollback dependency 未记录或无独立 change approval 时 gate 必须返回 blocked。
+- [x] **Step 2: 运行 RED** — 运行 cleanup gate tests，预期 evaluator 不存在而 FAIL。
+- [x] **Step 3: GREEN** — 实现纯 gate evaluator 和无 credentials 的 D1/KV/Queue/Workflow/DO/R2 清单 schema；不得实现 delete 调用。
+- [x] **Step 4: 文档/验证** — runbook 明确实际 30 日等待发生在 Archive 后，清理必须新建 OpenSpec change 并重新验证每条删除命令；tests 与 `git diff --check` PASS。
+- [x] **Step 5: 提交与推送** — commit `docs: gate legacy Cloudflare resource cleanup` 后 push。
 
 ## Final Acceptance Checklist
 
