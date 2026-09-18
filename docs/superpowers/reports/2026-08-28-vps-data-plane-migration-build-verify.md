@@ -13,6 +13,24 @@ build/runtime checks, GHCR registry checks, network checks, and production
 shadow/restore/cutover were not claimed as passed because the current
 environment has no Docker CLI or disposable PostgreSQL service.
 
+Task 9.4 adds only a pure legacy-resource cleanup gate and a read-only inventory
+template. The gate does not wait, contact Cloudflare, or issue deletion calls;
+the real thirty-day retention period starts after Archive, and cleanup requires
+a separately approved OpenSpec change.
+
+### Task 9.4 gate evidence
+
+- RED: `node --import tsx/esm --test apps/vps-sync/src/operations/cleanup-gate.test.ts`
+  failed before the evaluator existed, with all seven cases reporting the
+  expected missing-module guard.
+- GREEN: the same command passed 7/7 cases, covering the thirty-day threshold,
+  seven-day observation, restore evidence, rollback dependencies, independent
+  OpenSpec approval, and the credential-free D1/KV/Queue/Workflow/DO/R2
+  inventory template.
+- The implementation contains no Cloudflare client, delete method, sleep, or
+  production resource call. `git diff --check` and the vps-sync typecheck were
+  run after the GREEN change.
+
 ## Fresh command evidence
 
 | Gate | Command | Result |

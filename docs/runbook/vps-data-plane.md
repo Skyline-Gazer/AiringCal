@@ -189,6 +189,40 @@ node --import tsx/esm apps/vps-sync/src/cli.ts rollback --help
 rollback。rollback 只能提交由 manifest/snapshot readback 重新验证的 envelope，并且
 只恢复 `public/manifest.json`，不反向 migration、不删除 PostgreSQL 行或 R2 对象。
 
+## Legacy 资源保留与清理门禁
+
+Task 9.4 的 `evaluateLegacyCleanupGate(cutoverAt, now, evidence)` 是纯函数：它只
+比较调用方提供的时间和证据，不读取 Cloudflare、不等待、不调用任何删除 API。只有
+已满 30 个 24 小时周期（恰好到达阈值也可以）、七日观察记录、restore verification
+记录、rollback dependencies 记录和独立 OpenSpec change approval 全部存在且时间不在
+未来时才返回 `approved`；任一缺失都返回 `blocked` 和稳定 reason。Build 阶段只用
+固定测试时间验证该函数，不开始真实 30 日计时。
+
+实际保留计时发生在 Archive 之后：真实生产切流、七日观察和 rollback evidence
+完成并归档本 change 后，Archive 记录的 cutover 时间才是 30 日保留周期的起点。清理
+前必须新建独立的 OpenSpec change，逐条重新核验拟执行的 Cloudflare 删除命令、资源
+归属和 rollback 依赖，并在该 change 获批前保持资源及 legacy fallback；本 change
+永远不执行资源删除。
+
+只读资源清单使用 `LEGACY_RESOURCE_INVENTORY_TEMPLATE`，schema version 为 `1`，覆盖
+`d1`、`kv`、`queue`、`workflow`、`durable_object`（DO）和 `r2` 六类资源。每条记录
+只有 `kind`、`name`、`identifier`、`state`（`retained` 或 `disabled`）字段，不包含
+任何 credential、secret、token、连接 URL 或删除动作：
+
+```json
+{
+  "schemaVersion": 1,
+  "resources": [
+    {"kind": "d1", "name": "<legacy-d1-binding>", "identifier": "<recorded-resource-id>", "state": "retained"},
+    {"kind": "kv", "name": "<legacy-kv-binding>", "identifier": "<recorded-resource-id>", "state": "retained"},
+    {"kind": "queue", "name": "<legacy-queue-binding>", "identifier": "<recorded-resource-id>", "state": "retained"},
+    {"kind": "workflow", "name": "<legacy-workflow-binding>", "identifier": "<recorded-resource-id>", "state": "retained"},
+    {"kind": "durable_object", "name": "<legacy-do-binding>", "identifier": "<recorded-resource-id>", "state": "retained"},
+    {"kind": "r2", "name": "<legacy-r2-binding>", "identifier": "<recorded-resource-id>", "state": "retained"}
+  ]
+}
+```
+
 ## 上游完整抓取与重试
 
 VPS 适配器使用 `maxGetRetries: 0` 构造 `BgmClient`，每个 collection 分页请求和 calendar 请求只由外层 retry 处理，最多三次尝试。所有配置用户的分页和 calendar 通过完整性校验后，才会生成可提交的 `CompleteFullFetch`；primary user、任一分页或 calendar 不完整都会 fail closed。
