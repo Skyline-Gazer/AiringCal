@@ -267,11 +267,30 @@ export async function cutover(
       generation: verified.manifest.generation,
     }
   }
+
+  const liveSnapshotKey = physicalSnapshotKey(LIVE_MANIFEST_KEY, verified.manifest.snapshot_key)
+  const writes: string[] = []
+  const existingSnapshot = await storage.get(liveSnapshotKey)
+  if (existingSnapshot === null) {
+    await storage.put(liveSnapshotKey, verified.snapshotBytes)
+    writes.push(liveSnapshotKey)
+  } else if (!sameBytes(existingSnapshot, verified.snapshotBytes)) {
+    fail('CUTOVER_LIVE_SNAPSHOT_CONFLICT')
+  }
+
+  const liveSnapshotBytes = await storage.get(liveSnapshotKey)
+  if (!liveSnapshotBytes) fail('CUTOVER_LIVE_SNAPSHOT_MISSING')
+  await verifyManifestEnvelope({
+    key: LIVE_MANIFEST_KEY,
+    bytes: verified.bytes,
+    snapshotBytes: liveSnapshotBytes,
+  })
+
   await storage.put(LIVE_MANIFEST_KEY, verified.bytes)
   return {
     operation: 'cutover',
     status: 'executed',
-    writes: [LIVE_MANIFEST_KEY],
+    writes: [...writes, LIVE_MANIFEST_KEY],
     generation: verified.manifest.generation,
   }
 }

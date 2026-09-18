@@ -72,6 +72,16 @@ function requiredValue(argument: string, flag: string): string {
   return value
 }
 
+const OBJECT_KEY_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+function objectKey(value: string, code: string): string {
+  const segments = value.split('/')
+  if (segments.length < 2 || segments.some((segment) => !OBJECT_KEY_SEGMENT.test(segment))) {
+    throw new Error(code)
+  }
+  return value
+}
+
 function environmentName(value: string): string {
   if (!/^[A-Z][A-Z0-9_]*$/.test(value)) throw new Error('MIGRATION_ENV_NAME_INVALID')
   return value
@@ -106,7 +116,7 @@ export function parseMigrationRequest(argv: readonly string[]): MigrationCommand
       continue
     }
     if (argument.startsWith('--backup-key=')) {
-      backupKey = requiredValue(argument, '--backup-key')
+      backupKey = objectKey(requiredValue(argument, '--backup-key'), 'MIGRATION_BACKUP_KEY_INVALID')
       continue
     }
     if (argument.startsWith('--target-env=')) {
@@ -118,7 +128,7 @@ export function parseMigrationRequest(argv: readonly string[]): MigrationCommand
       continue
     }
     if (argument.startsWith('--manifest-key=')) {
-      manifestKey = requiredValue(argument, '--manifest-key')
+      manifestKey = objectKey(requiredValue(argument, '--manifest-key'), 'MIGRATION_MANIFEST_KEY_INVALID')
       continue
     }
     throw new Error('MIGRATION_ARGUMENT_INVALID')

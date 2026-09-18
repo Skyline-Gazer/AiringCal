@@ -145,7 +145,7 @@ test('supports three fake shadow rounds without ever producing a live write', as
   assert.ok(storage.writes.every(({ key }) => key.startsWith('shadow/')))
 })
 
-test('cutover fails closed without an approval token and writes only the live manifest after verification', async () => {
+test('cutover promotes the shadow snapshot before publishing a live manifest', async () => {
   const { cutover, readVerifiedManifest } = await migrationApi()
   const fixture = await manifestFixture()
   const storage = fakeStorage()
@@ -162,7 +162,43 @@ test('cutover fails closed without an approval token and writes only the live ma
 
   const result = await cutover(storage.port, { verifiedShadow: verified, approvalToken: 'approved' })
   assert.equal(result.status, 'executed')
-  assert.deepEqual(storage.writes.map(({ key }) => key), ['public/manifest.json'])
+  assert.deepEqual(storage.writes.map(({ key }) => key), [
+    fixture.manifest.snapshot_key,
+    'public/manifest.json',
+  ])
+  const live = await readVerifiedManifest(storage.port, 'public/manifest.json')
+  assert.deepEqual(live.snapshotBytes, fixture.snapshotBytes)
+  assert.deepEqual(live.manifest, fixture.manifest)
+})
+
+test('cutover does not publish a live manifest when live snapshot promotion readback fails', async () => {
+  const { cutover, readVerifiedManifest } = await migrationApi()
+  const fixture = await manifestFixture()
+  const storage = fakeStorage()
+  await storage.port.put('shadow/manifest.json', fixture.manifestBytes)
+  await storage.port.put(`shadow/${fixture.manifest.snapshot_key}`, fixture.snapshotBytes)
+  storage.writes.length = 0
+  const verified = await readVerifiedManifest(storage.port, 'shadow/manifest.json')
+  const failingStorage = {
+    get: storage.port.get,
+    put: async (key: string, bytes: Uint8Array) => {
+      if (key === fixture.manifest.snapshot_key) {
+        await storage.port.put(key, new TextEncoder().encode('{'))
+        return
+      }
+      await storage.port.put(key, bytes)
+    },
+  }
+
+  await assert.rejects(
+    () => cutover(failingStorage, { verifiedShadow: verified, approvalToken: 'approved' }),
+    /MIGRATION_SNAPSHOT_INVALID/,
+  )
+  assert.deepEqual(storage.writes.map(({ key }) => key), [fixture.manifest.snapshot_key])
+  await assert.rejects(
+    () => readVerifiedManifest(storage.port, 'public/manifest.json'),
+    /MIGRATION_MANIFEST_MISSING/,
+  )
 })
 
 test('rollback refuses an unverified manifest and restores only a verified envelope', async () => {
@@ -219,9 +255,33 @@ test('parses guarded operation commands without accepting database URLs or appro
     command: 'rollback', mode: 'live', manifestKey: 'public/manifest.json', dryRun: true,
   })
   assert.throws(
-    () => parseMigrationRequest(['restore-verify', '--backup-key=backup.dump', '--target-env=postgresql://db']),
+    () => parseMigrationRequest([
+      'restore-verify',
+      '--backup-key=backups/postgres/2026/09/18/20260918T030405006Z-' + gitSha + '.dump',
+      '--target-env=postgresql://db',
+    ]),
     /MIGRATION_ENV_NAME_INVALID/,
   )
+  for (const badKey of [
+    'https://example.test/backup.dump',
+    'postgresql://user:password@example.test/db',
+    'backups//dump',
+    'backups/../dump',
+    'backups/secret?token=raw',
+    'backups/secret#fragment',
+    'backups/secret\u0000.dump',
+  ]) {
+    assert.throws(
+      () => parseMigrationRequest(['restore-verify', `--backup-key=${badKey}`, '--target-env=RESTORE_DATABASE_URL']),
+      /MIGRATION_BACKUP_KEY_INVALID/,
+      badKey,
+    )
+    assert.throws(
+      () => parseMigrationRequest(['rollback', '--mode=live', `--manifest-key=${badKey}`]),
+      /MIGRATION_MANIFEST_KEY_INVALID/,
+      badKey,
+    )
+  }
   assert.throws(
     () => parseMigrationRequest(['cutover', '--mode=live', '--approval-token=secret']),
     /MIGRATION_ARGUMENT_INVALID/,
