@@ -4,51 +4,100 @@
 TBD - created by archiving change adopt-free-plan-sync-workflow. Update Purpose after archive.
 ## Requirements
 ### Requirement: subject 缓存必须支持过期继续服务
-系统 MUST 在 subject detail、metadata 或图片进入刷新窗口后继续提供旧缓存，并异步规划刷新任务。
+subject detail、metadata 或 image 到期时，公开读取 MUST 继续服务 PostgreSQL/R2 中最后成功版本，VPS 同步任务在后台刷新且失败不得清空旧值。
 
 #### Scenario: detail 已进入刷新窗口
-- **WHEN** 读取到已有 subject detail 且其确定性刷新时间已到
-- **THEN** 快照仍使用旧 detail 并为该 subject 规划刷新
+- **WHEN** subject detail 已到刷新时间但仍有上次成功值
+- **THEN** 公开 snapshot 继续包含旧值且本轮任务尝试刷新
 
 ### Requirement: subject 刷新时间必须分散
-系统 MUST 根据 subject ID 将常规刷新时间确定性分散在 6 至 8 天，避免同批缓存同时到期。
+系统 MUST 使用 subject ID 与稳定周期计算确定性刷新分片，避免单次日任务同时刷新所有稳定 subject。
 
 #### Scenario: 一百个 subject 同时写入
-- **WHEN** 一百个不同 subject 在同一时刻完成刷新
-- **THEN** 其下一次刷新时间按 subject ID 分散而不是落在同一时刻
+- **WHEN** 一百个 subject 首次进入 PostgreSQL
+- **THEN** 后续刷新时间按稳定分片分散而不是全部同日到期
+
+#### Scenario: subject 尚未到期
+- **WHEN** 已缓存 subject 内容未变化且刷新时间未到
+- **THEN** 同步任务不调用对应上游详情或图片接口
 
 ### Requirement: Media Queue 消息必须可去重
-每个刷新消息 MUST 包含由 Workflow instance 与 subject ID 组成的 `job_id`，consumer MUST 跳过已经完成或正在处理的重复 job。
+每个媒体刷新 MUST 由稳定 run ID、subject ID 与观察时间标识；PostgreSQL 唯一约束和状态转换 MUST 阻止重放产生重复下载或 R2 写入。
 
 #### Scenario: enqueue step 重放
-- **WHEN** 同一 enqueue step 因恢复再次投递相同 job
-- **THEN** Media consumer 不重复下载、写 R2 或覆盖已完成状态
+- **WHEN** 同一 enqueue step 因任务恢复再次投递相同 job
+- **THEN** 已完成状态被复用且不重复下载或覆盖图片
 
 ### Requirement: 刷新状态与图片结果必须分离
-系统 MUST 用 `subject:refresh:{subjectId}` 表达 queued/running/ok/partial/failed，用 `image:status:{subjectId}` 只表达真实图片缓存结果。
+系统 MUST 在 PostgreSQL 分别保存 detail、metadata、image 与 refresh 结果；缺少图片 URL 不得把成功 metadata 标记失败。
 
 #### Scenario: metadata 成功但图片缺少源 URL
-- **WHEN** Media consumer 成功更新 metadata 但无法取得图片源 URL
-- **THEN** refresh 状态为 partial 或相应终态且 image status 不得伪装为任务成功
+- **WHEN** subject metadata 可用而图片 URL 缺失
+- **THEN** metadata 被提交且 image 状态记录为明确缺失
 
 ### Requirement: Media Queue 重试必须区分瞬态与终态
-consumer MUST 对 timeout、network、429 与 5xx 使用有界延迟重试，对 404 与缺失源图写终态后 ack。
+VPS 媒体刷新 MUST 区分可重试网络/上游错误与 404 等终态，并使用持久化 next_retry_at 防止每轮无界重试。
 
 #### Scenario: 图片上游暂时返回 503
-- **WHEN** 图片下载返回 503 且未超过最大重试次数
-- **THEN** 消息按 30、120、300 秒策略中的相应延迟重试
+- **WHEN** 图片下载返回 503
+- **THEN** 旧图片继续服务且记录有界退避时间
 
 #### Scenario: subject 不存在
-- **WHEN** subject detail 返回 404
-- **THEN** consumer 写入不存在终态并 ack 消息
+- **WHEN** bgm.tv 明确返回 404
+- **THEN** 系统记录保守 tombstone 且不按瞬态错误立即重试
 
 ### Requirement: subject 副作用必须按 generation 串行
-系统 MUST 使用每 subject 一个 SQLite Durable Object 串行执行 detail、metadata、图片、R2 与 refresh 状态副作用，并拒绝低于已处理 generation 的消息。
+系统 MUST 使用 PostgreSQL advisory/row lock 和观察时间围栏串行执行同一 subject 的 detail、metadata、image 与 refresh 副作用，并拒绝过期写入。
 
 #### Scenario: 旧 job 晚到达
-- **WHEN** 同一 subject 的新 generation 已完成后旧 generation 消息才到达
-- **THEN** 旧消息以 obsolete ack，且不得覆盖 KV、R2 或刷新状态
+- **WHEN** 较旧 observed_at 的刷新在较新状态提交后返回
+- **THEN** 旧结果标记 obsolete 且不得覆盖 PostgreSQL 或 R2
 
 #### Scenario: legacy job 与 V3 共存
-- **WHEN** generation 0 的 V2/legacy job 在更高 V3 generation 已处理后到达
-- **THEN** legacy job 以 obsolete ack 且不执行刷新副作用
+- **WHEN** shadow 期间旧媒体 Worker 仍可能运行
+- **THEN** VPS shadow 不切换公开 manifest，切流前停止旧 consumer 以建立单一写者
+
+### Requirement: subject 404 必须建立保守 tombstone
+确认 subject 404 后 PostgreSQL MUST 保存有期限 tombstone；网络错误不得创建 tombstone，期限内不得重复抓取。
+
+#### Scenario: 已缓存 subject 后变成 404
+- **WHEN** 权威详情接口明确返回 404
+- **THEN** 系统保留最后成功公开数据并记录 tombstone 到期时间
+
+#### Scenario: tombstone TTL 内再次刷新
+- **WHEN** 下一轮任务发生在 tombstone 到期前
+- **THEN** 系统不重复请求该 subject 详情
+
+#### Scenario: 上游网络或服务错误
+- **WHEN** 请求因 timeout、429 或 5xx 失败
+- **THEN** 系统保留旧数据并记录可重试状态而非 tombstone
+
+### Requirement: 相同媒体状态不得重复写入
+系统 MUST 在写 PostgreSQL 或 R2 前比较规范媒体内容；可复用且未变化时不得执行对应 UPDATE 或 object PUT。
+
+#### Scenario: 两种图片均可复用
+- **WHEN** hash、来源和刷新状态与权威记录相同
+- **THEN** 本轮不产生媒体行更新或图片 PUT
+
+### Requirement: 媒体生产者必须唯一
+VPS 同步运行时 MUST 是 detail、metadata、image 与 R2 图片对象的唯一正式生产者；Cloudflare Read Worker MUST 只读取 snapshot 与内容寻址图片，不得抓取上游、更新 PostgreSQL 或写入图片对象。
+
+#### Scenario: 图片未命中公开缓存
+- **WHEN** Read Worker 收到一个有效 snapshot 图片 URI 且边缘缓存未命中
+- **THEN** Read Worker 仅从 R2 读取内容并返回缓存响应，不调用 bgm.tv 或产生 R2 PUT
+
+#### Scenario: 从 shadow 切换到 live
+- **WHEN** VPS shadow 验证通过并准备成为正式媒体生产者
+- **THEN** 旧 Cloudflare Media Queue consumer 在 live 切换前停止，避免出现两个正式写者
+
+### Requirement: 媒体失败原因必须使用可恢复的稳定代码
+媒体刷新 MUST 只持久化 allow-listed 稳定 `error_code`，并在读取媒体状态时还原该代码；原始异常文本 MUST NOT 写入 PostgreSQL。
+
+#### Scenario: 上游图片请求失败
+- **WHEN** 图片上游返回 503、429 或网络请求抛出 TypeError
+- **THEN** PostgreSQL 分别保存 `UPSTREAM_SERVER`、`UPSTREAM_RATE_LIMIT` 或 `UPSTREAM_NETWORK`，并在读取状态时返回相同代码
+
+#### Scenario: 图片内容无效或 R2 上传失败
+- **WHEN** 图片响应 MIME 无效或 R2 PUT 抛错
+- **THEN** PostgreSQL 分别保存 `MEDIA_INVALID` 或 `MEDIA_UPLOAD`，且不保存异常文本
+

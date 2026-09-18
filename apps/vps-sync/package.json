@@ -1,0 +1,24 @@
+{
+  "name": "@airing-cal/vps-sync",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc && cp -R src/postgres/migrations/. dist/postgres/migrations/",
+    "build:check": "tsc --noEmit",
+    "start": "node dist/cli.js",
+    "test": "tsx --test src/**/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@airing-cal/bgm-api": "workspace:*",
+    "@airing-cal/domain": "workspace:*",
+    "@airing-cal/storage": "workspace:*",
+    "@aws-sdk/client-s3": "3.1124.0",
+    "pg": "8.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "@types/pg": "^8.23.1"
+  }
+}

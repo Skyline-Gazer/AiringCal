@@ -1,11 +1,8 @@
 import { appendFile } from 'node:fs/promises'
 import { pathToFileURL } from 'node:url'
 
-const DEFAULT_RESOURCES = {
-  kvNamespaceTitle: 'airing-cal-kv',
-  r2BucketName: 'airing-cal-images',
-  queueNames: ['airing-cal-media'],
-}
+import { CLOUDFLARE_RESOURCES } from './cloudflare-resource-contract.mjs'
+
 const API_TIMEOUT_MS = 15_000
 
 function requiredEnv(name, env = process.env) {
@@ -14,7 +11,7 @@ function requiredEnv(name, env = process.env) {
   return value
 }
 
-async function apiRequest(fetchImpl, token, path, init = {}) {
+async function apiResponse(fetchImpl, token, path, init = {}) {
   const response = await fetchImpl(`https://api.cloudflare.com/client/v4${path}`, {
     ...init,
     signal: init.signal ?? AbortSignal.timeout(API_TIMEOUT_MS),
@@ -32,17 +29,110 @@ async function apiRequest(fetchImpl, token, path, init = {}) {
     apiError.errors = errors
     throw apiError
   }
-  return body.result
+  return body
+}
+
+async function apiRequest(fetchImpl, token, path, init = {}) {
+  return (await apiResponse(fetchImpl, token, path, init)).result
 }
 
 function findByName(items, names, expected) {
   return items.find((item) => names.some((name) => item?.[name] === expected))
 }
 
+function resultItems(result, property) {
+  if (Array.isArray(result)) return result
+  if (Array.isArray(result?.[property])) return result[property]
+  if (Array.isArray(result?.result)) return result.result
+  return []
+}
+
+function totalPages(resultInfo) {
+  if (Number.isFinite(resultInfo?.total_pages)) return resultInfo.total_pages
+  if (Number.isFinite(resultInfo?.total_count) && Number.isFinite(resultInfo?.per_page) && resultInfo.per_page > 0) {
+    return Math.ceil(resultInfo.total_count / resultInfo.per_page)
+  }
+  return undefined
+}
+
+async function listAll(context, path, { property, query, pagination = 'page' } = {}) {
+  const { fetchImpl, token } = context
+  const collected = []
+  let page = 1
+  let cursor
+
+  while (true) {
+    const pageQuery = new URLSearchParams(query)
+    if (pagination === 'cursor' && cursor) pageQuery.set('cursor', cursor)
+    if (pagination === 'page' && page > 1) pageQuery.set('page', String(page))
+    const response = await apiResponse(fetchImpl, token, `${path}${pageQuery.size > 0 ? `?${pageQuery}` : ''}`)
+    collected.push(...resultItems(response.result, property))
+
+    if (pagination === 'cursor') {
+      const nextCursor = response.result_info?.cursor
+      if (typeof nextCursor !== 'string' || nextCursor.length === 0 || nextCursor === cursor) break
+      cursor = nextCursor
+      continue
+    }
+
+    const currentPage = Number.isFinite(response.result_info?.page) ? response.result_info.page : page
+    const lastPage = totalPages(response.result_info)
+    if (!Number.isFinite(lastPage) || currentPage >= lastPage) break
+    page = currentPage + 1
+  }
+
+  return collected
+}
+
+function listD1Databases(context) {
+  return listAll(context, `/accounts/${context.accountId}/d1/database`, {
+    property: 'databases',
+    query: new URLSearchParams({ per_page: '10000' }),
+  })
+}
+
+function listKvNamespaces(context) {
+  return listAll(context, `/accounts/${context.accountId}/storage/kv/namespaces`, {
+    property: 'namespaces',
+    query: new URLSearchParams({ per_page: '1000', order: 'title', direction: 'asc' }),
+  })
+}
+
+function listR2Buckets(context) {
+  return listAll(context, `/accounts/${context.accountId}/r2/buckets`, {
+    property: 'buckets',
+    query: new URLSearchParams({ per_page: '1000' }),
+    pagination: 'cursor',
+  })
+}
+
+function listQueues(context) {
+  return listAll(context, `/accounts/${context.accountId}/queues`, { property: 'queues' })
+}
+
+async function ensureD1Database(context, name) {
+  const { fetchImpl, token, accountId } = context
+  const list = () => listD1Databases(context)
+  const existing = findByName(await list(), ['name'], name)
+  if (existing?.uuid) return existing
+
+  try {
+    return await apiRequest(fetchImpl, token, `/accounts/${accountId}/d1/database`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    })
+  } catch (error) {
+    if (error.errors?.some((item) => item.code === 10014 || /already exists/i.test(item.message ?? ''))) {
+      const createdByRace = findByName(await list(), ['name'], name)
+      if (createdByRace?.uuid) return createdByRace
+    }
+    throw error
+  }
+}
+
 async function ensureKvNamespace(context, title) {
   const { fetchImpl, token, accountId } = context
-  const query = new URLSearchParams({ per_page: '1000', order: 'title', direction: 'asc' })
-  const list = async () => apiRequest(fetchImpl, token, `/accounts/${accountId}/storage/kv/namespaces?${query}`)
+  const list = () => listKvNamespaces(context)
   const existing = findByName(await list(), ['title'], title)
   if (existing?.id) return existing
 
@@ -62,9 +152,8 @@ async function ensureKvNamespace(context, title) {
 
 async function ensureR2Bucket(context, name) {
   const { fetchImpl, token, accountId } = context
-  const listResult = await apiRequest(fetchImpl, token, `/accounts/${accountId}/r2/buckets`)
-  const buckets = Array.isArray(listResult) ? listResult : listResult?.buckets ?? []
-  const existing = findByName(buckets, ['name'], name)
+  const list = () => listR2Buckets(context)
+  const existing = findByName(await list(), ['name'], name)
   if (existing) return existing
 
   try {
@@ -73,16 +162,18 @@ async function ensureR2Bucket(context, name) {
       body: JSON.stringify({ name }),
     })
   } catch (error) {
-    if (error.errors?.some((item) => /already exists/i.test(item.message ?? ''))) return { name }
+    if (error.errors?.some((item) => /already exists/i.test(item.message ?? ''))) {
+      const createdByRace = findByName(await list(), ['name'], name)
+      if (createdByRace) return createdByRace
+    }
     throw error
   }
 }
 
 async function ensureQueue(context, queueName) {
   const { fetchImpl, token, accountId } = context
-  const listResult = await apiRequest(fetchImpl, token, `/accounts/${accountId}/queues`)
-  const queues = Array.isArray(listResult) ? listResult : listResult?.queues ?? []
-  const existing = findByName(queues, ['queue_name', 'name'], queueName)
+  const list = () => listQueues(context)
+  const existing = findByName(await list(), ['queue_name', 'name'], queueName)
   if (existing) return existing
 
   try {
@@ -91,7 +182,10 @@ async function ensureQueue(context, queueName) {
       body: JSON.stringify({ queue_name: queueName }),
     })
   } catch (error) {
-    if (error.errors?.some((item) => /already exists/i.test(item.message ?? ''))) return { queue_name: queueName }
+    if (error.errors?.some((item) => /already exists/i.test(item.message ?? ''))) {
+      const createdByRace = findByName(await list(), ['queue_name', 'name'], queueName)
+      if (createdByRace) return createdByRace
+    }
     throw error
   }
 }
@@ -99,23 +193,28 @@ async function ensureQueue(context, queueName) {
 export async function provisionCloudflareResources({
   env = process.env,
   fetchImpl = globalThis.fetch,
-  resources = DEFAULT_RESOURCES,
+  resources = CLOUDFLARE_RESOURCES,
 } = {}) {
   const token = requiredEnv('CLOUDFLARE_API_TOKEN', env)
   const accountId = requiredEnv('CLOUDFLARE_ACCOUNT_ID', env)
   if (!fetchImpl) throw new Error('fetch is required')
 
   const context = { fetchImpl, token, accountId }
+  const database = await ensureD1Database(context, resources.d1DatabaseName)
+  if (!database?.uuid) throw new Error(`D1 database ${resources.d1DatabaseName} did not return a uuid`)
   const namespace = await ensureKvNamespace(context, resources.kvNamespaceTitle)
   if (!namespace?.id) throw new Error(`KV namespace ${resources.kvNamespaceTitle} did not return an id`)
-  await ensureR2Bucket(context, resources.r2BucketName)
+  await ensureR2Bucket(context, resources.dataBucketName)
+  await ensureR2Bucket(context, resources.imageBucketName)
   for (const queueName of resources.queueNames) {
     await ensureQueue(context, queueName)
   }
   return {
+    d1DatabaseId: database.uuid,
+    d1DatabaseName: resources.d1DatabaseName,
+    dataBucketName: resources.dataBucketName,
+    imageBucketName: resources.imageBucketName,
     kvNamespaceId: namespace.id,
-    kvNamespaceTitle: resources.kvNamespaceTitle,
-    r2BucketName: resources.r2BucketName,
     queueNames: resources.queueNames,
   }
 }
@@ -123,11 +222,14 @@ export async function provisionCloudflareResources({
 async function main() {
   const result = await provisionCloudflareResources()
   const lines = [
+    `AIRING_CAL_D1_DATABASE_ID=${result.d1DatabaseId}`,
     `AIRING_CAL_KV_NAMESPACE_ID=${result.kvNamespaceId}`,
   ]
   if (process.env.GITHUB_ENV) await appendFile(process.env.GITHUB_ENV, `${lines.join('\n')}\n`)
-  if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `kv_namespace_id=${result.kvNamespaceId}\n`)
-  console.log(`Provisioned Cloudflare resources for ${result.kvNamespaceTitle}, ${result.r2BucketName}, ${result.queueNames.join(', ')}`)
+  if (process.env.GITHUB_OUTPUT) {
+    await appendFile(process.env.GITHUB_OUTPUT, `d1_database_id=${result.d1DatabaseId}\nkv_namespace_id=${result.kvNamespaceId}\n`)
+  }
+  console.log(`Provisioned Cloudflare resources for ${result.d1DatabaseName}, ${result.dataBucketName}, ${result.imageBucketName}, ${result.queueNames.join(', ')}`)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

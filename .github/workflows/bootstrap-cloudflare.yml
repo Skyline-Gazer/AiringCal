@@ -16,5 +16,13 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - name: Create or reuse Cloudflare resources
+      - id: provision
+        name: Create or reuse Cloudflare resources
         run: node scripts/provision-cloudflare-resources.mjs
+      - id: resolve
+        name: Resolve and verify Cloudflare resources
+        run: node scripts/resolve-cloudflare-resources.mjs
+      - name: Report verified resource ids
+        run: |
+          echo "d1_database_id=${{ steps.resolve.outputs.d1_database_id }}"
+          echo "kv_namespace_id=${{ steps.resolve.outputs.kv_namespace_id }}"

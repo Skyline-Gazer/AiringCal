@@ -1,0 +1,23 @@
+services:
+  sync:
+    image: ${VPS_SYNC_IMAGE:?VPS_SYNC_IMAGE must be a full git SHA image}
+    command: ["sync"]
+    init: true
+    read_only: true
+    user: "node"
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp/airing-cal:mode=1777
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+      BANGUMI_TOKEN: ${BANGUMI_TOKEN:?BANGUMI_TOKEN is required}
+      BANGUMI_USERS: ${BANGUMI_USERS:?BANGUMI_USERS is required}
+      R2_ENDPOINT: ${R2_ENDPOINT:?R2_ENDPOINT is required}
+      R2_BUCKET: ${R2_BUCKET:?R2_BUCKET is required}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID is required}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY is required}
+      FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:?FEISHU_WEBHOOK_URL is required}
+      FEISHU_WEBHOOK_TOKEN: ${FEISHU_WEBHOOK_TOKEN:-}
+      FEISHU_WEBHOOK_SECRET: ${FEISHU_WEBHOOK_SECRET:-}
+      FEISHU_TIMEOUT_MS: ${FEISHU_TIMEOUT_MS:-10000}

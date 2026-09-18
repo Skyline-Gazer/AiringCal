@@ -32,6 +32,19 @@ function episodeTypeMap(entries: Array<{ episode: { id: number }; type: EpisodeC
   return new Map(entries.map((entry) => [entry.episode.id, entry.type]))
 }
 
+export class BgmEpisodePatchError extends Error {
+  readonly code = 'EPISODE_PATCH_PARTIAL' as const
+
+  constructor(
+    public readonly succeeded: number,
+    public readonly failedBatch: { index: number; episodeIds: number[] },
+    cause: unknown,
+  ) {
+    super(`bgm.tv episode patch failed after ${succeeded} successful updates at batch ${failedBatch.index}`, { cause })
+    this.name = 'BgmEpisodePatchError'
+  }
+}
+
 export class BgmPlatformClient implements PlatformClient {
   readonly platform: PlatformId = 'bgm'
 
@@ -99,10 +112,19 @@ export class BgmPlatformClient implements PlatformClient {
     }
 
     let changed = 0
+    let batchIndex = 0
     for (const [type, ids] of changedByType) {
       if (!ids.length) continue
-      await client.patchSubjectEpisodeCollections(targetToken, subjectId, ids, type)
-      changed += ids.length
+      for (let start = 0; start < ids.length; start += 100) {
+        const episodeIds = ids.slice(start, start + 100)
+        try {
+          await client.patchSubjectEpisodeCollections(targetToken, subjectId, episodeIds, type)
+        } catch (cause) {
+          throw new BgmEpisodePatchError(changed, { index: batchIndex, episodeIds }, cause)
+        }
+        changed += episodeIds.length
+        batchIndex++
+      }
     }
 
     return { episodeChanged: changed, episodeProgress: { before, after, total } }

@@ -1,0 +1,84 @@
+# syntax=docker/dockerfile:1
+
+ARG PNPM_VERSION=9.15.9
+
+FROM node:alpine AS dependencies
+ARG PNPM_VERSION
+WORKDIR /workspace
+
+RUN npm install --global "pnpm@${PNPM_VERSION}"
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/vps-sync/package.json apps/vps-sync/package.json
+COPY packages/bgm-api/package.json packages/bgm-api/package.json
+COPY packages/domain/package.json packages/domain/package.json
+COPY packages/storage/package.json packages/storage/package.json
+
+RUN pnpm install --frozen-lockfile
+
+FROM dependencies AS build
+COPY . .
+
+RUN pnpm -F @airing-cal/vps-sync build
+RUN pnpm --filter @airing-cal/vps-sync deploy --prod /prod
+
+# The workspace exports are TypeScript source files. Compile the executable and
+# its runtime workspace dependencies so the final image needs no TS loader.
+FROM build AS runtime-compile
+RUN pnpm exec tsc \
+  --ignoreConfig \
+  --noEmit false \
+  --allowImportingTsExtensions false \
+  --outDir /runtime \
+  --rootDir . \
+  --module NodeNext \
+  --moduleResolution NodeNext \
+  --target ES2022 \
+  --rewriteRelativeImportExtensions \
+  --skipLibCheck \
+  --typeRoots apps/vps-sync/node_modules/@types \
+  --pretty false \
+  packages/bgm-api/src/index.ts \
+  packages/domain/src/index.ts \
+  packages/storage/src/index.ts
+
+FROM node:alpine AS production
+WORKDIR /app
+ENV NODE_ENV=production
+ENV TMPDIR=/tmp
+
+RUN apk add --no-cache ca-certificates postgresql17-client \
+  && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack
+
+COPY --from=build /prod/node_modules ./node_modules
+COPY --from=build /workspace/apps/vps-sync/dist/ ./dist/
+
+# Replace workspace package links and versioned virtual-store payloads with the
+# compiled production-only copies.
+RUN rm -rf node_modules/@airing-cal node_modules/.pnpm/node_modules/@airing-cal \
+  && find node_modules/.pnpm -mindepth 1 -maxdepth 1 -type d -name '@airing-cal+*' -exec rm -rf {} \; \
+  && mkdir -p node_modules/@airing-cal/bgm-api/src node_modules/@airing-cal/domain/src node_modules/@airing-cal/storage/src
+COPY --from=runtime-compile /runtime/packages/bgm-api/src/ ./node_modules/@airing-cal/bgm-api/src/
+COPY --from=runtime-compile /runtime/packages/domain/src/ ./node_modules/@airing-cal/domain/src/
+COPY --from=runtime-compile /runtime/packages/storage/src/ ./node_modules/@airing-cal/storage/src/
+COPY --from=build /workspace/packages/bgm-api/package.json ./node_modules/@airing-cal/bgm-api/package.json
+COPY --from=build /workspace/packages/domain/package.json ./node_modules/@airing-cal/domain/package.json
+COPY --from=build /workspace/packages/storage/package.json ./node_modules/@airing-cal/storage/package.json
+RUN set -eu; \
+  workspace_payload="$(find node_modules/.pnpm node_modules/@airing-cal -type f \( -name '*.ts' -o -name '*.test.ts' \) -path '*airing-cal*' -print -quit)"; \
+  if [ -n "$workspace_payload" ]; then \
+    echo "workspace source/test payload remains: $workspace_payload" >&2; \
+    exit 1; \
+  fi; \
+  sed -i 's#\./src/index\.ts#./src/index.js#g' \
+  node_modules/@airing-cal/bgm-api/package.json \
+  node_modules/@airing-cal/domain/package.json \
+  node_modules/@airing-cal/storage/package.json
+
+USER node
+ENTRYPOINT ["node", "dist/cli.js"]
+
+FROM production AS debug
+USER root
+RUN apk add --no-cache curl bind-tools netcat-openbsd procps-ng iproute2 jq
+USER node

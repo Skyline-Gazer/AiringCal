@@ -3,6 +3,11 @@ import { mergeCollections, subjectDetailImages, transformCalendar } from '@airin
 import {
   snapshotActiveKey,
   snapshotVersionKey,
+  compareShadowSnapshots,
+  imageStatusKey,
+  subjectDetailKey,
+  subjectMetaKey,
+  subjectRefreshKey,
   syncCurrentKey,
   syncMetaKey,
   syncRunKey,
@@ -10,23 +15,48 @@ import {
   syncStagingKey,
   SYNC_RUN_TTL_SECONDS,
   SYNC_STAGING_TTL_SECONDS,
+  D1StateStore,
   type CollectionType,
+  type D1DatabaseLike,
   type MediaRefreshJobV3,
   type SnapshotManifest,
   type SyncRun,
   type SyncWorkflowParams,
 } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
+import {
+  planSubjectRefresh,
+  selectRefreshCandidates,
+  type RefreshCandidate,
+  type RefreshPlannerInput,
+} from './refresh-planner.ts'
+import { assembleFullFetch } from './full-fetch-boundary.ts'
+import { runD1IncrementalSync, type D1SyncResult } from './d1-sync.ts'
+import {
+  readLegacyPublicResult,
+  runDailyShadowPhase,
+  type DailyShadowPhaseDeps,
+} from './daily-shadow.ts'
+import { runLegacyCleanup } from './legacy-cleanup.ts'
+import { runLegacyMigration } from './migration-runner.ts'
+import { recordDailyKvBudget, shadowGatePassed, switchReadMode, updateShadowStreak } from './read-mode.ts'
+import {
+  publishPublicSnapshot,
+  promoteShadowPointer,
+  POINTER_KEY_SHADOW,
+  type PublicationDataBucket,
+  type PublishPublicSnapshotArguments,
+} from './r2-publication.ts'
 
 const COLLECTION_TYPES: CollectionType[] = ['want', 'watched', 'watching', 'on_hold', 'dropped']
 const PAGE_LIMIT = 50
 const REFRESH_CHUNK_SIZE = 10
-const ENQUEUE_CHUNKS_PER_STEP = 3
 const NETWORK_STEP = { retries: { limit: 3, delay: 1_000, backoff: 'exponential' as const }, timeout: 45_000 }
 const STORAGE_STEP = { retries: { limit: 3, delay: 500, backoff: 'exponential' as const }, timeout: 45_000 }
 
 interface KVNamespaceLike {
   get(key: string, type: 'json'): Promise<unknown>
+  get(key: string, type: 'text'): Promise<string | null>
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>
   delete(key: string): Promise<void>
 }
@@ -41,6 +71,15 @@ export interface SyncWorkflowEnv {
   }
   BANGUMI_TOKEN: string
   BANGUMI_USERS: string
+  AIRING_CAL_D1: D1DatabaseLike
+  AIRING_CAL_DATA_R2: PublicationDataBucket
+}
+
+export interface SyncWorkflowDependencies {
+  runD1IncrementalSync?: typeof runD1IncrementalSync
+  publication?: Omit<PublishPublicSnapshotArguments, 'input' | 'now' | 'publicationId'>
+  publishPublicSnapshot?: typeof publishPublicSnapshot
+  runDailyShadowPhase?: typeof runDailyShadowPhase
 }
 
 export interface WorkflowStepLike {
@@ -58,17 +97,17 @@ interface StepOutput {
   count: number
   digest: string
   total?: number
+  offset?: number
   keys?: string[]
   snapshotKeys?: Partial<Record<CollectionType, string>>
   refreshInputKey?: string
+  completeInputKey?: string
   refreshChunks?: number
+  candidates?: RefreshCandidate[]
+  planning_errors?: Array<{ subject_id: number; error: string }>
 }
 
-interface RefreshInput {
-  subject_id: number
-  title: string
-  images?: { common?: string; large?: string }
-}
+type RefreshInput = RefreshPlannerInput
 
 type NonRetryableFactory = (message: string) => Error
 
@@ -180,7 +219,26 @@ export async function runSyncWorkflow(
   event: SyncWorkflowEventLike,
   step: WorkflowStepLike,
   nonRetryable: NonRetryableFactory,
-): Promise<{ instance_id: string; status: 'ok'; subject_count: number; refresh_jobs: number }> {
+  dependencies: SyncWorkflowDependencies = {},
+): Promise<{
+  instance_id: string
+  status: 'ok'
+  subject_count: number
+  refresh_jobs: number
+  refresh_candidates: number
+  refresh_candidates_by_priority: {
+    new_or_changed: number
+    hot: number
+    cold: number
+    retry: number
+  }
+  refresh_selected: number
+  refresh_granted: number
+  refresh_deferred: number
+  refresh_confirmed: number
+  refresh_uncertain: number
+  refresh_skipped: number
+}> {
   const scheduled = Boolean(event.schedule)
   const mode = scheduled ? 'live' : event.payload?.mode
   if (mode !== 'shadow' && mode !== 'live') throw nonRetryable('Manual workflow requires mode shadow or live')
@@ -202,6 +260,14 @@ export async function runSyncWorkflow(
     collection_pages: 0,
     subject_count: 0,
     refresh_jobs: 0,
+    refresh_candidates: 0,
+    refresh_candidates_by_priority: { new_or_changed: 0, hot: 0, cold: 0, retry: 0 },
+    refresh_selected: 0,
+    refresh_granted: 0,
+    refresh_deferred: 0,
+    refresh_confirmed: 0,
+    refresh_uncertain: 0,
+    refresh_skipped: 0,
     error: null,
   }
 
@@ -226,18 +292,21 @@ export async function runSyncWorkflow(
 
     const client = new BgmClient(env.BANGUMI_TOKEN, { maxGetRetries: 0 })
     const pageOutputs: StepOutput[] = []
+    const collectionGroups: Array<{ user_id: string; outputs: StepOutput[] }> = []
     for (let userIndex = 0; userIndex < users.length; userIndex++) {
       const username = users[userIndex]
+      const userOutputs: StepOutput[] = []
       const first = await step.do(pageStepName(userIndex, 0), NETWORK_STEP, async () => {
         const page = await fetchCollectionPage(client, username, 0, nonRetryable)
         const key = syncStagingKey(event.instanceId, `collections:${userIndex}:0`)
         await putJson(env.AIRING_CAL_KV, key, page.data, SYNC_STAGING_TTL_SECONDS)
         run = { ...run, stage: 'collections', heartbeat_at: nowSeconds() }
         await writeRun(env, run)
-        return { key, count: page.data.length, total: page.total, digest: await digest(page.data) }
+        return { key, count: page.data.length, total: page.total, offset: 0, digest: await digest(page.data) }
       })
       run = { ...run, stage: 'collections' }
       pageOutputs.push(first)
+      userOutputs.push(first)
       const pages = Math.ceil((first.total ?? 0) / PAGE_LIMIT)
       for (let pageIndex = 1; pageIndex < pages; pageIndex++) {
         const output = await step.do(pageStepName(userIndex, pageIndex), NETWORK_STEP, async () => {
@@ -246,11 +315,19 @@ export async function runSyncWorkflow(
           await putJson(env.AIRING_CAL_KV, key, page.data, SYNC_STAGING_TTL_SECONDS)
           run = { ...run, stage: 'collections', heartbeat_at: nowSeconds() }
           await writeRun(env, run)
-          return { key, count: page.data.length, digest: await digest(page.data) }
+          return {
+            key,
+            count: page.data.length,
+            total: page.total,
+            offset: pageIndex * PAGE_LIMIT,
+            digest: await digest(page.data),
+          }
         })
         run = { ...run, stage: 'collections' }
         pageOutputs.push(output)
+        userOutputs.push(output)
       }
+      collectionGroups.push({ user_id: username, outputs: userOutputs })
     }
     run = { ...run, collection_pages: pageOutputs.length }
 
@@ -265,9 +342,32 @@ export async function runSyncWorkflow(
     run = { ...run, stage: 'calendar' }
 
     const prepared = await step.do('prepare-snapshot-inputs', STORAGE_STEP, async () => {
-      const collectionPages = await Promise.all(pageOutputs.map((output) => getJson<BgmCollection[]>(env.AIRING_CAL_KV, output.key)))
-      const collections = collectionPages.flatMap((page) => page ?? [])
-      const calendar = await getJson<any[]>(env.AIRING_CAL_KV, calendarOutput.key) ?? []
+      const groups = await Promise.all(collectionGroups.map(async (group) => ({
+        pages: await Promise.all(group.outputs.map(async (output) => ({
+          offset: output.offset ?? -1,
+          total: output.total ?? -1,
+          data: await (async () => {
+            const data = await getJson<BgmCollection[]>(env.AIRING_CAL_KV, output.key)
+            if (data !== null && await digest(data) !== output.digest) {
+              throw new Error(`Staged collection digest mismatch: ${output.key}`)
+            }
+            return data
+          })(),
+        }))),
+        pageLimit: PAGE_LIMIT,
+        user_id: group.user_id,
+      })))
+      const stagedCalendar = await getJson(env.AIRING_CAL_KV, calendarOutput.key)
+      if (stagedCalendar !== null && await digest(stagedCalendar) !== calendarOutput.digest) {
+        throw new Error(`Staged calendar digest mismatch: ${calendarOutput.key}`)
+      }
+      const fetched = assembleFullFetch(
+        groups,
+        stagedCalendar,
+        run.started_at,
+      )
+      const collections = fetched.collections.map(({ collection }) => collection)
+      const { calendar } = fetched
       const merged = mergeCollections(collections)
       const snapshotKeys: Partial<Record<CollectionType, string>> = {}
       for (const type of COLLECTION_TYPES) {
@@ -275,20 +375,42 @@ export async function runSyncWorkflow(
         await putJson(env.AIRING_CAL_KV, key, merged[type], SYNC_STAGING_TTL_SECONDS)
         snapshotKeys[type] = key
       }
+      const calendarInputKey = syncStagingKey(event.instanceId, 'snapshot:calendar-input')
+      await putJson(env.AIRING_CAL_KV, calendarInputKey, calendar, SYNC_STAGING_TTL_SECONDS)
       const ids = [...new Set([...collections.map((entry) => entry.subject_id), ...calendarSubjectIds(calendar)])]
+      const hotIds = new Set(collections.map((entry) => entry.subject_id))
       const titles = sourceTitles(collections, calendar)
       const images = sourceImages(collections, calendar)
       const refreshInputs = ids.map((subjectId): RefreshInput => ({
         subject_id: subjectId,
         title: titles.get(subjectId) ?? String(subjectId),
+        hot: hotIds.has(subjectId),
         images: images.get(subjectId),
       }))
       const refreshInputKey = syncStagingKey(event.instanceId, 'refresh-inputs')
       await putJson(env.AIRING_CAL_KV, refreshInputKey, refreshInputs, SYNC_STAGING_TTL_SECONDS)
+      const completeInputKey = syncStagingKey(event.instanceId, 'complete-input')
+      await putJson(env.AIRING_CAL_KV, completeInputKey, fetched, SYNC_STAGING_TTL_SECONDS)
       const refreshChunks = Math.ceil(ids.length / REFRESH_CHUNK_SIZE)
       const key = syncStagingKey(event.instanceId, 'prepared')
-      await putJson(env.AIRING_CAL_KV, key, { snapshotKeys, refreshInputKey, refreshChunks }, SYNC_STAGING_TTL_SECONDS)
-      return { key, snapshotKeys, refreshInputKey, refreshChunks, count: ids.length, digest: await digest(ids) }
+      await putJson(env.AIRING_CAL_KV, key, {
+        snapshotKeys,
+        calendarInputKey,
+        completeInputKey,
+        refreshInputKey,
+        refreshChunks,
+        observedAt: fetched.observedAt,
+      }, SYNC_STAGING_TTL_SECONDS)
+      return {
+        key,
+        snapshotKeys,
+        calendarInputKey,
+        refreshInputKey,
+        completeInputKey,
+        refreshChunks,
+        count: ids.length,
+        digest: await digest(ids),
+      }
     })
     const summary: Record<string, number> = {}
     const publishedOutputs: StepOutput[] = []
@@ -313,7 +435,7 @@ export async function runSyncWorkflow(
       return { key, count: summary._total, digest: await digest(summary) }
     }))
     publishedOutputs.push(await step.do('publish-calendar', STORAGE_STEP, async () => {
-      const calendar = await getJson<any[]>(env.AIRING_CAL_KV, calendarOutput.key) ?? []
+      const calendar = await getJson<any[]>(env.AIRING_CAL_KV, prepared.calendarInputKey) ?? []
       const snapshot = transformCalendar(calendar)
       const key = targetSnapshotKey(mode, event.instanceId, 'calendar')
       await putJson(env.AIRING_CAL_KV, key, snapshot, mode === 'shadow' ? SYNC_RUN_TTL_SECONDS : undefined)
@@ -326,45 +448,145 @@ export async function runSyncWorkflow(
       return { key, count: 1, digest: await digest(value) }
     })
 
+    if (mode === 'shadow') {
+      await step.do('persist-d1-shadow', STORAGE_STEP, async () => {
+        const d1Database = env.AIRING_CAL_D1
+        if (!d1Database) throw new Error('Missing required AIRING_CAL_D1 binding')
+        const dataBucket = env.AIRING_CAL_DATA_R2
+        if (!dataBucket) throw new Error('Missing required AIRING_CAL_DATA_R2 binding')
+        const completeInput = await getJson<ReturnType<typeof assembleFullFetch>>(
+          env.AIRING_CAL_KV,
+          prepared.completeInputKey ?? '',
+        )
+        if (completeInput?.complete !== true) throw new Error('Missing complete D1 sync input')
+        const runner = dependencies.runD1IncrementalSync ?? runD1IncrementalSync
+        const result: D1SyncResult = await runner({
+          env,
+          instanceId: event.instanceId,
+          completeInput,
+          now: completeInput.observedAt,
+        })
+        const publicationBindings = dependencies.publication ?? {
+          state: new D1StateStore(d1Database),
+          dataBucket,
+          pointerKv: {
+            get: (key: string) => env.AIRING_CAL_KV.get(key, 'text'),
+            put: (key: string, value: string) => env.AIRING_CAL_KV.put(key, value),
+          },
+        }
+        const publisher = dependencies.publishPublicSnapshot ?? publishPublicSnapshot
+        const publicationResult = await publisher({
+          ...publicationBindings,
+          input: result.publicationInput,
+          now: completeInput.observedAt,
+          sourceObservedAt: completeInput.observedAt,
+          publicationId: event.instanceId,
+        })
+        if (publicationResult.status === 'pending') {
+          throw new Error('Public snapshot publication remains pending')
+        }
+        return {
+          key: syncRunKey(event.instanceId),
+          count: result.rowsWritten,
+          digest: result.publicationInput.content_hash,
+        }
+      })
+    }
+
     const planOutputs: StepOutput[] = []
-    let refreshJobs = 0
-    for (let chunkIndex = 0; chunkIndex < (prepared.refreshChunks ?? 0); chunkIndex++) {
+    for (let chunkIndex = 0; mode === 'live' && chunkIndex < (prepared.refreshChunks ?? 0); chunkIndex++) {
       const output = await step.do(`plan-refresh-${chunkIndex}`, STORAGE_STEP, async () => {
         const allInputs = await getJson<RefreshInput[]>(env.AIRING_CAL_KV, prepared.refreshInputKey ?? '') ?? []
         const inputs = allInputs.slice(chunkIndex * REFRESH_CHUNK_SIZE, (chunkIndex + 1) * REFRESH_CHUNK_SIZE)
-        const jobs: MediaRefreshJobV3[] = inputs.map((input) => ({
-            version: 3,
-            generation: run.generation ?? 0,
-            job_id: `${event.instanceId}:${input.subject_id}`,
-            subject_id: input.subject_id,
-            title: input.title,
-            components: ['detail', 'meta', 'image_common', 'image_large'],
-            images: input.images,
-          }))
+        const planned = await Promise.all(inputs.map(async (input) => {
+          try {
+            const cached = {
+              detail: await getJson<any>(env.AIRING_CAL_KV, subjectDetailKey(input.subject_id)),
+              meta: await getJson<any>(env.AIRING_CAL_KV, subjectMetaKey(input.subject_id)),
+              image: await getJson<any>(env.AIRING_CAL_KV, imageStatusKey(input.subject_id)),
+              refresh: await getJson<any>(env.AIRING_CAL_KV, subjectRefreshKey(input.subject_id)),
+            }
+            return { candidate: planSubjectRefresh(input, cached, nowSeconds()) }
+          } catch (error) {
+            return {
+              candidate: null,
+              planning_error: {
+                subject_id: input.subject_id,
+                error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+              },
+            }
+          }
+        }))
+        const candidates = planned.flatMap(({ candidate }) => candidate ? [candidate] : [])
+        const planningErrors = planned.flatMap(({ planning_error }) => planning_error ? [planning_error] : [])
         const key = syncStagingKey(event.instanceId, `refresh:${chunkIndex}`)
-        await putJson(env.AIRING_CAL_KV, key, jobs, SYNC_STAGING_TTL_SECONDS)
+        await putJson(env.AIRING_CAL_KV, key, candidates, SYNC_STAGING_TTL_SECONDS)
         run = { ...run, stage: 'refresh_plan', heartbeat_at: nowSeconds() }
         await writeRun(env, run)
-        return { key, count: jobs.length, digest: await digest(jobs) }
+        return { key, count: candidates.length, candidates, planning_errors: planningErrors, digest: await digest(candidates) }
       })
       planOutputs.push(output)
-      refreshJobs += output.count
       run = { ...run, stage: 'refresh_plan' }
     }
 
     if (mode === 'live') {
-      for (let index = 0; index < planOutputs.length; index += ENQUEUE_CHUNKS_PER_STEP) {
-        const batchIndex = index / ENQUEUE_CHUNKS_PER_STEP
-        const outputs = planOutputs.slice(index, index + ENQUEUE_CHUNKS_PER_STEP)
-        await step.do(`enqueue-refresh-${batchIndex}`, STORAGE_STEP, async () => {
-          const groups = await Promise.all(outputs.map((output) => getJson<MediaRefreshJobV3[]>(env.AIRING_CAL_KV, output.key)))
-          const jobs = groups.flatMap((group) => group ?? [])
-          if (jobs.length) await env.MEDIA_QUEUE.sendBatch(jobs.map((body) => ({ body, contentType: 'json' as const })))
-          run = { ...run, stage: 'enqueue', heartbeat_at: nowSeconds() }
-          await writeRun(env, run)
-          return { key: outputs[0]?.key ?? syncStagingKey(event.instanceId, `refresh:${index}`), count: jobs.length, digest: await digest(jobs.map((job) => job.job_id)) }
+      const utcDay = new Date(run.started_at * 1000).toISOString().slice(0, 10)
+      const selection = selectRefreshCandidates(planOutputs.flatMap((output) => output.candidates ?? []), utcDay, {
+        soft: 50,
+        hard: 100,
+      })
+      run = {
+        ...run,
+        subject_count: prepared.count,
+        refresh_candidates: selection.candidates,
+        refresh_candidates_by_priority: selection.by_priority,
+        refresh_selected: selection.selected.length,
+        refresh_deferred: selection.candidates,
+        refresh_skipped: Math.max(0, prepared.count - selection.candidates),
+      }
+      const jobs: MediaRefreshJobV3[] = selection.selected.map((candidate) => ({
+        version: 3,
+        generation: run.generation ?? 0,
+        job_id: `${event.instanceId}:${candidate.subject_id}`,
+        subject_id: candidate.subject_id,
+        title: candidate.title,
+        components: candidate.components,
+        images: candidate.images,
+      }))
+      let reservation: {
+        granted: number
+        consumed: number
+        soft_limit: number
+        hard_limit: number
+        submission: 'confirmed' | 'uncertain' | 'not_needed'
+      } = {
+        granted: 0,
+        consumed: 0,
+        soft_limit: 50,
+        hard_limit: 100,
+        submission: 'not_needed',
+      }
+      if (selection.selected.length > 0) {
+        reservation = await step.do('reserve-media', STORAGE_STEP, async () => {
+          const result = await coordinatorRequest<typeof reservation>(env, '/reserve-media', {
+            date: utcDay,
+            reservation_id: `${event.instanceId}:media`,
+            requested: selection.selected.length,
+            privileged_requested: selection.selected.filter((candidate) => candidate.priority === 'new_or_changed').length,
+            jobs,
+          })
+          return result
         })
-        run = { ...run, stage: 'enqueue' }
+      }
+      run = {
+        ...run,
+        stage: 'enqueue',
+        heartbeat_at: nowSeconds(),
+        refresh_jobs: reservation.granted,
+        refresh_granted: reservation.granted,
+        refresh_deferred: Math.max(0, selection.candidates - reservation.granted),
+        refresh_confirmed: reservation.submission === 'confirmed' ? reservation.granted : 0,
+        refresh_uncertain: reservation.submission === 'uncertain' ? reservation.granted : 0,
       }
 
       await step.do('commit-live-snapshot', STORAGE_STEP, async () => {
@@ -380,6 +602,87 @@ export async function runSyncWorkflow(
         await coordinatorRequest(env, '/commit', { generation: manifest.generation, manifest })
         return { key: snapshotActiveKey(), count: 1, digest: await digest(manifest) }
       })
+
+      if (source === 'schedule') {
+        await step.do('daily-shadow-phase', STORAGE_STEP, async () => {
+          const shadowErrors: string[] = []
+          try {
+            const d1Database = env.AIRING_CAL_D1
+            if (!d1Database) throw new Error('Missing required AIRING_CAL_D1 binding')
+            const dataBucket = env.AIRING_CAL_DATA_R2
+            if (!dataBucket) throw new Error('Missing required AIRING_CAL_DATA_R2 binding')
+            const completeInput = await getJson<ReturnType<typeof assembleFullFetch>>(
+              env.AIRING_CAL_KV,
+              prepared.completeInputKey ?? '',
+            )
+            if (completeInput?.complete !== true) throw new Error('Missing complete D1 sync input')
+            const now = completeInput.observedAt
+            const d1 = new D1StateStore(d1Database)
+            const pointerKv = {
+              get: (key: string) => env.AIRING_CAL_KV.get(key, 'text'),
+              put: (key: string, value: string) => env.AIRING_CAL_KV.put(key, value),
+            }
+            const legacyKv = {
+              get: (key: string, type: 'json') => env.AIRING_CAL_KV.get(key, type),
+              put: (key: string, value: unknown) => putJson(env.AIRING_CAL_KV, key, value),
+              delete: (key: string) => env.AIRING_CAL_KV.delete(key),
+            }
+            const phase = dependencies.runDailyShadowPhase ?? runDailyShadowPhase
+            const phaseResult = await phase({
+              now,
+              instanceId: `${event.instanceId}:shadow`,
+              activeInstance: event.instanceId,
+              legacySubjectKvWrites: run.refresh_jobs,
+              runIncremental: async () => {
+                const runner = dependencies.runD1IncrementalSync ?? runD1IncrementalSync
+                return await runner({
+                  env,
+                  instanceId: `${event.instanceId}:shadow`,
+                  completeInput,
+                  now,
+                  store: d1,
+                })
+              },
+              publishShadow: async (incrementalResult) => {
+                const publicationBindings = dependencies.publication ?? {
+                  state: new D1StateStore(d1Database),
+                  dataBucket,
+                  pointerKv,
+                }
+                const publisher = dependencies.publishPublicSnapshot ?? publishPublicSnapshot
+                return await publisher({
+                  ...publicationBindings,
+                  input: incrementalResult.publicationInput,
+                  now,
+                  sourceObservedAt: now,
+                  publicationId: `${event.instanceId}:shadow`,
+                  pointerKey: POINTER_KEY_SHADOW,
+                })
+              },
+              legacyResult: () => readLegacyPublicResult(legacyKv, event.instanceId),
+              compare: compareShadowSnapshots,
+              updateStreak: (equal, diffSummary, streakNow) => updateShadowStreak(d1, equal, diffSummary, streakNow),
+              recordKvBudget: (date, writes, budgetNow) => recordDailyKvBudget(d1, date, writes, budgetNow),
+              gatePassed: (date, gateNow) => shadowGatePassed(d1, date, gateNow),
+              promotePointer: (promoteNow) => promoteShadowPointer(pointerKv, promoteNow),
+              switchMode: (switchNow) => switchReadMode(d1, pointerKv, switchNow),
+              runCleanup: (cleanupNow) => runLegacyCleanup(d1, legacyKv, dataBucket, cleanupNow),
+              runMigration: (migrationNow) => runLegacyMigration(d1, legacyKv, migrationNow),
+            } satisfies DailyShadowPhaseDeps)
+            shadowErrors.push(...phaseResult.shadow_errors)
+          } catch (error) {
+            shadowErrors.push(error instanceof Error ? error.message : String(error))
+          }
+          if (shadowErrors.length > 0) {
+            const currentMeta = await getJson<Record<string, unknown>>(env.AIRING_CAL_KV, syncMetaKey()) ?? {}
+            await putJson(env.AIRING_CAL_KV, syncMetaKey(), {
+              ...currentMeta,
+              workflow_shadow_errors: shadowErrors.slice(0, 10),
+            })
+          }
+          return { key: `${event.instanceId}:shadow`, count: shadowErrors.length, digest: await digest(shadowErrors) }
+        })
+      }
     }
 
     await step.do('finalize', STORAGE_STEP, async () => {
@@ -391,7 +694,7 @@ export async function runSyncWorkflow(
         heartbeat_at: completedAt,
         completed_at: completedAt,
         subject_count: prepared.count,
-        refresh_jobs: refreshJobs,
+        refresh_skipped: Math.max(0, prepared.count - run.refresh_candidates),
       }
       await writeRun(env, run)
       const currentMeta = await getJson<Record<string, unknown>>(env.AIRING_CAL_KV, syncMetaKey()) ?? {}
@@ -404,7 +707,20 @@ export async function runSyncWorkflow(
       return { key: syncRunKey(event.instanceId), count: 1, digest: await digest(run) }
     })
 
-    return { instance_id: event.instanceId, status: 'ok', subject_count: prepared.count, refresh_jobs: refreshJobs }
+    return {
+      instance_id: event.instanceId,
+      status: 'ok',
+      subject_count: prepared.count,
+      refresh_jobs: run.refresh_jobs,
+      refresh_candidates: run.refresh_candidates,
+      refresh_candidates_by_priority: run.refresh_candidates_by_priority,
+      refresh_selected: run.refresh_selected,
+      refresh_granted: run.refresh_granted,
+      refresh_deferred: run.refresh_deferred,
+      refresh_confirmed: run.refresh_confirmed,
+      refresh_uncertain: run.refresh_uncertain,
+      refresh_skipped: run.refresh_skipped,
+    }
   } catch (error) {
     await step.do('record-error', STORAGE_STEP, async () => {
       const completedAt = nowSeconds()

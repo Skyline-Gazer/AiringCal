@@ -1,9 +1,20 @@
 export const appBoundary = 'read-worker'
 
-import { imageOriginalKey, imageStatusKey, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncCurrentKey, syncMetaKey, syncRunKey, type SnapshotManifest, type SyncRun } from '@airing-cal/storage'
+import { D1StateStore, imageOriginalKey, imageStatusKey, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncCurrentKey, syncMetaKey, syncRunKey, type D1DatabaseLike, type SnapshotManifest, type SyncRun } from '@airing-cal/storage'
+import { isConfirmedNotFoundSubjectMeta, type SubjectMeta } from '@airing-cal/domain'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
+import {
+  readSnapshotSource,
+  type ReadSnapshotCache,
+  type ReadSnapshotDataR2,
+} from './r2-snapshot.ts'
+import { buildMigrationHealth, type MigrationHealthD1, type MigrationHealthEnv } from './health.ts'
 
 interface ReadEnv {
+  AIRING_CAL_D1: D1DatabaseLike
+  AIRING_CAL_DATA_R2: {
+    get(key: string): Promise<unknown>
+  }
   AIRING_CAL_KV: {
     get(key: string, type: 'json'): Promise<unknown>
     put(key: string, value: string): Promise<void>
@@ -21,12 +32,42 @@ interface ReadEnv {
 }
 
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
-const CRON_INTERVAL_HOURS = 4
+const CRON_HOUR_UTC = 20
 const HYDRATION_CONCURRENCY = 8
 const WORKFLOW_STALE_SECONDS = 20 * 60
+const MAX_CURSOR_LENGTH = 1024
 
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000)
+}
+
+function defaultSnapshotCache(): ReadSnapshotCache {
+  const cache = (globalThis as { caches?: { default?: Cache } }).caches?.default
+  return {
+    async match(request: Request): Promise<Response | undefined> {
+      if (!cache) throw new Error('Cache API unavailable')
+      return await cache.match(request)
+    },
+    async put(request: Request, response: Response): Promise<void> {
+      if (!cache) throw new Error('Cache API unavailable')
+      await cache.put(request, response)
+    },
+  }
+}
+
+function snapshotSourceFor(env: ReadEnv) {
+  return readSnapshotSource(
+    env.AIRING_CAL_DATA_R2 as unknown as ReadSnapshotDataR2,
+    defaultSnapshotCache(),
+  )
+}
+
+function migrationHealthEnvFor(env: ReadEnv): MigrationHealthEnv {
+  const d1: MigrationHealthD1 = {
+    getAppState: (key, decode) => new D1StateStore(env.AIRING_CAL_D1).getAppState(key, decode),
+    prepare: (sql) => env.AIRING_CAL_D1.prepare(sql),
+  }
+  return { AIRING_CAL_KV: env.AIRING_CAL_KV, AIRING_CAL_D1: d1 }
 }
 
 function json(data: unknown, init?: ResponseInit): Response {
@@ -39,17 +80,32 @@ function json(data: unknown, init?: ResponseInit): Response {
   })
 }
 
-function validCollectionType(value: string | null): (typeof COLLECTION_TYPES)[number] {
-  return COLLECTION_TYPES.includes(value as any) ? value as (typeof COLLECTION_TYPES)[number] : 'watching'
+class InvalidQueryError extends Error {}
+
+function singleQueryParameter(searchParams: URLSearchParams, name: string): string | null {
+  const values = searchParams.getAll(name)
+  if (values.length > 1) throw new InvalidQueryError(`Repeated ${name}`)
+  return values[0] ?? null
 }
 
-function positiveInteger(value: string | null, fallback: number): number {
-  const parsed = Number.parseInt(value ?? '', 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+function parseCollectionType(value: string | null): (typeof COLLECTION_TYPES)[number] {
+  if (value === null) return 'watching'
+  if (!COLLECTION_TYPES.includes(value as (typeof COLLECTION_TYPES)[number])) throw new InvalidQueryError()
+  return value as (typeof COLLECTION_TYPES)[number]
 }
 
-function collectionLimit(value: string | null): number {
-  return Math.min(100, positiveInteger(value, 24))
+function parsePositiveInteger(name: string, value: string | null, fallback: number, max?: number): number {
+  if (value === null) return fallback
+  if (!/^[1-9]\d*$/.test(value)) throw new InvalidQueryError(`Invalid ${name}`)
+  const parsed = Number(value)
+  if (!Number.isSafeInteger(parsed) || (max !== undefined && parsed > max)) throw new InvalidQueryError(`Invalid ${name}`)
+  return parsed
+}
+
+function parseCursor(value: string | null): string | undefined {
+  if (value === null) return undefined
+  if (!value || value.length > MAX_CURSOR_LENGTH || /[\x00-\x1f\x7f-\x9f]/.test(value)) throw new InvalidQueryError()
+  return value
 }
 
 function sanitizeStatus(value: any): any {
@@ -153,11 +209,8 @@ function imageStatus(status: any): string {
 
 function nextCronAt(now = Date.now()): string {
   const next = new Date(now)
-  next.setUTCMinutes(0, 0, 0)
-  if (next.getTime() <= now) next.setUTCHours(next.getUTCHours() + 1)
-  while (next.getUTCHours() % CRON_INTERVAL_HOURS !== 0) {
-    next.setUTCHours(next.getUTCHours() + 1)
-  }
+  next.setUTCHours(CRON_HOUR_UTC, 0, 0, 0)
+  if (next.getTime() <= now) next.setUTCDate(next.getUTCDate() + 1)
   return next.toISOString()
 }
 
@@ -193,10 +246,15 @@ function positiveEpisodeCount(...values: unknown[]): number | undefined {
 async function hydrateCollectionImages(data: unknown[], env: ReadEnv): Promise<unknown[]> {
   return mapConcurrent(data, HYDRATION_CONCURRENCY, async (entry: any) => {
     if (!entry || typeof entry !== 'object' || typeof entry.subject_id !== 'number') return entry
-    const status = await env.AIRING_CAL_KV.get(imageStatusKey(entry.subject_id), 'json')
-    if (!status) return entry
+    const [status, meta] = await Promise.all([
+      env.AIRING_CAL_KV.get(imageStatusKey(entry.subject_id), 'json'),
+      env.AIRING_CAL_KV.get(subjectMetaKey(entry.subject_id), 'json'),
+    ])
+    const projected = projectSnapshotEntry(entry, meta as SubjectMeta | null)
+    if (isConfirmedNotFoundSubjectMeta(meta as SubjectMeta | null)) return projected
+    if (!status) return projected
     return {
-      ...entry,
+      ...projected,
       images: {
         common: cachedImageRef((status as any).common),
         large: cachedImageRef((status as any).large),
@@ -207,6 +265,26 @@ async function hydrateCollectionImages(data: unknown[], env: ReadEnv): Promise<u
       },
     }
   })
+}
+
+function projectSnapshotEntry(entry: any, meta: SubjectMeta | null): any {
+  if (!isConfirmedNotFoundSubjectMeta(meta)) {
+    return meta ? { ...entry, nsfw: meta.nsfw } : entry
+  }
+  const {
+    name: _name,
+    name_cn: _nameCn,
+    summary: _summary,
+    date: _date,
+    rating: _rating,
+    eps: _eps,
+    eps_count: _epsCount,
+    total_episodes: _totalEpisodes,
+    images: _images,
+    image_status: _imageStatus,
+    ...safe
+  } = entry
+  return { ...safe, nsfw: true }
 }
 
 async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unknown[]> {
@@ -226,27 +304,29 @@ async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unk
         env.AIRING_CAL_KV.get(subjectDetailKey(subjectId), 'json'),
       ])
       if (!status && !meta && !detailEntry) return entry
-      const detail = (detailEntry as any)?.subject
-      const eps = positiveEpisodeCount(detail?.eps, detail?.eps_count, detail?.total_episodes, entry.eps, entry.eps_count, entry.total_episodes)
-      const totalEpisodes = positiveEpisodeCount(detail?.total_episodes, detail?.eps, detail?.eps_count, entry.total_episodes, entry.eps, entry.eps_count)
+      const tombstone = isConfirmedNotFoundSubjectMeta(meta as SubjectMeta | null)
+      const detail = tombstone ? null : (detailEntry as any)?.subject
+      const projected = projectSnapshotEntry(entry, meta as SubjectMeta | null)
+      const eps = positiveEpisodeCount(detail?.eps, detail?.eps_count, detail?.total_episodes, projected.eps, projected.eps_count, projected.total_episodes)
+      const totalEpisodes = positiveEpisodeCount(detail?.total_episodes, detail?.eps, detail?.eps_count, projected.total_episodes, projected.eps, projected.eps_count)
       return {
-        ...entry,
+        ...projected,
         ...(eps ? { eps } : {}),
         ...(totalEpisodes ? { total_episodes: totalEpisodes } : {}),
         ...(detail?.rating ? { rating: detail.rating } : {}),
-        images: status
+        images: !tombstone && status
           ? {
               common: cachedImageRef((status as any).common),
               large: cachedImageRef((status as any).large),
             }
-          : entry.images,
-        image_status: status
+          : projected.images,
+        image_status: !tombstone && status
           ? {
               common: imageStatus((status as any).common),
               large: imageStatus((status as any).large),
             }
-          : entry.image_status,
-        nsfw: (meta as any)?.nsfw ?? entry.nsfw,
+          : projected.image_status,
+        nsfw: (meta as any)?.nsfw ?? projected.nsfw,
       }
     })
     hydrated.push({ ...day, items })
@@ -256,11 +336,23 @@ async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unk
 
 async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
-  const type = validCollectionType(url.searchParams.get('type'))
+  const type = parseCollectionType(singleQueryParameter(url.searchParams, 'type'))
+  const page = parsePositiveInteger('page', singleQueryParameter(url.searchParams, 'page'), 1)
+  const limit = parsePositiveInteger('limit', singleQueryParameter(url.searchParams, 'limit'), 24, 100)
+  const source = await snapshotSourceFor(env)
+  if (source.mode !== 'legacy') {
+    const data = source.snapshot.collections[type]
+    const start = (page - 1) * limit
+    return json({
+      data: data.slice(start, start + limit),
+      total: data.length,
+      page,
+      limit,
+      types: { ...source.snapshot.summary },
+    })
+  }
   const activeInstance = await activeSnapshotInstance(storage)
   const data = await readSnapshot<unknown[]>(storage, activeInstance, `collections:${type}`, snapshotCollectionsKey(type)) ?? []
-  const page = positiveInteger(url.searchParams.get('page'), 1)
-  const limit = collectionLimit(url.searchParams.get('limit'))
   const start = (page - 1) * limit
   const pageData = data.slice(start, start + limit)
   const types = await readSnapshot<Record<string, number>>(storage, activeInstance, 'summary', snapshotSummaryKey()) ?? {}
@@ -270,14 +362,16 @@ async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
 
 async function handleCalendar(env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
+  const source = await snapshotSourceFor(env)
+  if (source.mode !== 'legacy') return json(source.snapshot.calendar)
   const activeInstance = await activeSnapshotInstance(storage)
   const data = await readSnapshot<unknown[]>(storage, activeInstance, 'calendar', snapshotCalendarKey()) ?? []
   return json(await hydrateCalendarImages(data, env))
 }
 
 async function handleCache(url: URL, env: ReadEnv): Promise<Response> {
-  const limit = collectionLimit(url.searchParams.get('limit'))
-  const cursor = url.searchParams.get('cursor') ?? undefined
+  const limit = parsePositiveInteger('limit', singleQueryParameter(url.searchParams, 'limit'), 24, 100)
+  const cursor = parseCursor(singleQueryParameter(url.searchParams, 'cursor'))
   const list = await env.AIRING_CAL_KV.list?.({ prefix: 'image:status:', limit, cursor })
   const entries = (await mapConcurrent(list?.keys ?? [], HYDRATION_CONCURRENCY, async (key) => {
     const status = await env.AIRING_CAL_KV.get(key.name, 'json')
@@ -297,7 +391,7 @@ async function handleCache(url: URL, env: ReadEnv): Promise<Response> {
     if (entry.large?.status && entry.large.status in large) large[entry.large.status as keyof typeof large]++
   }
   return json({
-    total_subjects: entries.length,
+    page_subjects: entries.length,
     common,
     large,
     items: entries,
@@ -325,20 +419,23 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
         stale: workflowStale,
       })
     : null
+  const migrationHealth = await buildMigrationHealth(
+    migrationHealthEnvFor(env),
+    await snapshotSourceFor(env),
+  )
   return json({
     ok: true,
     worker: 'read-worker',
-    data: types && typeof types._total === 'number' && types._total > 0
-      ? {
+    data: {
           collections: {
-            types,
+            types: { ...types, _total: types?._total ?? 0 },
             updated_at: typeof active?.published_at === 'number'
               ? new Date(active.published_at * 1000).toISOString()
               : meta?.synced_at ? new Date(meta.synced_at * 1000).toISOString() : null,
             users: meta?.users ?? [],
           },
           cache: {
-            total_subjects: types._total,
+            total_subjects: types?._total ?? 0,
             source: 'snapshot_summary',
           },
           cron: {
@@ -346,8 +443,8 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
             last: scheduledWorkflowCronStatus(workflowRun, cronLastStatus(meta), effectiveWorkflowStatus),
           },
           workflow,
-        }
-      : null,
+        },
+    ...migrationHealth,
   })
 }
 
@@ -376,8 +473,17 @@ async function fetch(request: Request, env: ReadEnv): Promise<Response> {
     if (url.pathname.startsWith('/image/')) return await handleImage(url.pathname, env)
     return new Response('Not found', { status: 404 })
   } catch (error) {
+    if (error instanceof InvalidQueryError) {
+      return json({ ok: false, error: { code: 'INVALID_QUERY', message: 'Invalid query parameter' } }, {
+        status: 400,
+        headers: { 'Cache-Control': 'no-store' },
+      })
+    }
     if (error instanceof SnapshotIncompleteError) {
-      return json({ ok: false, error: { code: 'SNAPSHOT_INCOMPLETE', message: 'Active snapshot is incomplete' } }, { status: 503 })
+      return json({ ok: false, error: { code: 'SNAPSHOT_INCOMPLETE', message: 'Active snapshot is incomplete' } }, {
+        status: 503,
+        headers: { 'Cache-Control': 'no-store' },
+      })
     }
     throw error
   }

@@ -51,6 +51,18 @@ function text(body: string, contentType: string): Response {
   })
 }
 
+function html(body: string): Response {
+  return new Response(body, {
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'public, max-age=300',
+      'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+    },
+  })
+}
+
 function readWorkerRequest(url: URL, path: string, request: Request): Request {
   const target = new URL(url)
   target.pathname = path
@@ -65,7 +77,7 @@ function serviceRequest(url: URL, path: string, request: Request): Request {
 
 async function fetch(request: Request, env: FrontendEnv): Promise<Response> {
   const url = new URL(request.url)
-  if (url.pathname === '/') return text(renderIndexPage(pageOptions(env)), 'text/html; charset=utf-8')
+  if (url.pathname === '/') return html(renderIndexPage(pageOptions(env)))
   if (url.pathname === '/src/bangumi.js') return text(widgetJs, 'application/javascript; charset=utf-8')
   if (url.pathname === '/src/bangumi.css') return text(widgetCss, 'text/css; charset=utf-8')
   if (url.pathname === '/src/cache.js') return text(cacheJs, 'application/javascript; charset=utf-8')

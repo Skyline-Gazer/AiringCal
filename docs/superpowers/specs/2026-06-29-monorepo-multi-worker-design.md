@@ -1,7 +1,48 @@
 # Monorepo Multi-Worker Architecture Design
 
-> Status: pending review
+> Status: mixed historical design record; amended for D1/R2 shadow on 2026-07-29
 > Date: 2026-06-29
+
+Only the D1/R2 shadow amendment, sections explicitly labeled `Implemented` or
+`Current`, and other explicit current-state callouts are code-backed
+implementation claims. The remaining original target/`should`/`must` text is a
+historical proposal, not a blanket claim that every feature was implemented.
+
+## D1/R2 shadow amendment
+
+- Resources are D1 `airing-cal-state`, data R2 `airing-cal-data`, image R2
+  `airing-cal-images`, KV `airing-cal-kv`, and Queue `airing-cal-media`.
+- `read-worker` binds `AIRING_CAL_D1`, `AIRING_CAL_DATA_R2`,
+  `AIRING_CAL_KV`, and image `AIRING_CAL_R2`, but current handlers use only
+  legacy KV plus image R2. `sync-worker` additionally uses `MEDIA_QUEUE`,
+  `SYNC_WORKFLOW`, and `SNAPSHOT_COORDINATOR`; `media-worker` binds D1, KV,
+  image R2, and `SUBJECT_REFRESH_COORDINATOR`.
+- Manual shadow performs the new authoritative D1 diff and publishes immutable
+  data-R2 objects under
+  `snapshots/v1/{generation}-{content_hash}.json`, then verifies and writes
+  `public:current`. This pointer is not a public-read pointer yet.
+- D1 has five primary application tables: `collection_items`, `subject_media`,
+  `sync_runs`, `sync_budget`, and `app_state`. `sync_budget_reservations` is
+  the reservation idempotency helper. Soft/hard media limits remain 50/100;
+  the current shadow path submits no Queue jobs.
+- Public API responses still follow legacy KV `snapshot:active` and
+  generation-scoped KV keys. Import, `public:current` read cutover, and legacy
+  KV cleanup are owned only by `migrate-public-reads-from-kv`.
+- Worker Cron is exactly `0 20 * * *` (daily 20:00 UTC / following 04:00
+  Asia/Shanghai). Deploy order is resource resolve and Cron preflight, remote
+  D1 migration, read/media, sync/Workflow control-plane verification, then
+  frontend.
+- `/api/health` remains a legacy-KV view; D1/data-R2 shadow health and usage are
+  observed through Workflow and Cloudflare D1/R2/Queue/KV metrics. Persisted
+  D1 failures use classified `error_code`, and public/log output must not
+  include tokens, complete authenticated upstream bodies, or collection
+  comments.
+- Runtime rollback deploys the previous compatible immutable SHA. Additive D1
+  migrations and all D1/R2/KV/Queue/Workflow/Durable Object data remain in
+  place; no destructive reverse migration is run.
+- Frontend webmaster verification meta tags are implemented. Analytics
+  environment names remain reserved, but `renderAnalyticsScripts()` currently
+  returns an empty string for every input and no analytics script is emitted.
 
 ## Goals
 
@@ -107,7 +148,7 @@ Responsibilities:
 - Enqueue media jobs for missing or stale image cache and missing or stale subject meta.
 - Write sync generation metadata.
 
-There is no public `POST /__cron/sync` route in the new architecture. Production sync is triggered by Cloudflare scheduled events, not by `curl`ing a Worker URI. If a manual production run is needed, it should use Cloudflare's scheduled-event tooling or an explicitly internal/admin mechanism added later, not a public cron URL and `CRON_SECRET`.
+There is no public `POST /__cron/sync` route in the new architecture. Production sync is triggered by Cloudflare scheduled events, not by `curl`ing a Worker URI. Manual trigger/describe/restart/terminate operations use the authenticated Cloudflare Workflow control plane, not a public cron URL or `CRON_SECRET`.
 
 This Worker should keep heavy media and subject-detail enrichment out of the main cron invocation.
 
@@ -232,9 +273,13 @@ Responsibilities:
 Browser
   -> frontend-worker
   -> read-worker service binding
-  -> KV/R2
+  -> legacy KV snapshot/status + image R2
   -> frontend-worker response
 ```
+
+The checked-in D1/data-R2 bindings are intentionally absent from handler code.
+`public:current` and `airing-cal-data` are shadow outputs, not fallback sources
+for this public flow.
 
 The public surface remains small:
 
@@ -252,16 +297,19 @@ Public JSON endpoints may remain under the frontend Worker as BFF routes, but th
 
 ```text
 sync-worker cron/manual trigger
-  -> validate/refresh token
-  -> fetch collections
-  -> fetch calendar
-  -> read current subject meta and image status
-  -> build snapshot with available data
-  -> enqueue media jobs for missing/stale work
-  -> write snapshot and sync metadata
+  -> create/run SyncWorkflow
+  -> fetch collections and calendar into instance staging
+  -> live: publish/commit generation-scoped legacy KV snapshot
+  -> manual shadow: D1 diff/state + immutable data-R2 verify + public:current
+  -> live only: bounded reads of current detail/meta/image/refresh state
+  -> live only: select due candidates by priority and shared UTC-day budget
+  -> live only: reserve logical grants in SnapshotCoordinator
+  -> live only: submit one Queue batch with confirmed/uncertain outcome
 ```
 
-The first sync may produce a snapshot before every image and NSFW meta entry is complete. Later media jobs and later sync generations improve the snapshot.
+Scheduled and manual live runs share soft limit 50 / hard limit 100; cold work uses one of seven UTC-day shards. Shadow runs preserve their isolated legacy audit snapshot, then fail closed unless D1 and data R2 can persist and verify the new shadow publication; they still make no reservation or Queue submission. The first live sync may produce a snapshot before every image and NSFW meta entry is complete. Later media jobs and later sync generations improve the legacy public snapshot.
+
+Each `SyncRun` reports total subjects, eligible candidates and their priority distribution, planner-selected candidates, logical grants, budget-deferred candidates (`candidates - grants`), confirmed/uncertain producer outcomes, and subjects skipped before reservation (`total - candidates`). `refresh_jobs` is only a compatibility alias for logical grants. These run counters do not claim the asynchronous consumer's physical Queue delivery or actual KV PUT count and do not add per-subject metric keys.
 
 ### Media Queue Flow
 
@@ -270,10 +318,19 @@ sync-worker
   -> MEDIA_QUEUE.send(...)
   -> media-worker queue consumer
   -> bgm.tv image fetch / subject detail fetch
-  -> R2 + KV status writes
+  -> V4: D1 subject_media + image R2, zero per-subject KV
+  -> V3/V2/legacy compatibility: image R2 + KV status writes
 ```
 
 Queue is preferred over direct service-binding calls for heavy work because it naturally batches, retries, and gives each consumer invocation its own subrequest budget.
+
+The per-subject Durable Object keeps the deployed V2/V3 compatibility fence on
+its existing unprefixed numeric keys. D1-only V4 uses separate `v4:` fence keys
+and a generation tuple `{ observed_at, run_id }`, derived from the persisted
+complete-sync observation and stable Workflow instance ID. Tuple ordering is by
+`observed_at` and then `run_id`, so a retry is byte-stable, a later V4 run makes
+an older V4 delivery obsolete, and neither V3 nor V4 advances the other
+protocol's fence.
 
 ## Image Cache Design
 
@@ -524,9 +581,13 @@ If commit data is unavailable, footer shows `Build unknown` without a commit lin
 
 Footer tests must render every public page template and assert that they all use the shared footer output, rather than each page carrying a local footer variant.
 
-## Build-Time Analytics and Webmaster Injection
+## Proposed Build-Time Analytics and Webmaster Injection
 
-Analytics scripts and webmaster verification meta tags are generated during the widget/frontend build. They are not guessed at runtime and not inserted on every request.
+This original target is only partially implemented. Webmaster verification meta
+tags are rendered from configured frontend variables. Analytics script
+injection is not implemented: the frontend still passes the reserved values,
+but `renderAnalyticsScripts()` deliberately returns an empty string and tests
+pin the no-script behavior.
 
 ### Analytics Env
 
@@ -537,9 +598,12 @@ BANGUMI_YANDEX_METRICA_ID
 BANGUMI_BAIDU_TONGJI_ID
 ```
 
-If a value is present, the build renders that platform's snippet. If absent, no snippet for that platform appears in the HTML.
+These names are reserved for a possible future implementation. Supplying them
+currently emits no analytics snippet.
 
-Before implementation, each snippet must be verified against official platform documentation or current platform-provided install code. Do not write snippet details from memory.
+Before any future implementation, each snippet must be verified against
+official platform documentation or current platform-provided install code. Do
+not write snippet details from memory.
 
 ### Webmaster Verification Env
 
@@ -563,12 +627,11 @@ If a value is absent, the corresponding meta tag is omitted.
 
 ### Build Tests
 
-`packages/widget` must test:
+Current `packages/widget` tests establish:
 
-- Empty env renders no analytics snippets.
-- Empty env renders no webmaster meta tags.
-- Each analytics env renders only its own snippet.
-- Each verification env renders only its own meta tag.
+- Configured analytics env values still render no placeholder scripts.
+- Configured webmaster values render only their matching tags and omit
+  unconfigured platforms.
 - Footer commit link renders with a valid SHA.
 - Footer falls back cleanly when SHA is missing.
 
@@ -580,6 +643,7 @@ Bindings:
 
 ```text
 READ_WORKER service binding -> read-worker
+SYNC_WORKER service binding -> sync-worker
 ```
 
 Optional direct R2 binding is avoided unless `/image/:hash` performance requires it. The default design keeps image reads behind `read-worker`.
@@ -589,8 +653,10 @@ Optional direct R2 binding is avoided unless `/image/:hash` performance requires
 Bindings:
 
 ```text
+AIRING_CAL_D1 D1 (bound; public handlers do not consume it yet)
 AIRING_CAL_KV KV
 AIRING_CAL_R2 R2
+AIRING_CAL_DATA_R2 R2 (bound; public handlers do not consume it yet)
 ```
 
 ### `sync-worker`
@@ -598,8 +664,12 @@ AIRING_CAL_R2 R2
 Bindings:
 
 ```text
+AIRING_CAL_D1 D1
 AIRING_CAL_KV KV
+AIRING_CAL_DATA_R2 R2
 MEDIA_QUEUE queue producer
+SYNC_WORKFLOW Workflow binding
+SNAPSHOT_COORDINATOR Durable Object
 ```
 
 Secrets and vars:
@@ -613,27 +683,37 @@ SYNC_MODE
 Cron config:
 
 ```text
-triggers.crons = ["0 * * * *"]
+triggers.crons = ["0 20 * * *"]
 ```
 
 The exact syntax must be written in the target Worker config only after validating against the local Wrangler schema and `wrangler --help` / config docs for the chosen config format.
-Cloudflare plan limits count configured Cron Triggers, so the Worker keeps one hourly trigger and gates real sync execution in code to UTC hours 0/4/8/12/16/20.
+Cloudflare Cron uses UTC, so the Worker keeps one daily trigger at 20:00 UTC, corresponding to 04:00 Asia/Shanghai on the following local day.
 
 ### `media-worker`
 
 Bindings:
 
 ```text
+AIRING_CAL_D1 D1
 AIRING_CAL_KV KV
 AIRING_CAL_R2 R2
 MEDIA_QUEUE queue consumer
+SUBJECT_REFRESH_COORDINATOR Durable Object
 ```
 
 `media-worker` does not require bgm.tv credentials. It downloads image URLs supplied by `sync-worker` and calls optional subject-detail endpoints with `OptionalHTTPBearer` omitted.
 
 ## CI/CD and Cron Deployment
 
-The current workflow performs too many deployment-time infrastructure mutations: creating KV/R2 resources, listing KV namespaces, rewriting Wrangler config files, uploading secrets on every run, calling Cloudflare REST APIs with `curl` to inspect or create cron schedules, and deploying multiple Workers through ad hoc commands. The monorepo architecture replaces this with a smaller and more predictable pipeline.
+### Historical Migration Motivation
+
+Before the monorepo migration, the deployment workflow performed too many
+deployment-time infrastructure mutations: creating KV/R2 resources, listing KV
+namespaces, rewriting Wrangler config files, uploading secrets on every run,
+calling Cloudflare REST APIs with `curl` to inspect or create Cron schedules,
+and deploying multiple Workers through ad hoc commands. The implemented
+monorepo pipeline replaced those migration-era behaviors with the bounded
+workflow documented below.
 
 ### CI/CD Goals
 
@@ -647,43 +727,48 @@ The current workflow performs too many deployment-time infrastructure mutations:
 
 ### Resource Provisioning Model
 
-Cloudflare resources are provisioned once outside normal deploy runs:
+The manual `Bootstrap Cloudflare Resources` workflow creates or reuses these
+long-lived data resources outside routine deploy runs:
 
 ```text
+D1 database: airing-cal-state
+R2 data bucket: airing-cal-data
 KV namespace title: airing-cal-kv
-KV namespace id: copied into each Worker config as kv_namespaces.id
-R2 bucket: airing-cal-images
+R2 image bucket: airing-cal-images
 Queue: airing-cal-media
-Service bindings
-Worker secrets
-Cron schedule in sync-worker config
 ```
 
-After initial provisioning, GitHub Actions deploys against stable resource identifiers checked into environment-specific Wrangler configs or injected through safe environment-specific config templates that are not rewritten by shell scripts during deployment.
+Checked-in `wrangler.toml` files retain audited D1/KV ID placeholders. Routine
+deploy resolves the real IDs and materializes only runner-temporary configs; it
+does not copy IDs back into committed files. Service, storage, Queue, Workflow,
+Durable Object bindings, and the Worker Cron are declared in checked-in config
+and applied with Worker deployment. Worker secrets are managed separately;
+routine deploy does not run `wrangler secret put`.
 
-### Target Workflow
+After initial provisioning, GitHub Actions resolves D1, both R2 buckets, KV and Queue before upload. Bootstrap prepares or reuses all five resource types and the resolver verifies all five. D1/data R2 runtime bindings are now checked in: manual shadow and D1-only media V4 access the new resources, while live V3 and read handlers deliberately remain on legacy KV/image R2 until `migrate-public-reads-from-kv`.
 
-The default deploy workflow should be short:
+### Implemented Workflow
+
+The default deploy workflow is:
 
 ```text
-checkout
-setup pnpm/node
-pnpm install --frozen-lockfile
-pnpm typecheck
-pnpm test
-pnpm build
-wrangler check/types for each Worker config
-wrangler deploy for frontend-worker
-wrangler deploy for read-worker
-wrangler deploy for sync-worker
-wrangler deploy for media-worker
+resolve and authorize one immutable dev-ancestor SHA
+validate typecheck/test/build
+resolve all existing resources and preflight Cron quota
+materialize the D1 id and apply remote D1 migrations
+deploy read-worker and media-worker
+deploy sync-worker/Workflow and describe its control plane
+deploy frontend-worker last
+on partial failure, report deployed versions and exact same-SHA convergence
 ```
 
-Optional dry-run deploy checks may run before deploy, but they should use each app's own config directly.
+Every post-resolution job checks out the same SHA. Each upload job materializes
+only a temporary Wrangler config and runs a dry-run before deploy; committed
+`wrangler.toml` files retain their audited placeholders.
 
-### Removed Workflow Steps
+### Historical Workflow Steps Removed
 
-The new workflow must remove these old patterns:
+The implemented workflow removed these migration-era patterns:
 
 - `wrangler kv namespace create` during normal deploy.
 - `wrangler r2 bucket create` during normal deploy.
@@ -696,9 +781,12 @@ The new workflow must remove these old patterns:
 
 ### Native Cron Requirement
 
-`sync-worker` must implement `scheduled(event, env, ctx)` and its Worker config must declare the cron schedule. The deployed Worker should run from Cloudflare scheduled events without a public HTTP cron endpoint.
+`sync-worker` implements `scheduled(event, env, ctx)`, and its checked-in Worker
+config declares the Cron schedule. The deployed Worker runs from Cloudflare
+scheduled events without a public HTTP Cron endpoint.
 
-The README must describe cron as native Worker scheduled events. It must not tell users to manually call a `/__cron/sync` URI or rely on a public cron secret.
+The README describes Cron as native Worker scheduled events and does not tell
+operators to call a `/__cron/sync` URI or rely on a public Cron secret.
 
 ### GitHub Permissions
 
@@ -706,7 +794,7 @@ The workflow should explicitly set minimum GitHub token permissions. For a simpl
 
 Cloudflare API token permissions must be documented as two tiers:
 
-- Initial provisioning token: can create/manage KV, R2, Queues, Workers, and required bindings.
+- Initial provisioning token: can create/manage D1, KV, R2, Queues, Workers, and required bindings.
 - Routine deploy token: can deploy Workers and read/use existing resources.
 
 Routine deploys should not require broad resource creation permissions.
@@ -789,7 +877,7 @@ README must not instruct users to edit the removed standalone theme directory, b
 
 README must not instruct users to `curl` a cron URI for normal sync. Manual sync by public HTTP endpoint is removed from the target architecture.
 
-## Implementation Order
+## Historical Implementation Order
 
 1. Create monorepo app/package layout.
 2. Move pure domain logic into `packages/domain`.
@@ -810,9 +898,9 @@ README must not instruct users to `curl` a cron URI for normal sync. Manual sync
 17. Rewrite README and deployment docs.
 18. Run full tests, typecheck, Wrangler config validation, and dry-run deploy checks.
 
-## Open Decisions
+## Current Decisions
 
-None. The cache statistics page is public. Queue is the selected media processing mechanism. Legacy compatibility is out of scope. Cron is native Worker scheduled events, not a public HTTP endpoint.
+The cache statistics page is public. Queue remains the selected media processing mechanism. Legacy KV compatibility remains in the live/public path while D1/data R2 are shadow-only. Cron is a native Worker scheduled event, not a public HTTP endpoint. The later `migrate-public-reads-from-kv` change owns import, cutover, and cleanup.
 
 ## Self-Review
 
@@ -822,6 +910,7 @@ None. The cache statistics page is public. Queue is the selected media processin
 - Queue is the selected media execution path.
 - New image shape removes legacy fields.
 - Public `/cache` is included and secret-safe.
-- Build-time analytics and webmaster injection are included.
+- The original target includes analytics and webmaster injection; current code
+  implements webmaster meta tags and deliberately emits no analytics scripts.
 - CI/CD simplification and native cron requirements are included.
 - README obligations are explicit.

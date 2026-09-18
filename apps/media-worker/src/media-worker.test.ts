@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { subjectDetailKey, subjectRefreshKey } from '@airing-cal/storage'
-import worker from './index.ts'
+import worker, { processJob } from './index.ts'
 
 class MockKV {
   values = new Map<string, unknown>()
+  puts: Array<{ key: string; value: unknown }> = []
 
   async get(key: string, type?: 'json') {
     const value = this.values.get(key)
@@ -13,7 +14,9 @@ class MockKV {
   }
 
   async put(key: string, value: string) {
-    this.values.set(key, JSON.parse(value))
+    const parsed = JSON.parse(value)
+    this.puts.push({ key, value: parsed })
+    this.values.set(key, parsed)
   }
 
   async delete(key: string) {
@@ -52,6 +55,484 @@ function trackedBatch(body: unknown, attempts = 1) {
     },
   }
 }
+
+test('processJob rejects an unknown present version before any external side effect', async () => {
+  const calls = { kv: 0, r2: 0, d1: 0, upstream: 0 }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    calls.upstream++
+    return Response.json({
+      id: 23080,
+      type: 2,
+      name: 'A',
+      name_cn: 'A CN',
+      summary: '',
+      date: '2026-01-01',
+      eps: 12,
+      total_episodes: 12,
+      nsfw: false,
+      images: {},
+    })
+  }
+  const outcome = await processJob({
+    version: 5,
+    generation: 1,
+    job_id: 'unknown-direct:23080',
+    subject_id: 23080,
+    title: 'Unknown',
+    components: [],
+  } as any, {
+    AIRING_CAL_D1: {
+      prepare() { calls.d1++; throw new Error('unexpected D1 access') },
+    },
+    AIRING_CAL_KV: {
+      async get() { calls.kv++; return null },
+      async put() { calls.kv++ },
+      async delete() { calls.kv++ },
+    },
+    AIRING_CAL_R2: {
+      async get() { calls.r2++; return null },
+      async put() { calls.r2++; return {} },
+    },
+  } as any).then(() => null, (error) => error)
+
+  try {
+    assert.deepEqual(calls, { kv: 0, r2: 0, d1: 0, upstream: 0 })
+    assert.match(String(outcome), /Unsupported media job version/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('Queue retries an unknown present version before coordinator or external side effects', async () => {
+  const calls = { coordinator: 0, kv: 0, r2: 0, d1: 0, upstream: 0 }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => {
+    calls.upstream++
+    throw new Error('unexpected upstream access')
+  }
+  const message = trackedBatch({
+    version: 5,
+    generation: 1,
+    job_id: 'unknown-queue:23080',
+    subject_id: 23080,
+    title: 'Unknown',
+    components: [],
+  })
+
+  try {
+    await worker.queue(message.batch as any, {
+      AIRING_CAL_D1: {
+        prepare() { calls.d1++; throw new Error('unexpected D1 access') },
+      },
+      AIRING_CAL_KV: {
+        async get() { calls.kv++; return null },
+        async put() { calls.kv++ },
+        async delete() { calls.kv++ },
+      },
+      AIRING_CAL_R2: {
+        async get() { calls.r2++; return null },
+        async put() { calls.r2++; return {} },
+      },
+      SUBJECT_REFRESH_COORDINATOR: {
+        getByName() {
+          calls.coordinator++
+          return { async fetch() { return Response.json({ status: 'processed' }) } }
+        },
+      },
+    } as any)
+    assert.deepEqual(calls, { coordinator: 0, kv: 0, r2: 0, d1: 0, upstream: 0 })
+    assert.equal(message.state.acked, 0)
+    assert.deepEqual(message.state.retries, [{ delaySeconds: 30 }])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker retries a D1-only V4 queue message without D1 and performs no legacy per-subject writes', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => { throw new Error('missing D1 must fail before upstream access') }) as typeof globalThis.fetch
+  const message = trackedBatch({
+    version: 4,
+    generation: { observed_at: 2, run_id: 'missing-d1' },
+    job_id: 'missing-d1:23080',
+    subject_id: 23080,
+    title: 'A CN',
+    components: [],
+  }, 2)
+
+  try {
+    await worker.queue(message.batch as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.equal(message.state.acked, 0)
+    assert.deepEqual(message.state.retries, [{ delaySeconds: 120 }])
+    assert.deepEqual(kv.puts, [])
+    assert.equal(r2.writes.length, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('processJob rejects a D1-only V4 job without D1 before legacy per-subject writes', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+
+  await assert.rejects(
+    processJob({
+      version: 4,
+      generation: { observed_at: 3, run_id: 'missing-d1-direct' },
+      job_id: 'missing-d1-direct:23080',
+      subject_id: 23080,
+      title: 'A CN',
+      components: [],
+    }, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any),
+    /AIRING_CAL_D1/,
+  )
+  assert.deepEqual(kv.puts, [])
+  assert.equal(r2.writes.length, 0)
+})
+
+test('media-worker routes D1-only V4 jobs without new legacy per-subject KV puts', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const message = trackedBatch({
+    version: 4,
+    generation: { observed_at: 8, run_id: 'd1-only' },
+    job_id: 'd1-only:23080',
+    subject_id: 23080,
+    title: 'A CN',
+    components: ['detail', 'meta'],
+  })
+  const d1 = {
+    prepare() {
+      return {
+        bind() { return this },
+        async first() { return null },
+        async all() { throw new Error('unexpected all') },
+        async run() { throw new Error('unexpected run') },
+        async raw() { throw new Error('unexpected raw') },
+      }
+    },
+    async batch() {
+      return [{
+        results: [],
+        success: true,
+        meta: {
+          duration: 0,
+          size_after: 0,
+          rows_read: 0,
+          rows_written: 1,
+          last_row_id: 23080,
+          changed_db: true,
+          changes: 1,
+        },
+      }]
+    },
+    async exec() { return { count: 0, duration: 0 } },
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith('/v0/subjects/23080')) {
+      return Response.json({
+        id: 23080,
+        type: 2,
+        name: 'A',
+        name_cn: 'A CN',
+        summary: '',
+        date: '2026-01-01',
+        eps: 12,
+        total_episodes: 12,
+        nsfw: false,
+        images: {},
+      })
+    }
+    throw new Error(`unexpected fetch ${input}`)
+  }
+
+  try {
+    await worker.queue(message.batch as any, {
+      AIRING_CAL_D1: d1,
+      AIRING_CAL_KV: kv,
+      AIRING_CAL_R2: r2,
+    } as any)
+    assert.equal(message.state.acked, 1)
+    assert.deepEqual(message.state.retries, [])
+    assert.deepEqual(kv.puts.filter(({ key }) =>
+      key === 'subject:detail:23080'
+      || key === 'subject:meta:23080'
+      || key === 'image:status:23080'
+      || key === 'subject:refresh:23080'), [])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker retries D1-authoritative read and upsert failures without legacy KV mutation', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith('/v0/subjects/23080')) {
+      return Response.json({
+        id: 23080,
+        type: 2,
+        name: 'A',
+        name_cn: 'A CN',
+        summary: '',
+        date: '2026-01-01',
+        eps: 12,
+        total_episodes: 12,
+        nsfw: false,
+        images: {},
+      })
+    }
+    throw new Error(`unexpected fetch ${input}`)
+  }
+
+  try {
+    for (const failurePoint of ['read', 'upsert'] as const) {
+      const kv = new MockKV()
+      const message = trackedBatch({
+        version: 4,
+        generation: { observed_at: 9, run_id: `d1-${failurePoint}` },
+        job_id: `d1-${failurePoint}:23080`,
+        subject_id: 23080,
+        title: 'A CN',
+        components: ['detail', 'meta'],
+      })
+      const d1 = {
+        prepare() {
+          return {
+            bind() { return this },
+            async first() {
+              if (failurePoint === 'read') throw new Error('D1 read unavailable')
+              return null
+            },
+            async all() { throw new Error('unexpected all') },
+            async run() { throw new Error('unexpected run') },
+            async raw() { throw new Error('unexpected raw') },
+          }
+        },
+        async batch() {
+          throw new Error('D1 upsert unavailable')
+        },
+        async exec() { return { count: 0, duration: 0 } },
+      }
+
+      await worker.queue(message.batch as any, {
+        AIRING_CAL_D1: d1,
+        AIRING_CAL_KV: kv,
+        AIRING_CAL_R2: new MockR2(),
+      } as any)
+
+      assert.equal(message.state.acked, 0, failurePoint)
+      assert.deepEqual(message.state.retries, [{ delaySeconds: 30 }], failurePoint)
+      assert.deepEqual(kv.puts, [], failurePoint)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker changed image source still writes cached status', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  kv.values.set('image:status:23080', {
+    subject_id: 23080,
+    title: 'A CN',
+    common: { status: 'cached', hash: 'a'.repeat(64), uri: `/image/${'a'.repeat(64)}`, r2_key: `images/${'a'.repeat(64)}/original`, source_url: 'https://img.example/old.jpg' },
+    large: { status: 'cached', hash: 'b'.repeat(64), uri: `/image/${'b'.repeat(64)}`, r2_key: `images/${'b'.repeat(64)}/original`, source_url: 'https://img.example/large.jpg' },
+    subject_checked_at: 1,
+  })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    if (String(url) === 'https://img.example/new.jpg') return new Response('new-image')
+    throw new Error(`unexpected fetch ${url}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    await worker.queue(batch({
+      version: 2,
+      job_id: 'changed-source:23080',
+      subject_id: 23080,
+      title: 'A CN',
+      components: ['image_common'],
+      images: { common: 'https://img.example/new.jpg' },
+    }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+
+    assert.equal(kv.puts.some(({ key, value }) => key === 'image:status:23080' && (value as any).common.source_url === 'https://img.example/new.jpg'), true)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker retries a changed image source transient failure while preserving the old cached image', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const previousCommon = {
+    status: 'cached',
+    hash: 'a'.repeat(64),
+    uri: `/image/${'a'.repeat(64)}`,
+    r2_key: `images/${'a'.repeat(64)}/original`,
+    queued_at: 1,
+    cached_at: 2,
+    last_error: null,
+    source_url: 'https://img.example/old.jpg',
+  }
+  const previousImageStatus = {
+    subject_id: 23080,
+    title: 'A CN',
+    common: previousCommon,
+    large: { status: 'missing_source', hash: null, uri: null, r2_key: null, queued_at: null, cached_at: null, last_error: null },
+    subject_checked_at: 1,
+  }
+  kv.values.set('image:status:23080', previousImageStatus)
+  const message = trackedBatch({
+    version: 2,
+    job_id: 'changed-source-transient:23080',
+    subject_id: 23080,
+    title: 'A CN',
+    components: ['image_common'],
+    images: { common: 'https://img.example/new.jpg' },
+  })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response('unavailable', { status: 503 })) as typeof globalThis.fetch
+
+  try {
+    await worker.queue(message.batch as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+
+    assert.equal(message.state.acked, 0)
+    assert.deepEqual(message.state.retries, [{ delaySeconds: 30 }])
+    assert.deepEqual((kv.values.get('image:status:23080') as any).common, previousCommon)
+    assert.equal((kv.values.get(subjectRefreshKey(23080)) as any).status, 'failed')
+    assert.match((kv.values.get(subjectRefreshKey(23080)) as any).error, /503/)
+    assert.equal(r2.writes.length, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker persists one successful image component before retrying its transiently failed sibling', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const previousLarge = {
+    status: 'cached',
+    hash: 'b'.repeat(64),
+    uri: `/image/${'b'.repeat(64)}`,
+    r2_key: `images/${'b'.repeat(64)}/original`,
+    queued_at: 3,
+    cached_at: 4,
+    last_error: null,
+    source_url: 'https://img.example/old-large.jpg',
+  }
+  kv.values.set('image:status:23080', {
+    subject_id: 23080,
+    title: 'A CN',
+    common: { status: 'failed', hash: null, uri: null, r2_key: null, queued_at: 1, cached_at: null, last_error: 'old error', source_url: 'https://img.example/common.jpg' },
+    large: previousLarge,
+    subject_checked_at: 1,
+  })
+  let commonFetches = 0
+  let largeFetches = 0
+  let commonIndexed!: () => void
+  const indexed = new Promise<void>((resolve) => { commonIndexed = resolve })
+  const originalPut = kv.put.bind(kv)
+  kv.put = async (key: string, value: string) => {
+    await originalPut(key, value)
+    if (key.startsWith('image:index:')) commonIndexed()
+  }
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    if (String(url) === 'https://img.example/common.jpg') {
+      commonFetches++
+      return new Response('common-image')
+    }
+    if (String(url) === 'https://img.example/new-large.jpg') {
+      largeFetches++
+      await indexed
+      return new Response('unavailable', { status: 503 })
+    }
+    throw new Error(`unexpected fetch ${url}`)
+  }) as typeof globalThis.fetch
+  const job = {
+    version: 2 as const,
+    job_id: 'partial-images:23080',
+    subject_id: 23080,
+    title: 'A CN',
+    components: ['image_common', 'image_large'] as const,
+    images: {
+      common: 'https://img.example/common.jpg',
+      large: 'https://img.example/new-large.jpg',
+    },
+  }
+  const first = trackedBatch(job, 1)
+  const second = trackedBatch(job, 2)
+
+  try {
+    await worker.queue(first.batch as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    await worker.queue(second.batch as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+
+    assert.deepEqual(first.state, { acked: 0, retries: [{ delaySeconds: 30 }] })
+    assert.deepEqual(second.state, { acked: 0, retries: [{ delaySeconds: 120 }] })
+    assert.equal(commonFetches, 1)
+    assert.equal(largeFetches, 2)
+    assert.equal(r2.writes.length, 1)
+    assert.equal(kv.puts.filter(({ key }) => key.startsWith('image:index:')).length, 1)
+    const imageStatusPuts = kv.puts.filter(({ key }) => key === 'image:status:23080')
+    assert.equal(imageStatusPuts.length, 1)
+    assert.equal((imageStatusPuts[0]?.value as any).common.status, 'cached')
+    assert.deepEqual((imageStatusPuts[0]?.value as any).large, previousLarge)
+    assert.deepEqual(kv.puts
+      .filter(({ key }) => key === subjectRefreshKey(23080))
+      .map(({ value }) => (value as any).status), ['running', 'failed', 'running', 'failed'])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker image status normalization ignores only observation queued_at', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  globalThis.fetch = (async () => new Response('not found', { status: 404 })) as typeof globalThis.fetch
+  const job = (generation: number, sourceUrl: string) => ({
+    version: 2 as const,
+    job_id: `failed-image-${generation}:23080`,
+    subject_id: 23080,
+    title: 'A CN',
+    components: ['image_common'] as const,
+    images: { common: sourceUrl },
+  })
+
+  try {
+    Date.now = () => 1_000_000
+    await worker.queue(batch(job(1, 'https://img.example/failed-a.jpg')) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+
+    kv.puts.length = 0
+    Date.now = () => 2_000_000
+    await worker.queue(batch(job(2, 'https://img.example/failed-a.jpg')) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.deepEqual(kv.puts.filter(({ key }) => key === 'image:status:23080'), [])
+
+    kv.puts.length = 0
+    Date.now = () => 3_000_000
+    await worker.queue(batch(job(3, 'https://img.example/failed-b.jpg')) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    const changedSourcePuts = kv.puts.filter(({ key }) => key === 'image:status:23080')
+    assert.equal(changedSourcePuts.length, 1)
+    assert.deepEqual((changedSourcePuts[0]?.value as any).common, {
+      status: 'failed',
+      hash: null,
+      uri: null,
+      r2_key: null,
+      queued_at: 3000,
+      cached_at: null,
+      last_error: 'image download failed',
+      source_url: 'https://img.example/failed-b.jpg',
+    })
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
 
 test('media-worker downloads common and large images, writes R2 and cache status', async () => {
   const kv = new MockKV()
@@ -94,6 +575,7 @@ test('media-worker downloads common and large images, writes R2 and cache status
       exists: true,
       nsfw: true,
       checked_at: status.subject_checked_at,
+      expires_at: null,
       reason: 'subject_detail',
     })
   } finally {
@@ -202,6 +684,7 @@ test('media-worker reuses cached subject detail without fetching subject API', a
       exists: true,
       nsfw: false,
       checked_at: status.subject_checked_at,
+      expires_at: null,
       reason: 'subject_detail',
     })
   } finally {
@@ -232,8 +715,284 @@ test('media-worker treats subject detail 404 as restricted NSFW', async () => {
     const meta = kv.values.get('subject:meta:23080') as any
     assert.equal(meta.exists, false)
     assert.equal(meta.nsfw, true)
-    assert.equal(meta.reason, 'not_found_or_restricted')
+    assert.equal(meta.reason, 'not_found')
   } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker stops a V2 detail and image job after its first confirmed 404', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const previousStatus = {
+    subject_id: 23080,
+    title: 'Old title',
+    common: { status: 'cached', hash: 'a'.repeat(64), uri: `/image/${'a'.repeat(64)}`, r2_key: `images/${'a'.repeat(64)}/original`, source_url: 'https://img.example/old.jpg' },
+    large: { status: 'missing_source', hash: null, uri: null, r2_key: null },
+    subject_checked_at: 1,
+  }
+  kv.values.set('image:status:23080', previousStatus)
+  const originalFetch = globalThis.fetch
+  const calls: string[] = []
+  globalThis.fetch = async (url: string | URL | Request) => {
+    const text = String(url)
+    calls.push(text)
+    if (text.includes('/v0/subjects/23080')) return new Response('Not found', { status: 404 })
+    if (text.includes('stale-job.jpg')) return new Response('must-not-be-downloaded')
+    throw new Error(`unexpected fetch ${text}`)
+  }
+
+  try {
+    await worker.queue(batch({
+      version: 2,
+      job_id: 'first-404',
+      subject_id: 23080,
+      title: 'Stale job title',
+      components: ['detail', 'meta', 'image_common', 'image_large'],
+      images: {
+        common: 'https://img.example/stale-job.jpg',
+        large: 'https://img.example/stale-job-large.jpg',
+      },
+    }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+
+    assert.deepEqual(calls, ['https://api.bgm.tv/v0/subjects/23080'])
+    assert.equal(r2.writes.length, 0)
+    assert.deepEqual(kv.values.get('image:status:23080'), previousStatus)
+    assert.equal((kv.values.get(subjectRefreshKey(23080)) as any).status, 'ok')
+    assert.equal((kv.values.get('subject:meta:23080') as any).reason, 'not_found')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker tombstones a confirmed 404 for exactly 24 hours then recovers', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const checkedAt = 1_782_650_000
+  kv.values.set(subjectDetailKey(23080), {
+    cached_at: checkedAt - 8 * 86400,
+    subject: { id: 23080, nsfw: false, eps: 99 },
+  })
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  let subjectCalls = 0
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    if (!String(url).includes('/v0/subjects/23080')) throw new Error(`unexpected fetch ${url}`)
+    subjectCalls++
+    if (subjectCalls === 1) return new Response('Not found', { status: 404 })
+    return Response.json({ id: 23080, nsfw: false, eps: 24 })
+  }) as typeof globalThis.fetch
+  const job = {
+    version: 2 as const, job_id: 'job-1', subject_id: 23080, title: 'A CN', components: ['detail', 'meta'] as const,
+  }
+
+  try {
+    Date.now = () => checkedAt * 1000
+    await worker.queue(batch(job) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.equal(kv.puts.some(({ key, value }) => key === 'subject:meta:23080' && (value as any).reason === 'not_found'), true)
+    assert.deepEqual(kv.values.get('subject:meta:23080'), {
+      subject_id: 23080, exists: false, nsfw: true, reason: 'not_found', checked_at: checkedAt, expires_at: checkedAt + 86400,
+    })
+    assert.equal(kv.values.has(subjectDetailKey(23080)), false)
+
+    Date.now = () => (checkedAt + 86399) * 1000
+    await worker.queue(batch({ ...job, job_id: 'job-2' }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.equal(subjectCalls, 1)
+
+    Date.now = () => (checkedAt + 86400) * 1000
+    await worker.queue(batch({ ...job, job_id: 'job-3' }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.equal(subjectCalls, 2)
+    assert.equal((kv.values.get('subject:meta:23080') as any).exists, true)
+    assert.equal((kv.values.get(subjectDetailKey(23080)) as any).subject.eps, 24)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker keeps stale detail and does not tombstone transient subject errors', async () => {
+  for (const failure of [new Error('network down'), new Response('rate limited', { status: 429 }), new Response('unavailable', { status: 503 })]) {
+    const kv = new MockKV()
+    const r2 = new MockR2()
+    kv.values.set(subjectDetailKey(23080), { cached_at: 1, subject: { id: 23080, nsfw: false, eps: 12 } })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => {
+      if (failure instanceof Response) return failure
+      throw failure
+    }) as typeof globalThis.fetch
+
+    try {
+      await worker.queue(batch({
+        version: 2, job_id: `transient-${failure instanceof Response ? failure.status : 'network'}`,
+        subject_id: 23080, title: 'A CN', components: ['detail', 'meta'],
+      }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+      assert.notEqual((kv.values.get('subject:meta:23080') as any)?.reason, 'not_found')
+      assert.equal((kv.values.get(subjectDetailKey(23080)) as any).subject.eps, 12)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+})
+
+test('media-worker active tombstone suppresses subject and image upstream for image-only jobs', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const now = 1_782_650_000
+  kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, reason: 'not_found', checked_at: now, expires_at: now + 86400 })
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  let calls = 0
+  globalThis.fetch = async () => { calls++; throw new Error('must not access upstream') }
+  Date.now = () => (now + 1) * 1000
+  try {
+    await worker.queue(batch({ version: 2, job_id: 'image-only', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.equal(calls, 0)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker expired tombstone forces image-only jobs through a confirmed detail reprobe', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const now = 1_782_650_000
+  const previousStatus = {
+    common: { status: 'cached', hash: 'a'.repeat(64), uri: `/image/${'a'.repeat(64)}`, r2_key: `images/${'a'.repeat(64)}/original`, source_url: 'https://img.example/old.jpg' },
+    large: { status: 'missing_source', hash: null, uri: null, r2_key: null },
+  }
+  kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, reason: 'not_found', checked_at: now - 86400, expires_at: now })
+  kv.values.set(subjectDetailKey(23080), { cached_at: now - 1, subject: { id: 23080, images: { common: 'https://img.example/residual.jpg' } } })
+  kv.values.set('image:status:23080', previousStatus)
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  const calls: string[] = []
+  globalThis.fetch = async (url: string | URL | Request) => {
+    calls.push(String(url))
+    if (String(url).includes('/v0/subjects/23080')) return new Response('Not found', { status: 404 })
+    throw new Error(`stale image URL must not be processed: ${url}`)
+  }
+  Date.now = () => now * 1000
+  try {
+    await worker.queue(batch({ version: 2, job_id: 'expired-image-only-404', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.deepEqual(calls, ['https://api.bgm.tv/v0/subjects/23080'])
+    assert.deepEqual(kv.values.get('image:status:23080'), previousStatus)
+    assert.equal(r2.writes.length, 0)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker expired tombstone recovery uses fresh detail images for image-only jobs', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const now = 1_782_650_000
+  kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, reason: 'not_found', checked_at: now - 86400, expires_at: now })
+  kv.values.set(subjectDetailKey(23080), { cached_at: now - 1, subject: { id: 23080, images: { common: 'https://img.example/residual.jpg' } } })
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  const calls: string[] = []
+  globalThis.fetch = async (url: string | URL | Request) => {
+    const text = String(url)
+    calls.push(text)
+    if (text.includes('/v0/subjects/23080')) return Response.json({ id: 23080, nsfw: false, images: { common: 'https://img.example/recovered.jpg' } })
+    if (text === 'https://img.example/recovered.jpg') return new Response('recovered-bytes', { headers: { 'content-type': 'image/jpeg' } })
+    throw new Error(`stale image URL must not be processed: ${text}`)
+  }
+  Date.now = () => now * 1000
+  try {
+    await worker.queue(batch({ version: 2, job_id: 'expired-image-only-recovery', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.deepEqual(calls, ['https://api.bgm.tv/v0/subjects/23080', 'https://img.example/recovered.jpg'])
+    assert.equal((kv.values.get('subject:meta:23080') as any).exists, true)
+    assert.equal((kv.values.get('image:status:23080') as any).common.source_url, 'https://img.example/recovered.jpg')
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker immediately reprobes legacy tombstones and migrates repeated 404 metadata', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const now = 1_782_650_000
+  kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: now - 100, reason: 'not_found_or_restricted' })
+  kv.values.set(subjectDetailKey(23080), { cached_at: now - 1, subject: { id: 23080, images: { common: 'https://img.example/residual.jpg' } } })
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  const calls: string[] = []
+  globalThis.fetch = async (url: string | URL | Request) => {
+    calls.push(String(url))
+    if (String(url).includes('/v0/subjects/23080')) return new Response('Not found', { status: 404 })
+    throw new Error(`legacy image URL must not be processed: ${url}`)
+  }
+  Date.now = () => now * 1000
+  try {
+    await worker.queue(batch({ version: 2, job_id: 'legacy-image-only-404', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.deepEqual(calls, ['https://api.bgm.tv/v0/subjects/23080'])
+    assert.deepEqual(kv.values.get('subject:meta:23080'), {
+      subject_id: 23080, exists: false, nsfw: true, checked_at: now, expires_at: now + 86400, reason: 'not_found',
+    })
+    assert.equal(r2.writes.length, 0)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker keeps legacy tombstones fail-closed when forced reprobe is forbidden', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const now = 1_782_650_000
+  const tombstone = { subject_id: 23080, exists: false, nsfw: true, checked_at: now - 100, reason: 'not_found_or_restricted' }
+  const previousStatus = {
+    subject_id: 23080,
+    title: 'A',
+    common: { status: 'cached', hash: 'a'.repeat(64), uri: `/image/${'a'.repeat(64)}`, r2_key: `images/${'a'.repeat(64)}/original`, source_url: 'https://img.example/old.jpg' },
+    large: { status: 'missing_source', hash: null, uri: null, r2_key: null },
+    subject_checked_at: now - 100,
+  }
+  kv.values.set('subject:meta:23080', tombstone)
+  kv.values.set(subjectDetailKey(23080), { cached_at: now - 1, subject: { id: 23080, images: { common: 'https://img.example/residual.jpg' } } })
+  kv.values.set('image:status:23080', previousStatus)
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  const calls: string[] = []
+  globalThis.fetch = async (url: string | URL | Request) => {
+    calls.push(String(url))
+    if (String(url).includes('/v0/subjects/23080')) return new Response('Forbidden', { status: 403 })
+    throw new Error(`legacy image URL must not be processed: ${url}`)
+  }
+  Date.now = () => now * 1000
+  try {
+    await worker.queue(batch({ version: 2, job_id: 'legacy-image-only-403', subject_id: 23080, title: 'A', components: ['image_common'], images: { common: 'https://img.example/stale.jpg' } }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.deepEqual(calls, ['https://api.bgm.tv/v0/subjects/23080'])
+    assert.deepEqual(kv.values.get('subject:meta:23080'), tombstone)
+    assert.deepEqual(kv.values.get('image:status:23080'), previousStatus)
+    assert.equal(r2.writes.length, 0)
+    assert.equal((kv.values.get(subjectRefreshKey(23080)) as any).status, 'ok')
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('media-worker remains fail-closed when stale detail deletion fails after tombstone write', async () => {
+  const kv = new MockKV()
+  const r2 = new MockR2()
+  const now = 1_782_650_000
+  kv.values.set(subjectDetailKey(23080), { cached_at: 1, subject: { id: 23080, eps: 99 } })
+  kv.delete = async () => { throw new Error('delete failed') }
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  globalThis.fetch = async () => new Response('Not found', { status: 404 })
+  Date.now = () => now * 1000
+  try {
+    await worker.queue(batch({ version: 2, job_id: 'delete-fails', subject_id: 23080, title: 'A', components: ['detail', 'meta'] }) as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
+    assert.equal((kv.values.get('subject:meta:23080') as any).reason, 'not_found')
+    assert.equal((kv.values.get(subjectDetailKey(23080)) as any).subject.eps, 99)
+  } finally {
+    Date.now = originalNow
     globalThis.fetch = originalFetch
   }
 })
@@ -403,6 +1162,7 @@ test('media-worker processes subject metadata without image sources', async () =
       exists: true,
       nsfw: true,
       checked_at: (kv.values.get('image:status:23080') as any).subject_checked_at,
+      expires_at: null,
       reason: 'subject_detail',
     })
     assert.equal(r2.writes.length, 0)
@@ -442,6 +1202,7 @@ test('media-worker skips a duplicate completed V2 job', async () => {
     assert.equal(calls, 0)
     assert.equal(message.state.acked, 1)
     assert.deepEqual(message.state.retries, [])
+    assert.deepEqual(kv.puts.filter(({ key }) => key === subjectRefreshKey(23080)), [])
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -492,7 +1253,7 @@ test('media-worker handles a fresh V2 candidate without upstream or R2 work', as
   }
 })
 
-test('media-worker retries transient V2 failures with bounded delay', async () => {
+test('media-worker failure backoff transition writes failed refresh state with bounded delay', async () => {
   const kv = new MockKV()
   const r2 = new MockR2()
   const message = trackedBatch({
@@ -510,6 +1271,7 @@ test('media-worker retries transient V2 failures with bounded delay', async () =
     assert.equal(message.state.acked, 0)
     assert.deepEqual(message.state.retries, [{ delaySeconds: 30 }])
     assert.equal((kv.values.get(subjectRefreshKey(23080)) as any).status, 'failed')
+    assert.equal(kv.puts.some(({ key, value }) => key === subjectRefreshKey(23080) && (value as any).status === 'failed'), true)
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -538,7 +1300,7 @@ test('media-worker acks terminal 404 and missing image sources', async () => {
       await worker.queue(message.batch as any, { AIRING_CAL_KV: kv, AIRING_CAL_R2: r2 } as any)
       assert.equal(message.state.acked, 1)
       assert.deepEqual(message.state.retries, [])
-      assert.match((kv.values.get(subjectRefreshKey(23080)) as any).status, /partial|failed/)
+      assert.equal((kv.values.get(subjectRefreshKey(23080)) as any).status, responseBody ? 'partial' : 'ok')
     } finally {
       globalThis.fetch = originalFetch
     }

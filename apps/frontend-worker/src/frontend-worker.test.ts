@@ -43,6 +43,20 @@ test('frontend-worker serves index without cache page link and removes cache HTM
   assert.equal(cache.status, 404)
 })
 
+test('frontend-worker protects HTML responses without applying HTML CSP to assets', async () => {
+  const html = await worker.fetch(new Request('https://front.local/'), env() as any)
+  const js = await worker.fetch(new Request('https://front.local/src/bangumi.js'), env() as any)
+  const css = await worker.fetch(new Request('https://front.local/src/bangumi.css'), env() as any)
+
+  assert.equal(html.headers.get('x-content-type-options'), 'nosniff')
+  assert.equal(html.headers.get('x-frame-options'), 'DENY')
+  assert.match(html.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/)
+  assert.match(html.headers.get('content-security-policy') ?? '', /base-uri 'none'/)
+  assert.doesNotMatch(html.headers.get('content-security-policy') ?? '', /script-src[^;]*'unsafe-inline'/)
+  assert.equal(js.headers.get('content-security-policy'), null)
+  assert.equal(css.headers.get('content-security-policy'), null)
+})
+
 test('frontend-worker serves widget assets from widget package', async () => {
   const js = await worker.fetch(new Request('https://front.local/src/bangumi.js'), env() as any)
   const css = await worker.fetch(new Request('https://front.local/src/bangumi.css'), env() as any)

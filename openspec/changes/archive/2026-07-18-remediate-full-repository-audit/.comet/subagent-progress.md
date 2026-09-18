@@ -1,0 +1,89 @@
+# Subagent Progress
+
+- Plan: `docs/superpowers/plans/2026-07-14-full-repository-audit-remediation.md`
+- Review mode: `thorough`
+- TDD mode: `tdd`
+- Worktree: `/Users/ian/Desktop/Projects/BangumiTV/.worktrees/remediate-full-repository-audit`
+
+## Current Task
+
+- Unique text: `Task 8: 全量质量门禁、文档审计与生产验收准备`
+- OpenSpec mappings:
+  - `6.1 运行相关包 RED→GREEN 测试、typecheck、Wrangler dry-run 与 diff check，并按安全/API/缓存边界原子 commit/push`
+  - `6.2 运行全量 pnpm test、pnpm typecheck、pnpm build:check、OpenSpec strict、git diff --check 与 pnpm audit --prod`
+  - `6.3 完成 thorough code review，修复全部 P0/P1/P2 并记录验证报告`
+- Stage: `done`
+- Base commit: `70762b1`
+- Implementer: `/root/task8_docs_gates`
+- README/gates commit: `90424feefdc1bb5d8a3c9920325712aa7cae1ca1` (`docs: synchronize audit remediation contracts`).
+- Fresh gates: tests 221/221, typecheck 9/9 projects, build check 4/4 Workers, OpenSpec strict, and `git diff --check` pass.
+- Gate blocker: `pnpm audit --prod` could not produce a vulnerability result; the registry request is denied as production dependency metadata export. Explicit informed user approval is required before retrying.
+- Boundary review results:
+  - Security BLOCKED: `safeUrl` accepts same-origin `blob:` before protocol restriction. Minor gaps: external footer link `rel`, explicit CSP unsafe-inline/default-src/entity assertions.
+  - Read/API APPROVED: Minor direct PATCH helper 1–100 guard and `SNAPSHOT_INCOMPLETE` 503 `no-store` gap.
+  - Media/cache/assets APPROVED: accepted Minor matrix coverage and generator-test template coupling.
+- Next action: TDD-fix the security Important and actionable security/API Minors, rerun affected gates, then re-review and run full-branch review.
+- Boundary fix commit: `a964338` (`fix: close final security and api boundaries`).
+- Boundary fix GREEN: Widget 24/24, Frontend 7/7, Sync 43/43, bgm-api 28/28, Read 32/32; five typechecks, Frontend/Sync/Read build checks, generation chain 2/2, and diff check pass.
+- Boundary re-review:
+  - API APPROVED with no findings.
+  - Security BLOCKED: `renderFooter` accepts configured `repositoryUrl` values using `javascript:` or `data:` and emits them into `href`; it must validate HTTP(S) and fall back to a non-link build label.
+- Extra-round authorization: user explicitly authorized one additional focused footer URL security fix/review.
+- Audit authorization: user explicitly accepted sending production dependency names and versions to npm registry for `pnpm audit --prod`.
+- Extra security fix commit: `edf6172d1a7c1813c5bc281d03d78dd91fc2a443` (`fix: restrict footer repository links`).
+- Extra security RED/GREEN: Widget 24/26 reproduced dangerous protocols and double-slash commit URL; after fix Widget 26/26, Frontend 7/7, both typechecks, Frontend build check, generation cleanliness, and diff check pass.
+- Production audit: `pnpm audit --prod` completed under informed authorization with exit 0 and `No known vulnerabilities found`.
+- Extra security review: APPROVED with no Critical, Important, or Minor findings; Widget 26/26, Frontend 7/7, both typechecks, and diff check pass.
+- Full-branch review: APPROVED with no Critical, Important, or Minor findings across `549edf34..2986c61`; all implementation boundaries and deferred production verification scope match the design.
+- Final fresh gates on current HEAD: full tests, 9-project typecheck, 4-Worker build check, OpenSpec strict, diff/status cleanliness, and `pnpm audit --prod` (`No known vulnerabilities found`) pass.
+- Base commit: `bf171585902d63f32ebfffd8224167c5777cce69`
+- Implementer: `/root/task6_tombstone`
+- Implementation commits: `172192f`, report `8b42ba7`, fix `403cb6658bb3ca14ed688c0b5dd7bc367038f608`
+- Changed files: media/read worker code and tests, domain/storage types/helpers and tests
+- RED evidence: domain 26/27, storage 7/8, media 20/21, read 29/30 on missing TTL/stale deletion/read projection
+- GREEN evidence: five packages 130/130, five typechecks, media/read/sync build:check and diff check passed
+- Report: `.superpowers/sdd/task-6-report.md`
+- Review package: `.superpowers/sdd/review-bf17158..403cb66.diff`
+- Batch review round: `2/2`
+- Passed review stages: sync/media/generation/timing boundaries approved
+- Resolved feedback: sync residual-detail suppression, numeric snapshot field stripping, shared predicate, exact expiry, image-only suppression
+- Unresolved feedback:
+  - P1: Read active-tombstone projection must also remove snapshot-carried canonical detail fields `name`, `name_cn`, `summary`, and `date`, with collection/calendar regressions.
+- Extra-round authorization: user explicitly authorized one additional focused fix round on 2026-07-16.
+- Extra fix commit: `5b5ae5d6a68d51907f002be8b068e5e12dd76cdc` (`fix: remove stale tombstone snapshot fields`).
+- Extra fix RED/GREEN: enriched collection/calendar tests failed at 29/31 on stale `name`; after the minimal projection fix, five Task 6 suites pass 130/130, five typechecks pass, media/read/sync build checks pass, and `git diff --check` passes.
+- Extra review result: the previously blocking active-tombstone canonical-field P1 is fixed, but the complete Task 6 boundary remains blocked by two newly identified Important findings.
+- New Important findings:
+  - A first confirmed 404 writes the tombstone but the same media job continues into stale image fallback/download/status writes.
+  - At `now >= expires_at`, read suppression ends before a successful reprobe replaces the `not_found` meta, so snapshot or residual cached detail can reappear.
+- Second extra-round authorization: user explicitly authorized RED→GREEN fixes for both remaining Important findings.
+- Second extra fix commit: `56d4aad2fab77a9b741dffb0016d460010285774` (`fix: keep missing subjects suppressed through reprobe`).
+- Second extra fix RED/GREEN: media 23/24 reproduced same-job stale image downloads; read 29/31 reproduced exact-expiry stale detail. After fixes, five Task 6 suites pass 133/133, five typechecks pass, media/read/sync build checks pass, and `git diff --check` passes.
+- Second extra review result: both authorized fixes are correct and fresh focused verification passes 133/133, but the complete boundary remains blocked by three newly identified Important findings.
+- New Important findings:
+  - Read collection/calendar hydration reattaches cached or snapshot image projections for confirmed-not-found subjects.
+  - At/after TTL expiry, an image-only V3 job can process stale job URLs without a successful detail reprobe.
+  - Collection-only tombstones with cached images may never be reprobed because sync considers metadata plus cached images complete.
+- Third extra-round authorization: user explicitly authorized RED→GREEN fixes for all three image/recovery findings.
+- Third extra fix commit: `864b30fdd19b59aeca4dd7e595b7cb0c9af1ba3e` (`fix: close tombstone image recovery gaps`).
+- Third extra fix RED/GREEN: Read 29/31 exposed images; Media 24/26 used stale job/cache URLs; Sync 40/41 failed to queue expired collection-only recovery. After fixes, five Task 6 suites pass 134/134, five typechecks pass, media/read/sync build checks pass, and `git diff --check` passes.
+- Third extra review result: all three authorized fixes are correct and fresh focused verification passes 134/134, but the full boundary remains blocked by one newly identified Important finding.
+- New Important finding: at exact expiry, Sync detail loading excludes only active tombstones, so a best-effort deletion failure can let residual cached detail re-enter a new snapshot; after Media recovery changes meta to `exists: true`, Read can expose that old snapshot detail until another sync.
+- Fourth extra-round authorization: user explicitly authorized the residual-detail snapshot RED→GREEN fix and review.
+- Fourth extra fix commit: `06d9e9cba2614c1617e1cd7bea88fd6220e14366` (`fix: prevent residual tombstone detail snapshots`).
+- Fourth extra fix RED/GREEN: Sync 41/42 exposed `name: Residual`; after both detail loaders suppress all confirmed tombstones, five Task 6 suites pass 135/135, five typechecks pass, media/read/sync build checks pass, and `git diff --check` passes.
+- Fourth extra review result: the residual-detail fix and all previously authorized sequential behaviors are correct with fresh focused verification at 135/135, but deployment-state compatibility remains blocked by one Important finding.
+- New Important finding: pre-change persisted tombstones use `exists: false, reason: not_found_or_restricted` without `expires_at`; the new confirmed-not-found predicate recognizes only `reason: not_found`, so Read/Sync/Media can stop fail-closed behavior for existing production records after deployment.
+- Fifth extra-round authorization: user explicitly authorized legacy tombstone compatibility RED→GREEN fixes and continuation.
+- Fifth extra fix commit: `7c8cdd0` (`fix: preserve legacy tombstone safety`).
+- Fifth extra fix RED/GREEN: Domain 28/29 showed the legacy record was not confirmed; after compatibility changes, five Task 6 suites pass 139/139, five typechecks pass, media/read/sync build checks pass, and `git diff --check` passes.
+- Fifth extra review result: legacy shape/type/read/sync/recovery compatibility is correct with fresh focused verification at 139/139, but one Media fail-closed edge remains.
+- New Important finding: when a forced reprobe for a legacy or expired confirmed tombstone returns non-transient non-404 (for example 401/403), metadata remains confirmed but inactive; the post-fetch guard checks only active current tombstones, so the job can fall through to stale image URLs and writes.
+- Sixth extra-round authorization: user explicitly authorized the non-404 reprobe fail-closed RED→GREEN fix and continuation.
+- Sixth extra fix commit: `86d355b` (`fix: keep failed reprobes fail closed`).
+- Sixth extra fix RED/GREEN: Media 27/28 showed a 403 reprobe falling through to a stale image URL; after the confirmed-meta post-fetch guard, five Task 6 suites pass 140/140, five typechecks pass, media/read/sync build checks pass, and `git diff --check` passes.
+- Final review: APPROVED with no Critical or Important findings; fresh focused tests pass 140/140, five typechecks pass, and `git diff --check` passes.
+- Accepted Minor: add a separate expired-current tombstone plus 401 matrix test; runtime uses the same shared confirmed predicate as the covered legacy plus 403 regression.
+- Accepted Minor findings carried to final review:
+  - Task 2 Frontend CSP test could explicitly forbid script `'unsafe-inline'`.
+  - Task 2 operation test could explicitly assert `default-src 'none'` and encoded entities.

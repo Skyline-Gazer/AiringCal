@@ -76,6 +76,66 @@ test('compareAccounts separates same, changed, only-source, and only-target entr
   assert.equal(result.onlyB[0]?.itemB?.externalId, '4')
 })
 
+test('compareAccounts preserves either account authentication failure without fetching collections', async () => {
+  for (const rejectedAccount of ['source', 'target'] as const) {
+    const authenticationError = Object.assign(new Error(`${rejectedAccount} authentication failed`), { status: 401 })
+    const source = new FakeClient('source-user', [])
+    const target = new FakeClient('target-user', [])
+    if (rejectedAccount === 'source') source.getMe = async () => { throw authenticationError }
+    else target.getMe = async () => { throw authenticationError }
+
+    await assert.rejects(
+      compareAccounts(source, 'source-secret', target, 'target-secret'),
+      (error) => error === authenticationError,
+    )
+    assert.deepEqual(source.fetchedUsernames, [])
+    assert.deepEqual(target.fetchedUsernames, [])
+  }
+})
+
+test('compareAccounts preserves a dual authentication failure without fetching collections', async () => {
+  const authenticationError = Object.assign(new Error('source authentication failed'), { status: 403 })
+  const source = new FakeClient('source-user', [])
+  const target = new FakeClient('target-user', [])
+  source.getMe = async () => { throw authenticationError }
+  target.getMe = async () => { throw Object.assign(new Error('target authentication failed'), { status: 401 }) }
+
+  await assert.rejects(
+    compareAccounts(source, 'source-secret', target, 'target-secret'),
+    (error) => error === authenticationError,
+  )
+  assert.deepEqual(source.fetchedUsernames, [])
+  assert.deepEqual(target.fetchedUsernames, [])
+})
+
+test('compareAccounts preserves either collection authentication failure', async () => {
+  for (const [rejectedAccount, status] of [['source', 401], ['target', 403]] as const) {
+    const authenticationError = Object.assign(new Error(`${rejectedAccount} collection authentication failed`), { status })
+    const source = new FakeClient('source-user', [item('1')])
+    const target = new FakeClient('target-user', [item('2')])
+    if (rejectedAccount === 'source') source.fetchCollections = async () => { throw new Error('source collection failed', { cause: authenticationError }) }
+    else target.fetchCollections = async () => { throw authenticationError }
+
+    await assert.rejects(
+      compareAccounts(source, 'source-secret', target, 'target-secret'),
+      (error) => error === authenticationError,
+    )
+  }
+})
+
+test('compareAccounts preserves a dual collection authentication failure', async () => {
+  const sourceError = Object.assign(new Error('source collection authentication failed'), { status: 403 })
+  const source = new FakeClient('source-user', [])
+  const target = new FakeClient('target-user', [])
+  source.fetchCollections = async () => { throw sourceError }
+  target.fetchCollections = async () => { throw Object.assign(new Error('target collection authentication failed'), { status: 401 }) }
+
+  await assert.rejects(
+    compareAccounts(source, 'source-secret', target, 'target-secret'),
+    (error) => error === sourceError,
+  )
+})
+
 test('executeSync patches partial entries and reports baseline field changes', async () => {
   const source = new FakeClient('source-user', [
     item('8', { status: WatchStatus.COMPLETED, progress: 8, score: 9 }),
@@ -116,6 +176,56 @@ test('executeSync applies validated items without refetching source collections'
   assert.deepEqual(target.patched.map((call) => call.externalId), ['8'])
   assert.equal(results[0]?.status, 'ok')
 })
+
+test('executeSync preserves structured partial episode patch evidence', async () => {
+  const source = new FakeClient('source-user', [])
+  const partialError = Object.assign(new Error('episode patch partially failed'), {
+    code: 'EPISODE_PATCH_PARTIAL' as const,
+    succeeded: 100,
+    failedBatch: { index: 1, episodeIds: [101, 102] },
+  })
+  const target = new FakeClient('target-user', [])
+  target.patchEntry = async () => { throw partialError }
+
+  const results = await executeSync(source, 'source-token', target, 'target-token', {
+    mode: 'partial', from: 'source', to: 'target', items: [item('8')],
+  })
+
+  assert.deepEqual(results[0], {
+    externalId: '8',
+    title: 'Anime 8',
+    status: 'error',
+    error: 'episode patch partially failed',
+    code: 'EPISODE_PATCH_PARTIAL',
+    succeeded: 100,
+    failedBatch: { index: 1, episodeIds: [101, 102] },
+  })
+})
+
+for (const [name, partialError] of [
+  ['a non-Error object', { code: 'EPISODE_PATCH_PARTIAL', succeeded: 1, failedBatch: { index: 0, episodeIds: [1] } }],
+  ['the wrong code', Object.assign(new Error('bad code'), { code: 'OTHER', succeeded: 1, failedBatch: { index: 0, episodeIds: [1] } })],
+  ['NaN succeeded', Object.assign(new Error('bad succeeded'), { code: 'EPISODE_PATCH_PARTIAL', succeeded: Number.NaN, failedBatch: { index: 0, episodeIds: [1] } })],
+  ['negative succeeded', Object.assign(new Error('bad succeeded'), { code: 'EPISODE_PATCH_PARTIAL', succeeded: -1, failedBatch: { index: 0, episodeIds: [1] } })],
+  ['an unsafe batch index', Object.assign(new Error('bad index'), { code: 'EPISODE_PATCH_PARTIAL', succeeded: 1, failedBatch: { index: Number.MAX_SAFE_INTEGER + 1, episodeIds: [1] } })],
+  ['a negative batch index', Object.assign(new Error('bad index'), { code: 'EPISODE_PATCH_PARTIAL', succeeded: 1, failedBatch: { index: -1, episodeIds: [1] } })],
+  ['a zero episode ID', Object.assign(new Error('bad episode id'), { code: 'EPISODE_PATCH_PARTIAL', succeeded: 1, failedBatch: { index: 0, episodeIds: [0] } })],
+  ['an unsafe episode ID', Object.assign(new Error('bad episode id'), { code: 'EPISODE_PATCH_PARTIAL', succeeded: 1, failedBatch: { index: 0, episodeIds: [Number.MAX_SAFE_INTEGER + 1] } })],
+] as const) {
+  test(`executeSync rejects partial evidence with ${name}`, async () => {
+    const source = new FakeClient('source-user', [])
+    const target = new FakeClient('target-user', [])
+    target.patchEntry = async () => { throw partialError }
+
+    const [result] = await executeSync(source, 'source-token', target, 'target-token', {
+      mode: 'partial', from: 'source', to: 'target', items: [item('8')],
+    })
+
+    assert.equal(result?.code, undefined)
+    assert.equal(result?.succeeded, undefined)
+    assert.equal(result?.failedBatch, undefined)
+  })
+}
 
 test('executeSync rejects more than five items before any platform call', async () => {
   const source = new FakeClient('source-user', [])

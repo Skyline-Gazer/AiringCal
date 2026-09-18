@@ -80,3 +80,115 @@ test('BgmPlatformClient patchEntry upserts collection and syncs episode progress
     globalThis.fetch = originalFetch
   }
 })
+
+test('BgmPlatformClient patches 201 changed episodes in batches of at most 100', async () => {
+  const originalFetch = globalThis.fetch
+  const patchSizes: number[] = []
+  globalThis.fetch = async (url, init) => {
+    const text = String(url)
+    if (text.endsWith('/collections/23080')) return Response.json({})
+    if (text.includes('/episodes?')) {
+      const token = (init?.headers as Record<string, string>).Authorization
+      const data = token === 'Bearer source-token'
+        ? Array.from({ length: 201 }, (_, index) => ({ episode: { id: index + 1 }, type: 2 }))
+        : Array.from({ length: 201 }, (_, index) => ({ episode: { id: index + 1 }, type: 1 }))
+      return Response.json({ total: 201, data })
+    }
+    const body = JSON.parse(String(init?.body)) as { episode_id: number[] }
+    patchSizes.push(body.episode_id.length)
+    return Response.json({})
+  }
+  try {
+    const result = await new BgmPlatformClient().patchEntry('target-token', '23080', {
+      externalId: '23080', title: 'A', status: WatchStatus.COMPLETED, progress: 201,
+      totalEpisodes: 201, score: 9, platform: 'bgm',
+    }, { sourceToken: 'source-token' })
+
+    assert.deepEqual(patchSizes, [100, 100, 1])
+    assert.equal(result.episodeChanged, 201)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('BgmPlatformClient exposes structured partial evidence when the second episode batch fails', async () => {
+  const originalFetch = globalThis.fetch
+  let patchBatch = 0
+  globalThis.fetch = async (url, init) => {
+    const text = String(url)
+    if (text.endsWith('/collections/23080')) return Response.json({})
+    if (text.includes('/episodes?')) {
+      const token = (init?.headers as Record<string, string>).Authorization
+      const data = Array.from({ length: 201 }, (_, index) => ({
+        episode: { id: index + 1 }, type: token === 'Bearer source-token' ? 2 : 1,
+      }))
+      return Response.json({ total: 201, data })
+    }
+    patchBatch++
+    return patchBatch === 2
+      ? Response.json({ title: 'failed' }, { status: 500 })
+      : Response.json({})
+  }
+  try {
+    await assert.rejects(
+      () => new BgmPlatformClient().patchEntry('target-token', '23080', {
+        externalId: '23080', title: 'A', status: WatchStatus.COMPLETED, progress: 201,
+        totalEpisodes: 201, score: 9, platform: 'bgm',
+      }, { sourceToken: 'source-token' }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error)
+        const partial = error as Error & { code?: string; succeeded?: number; failedBatch?: { index: number; episodeIds: number[] }; cause?: unknown }
+        assert.equal(partial.code, 'EPISODE_PATCH_PARTIAL')
+        assert.equal(partial.succeeded, 100)
+        assert.deepEqual(partial.failedBatch, { index: 1, episodeIds: Array.from({ length: 100 }, (_, index) => index + 101) })
+        assert.ok(partial.cause instanceof Error)
+        assert.doesNotMatch(error.message, /source-token|target-token/)
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('BgmPlatformClient keeps succeeded count and batch index global across type buckets', async () => {
+  const originalFetch = globalThis.fetch
+  const patches: Array<{ type: number; episodeIds: number[] }> = []
+  globalThis.fetch = async (url, init) => {
+    const text = String(url)
+    if (text.endsWith('/collections/23080')) return Response.json({})
+    if (text.includes('/episodes?')) {
+      const source = (init?.headers as Record<string, string>).Authorization === 'Bearer source-token'
+      const data = source
+        ? [
+            ...Array.from({ length: 101 }, (_, index) => ({ episode: { id: index + 1 }, type: 2 })),
+            ...Array.from({ length: 2 }, (_, index) => ({ episode: { id: index + 102 }, type: 3 })),
+          ]
+        : Array.from({ length: 103 }, (_, index) => ({ episode: { id: index + 1 }, type: 1 }))
+      return Response.json({ total: 103, data })
+    }
+    const body = JSON.parse(String(init?.body)) as { type: number; episode_id: number[] }
+    patches.push({ type: body.type, episodeIds: body.episode_id })
+    return patches.length === 3
+      ? Response.json({ title: 'failed' }, { status: 500 })
+      : Response.json({})
+  }
+  try {
+    await assert.rejects(
+      () => new BgmPlatformClient().patchEntry('target-token', '23080', {
+        externalId: '23080', title: 'A', status: WatchStatus.COMPLETED, progress: 103,
+        totalEpisodes: 103, score: 9, platform: 'bgm',
+      }, { sourceToken: 'source-token' }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error)
+        const partial = error as Error & { succeeded?: number; failedBatch?: { index: number; episodeIds: number[] } }
+        assert.equal(partial.succeeded, 101)
+        assert.deepEqual(partial.failedBatch, { index: 2, episodeIds: [102, 103] })
+        assert.deepEqual(patches.map(({ type, episodeIds }) => [type, episodeIds.length]), [[2, 100], [2, 1], [3, 2]])
+        return true
+      },
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

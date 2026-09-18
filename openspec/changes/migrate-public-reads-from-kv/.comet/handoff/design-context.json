@@ -1,0 +1,18 @@
+{
+  "change": "migrate-public-reads-from-kv",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "0fd2dd5a85f7568ad6a4cf64b42b355cd0cac532edda8b210f200d17b8e6f41d",
+  "files": [
+    { "path": "openspec/changes/migrate-public-reads-from-kv/proposal.md", "sha256": "b7748212d310c74065f5eafd3b9931edc01566a938b796c208b1bcb783deb4b7" },
+    { "path": "openspec/changes/migrate-public-reads-from-kv/design.md", "sha256": "2acae7bd344cfead5c60f3539b7af0c3c57bd9ce15483322444e92fb8da0380c" },
+    { "path": "openspec/changes/migrate-public-reads-from-kv/tasks.md", "sha256": "01fdb46d7b453fcf62f2c299e163aae8dada3b92e05f5cd06c73c9a0998a13a7" },
+    { "path": "openspec/changes/migrate-public-reads-from-kv/specs/cache-refresh-lifecycle/spec.md", "sha256": "9cfeb627ca49cf0d451f07a2fb2b1e66b4a1a5918caa22f77562c61f4654d646" },
+    { "path": "openspec/changes/migrate-public-reads-from-kv/specs/durable-sync-workflow/spec.md", "sha256": "678a392ed2bfbf1206dea95ab54e0a1d84d3baa30f9edb2df31e17ec6b52a3ac" },
+    { "path": "openspec/changes/migrate-public-reads-from-kv/specs/legacy-state-migration/spec.md", "sha256": "089d17d9d9360e96a5cc2073f526d486ff95871b51b6aece1f48cca357ee06fa" },
+    { "path": "openspec/changes/migrate-public-reads-from-kv/specs/project-quality-gates/spec.md", "sha256": "c9dbfead2fd325e01cff97d3da1476e67f11ec1f3e9be90c843afdb12e6c34e0" },
+    { "path": "openspec/changes/migrate-public-reads-from-kv/specs/public-read-contracts/spec.md", "sha256": "6d34258b6eb4bacdcdf3084d0038e2d8e30fd616372a7ef9682fd97598ff88a3" }
+  ]
+}

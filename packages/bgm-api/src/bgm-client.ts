@@ -7,9 +7,12 @@ export type TokenStatus =
   | { status: 'probe_failed' }
 
 export class BgmHttpError extends Error {
-  constructor(public status: number, message: string) {
+  readonly retryAfter?: string
+
+  constructor(public status: number, message: string, metadata?: { retryAfter?: string }) {
     super(message)
     this.name = 'BgmHttpError'
+    if (typeof metadata?.retryAfter === 'string') this.retryAfter = metadata.retryAfter
   }
 }
 
@@ -24,6 +27,23 @@ export class BgmNetworkError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'BgmNetworkError'
+  }
+}
+
+export class BgmPaginationError extends Error {
+  readonly code: 'EPISODE_PAGINATION_EMPTY_PAGE' | 'EPISODE_PAGINATION_INCONSISTENT'
+
+  constructor(
+    subjectId: number,
+    offset: number,
+    total: number,
+    reason = `returned an empty page at offset ${offset} before total ${total}`,
+  ) {
+    super(`bgm.tv episode pagination for subject ${subjectId} ${reason}`)
+    this.name = 'BgmPaginationError'
+    this.code = reason.startsWith('returned an empty page')
+      ? 'EPISODE_PAGINATION_EMPTY_PAGE'
+      : 'EPISODE_PAGINATION_INCONSISTENT'
   }
 }
 
@@ -114,6 +134,11 @@ export class BgmClient {
     return this.retryBaseDelayMs * 2 ** attempt
   }
 
+  private retryMetadata(response: Response): { retryAfter?: string } {
+    const retryAfter = response.headers.get('retry-after')
+    return retryAfter === null ? {} : { retryAfter }
+  }
+
   /** 统一 fetch 包装：GET 有界重试，写请求单次执行；异常按类型返回中文错误。 */
   private async fetchJson(url: string, init?: RequestInit): Promise<any> {
     const method = (init?.method ?? 'GET').toUpperCase()
@@ -153,7 +178,11 @@ export class BgmClient {
       }
       if (!res.ok) {
         const body = await res.text().catch(() => '')
-        throw new BgmHttpError(res.status, `bgm.tv 返回错误 (${res.status}): ${body.slice(0, 300)}`)
+        throw new BgmHttpError(
+          res.status,
+          `bgm.tv 返回错误 (${res.status}): ${body.slice(0, 300)}`,
+          res.status === 429 || res.status >= 500 ? this.retryMetadata(res) : undefined,
+        )
       }
       if (res.status === 204) return undefined
       const body = await res.text()
@@ -195,7 +224,9 @@ export class BgmClient {
       throw new BgmNetworkError(`无法连接 bgm.tv 图片: ${error?.message || String(error)}`)
     }
     if (res.status === 404) return null
-    if (res.status === 429 || res.status >= 500) throw new BgmHttpError(res.status, `bgm.tv 图片返回错误 (${res.status})`)
+    if (res.status === 429 || res.status >= 500) {
+      throw new BgmHttpError(res.status, `bgm.tv 图片返回错误 (${res.status})`, this.retryMetadata(res))
+    }
     if (!res.ok) return null
     return {
       data: await res.arrayBuffer(),
@@ -287,13 +318,51 @@ export class BgmClient {
   }
 
   async getSubjectEpisodeCollections(token: string, subjectId: number): Promise<{ data: BgmEpisodeCollection[]; total: number }> {
-    const url = `${BGM_BASE}/v0/users/-/collections/${subjectId}/episodes?limit=1000&offset=0`
-    return this.fetchJson(url, {
-      headers: { Authorization: `Bearer ${token}`, 'User-Agent': UA },
-    })
+    const data: BgmEpisodeCollection[] = []
+    const episodeIds = new Set<number>()
+    let total: number | undefined
+    let offset = 0
+    do {
+      const url = `${BGM_BASE}/v0/users/-/collections/${subjectId}/episodes?limit=1000&offset=${offset}`
+      const page = await this.fetchJson(url, {
+        headers: { Authorization: `Bearer ${token}`, 'User-Agent': UA },
+      }) as { data: BgmEpisodeCollection[]; total: number }
+      if (total === undefined) {
+        if (!Number.isSafeInteger(page.total) || page.total < 0) {
+          throw new BgmPaginationError(subjectId, offset, page.total, `returned invalid total ${page.total}`)
+        }
+        total = page.total
+      } else if (page.total !== total) {
+        throw new BgmPaginationError(subjectId, offset, total, `changed total from ${total} to ${page.total} at offset ${offset}`)
+      }
+      if (data.length < total && page.data.length === 0) {
+        throw new BgmPaginationError(subjectId, offset, total)
+      }
+      if (data.length + page.data.length > total) {
+        throw new BgmPaginationError(subjectId, offset, total, `exceeded total ${total} at offset ${offset}`)
+      }
+      let unique = 0
+      for (const entry of page.data) {
+        const episodeId = entry.episode.id
+        if (episodeIds.has(episodeId)) {
+          throw new BgmPaginationError(subjectId, offset, total, `returned duplicate episode ID ${episodeId} at offset ${offset}`)
+        }
+        episodeIds.add(episodeId)
+        unique++
+      }
+      if (page.data.length > 0 && unique === 0) {
+        throw new BgmPaginationError(subjectId, offset, total, `made no unique progress at offset ${offset}`)
+      }
+      data.push(...page.data)
+      offset += page.data.length
+    } while (data.length < total)
+    return { data, total }
   }
 
   async patchSubjectEpisodeCollections(token: string, subjectId: number, episodeIds: number[], type: 0 | 1 | 2 | 3) {
+    if (episodeIds.length < 1 || episodeIds.length > 100) {
+      throw new RangeError('episodeIds must contain between 1 and 100 entries')
+    }
     const url = `${BGM_BASE}/v0/users/-/collections/${subjectId}/episodes`
     return this.fetchJson(url, {
       method: 'PATCH',

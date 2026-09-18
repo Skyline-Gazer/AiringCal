@@ -113,6 +113,190 @@ test('sync-worker does not expose public cron HTTP route', async () => {
   assert.equal(response?.status, 404)
 })
 
+test('internal compare maps either account authentication failure without exposing tokens or fetching collections', async () => {
+  for (const scenario of [
+    { rejectedToken: 'source-secret', status: 401 },
+    { rejectedToken: 'target-secret', status: 403 },
+  ]) {
+    const originalFetch = globalThis.fetch
+    const calls: string[] = []
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      calls.push(url)
+      assert.equal(url.endsWith('/v0/me'), true)
+      const authorization = new Headers(init?.headers).get('authorization')
+      if (authorization === `Bearer ${scenario.rejectedToken}`) {
+        return new Response('invalid token', { status: scenario.status })
+      }
+      return Response.json({ username: 'valid-user', id: 1 })
+    }) as typeof globalThis.fetch
+
+    try {
+      const response = await worker.fetch?.(new Request('https://sync.local/internal/sync/compare', {
+        method: 'POST',
+        body: JSON.stringify({
+          platformA: 'bgm',
+          platformB: 'bgm',
+          tokenA: 'source-secret',
+          tokenB: 'target-secret',
+        }),
+      }), {} as any)
+      const body = await response?.json() as any
+
+      assert.equal(response?.status, scenario.status)
+      assert.equal(body.ok, false)
+      assert.equal(body.error.code, 'AUTHENTICATION_FAILED')
+      assert.doesNotMatch(JSON.stringify(body), /source-secret|target-secret/)
+      assert.equal(calls.some((url) => url.includes('/collections?')), false)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+})
+
+test('internal compare maps dual authentication failure to a stable non-secret error', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response('invalid token', { status: 401 })) as typeof globalThis.fetch
+
+  try {
+    const response = await worker.fetch?.(new Request('https://sync.local/internal/sync/compare', {
+      method: 'POST',
+      body: JSON.stringify({
+        platformA: 'bgm',
+        platformB: 'bgm',
+        tokenA: 'source-secret',
+        tokenB: 'target-secret',
+      }),
+    }), {} as any)
+    const body = await response?.json() as any
+
+    assert.equal(response?.status, 401)
+    assert.equal(body.error.code, 'AUTHENTICATION_FAILED')
+    assert.doesNotMatch(JSON.stringify(body), /source-secret|target-secret/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('internal compare maps either collection authentication failure without returning partial success', async () => {
+  for (const scenario of [
+    { rejectedToken: 'source-secret', status: 401 },
+    { rejectedToken: 'target-secret', status: 403 },
+  ]) {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/v0/me')) return Response.json({ username: 'valid-user', id: 1 })
+      assert.equal(url.includes('/collections?'), true)
+      const authorization = new Headers(init?.headers).get('authorization')
+      if (authorization === `Bearer ${scenario.rejectedToken}`) {
+        return new Response('invalid token', { status: scenario.status })
+      }
+      return Response.json({ total: 0, data: [] })
+    }) as typeof globalThis.fetch
+
+    try {
+      const response = await worker.fetch?.(new Request('https://sync.local/internal/sync/compare', {
+        method: 'POST',
+        body: JSON.stringify({
+          platformA: 'bgm',
+          platformB: 'bgm',
+          tokenA: 'source-secret',
+          tokenB: 'target-secret',
+        }),
+      }), {} as any)
+      const body = await response?.json() as any
+
+      assert.equal(response?.status, scenario.status)
+      assert.equal(body.ok, false)
+      assert.equal(body.error.code, 'AUTHENTICATION_FAILED')
+      assert.doesNotMatch(JSON.stringify(body), /source-secret|target-secret/)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+})
+
+test('internal compare maps dual collection authentication failure to a stable non-secret error', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    const url = String(input)
+    if (url.endsWith('/v0/me')) return Response.json({ username: 'valid-user', id: 1 })
+    assert.equal(url.includes('/collections?'), true)
+    return new Response('invalid token', { status: 403 })
+  }) as typeof globalThis.fetch
+
+  try {
+    const response = await worker.fetch?.(new Request('https://sync.local/internal/sync/compare', {
+      method: 'POST',
+      body: JSON.stringify({
+        platformA: 'bgm',
+        platformB: 'bgm',
+        tokenA: 'source-secret',
+        tokenB: 'target-secret',
+      }),
+    }), {} as any)
+    const body = await response?.json() as any
+
+    assert.equal(response?.status, 403)
+    assert.equal(body.ok, false)
+    assert.equal(body.error.code, 'AUTHENTICATION_FAILED')
+    assert.doesNotMatch(JSON.stringify(body), /source-secret|target-secret/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('internal compare keeps network failures on the generic request failure path', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () => { throw new Error('network unavailable') }) as typeof globalThis.fetch
+
+  try {
+    const response = await worker.fetch?.(new Request('https://sync.local/internal/sync/compare', {
+      method: 'POST',
+      body: JSON.stringify({
+        platformA: 'bgm',
+        platformB: 'bgm',
+        tokenA: 'source-secret',
+        tokenB: 'target-secret',
+      }),
+    }), {} as any)
+    const body = await response?.json() as any
+
+    assert.equal(response?.status, 500)
+    assert.equal(body.error.code, 'REQUEST_FAILED')
+    assert.doesNotMatch(JSON.stringify(body), /source-secret|target-secret/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('internal compare does not misclassify rate limits or upstream failures as authentication', async () => {
+  for (const upstreamStatus of [429, 503]) {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () => new Response('temporary upstream failure', { status: upstreamStatus })) as typeof globalThis.fetch
+
+    try {
+      const response = await worker.fetch?.(new Request('https://sync.local/internal/sync/compare', {
+        method: 'POST',
+        body: JSON.stringify({
+          platformA: 'bgm',
+          platformB: 'bgm',
+          tokenA: 'source-secret',
+          tokenB: 'target-secret',
+        }),
+      }), {} as any)
+      const body = await response?.json() as any
+
+      assert.equal(response?.status, 500)
+      assert.equal(body.error.code, 'REQUEST_FAILED')
+      assert.doesNotMatch(JSON.stringify(body), /source-secret|target-secret/)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  }
+})
+
 test('scheduled sync writes new snapshot keys and enqueues media work without image downloads', async () => {
   const kv = new MockKV()
   const queueMessages: unknown[] = []
@@ -121,7 +305,7 @@ test('scheduled sync writes new snapshot keys and enqueues media work without im
   globalThis.fetch = upstream.fetch as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -187,7 +371,7 @@ test('scheduled sync marks refresh queued without changing image status for cale
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -246,7 +430,7 @@ test('scheduled sync enriches calendar episode totals from subject detail', asyn
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -331,7 +515,7 @@ test('scheduled sync still updates collection snapshots when subject detail enri
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async () => {} },
       BANGUMI_TOKEN: 'token-a',
@@ -412,7 +596,7 @@ test('scheduled sync reuses cached subject detail for calendar enrichment', asyn
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -491,7 +675,7 @@ test('scheduled sync normalizes cached subject detail episode count aliases into
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async () => {} },
       BANGUMI_TOKEN: 'token-a',
@@ -549,7 +733,7 @@ test('scheduled sync preserves queued refresh state when media queue send fails'
 
   try {
     await assert.rejects(
-      worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+      worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
         AIRING_CAL_KV: kv,
         MEDIA_QUEUE: { send: async () => { throw new Error('queue unavailable') } },
         BANGUMI_TOKEN: 'token-a',
@@ -614,7 +798,7 @@ test('scheduled sync publishes V2 refresh job before later KV enrichment failure
 
   try {
     await assert.rejects(
-      worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+      worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
         AIRING_CAL_KV: kv,
         MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
         BANGUMI_TOKEN: 'token-a',
@@ -649,7 +833,7 @@ test('scheduled sync enriches collection and calendar snapshots from existing me
   globalThis.fetch = upstream.fetch as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -670,6 +854,194 @@ test('scheduled sync enriches collection and calendar snapshots from existing me
       large: 'https://img.example/detail-large.jpg',
     })
   } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled sync never republishes residual detail while a not-found tombstone is active', async () => {
+  const kv = new MockKV()
+  const now = Math.floor(Date.UTC(2026, 5, 30, 20, 0, 0) / 1000)
+  kv.values.set(subjectDetailKey(23080), { cached_at: now - 1, subject: { id: 23080, name: 'Residual', name_cn: '残留', eps: 99, eps_count: 98, total_episodes: 97, rating: { score: 9.9 } } })
+  kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: now - 1, expires_at: now + 86400, reason: 'not_found' })
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  const upstream = mockFetch()
+  globalThis.fetch = upstream.fetch as typeof globalThis.fetch
+  Date.now = () => now * 1000
+  try {
+    await worker.scheduled({ scheduledTime: now * 1000 } as any, { AIRING_CAL_KV: kv, MEDIA_QUEUE: { send: async () => {} }, BANGUMI_TOKEN: 'token-a', BANGUMI_USERS: 'alice', SYNC_MODE: 'merge' } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+    const collection = (kv.values.get('snapshot:collections:watching') as any[])[0]
+    const calendar = (kv.values.get('snapshot:calendar') as any[])[0].items[0]
+    assert.equal(collection.ep_status, 1)
+    assert.notEqual(collection.eps, 99)
+    assert.notEqual(collection.total_episodes, 97)
+    assert.notEqual(calendar.eps, 99)
+    assert.notEqual(calendar.eps_count, 98)
+    assert.notEqual(calendar.total_episodes, 97)
+    assert.notEqual(calendar.rating?.score, 9.9)
+    assert.equal(upstream.calls.filter((url) => url.endsWith('/v0/subjects/23080')).length, 0)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled sync never republishes residual detail when a not-found tombstone expires', async () => {
+  const kv = new MockKV()
+  const now = Math.floor(Date.UTC(2026, 5, 30, 20, 0, 0) / 1000)
+  kv.values.set(subjectDetailKey(23080), {
+    cached_at: now - 1,
+    subject: {
+      id: 23080,
+      name: 'Residual',
+      name_cn: '残留',
+      summary: 'deleted detail',
+      date: '1999-01-01',
+      eps: 99,
+      eps_count: 98,
+      total_episodes: 97,
+      rating: { score: 9.9 },
+    },
+  })
+  kv.values.set('subject:meta:23080', {
+    subject_id: 23080,
+    exists: false,
+    nsfw: true,
+    checked_at: now - 86400,
+    expires_at: now,
+    reason: 'not_found',
+  })
+  const queueMessages: unknown[] = []
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  const upstream = mockFetch()
+  globalThis.fetch = upstream.fetch as typeof globalThis.fetch
+  Date.now = () => now * 1000
+  try {
+    await worker.scheduled({ scheduledTime: now * 1000 } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
+      BANGUMI_TOKEN: 'token-a',
+      BANGUMI_USERS: 'alice',
+      SYNC_MODE: 'merge',
+    } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+
+    const collection = (kv.values.get('snapshot:collections:watching') as any[])[0]
+    const calendar = (kv.values.get('snapshot:calendar') as any[])[0].items[0]
+    for (const entry of [collection, calendar]) {
+      assert.notEqual(entry.name, 'Residual')
+      assert.notEqual(entry.name_cn, '残留')
+      assert.notEqual(entry.summary, 'deleted detail')
+      assert.notEqual(entry.date, '1999-01-01')
+      assert.notEqual(entry.eps, 99)
+      assert.notEqual(entry.eps_count, 98)
+      assert.notEqual(entry.total_episodes, 97)
+      assert.notEqual(entry.rating?.score, 9.9)
+    }
+    assert.equal(queueMessages.length, 1)
+    assertV2MediaJob(queueMessages[0], 23080, 'A CN', {
+      common: 'https://img.example/common.jpg',
+      large: 'https://img.example/large.jpg',
+    })
+    assert.equal(upstream.calls.filter((url) => url.endsWith('/v0/subjects/23080')).length, 0)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled sync suppresses legacy tombstone detail and queues immediate recovery', async () => {
+  const kv = new MockKV()
+  const now = Math.floor(Date.UTC(2026, 5, 30, 20, 0, 0) / 1000)
+  kv.values.set(subjectDetailKey(23080), { cached_at: now - 1, subject: { id: 23080, name: 'Residual', eps: 99, rating: { score: 9.9 } } })
+  kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: now - 100, reason: 'not_found_or_restricted' })
+  const queueMessages: unknown[] = []
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  const upstream = mockFetch()
+  globalThis.fetch = upstream.fetch as typeof globalThis.fetch
+  Date.now = () => now * 1000
+  try {
+    await worker.scheduled({ scheduledTime: now * 1000 } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
+      BANGUMI_TOKEN: 'token-a', BANGUMI_USERS: 'alice', SYNC_MODE: 'merge',
+    } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+    const collection = (kv.values.get('snapshot:collections:watching') as any[])[0]
+    const calendar = (kv.values.get('snapshot:calendar') as any[])[0].items[0]
+    assert.notEqual(collection.name, 'Residual')
+    assert.notEqual(collection.eps, 99)
+    assert.notEqual(collection.rating?.score, 9.9)
+    assert.notEqual(calendar.name, 'Residual')
+    assert.notEqual(calendar.eps, 99)
+    assert.equal(upstream.calls.filter((url) => url.endsWith('/v0/subjects/23080')).length, 0)
+    assert.equal(queueMessages.length, 1)
+  } finally {
+    Date.now = originalNow
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled sync queues expired collection-only tombstones for recovery but suppresses active TTLs', async () => {
+  const now = Math.floor(Date.UTC(2026, 5, 30, 20, 0, 0) / 1000)
+  const originalFetch = globalThis.fetch
+  const originalNow = Date.now
+  Date.now = () => now * 1000
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const text = String(url)
+    if (text.includes('/collections?')) {
+      return Response.json({
+        total: 1,
+        data: [{
+          subject_id: 23080,
+          subject_type: 2,
+          rate: 9,
+          type: 3,
+          comment: '',
+          tags: [],
+          ep_status: 1,
+          vol_status: 0,
+          updated_at: '2026-06-29T00:00:00.000Z',
+          private: false,
+          subject: {
+            id: 23080,
+            name: 'Collection only',
+            name_cn: '仅收藏',
+            images: { common: 'https://img.example/common.jpg', large: 'https://img.example/large.jpg' },
+          },
+        }],
+      })
+    }
+    if (text.endsWith('/calendar')) return Response.json([])
+    throw new Error(`unexpected upstream fetch: ${text}`)
+  }) as typeof globalThis.fetch
+
+  try {
+    for (const scenario of [
+      { label: 'active', expiresAt: now + 1, expectedJobs: 0 },
+      { label: 'expired', expiresAt: now, expectedJobs: 1 },
+    ]) {
+      const kv = new MockKV()
+      kv.values.set('subject:meta:23080', { subject_id: 23080, exists: false, nsfw: true, checked_at: now - 86400, expires_at: scenario.expiresAt, reason: 'not_found' })
+      kv.values.set('image:status:23080', {
+        common: { status: 'cached', hash: 'a'.repeat(64), uri: `/image/${'a'.repeat(64)}`, r2_key: `images/${'a'.repeat(64)}/original` },
+        large: { status: 'cached', hash: 'b'.repeat(64), uri: `/image/${'b'.repeat(64)}`, r2_key: `images/${'b'.repeat(64)}/original` },
+      })
+      const queueMessages: unknown[] = []
+
+      await worker.scheduled({ scheduledTime: now * 1000 } as any, {
+        AIRING_CAL_KV: kv,
+        MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
+        BANGUMI_TOKEN: 'token-a',
+        BANGUMI_USERS: 'alice',
+        SYNC_MODE: 'merge',
+      } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+
+      assert.equal(queueMessages.length, scenario.expectedJobs, scenario.label)
+      if (scenario.expectedJobs) assertV2MediaJob(queueMessages[0], 23080, '仅收藏', { common: 'https://img.example/common.jpg', large: 'https://img.example/large.jpg' })
+    }
+  } finally {
+    Date.now = originalNow
     globalThis.fetch = originalFetch
   }
 })
@@ -759,7 +1131,7 @@ test('scheduled sync loads collection cache state concurrently before publishing
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -782,7 +1154,7 @@ test('scheduled sync uses subject detail as canonical collection display source'
   globalThis.fetch = upstream.fetch as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -876,7 +1248,7 @@ test('scheduled sync refreshes subject details for calendar subjects only', asyn
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 4, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -959,6 +1331,36 @@ test('internal sync apply persists a 24h operation log and check returns it', as
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('operation check escapes HTML while preserving the JSON response contract', async () => {
+  const kv = new MockKV()
+  const operationId = 'malicious-0123456789abcdef'
+  const maliciousOperation = {
+    id: operationId,
+    event: 'sync_operation',
+    status: 'error',
+    error: '</pre><script>alert("operation")</script>&',
+  }
+  kv.values.set(`sync:operation:${operationId}`, maliciousOperation)
+
+  const html = await worker.fetch?.(new Request(`https://sync.local/internal/check/${operationId}`), {
+    AIRING_CAL_KV: kv,
+  } as any)
+  const jsonResponse = await worker.fetch?.(new Request(`https://sync.local/internal/check/${operationId}`, {
+    headers: { Accept: 'application/json' },
+  }), { AIRING_CAL_KV: kv } as any)
+
+  assert.equal(html?.headers.get('x-content-type-options'), 'nosniff')
+  assert.equal(html?.headers.get('x-frame-options'), 'DENY')
+  assert.match(html?.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/)
+  assert.match(html?.headers.get('content-security-policy') ?? '', /base-uri 'none'/)
+  assert.match(html?.headers.get('content-security-policy') ?? '', /default-src 'none'/)
+  const htmlBody = await html?.text() ?? ''
+  assert.match(htmlBody, /&lt;\/pre&gt;&lt;script&gt;alert\(\\"operation\\"\)&lt;\/script&gt;&amp;/)
+  assert.doesNotMatch(htmlBody, /<\/pre><script>/)
+  assert.equal(jsonResponse?.headers.get('content-security-policy'), null)
+  assert.deepEqual(await jsonResponse?.json(), { ok: true, operation: maliciousOperation })
 })
 
 test('internal sync apply reuses at most five items without refetching collections', async () => {
@@ -1079,7 +1481,7 @@ test('internal sync apply rejects missing tokens before upstream work', async ()
   }
 })
 
-test('scheduled sync skips non-four-hour cron ticks without upstream work', async () => {
+test('scheduled sync skips every UTC hour except the daily 20:00 trigger', async () => {
   const kv = new MockKV()
   kv.values.set('sync:meta', {
     synced_at: 1782650300,
@@ -1101,7 +1503,7 @@ test('scheduled sync skips non-four-hour cron ticks without upstream work', asyn
   }) as typeof globalThis.fetch
 
   try {
-    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 5, 0, 0) } as any, {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 0, 0, 0) } as any, {
       AIRING_CAL_KV: kv,
       MEDIA_QUEUE: { send: async (message: unknown) => { queueMessages.push(message) } },
       BANGUMI_TOKEN: 'token-a',
@@ -1113,7 +1515,34 @@ test('scheduled sync skips non-four-hour cron ticks without upstream work', asyn
     assert.equal((kv.values.get('sync:meta') as any).cron.last.status, 'ok')
     assert.equal((kv.values.get('sync:meta') as any).cron.last_skip.status, 'skipped')
     assert.equal((kv.values.get('sync:meta') as any).cron.last_skip.source, 'scheduled')
+    assert.equal((kv.values.get('sync:meta') as any).cron.effective_schedule, '0 20 * * *')
     assert.equal(queueMessages.length, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('scheduled sync also skips after the exact daily 20:00 UTC minute', async () => {
+  const kv = new MockKV()
+  const originalFetch = globalThis.fetch
+  let fetchCount = 0
+  globalThis.fetch = (async () => {
+    fetchCount += 1
+    throw new Error('unexpected fetch')
+  }) as typeof globalThis.fetch
+
+  try {
+    await worker.scheduled({ scheduledTime: Date.UTC(2026, 5, 30, 20, 1, 0) } as any, {
+      AIRING_CAL_KV: kv,
+      MEDIA_QUEUE: { send: async () => {} },
+      BANGUMI_TOKEN: 'token-a',
+      BANGUMI_USERS: 'alice',
+      SYNC_MODE: 'merge',
+    } as any, { waitUntil: (promise: Promise<unknown>) => promise } as any)
+
+    assert.equal(fetchCount, 0)
+    assert.equal((kv.values.get('sync:meta') as any).cron.last_skip.status, 'skipped')
+    assert.equal((kv.values.get('sync:meta') as any).cron.effective_schedule, '0 20 * * *')
   } finally {
     globalThis.fetch = originalFetch
   }

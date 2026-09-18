@@ -1,10 +1,48 @@
 (function () {
   const config = window.bgmConfig || { apiUrl: '', quote: '' }
   const API = (config.apiUrl || window.location.origin).replace(/\/$/, '')
+  sessionStorage.removeItem('sync-tokenA')
+  sessionStorage.removeItem('sync-tokenB')
   const container = document.querySelector('.bgm-container')
   if (!container) return
 
   const TYPE_NAMES = { want: '想看', watched: '看过', watching: '在看', on_hold: '搁置', dropped: '抛弃' }
+
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(char) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]
+    })
+  }
+
+  function escapeAttribute(value) {
+    return escapeHtml(value)
+  }
+
+  function safeUrl(value, fallback) {
+    try {
+      var url = new URL(String(value), location.origin)
+      if (url.protocol === 'https:' || url.protocol === 'http:') return url.href
+    } catch (_) {}
+    return fallback || '#'
+  }
+
+  function safeNumber(value, fallback) {
+    var number = Number(value)
+    return Number.isFinite(number) ? number : (fallback || 0)
+  }
+
+  function safeScore(value) {
+    var score = Number(value)
+    return Number.isFinite(score) && score >= 0 && score <= 10 ? score : 0
+  }
+
+  container.addEventListener('click', function(event) {
+    var overlay = event.target.closest && event.target.closest('.bgm-nsfw-overlay')
+    if (!overlay) return
+    event.preventDefault()
+    var card = overlay.closest('.bgm-card')
+    if (card) card.classList.toggle('bgm-nsfw-reveal')
+  })
 
   // 顶部视图切换：番组计划（收藏列表） / 放送日历（/api/calendar） / 动画同步
   const VIEWS = [
@@ -39,7 +77,7 @@
 
   function subjectImageUrl(images) {
     return images?.common?.uri
-      ? API + images.common.uri
+      ? safeUrl(API + images.common.uri, '')
       : null
   }
 
@@ -55,23 +93,25 @@
   function renderCover(images, imageStatus, alt, attrs) {
     const imgUrl = subjectImageUrl(images)
     return imgUrl
-      ? '<img src="' + imgUrl + '" alt="' + alt + '" ' + attrs + '>'
-      : '<span class="bgm-image-cache-failed">' + imageCacheLabel(imageStatus) + '</span>'
+      ? '<img src="' + escapeAttribute(imgUrl) + '" alt="' + escapeAttribute(alt) + '" ' + attrs + '>'
+      : '<span class="bgm-image-cache-failed">' + escapeHtml(imageCacheLabel(imageStatus)) + '</span>'
   }
 
   function renderSubjectCard(card) {
-    var html = '<a href="https://bgm.tv/subject/' + card.subjectId + '" target="_blank" class="bgm-card'
+    var subjectId = Math.max(0, Math.trunc(safeNumber(card.subjectId, 0)))
+    var html = '<a href="' + escapeAttribute(safeUrl('https://bgm.tv/subject/' + subjectId, '#')) + '" target="_blank" rel="noopener noreferrer" class="bgm-card'
     if (card.nsfw) html += ' bgm-nsfw'
     html += '">' +
       '<div class="bgm-card-cover">' +
         renderCover(card.images, card.imageStatus, card.name, 'width="300" height="400" loading="lazy"')
-    if (card.nsfw) html += '<div class="bgm-nsfw-overlay" onclick="event.preventDefault();this.parentElement.parentElement.classList.toggle(\'bgm-nsfw-reveal\')">R18</div>'
+    if (card.nsfw) html += '<button type="button" class="bgm-nsfw-overlay">R18</button>'
     html += '</div>' +
       '<div class="bgm-card-info">' +
-        '<h3>' + card.name + '</h3>'
-    if (card.progress > 0) html += '<div class="bgm-progress"><span style="width:' + card.progress + '%"></span></div>'
-    if (card.score) html += '<span class="bgm-score">★ ' + Number(card.score).toFixed(1) + '</span>'
-    if (card.meta) html += '<span class="bgm-ep">' + card.meta + '</span>'
+        '<h3>' + escapeHtml(card.name) + '</h3>'
+    if (card.progress > 0) html += '<div class="bgm-progress"><span style="width:' + Math.min(100, Math.max(0, safeNumber(card.progress, 0))) + '%"></span></div>'
+    var score = safeScore(card.score)
+    if (score > 0) html += '<span class="bgm-score">★ ' + score.toFixed(1) + '</span>'
+    if (card.meta) html += '<span class="bgm-ep">' + escapeHtml(card.meta) + '</span>'
     html += '</div>' +
     '</a>'
     return html
@@ -166,11 +206,11 @@
           var btn = document.createElement('button')
           btn.textContent = i
           if (i === page) btn.classList.add('active')
-          ;(function(p) { btn.onclick = function() { currentPage = p; load(currentType, p) } })(i)
+          ;(function(p) { btn.addEventListener('click', function() { currentPage = p; load(currentType, p) }) })(i)
           pagination.appendChild(btn)
         }
       } catch (e) {
-        grid.innerHTML = '<p class="bgm-error">加载失败: ' + (e.message || '未知错误') + '<br><small>API: ' + API + '</small></p>'
+        grid.innerHTML = '<p class="bgm-error">加载失败: ' + escapeHtml(e.message || '未知错误') + '<br><small>API: ' + escapeHtml(API) + '</small></p>'
       }
     }
 
@@ -201,16 +241,16 @@
           var health = await healthRes.json()
           if (health.ok && health.data && health.data.collections) {
             var c = health.data.collections
-            statusBar.innerHTML = '<p>已连接 | 条目 ' + (c.types && c.types._total) + ' | 更新于 ' + (c.updated_at || '?').slice(0, 10) + '</p>'
+            statusBar.innerHTML = '<p>已连接 | 条目 ' + safeNumber(c.types && c.types._total, 0) + ' | 更新于 ' + escapeHtml((c.updated_at || '?').slice(0, 10)) + '</p>'
           } else if (health.ok) {
             var hint = '请在动画同步视图配置 token 并触发同步'
-            if (health.data && health.data.last_error) hint += '<br>上次同步错误: ' + health.data.last_error
+            if (health.data && health.data.last_error) hint += '<br>上次同步错误: ' + escapeHtml(health.data.last_error)
             statusBar.innerHTML = '<p class="bgm-status-warn">已连接，但 KV 无数据。' + hint + '</p>'
           } else {
-            statusBar.innerHTML = '<p class="bgm-status-warn">健康检查失败: ' + (health.error || '') + '</p>'
+            statusBar.innerHTML = '<p class="bgm-status-warn">健康检查失败: ' + escapeHtml(health.error || '') + '</p>'
           }
         } catch (e) {
-          statusBar.innerHTML = '<p class="bgm-status-warn">无法连接 Worker: ' + (e.message || '') + '</p>'
+          statusBar.innerHTML = '<p class="bgm-status-warn">无法连接 Worker: ' + escapeHtml(e.message || '') + '</p>'
         }
         setTimeout(function () { statusBar.style.opacity = '0.4' }, 3000)
         load(currentType, 1)
@@ -246,8 +286,8 @@
         var isToday = wd.id === todayId
         html += '<section class="bgm-weekday' + (isToday ? ' is-today' : '') + '">'
         html += '<div class="bgm-weekday-head">' +
-          '<span class="cn">' + (wd.cn || '') + '</span>' +
-          '<span class="en">' + (wd.en || '') + '</span>' +
+          '<span class="cn">' + escapeHtml(wd.cn || '') + '</span>' +
+          '<span class="en">' + escapeHtml(wd.en || '') + '</span>' +
           '<span class="count">' + items.length + '</span>' +
         '</div>'
         html += '<div class="bgm-grid">'
@@ -271,7 +311,7 @@
           var days = await res.json()
           renderCalendar(days)
         } catch (e) {
-          cal.innerHTML = '<p class="bgm-error">日历加载失败: ' + (e.message || '未知错误') + '<br><small>API: ' + API + '</small></p>'
+          cal.innerHTML = '<p class="bgm-error">日历加载失败: ' + escapeHtml(e.message || '未知错误') + '<br><small>API: ' + escapeHtml(API) + '</small></p>'
           loaded = false // 允许下次重试
         }
       },
@@ -289,21 +329,23 @@
     var tok = document.createElement('div')
     tok.className = 'sync-token-area'
     tok.innerHTML = '<h3>多账户动画同步</h3>' +
-      '<p class="muted" style="font-size:12px;margin-bottom:8px;">粘贴 <a href="https://bgm.tv/dev" target="_blank">bgm.tv Access Token</a>，两个账号各一个；同步动画条目、状态、评分和章节进度</p>'
+      '<p class="muted" style="font-size:12px;margin-bottom:8px;">粘贴 <a href="https://bgm.tv/dev" target="_blank" rel="noopener noreferrer">bgm.tv Access Token</a>，两个账号各一个；同步动画条目、状态、评分和章节进度</p>'
     view.appendChild(tok)
+
+    var syncState = { tokenA: '', tokenB: '', data: null, page: 1, filter: 'all', search: '' }
 
     function buildTokenRow(side, idSuffix) {
       var row = document.createElement('div')
       row.className = 'sync-token-row'
-      var saved = sessionStorage.getItem('sync-token' + idSuffix) || ''
+      var saved = syncState['token' + idSuffix]
       if (saved) {
-        row.innerHTML = '<span class="sync-token-ok">\u2713 ' + side + ' token 已就绪</span>' +
-          ' <button class="sync-token-clear" data-side="' + idSuffix + '">清除</button>'
+        row.innerHTML = '<span class="sync-token-ok">\u2713 ' + escapeHtml(side) + ' token 已就绪</span>' +
+          ' <button class="sync-token-clear" data-side="' + escapeAttribute(idSuffix) + '">清除</button>'
       } else {
         row.innerHTML = '<div class="sync-token-fields">' +
-          '<label class="sync-token-label sync-token-label-grow">' + side + ' Token' +
-          '<input type="password" class="sync-token-input" data-side="' + idSuffix + '" placeholder="Access Token"></label>' +
-          '<label class="sync-token-label">平台<select class="sync-platform" data-side="' + idSuffix + '"><option value="bgm">bgm.tv</option></select></label>' +
+          '<label class="sync-token-label sync-token-label-grow">' + escapeHtml(side) + ' Token' +
+          '<input type="password" class="sync-token-input" data-side="' + escapeAttribute(idSuffix) + '" placeholder="Access Token"></label>' +
+          '<label class="sync-token-label">平台<select class="sync-platform" data-side="' + escapeAttribute(idSuffix) + '"><option value="bgm">bgm.tv</option></select></label>' +
           '</div>'
       }
       return row
@@ -327,14 +369,13 @@
     view.appendChild(resultArea)
 
     var loaded = false
-    var syncState = { tokenA: '', tokenB: '', data: null, page: 1, filter: 'all', search: '' }
     var SYNC_BATCH_SIZE = 5
 
     // ── Token clear handler ──
     tok.addEventListener('click', function(e) {
       if (e.target.classList.contains('sync-token-clear')) {
         var side = e.target.dataset.side
-        sessionStorage.removeItem('sync-token' + side)
+        syncState['token' + side] = ''
         var row = e.target.closest('.sync-token-row')
         var newRow = buildTokenRow(side === 'A' ? 'Account A' : 'Account B', side)
         row.parentNode.replaceChild(newRow, row)
@@ -409,8 +450,13 @@
           h += '<div class="sync-card" style="' + (borderColor ? 'border-left:4px solid ' + borderColor : '') + '">'
 
           // Title row
-          var highScore = Math.max(d.scoreA || 0, d.scoreB || 0, d.score || 0)
-          var highEp = Math.max(d.totalEpisodes || d.progressA || d.progressB || d.progress || 0)
+          var scoreA = safeScore(d.scoreA)
+          var scoreB = safeScore(d.scoreB)
+          var progressA = safeNumber(d.progressA, 0)
+          var progressB = safeNumber(d.progressB, 0)
+          var totalEpisodes = safeNumber(d.totalEpisodes, 0)
+          var highScore = Math.max(scoreA, scoreB, safeScore(d.score))
+          var highEp = Math.max(totalEpisodes || progressA || progressB || safeNumber(d.progress, 0))
           var titleExtras = ''
           if (highEp > 0 || highScore > 0) {
             titleExtras = '<span class="sync-card-meta">'
@@ -419,41 +465,41 @@
             titleExtras += '</span>'
           }
           var titleName = getTitle(d)
-          h += '<div class="sync-card-title">' + titleName + titleExtras + '</div>'
+          h += '<div class="sync-card-title">' + escapeHtml(titleName) + titleExtras + '</div>'
 
           // Side-by-side columns
           h += '<div class="sync-card-cols">'
 
           // Column A
           h += '<div class="sync-card-col">'
-          h += '<div class="sync-col-label">' + nameA + '</div>'
+          h += '<div class="sync-col-label">' + escapeHtml(nameA) + '</div>'
           if (isOnlyB) {
             h += '<div class="sync-col-empty">\u2014</div>'
           } else {
-            h += '<span class="sync-badge" style="background:' + statusBadgeColor(d.statusA) + '">' + statusLabel(d.statusA) + '</span>'
-            var pctA = (d.totalEpisodes || d.progressA) > 0 ? Math.round(d.progressA / Math.max(d.totalEpisodes || d.progressA, 1) * 100) : 0
+            h += '<span class="sync-badge" style="background:' + statusBadgeColor(d.statusA) + '">' + escapeHtml(statusLabel(d.statusA)) + '</span>'
+            var pctA = (totalEpisodes || progressA) > 0 ? Math.round(progressA / Math.max(totalEpisodes || progressA, 1) * 100) : 0
             h += '<div class="sync-progress-bar"><span style="width:' + pctA + '%"></span></div>'
-            h += '<span class="sync-progress-text">' + d.progressA + '话</span>'
-            if (d.scoreA > 0) {
-              var arrow = (d.scoreA > d.scoreB) ? ' <span style="color:#e94560;">\u2191</span>' : ''
-              h += '<span class="sync-score">\u2605 ' + d.scoreA + arrow + '</span>'
+            h += '<span class="sync-progress-text">' + progressA + '话</span>'
+            if (scoreA > 0) {
+              var arrow = (scoreA > scoreB) ? ' <span style="color:#e94560;">\u2191</span>' : ''
+              h += '<span class="sync-score">\u2605 ' + scoreA + arrow + '</span>'
             }
           }
           h += '</div>'
 
           // Column B
           h += '<div class="sync-card-col">'
-          h += '<div class="sync-col-label">' + nameB + '</div>'
+          h += '<div class="sync-col-label">' + escapeHtml(nameB) + '</div>'
           if (isOnlyA) {
             h += '<div class="sync-col-empty">\u2014</div>'
           } else {
-            h += '<span class="sync-badge" style="background:' + statusBadgeColor(d.statusB) + '">' + statusLabel(d.statusB) + '</span>'
-            var pctB = (d.totalEpisodes || d.progressB) > 0 ? Math.round(d.progressB / Math.max(d.totalEpisodes || d.progressB, 1) * 100) : 0
+            h += '<span class="sync-badge" style="background:' + statusBadgeColor(d.statusB) + '">' + escapeHtml(statusLabel(d.statusB)) + '</span>'
+            var pctB = (totalEpisodes || progressB) > 0 ? Math.round(progressB / Math.max(totalEpisodes || progressB, 1) * 100) : 0
             h += '<div class="sync-progress-bar"><span style="width:' + pctB + '%"></span></div>'
-            h += '<span class="sync-progress-text">' + d.progressB + '话</span>'
-            if (d.scoreB > 0) {
-              var arrowB = (d.scoreB > d.scoreA) ? ' <span style="color:#e94560;">\u2191</span>' : ''
-              h += '<span class="sync-score">\u2605 ' + d.scoreB + arrowB + '</span>'
+            h += '<span class="sync-progress-text">' + progressB + '话</span>'
+            if (scoreB > 0) {
+              var arrowB = (scoreB > scoreA) ? ' <span style="color:#e94560;">\u2191</span>' : ''
+              h += '<span class="sync-score">\u2605 ' + scoreB + arrowB + '</span>'
             }
           }
           h += '</div>'
@@ -463,7 +509,7 @@
           // Checkbox row
           if (canSync) {
             var cid = d.externalId || d.subject_id
-            h += '<div class="sync-card-check"><label><input type="checkbox" checked data-id="' + cid + '"> \u540c\u6b65\u6b64\u9879</label></div>'
+            h += '<div class="sync-card-check"><label><input type="checkbox" checked data-id="' + escapeAttribute(cid) + '"> \u540c\u6b65\u6b64\u9879</label></div>'
           } else if (!isSame) {
             h += '<div class="sync-card-check"><span class="sync-card-nosync">\u5f53\u524d\u65b9\u5411\u4e0d\u53ef\u540c\u6b65</span></div>'
           }
@@ -518,8 +564,8 @@
       h += '<div class="sync-pills">'
       h += '<button class="sync-pill active" data-filter="all">\u5168\u90e8 ' + allLen + '</button>'
       if (diffLen) h += '<button class="sync-pill" data-filter="diff">\u5dee\u5f02 ' + diffLen + '</button>'
-      if (onlyALen) h += '<button class="sync-pill" data-filter="onlyA">\u4ec5' + nameA + ' ' + onlyALen + '</button>'
-      if (onlyBLen) h += '<button class="sync-pill" data-filter="onlyB">\u4ec5' + nameB + ' ' + onlyBLen + '</button>'
+      if (onlyALen) h += '<button class="sync-pill" data-filter="onlyA">\u4ec5' + escapeHtml(nameA) + ' ' + onlyALen + '</button>'
+      if (onlyBLen) h += '<button class="sync-pill" data-filter="onlyB">\u4ec5' + escapeHtml(nameB) + ' ' + onlyBLen + '</button>'
       if (sameLen) h += '<button class="sync-pill" data-filter="same">\u76f8\u540c ' + sameLen + '</button>'
       h += '</div>'
 
@@ -535,8 +581,8 @@
       h += '<input type="text" id="sync-search" class="sync-search" placeholder="\u641c\u7d22\u6761\u76ee...">'
       h += '<span style="flex:1;"></span>'
       h += '<select id="sync-direction" class="sync-select">'
-      h += '<option value="A->B">' + nameA + ' \u2192 ' + nameB + '</option>'
-      h += '<option value="B->A">' + nameB + ' \u2192 ' + nameA + '</option></select>'
+      h += '<option value="A->B">' + escapeHtml(nameA) + ' \u2192 ' + escapeHtml(nameB) + '</option>'
+      h += '<option value="B->A">' + escapeHtml(nameB) + ' \u2192 ' + escapeHtml(nameA) + '</option></select>'
       h += '<button id="sync-full-btn" class="sync-tool-btn sync-tool-btn-primary">\u540c\u6b65\u7b5b\u9009\u5168\u90e8</button>'
       h += '<button id="sync-sel-btn" class="sync-tool-btn">\u9009\u4e2d\u540c\u6b65</button>'
       h += '</div>'
@@ -610,15 +656,6 @@
       }))
     }
 
-    function escapeSyncHtml(value) {
-      return String(value == null ? '' : value)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;')
-    }
-
     function formatEpisodeProgress(progress) {
       if (!progress) return ''
       var delta = progress.after - progress.before
@@ -644,7 +681,7 @@
         return {
           externalId: String(getEntryId(entry) || ''),
           status: targetIsB ? entry.statusB : entry.statusA,
-          score: targetIsB ? entry.scoreB : entry.scoreA,
+          score: safeScore(targetIsB ? entry.scoreB : entry.scoreA),
           progress: targetIsB ? entry.progressB : entry.progressA,
           totalEpisodes: entry.totalEpisodes || Math.max(entry.progressA || 0, entry.progressB || 0),
         }
@@ -666,17 +703,17 @@
       var rows = results.map(function(r) {
         var cls = r.status === 'ok' ? 'ok' : 'error'
         return '<tr>' +
-          '<td>' + escapeSyncHtml(r.externalId) + '</td>' +
-          '<td>' + escapeSyncHtml(r.title || '') + '</td>' +
-          '<td class="' + cls + '">' + escapeSyncHtml(r.status) + '</td>' +
-          '<td>' + escapeSyncHtml(formatFieldChange(r.collectionStatus)) + '</td>' +
-          '<td>' + escapeSyncHtml(formatFieldChange(r.scoreChange)) + '</td>' +
-          '<td>' + escapeSyncHtml(formatEpisodeProgress(r.episodeProgress)) + '</td>' +
-          '<td>' + escapeSyncHtml(r.error || '') + '</td>' +
+          '<td>' + escapeHtml(r.externalId) + '</td>' +
+          '<td>' + escapeHtml(r.title || '') + '</td>' +
+          '<td class="' + cls + '">' + escapeHtml(r.status) + '</td>' +
+          '<td>' + escapeHtml(formatFieldChange(r.collectionStatus)) + '</td>' +
+          '<td>' + escapeHtml(formatFieldChange(r.scoreChange)) + '</td>' +
+          '<td>' + escapeHtml(formatEpisodeProgress(r.episodeProgress)) + '</td>' +
+          '<td>' + escapeHtml(r.error || '') + '</td>' +
           '</tr>'
       }).join('')
       var links = operationLinks.length ? '<div class="sync-log-links">\u5b8c\u6574\u65e5\u5fd7: ' + operationLinks.map(function(url, index) {
-        return '<a href="' + url + '" target="_blank" rel="noreferrer">#' + (index + 1) + '</a>'
+        return '<a href="' + escapeAttribute(safeUrl(url, '#')) + '" target="_blank" rel="noopener noreferrer">#' + (index + 1) + '</a>'
       }).join(' ') + '</div>' : ''
       return '<div class="sync-inline-log"><h4>\u672c\u6b21\u64cd\u4f5c\u65e5\u5fd7</h4>' + links +
         '<table><thead><tr><th>Subject ID</th><th>\u6807\u9898</th><th>\u7ed3\u679c</th><th>\u6536\u85cf\u72b6\u6001</th><th>\u8bc4\u5206</th><th>\u7ae0\u8282\u8fdb\u5ea6</th><th>\u9519\u8bef</th></tr></thead><tbody>' +
@@ -724,7 +761,7 @@
           if (!res.ok) {
             var errMsg = (batchResults && batchResults.error && batchResults.error.message) || ('HTTP ' + res.status + ' ' + res.statusText)
             document.getElementById('sync-progress-fill').style.width = '0%'
-            document.getElementById('sync-progress-text').innerHTML = '<span style="color:#e94560;">\u540c\u6b65\u5931\u8d25: ' + errMsg + '</span>'
+            document.getElementById('sync-progress-text').innerHTML = '<span style="color:#e94560;">\u540c\u6b65\u5931\u8d25: ' + escapeHtml(errMsg) + '</span>'
             return
           }
           if (!Array.isArray(batchResults)) throw new Error('Invalid response')
@@ -742,12 +779,12 @@
         msg += renderInlineSyncLog(results, operationLinks)
         if (err > 0) {
           var failed = results.filter(function(r) { return r.status === 'error' }).slice(0, 3).map(function(r) { return (r.title || r.externalId) + ': ' + (r.error || 'unknown') }).join('; ')
-          msg += '<br><small style="color:#e94560;">\u5931\u8d25\u6761\u76ee: ' + failed + (err > 3 ? ' \u7b49' + err + '\u9879' : '') + '</small>'
+          msg += '<br><small style="color:#e94560;">\u5931\u8d25\u6761\u76ee: ' + escapeHtml(failed) + (err > 3 ? ' \u7b49' + err + '\u9879' : '') + '</small>'
         }
         document.getElementById('sync-progress-text').innerHTML = msg
       } catch (e) {
         document.getElementById('sync-progress-fill').style.width = '0%'
-        document.getElementById('sync-progress-text').innerHTML = '<span style="color:#e94560;">\u540c\u6b65\u5931\u8d25: ' + (e.message || '\u672a\u77e5\u9519\u8bef') + '</span>'
+        document.getElementById('sync-progress-text').innerHTML = '<span style="color:#e94560;">\u540c\u6b65\u5931\u8d25: ' + escapeHtml(e.message || '\u672a\u77e5\u9519\u8bef') + '</span>'
       }
     }
 
@@ -763,8 +800,8 @@
           var selB = tok.querySelector('.sync-platform[data-side="B"]')
           var ta = inputA ? inputA.value.trim() : ''
           var tb = inputB ? inputB.value.trim() : ''
-          if (!ta && sessionStorage.getItem('sync-tokenA')) ta = sessionStorage.getItem('sync-tokenA')
-          if (!tb && sessionStorage.getItem('sync-tokenB')) tb = sessionStorage.getItem('sync-tokenB')
+          if (!ta) ta = syncState.tokenA
+          if (!tb) tb = syncState.tokenB
           if (!ta || !tb) return alert('\u8bf7\u586b\u5199\u4e24\u4e2a\u8d26\u53f7\u7684 Access Token')
 
           syncState.tokenA = ta; syncState.tokenB = tb
@@ -781,9 +818,6 @@
             var data = await res.json()
             if (!res.ok) throw new Error(data.error || '\u8bf7\u6c42\u5931\u8d25')
 
-            // Save tokens
-            sessionStorage.setItem('sync-tokenA', ta)
-            sessionStorage.setItem('sync-tokenB', tb)
             // Update token row display
             var rows = tok.querySelectorAll('.sync-token-row')
             if (rows[0]) { var nrA = buildTokenRow('Account A', 'A'); rows[0].parentNode.replaceChild(nrA, rows[0]) }
@@ -791,7 +825,7 @@
 
             renderCompareResult(data)
           } catch (e) {
-            resultArea.innerHTML = '<p class="bgm-error">\u5bf9\u6bd4\u5931\u8d25: ' + (e.message || '\u672a\u77e5\u9519\u8bef') + '</p>'
+            resultArea.innerHTML = '<p class="bgm-error">\u5bf9\u6bd4\u5931\u8d25: ' + escapeHtml(e.message || '\u672a\u77e5\u9519\u8bef') + '</p>'
           }
         })
       },
@@ -799,10 +833,11 @@
   }
   function statusLabel(s) {
   var map = { watching: '在看', completed: '看过', plan_to_watch: '想看', on_hold: '搁置', dropped: '抛弃' }
-  return map[s] || s || '—'
+  return Object.prototype.hasOwnProperty.call(map, s) ? map[s] : '—'
 }
 function statusBadgeColor(s) {
-  return { watching: '#00a1d6', completed: '#4caf50', plan_to_watch: '#9b59b6', on_hold: '#f39c12', dropped: '#e74c3c' }[s] || '#666'
+  var map = { watching: '#00a1d6', completed: '#4caf50', plan_to_watch: '#9b59b6', on_hold: '#f39c12', dropped: '#e74c3c' }
+  return Object.prototype.hasOwnProperty.call(map, s) ? map[s] : '#666'
 }
 
   // ---------------------------------------------------------------

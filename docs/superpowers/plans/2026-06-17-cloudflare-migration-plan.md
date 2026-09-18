@@ -1,4 +1,21 @@
+---
+status: archived-historical
+superseded-by:
+  - docs/superpowers/specs/2026-06-29-monorepo-multi-worker-design.md
+  - docs/superpowers/specs/2026-07-10-free-plan-sync-workflow-design.md
+  - docs/superpowers/specs/2026-07-22-free-plan-d1-r2-incremental-sync-design.md
+current-runbook: README.md
+---
+
 # BangumiTV Cloudflare 迁移实现计划
+
+> [!WARNING]
+> Archived historical plan. Do not execute its commands, copy its config, or
+> resume its checklist. It predates the four-Worker monorepo, Workflow control
+> plane, D1/data-R2 shadow path, and current deployment pipeline. Use
+> `README.md` plus the superseding designs named in the frontmatter. In
+> particular, production has no public `POST /__cron/sync`; the checked-in
+> schedule is daily `0 20 * * *`, not the four-hour example below.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -510,6 +527,12 @@ git commit -m "feat: add API route handlers"
 ---
 
 ### Task 7: 创建 Worker 入口和 wrangler.toml
+
+> [!CAUTION]
+> Historical proposal only. The public Cron route, `CRON_SECRET`, single-Worker
+> config, and `0 */4 * * *` trigger in this task were superseded. They are
+> retained solely as migration history and must not be copied into current
+> source or configuration.
 
 **Files:**
 - Create: `workers/index.ts`

@@ -1,0 +1,17 @@
+{
+  "change": "stop-kv-write-amplification",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "f6a19bd3d884b67e5132085814bde03c7871a7e87646f0711e5efcc4b5688b3e",
+  "files": [
+    { "path": "openspec/changes/stop-kv-write-amplification/proposal.md", "sha256": "26378d445cbe871727e25fae1834cd6218c44d631278c666b83096ad752e2e3a" },
+    { "path": "openspec/changes/stop-kv-write-amplification/design.md", "sha256": "ab96daba2282f00d54855c47ce0db2a3d70b75c5e00bb06df48fc866deaa16c3" },
+    { "path": "openspec/changes/stop-kv-write-amplification/tasks.md", "sha256": "74c3d4a39e2a354946c3401663145fa3ad70753df2b71c7a5c137631567319ff" },
+    { "path": "openspec/changes/stop-kv-write-amplification/specs/cache-refresh-lifecycle/spec.md", "sha256": "979080c3f153169528e7d512cfcb2915bf83a031d576dac610cd4e6d50996c01" },
+    { "path": "openspec/changes/stop-kv-write-amplification/specs/durable-sync-workflow/spec.md", "sha256": "4c77b441548b25fa5f29ed517f5e00454b636974b41195e3c3e2f6de3847365f" },
+    { "path": "openspec/changes/stop-kv-write-amplification/specs/project-quality-gates/spec.md", "sha256": "6e8e9e3e042aec9eadf58df60acbc0d8ec8227e5fcdb2662d2a392dd23b126d9" },
+    { "path": "openspec/changes/stop-kv-write-amplification/specs/sync-write-budget/spec.md", "sha256": "55e0b36b11a005a17d40c8f1e830eebdca44b62f35be0b26d7adaab2d6d73de2" }
+  ]
+}

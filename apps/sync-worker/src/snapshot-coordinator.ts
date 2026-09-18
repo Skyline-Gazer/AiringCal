@@ -1,8 +1,22 @@
-import { snapshotActiveKey, type SnapshotManifest } from '@airing-cal/storage'
+import {
+  claimDailyBudgetReservation,
+  isMediaRefreshJobV3,
+  isMediaRefreshJobV4,
+  markBudgetSubmission,
+  snapshotActiveKey,
+  transitionBudgetSubmission,
+  type BudgetReservationRequest,
+  type BudgetReservationResult,
+  type D1DatabaseLike,
+  type MediaRefreshJobV3,
+  type MediaRefreshJobV4,
+  type SnapshotManifest,
+} from '@airing-cal/storage'
 
 interface CoordinatorStorage {
   get<T>(key: string): Promise<T | undefined>
   put<T>(key: string, value: T): Promise<void>
+  delete(key: string): Promise<boolean | void>
 }
 
 interface JsonKV {
@@ -11,17 +25,77 @@ interface JsonKV {
 
 interface SnapshotCoordinatorEnv {
   AIRING_CAL_KV: JsonKV
+  MEDIA_QUEUE: {
+    sendBatch(messages: Array<{ body: MediaRefreshJobV3; contentType?: 'json' }>): Promise<unknown>
+  }
+}
+
+interface MediaQueueLike {
+  sendBatch(messages: Array<{ body: MediaRefreshJobV4; contentType?: 'json' }>): Promise<unknown>
+}
+
+export async function reserveAndSubmitMedia(
+  database: D1DatabaseLike,
+  queue: MediaQueueLike | undefined,
+  request: BudgetReservationRequest<MediaRefreshJobV4>,
+  now = Math.floor(Date.now() / 1000),
+): Promise<BudgetReservationResult> {
+  if (!request.jobs.every(isMediaRefreshJobV4)) throw new Error('Invalid D1-only media reservation jobs')
+  const claim = await claimDailyBudgetReservation(database, request, now)
+  if (claim.result.granted === 0) {
+    if (claim.result.submission !== 'reserved') return claim.result
+    return markBudgetSubmission(database, request.reservationId, 'submitted', now)
+  }
+  if (claim.result.submission !== 'reserved') return claim.result
+
+  const attempt = await transitionBudgetSubmission(database, request.reservationId, 'uncertain', now)
+  if (!attempt.transitioned || !queue) return attempt.result
+  try {
+    await queue.sendBatch(
+      request.jobs
+        .slice(0, claim.result.granted)
+        .map((body) => ({ body, contentType: 'json' as const })),
+    )
+  } catch {
+    return attempt.result
+  }
+  try {
+    return await markBudgetSubmission(database, request.reservationId, 'submitted', now)
+  } catch {
+    return attempt.result
+  }
 }
 
 type CommitResult = { status: 'committed' | 'obsolete'; generation: number }
+type MediaSubmission = 'confirmed' | 'uncertain' | 'not_needed'
+type MediaBudgetCounters = { granted: number; consumed: number; soft_limit: number; hard_limit: number }
+type MediaBudgetResult = MediaBudgetCounters & { submission: MediaSubmission }
+type MediaReservation = {
+  date: string
+  budget_date?: string
+  requested: number
+  privileged_requested: number
+  job_ids: string[]
+  result: MediaBudgetCounters
+  submission?: 'reserved' | 'confirmed' | 'uncertain' | 'not_needed'
+}
 
 const NEXT_GENERATION_KEY = 'nextGeneration'
 const INSTANCE_PREFIX = 'instance:'
 const LAST_COMMITTED_KEY = 'lastCommittedGeneration'
 const LAST_MANIFEST_KEY = 'lastCommittedManifest'
+const MEDIA_BUDGET_KEY = 'mediaBudget'
+const MEDIA_RESERVATION_PREFIX = 'mediaReservation:'
+const MEDIA_SOFT_LIMIT = 50
+const MEDIA_HARD_LIMIT = 100
 
 export class SnapshotCoordinatorCore {
-  constructor(private storage: CoordinatorStorage, private kv: JsonKV) {}
+  constructor(
+    private storage: CoordinatorStorage,
+    private kv: JsonKV,
+    private queue?: SnapshotCoordinatorEnv['MEDIA_QUEUE'],
+    private clock: () => number = () => Date.now(),
+  ) {}
 
   async allocate(instanceId: string): Promise<number> {
     const instanceKey = `${INSTANCE_PREFIX}${instanceId}`
@@ -48,6 +122,95 @@ export class SnapshotCoordinatorCore {
     await this.storage.put(LAST_MANIFEST_KEY, manifest)
     return { status: 'committed', generation }
   }
+
+  async reserveMedia(
+    date: string,
+    reservationId: string,
+    requested: number,
+    privilegedRequested: number,
+    jobs: MediaRefreshJobV3[],
+  ): Promise<MediaBudgetResult> {
+    const reservationKey = `${MEDIA_RESERVATION_PREFIX}${reservationId}`
+    const jobIds = jobs.map(({ job_id }) => job_id)
+    const existing = await this.storage.get<MediaReservation>(reservationKey)
+    if (existing) {
+      if (
+        existing.date !== date
+        || existing.requested !== requested
+        || existing.privileged_requested !== privilegedRequested
+        || existing.job_ids.length !== jobIds.length
+        || existing.job_ids.some((jobId, index) => jobId !== jobIds[index])
+      ) throw new Error(`Media reservation ${reservationId} payload mismatch`)
+      return {
+        ...existing.result,
+        submission: existing.submission === 'confirmed' || existing.submission === 'not_needed'
+          ? existing.submission
+          : 'uncertain',
+      }
+    }
+
+    const budgetDate = new Date(this.clock()).toISOString().slice(0, 10)
+    const previous = await this.storage.get<{ date: string; consumed: number }>(MEDIA_BUDGET_KEY)
+    const consumed = previous?.date === budgetDate ? previous.consumed : 0
+    if (previous && budgetDate < previous.date) {
+      const result = {
+        granted: 0,
+        consumed: previous.consumed,
+        soft_limit: MEDIA_SOFT_LIMIT,
+        hard_limit: MEDIA_HARD_LIMIT,
+      }
+      await this.storage.put(reservationKey, {
+        date,
+        budget_date: budgetDate,
+        requested,
+        privileged_requested: privilegedRequested,
+        job_ids: jobIds,
+        result,
+        submission: 'not_needed',
+      })
+      return { ...result, submission: 'not_needed' }
+    }
+
+    const privileged = Math.min(requested, privilegedRequested)
+    const privilegedGranted = Math.min(privileged, Math.max(0, MEDIA_HARD_LIMIT - consumed))
+    const ordinaryRequested = requested - privileged
+    const ordinaryGranted = Math.min(ordinaryRequested, Math.max(0, MEDIA_SOFT_LIMIT - consumed - privilegedGranted))
+    const granted = privilegedGranted + ordinaryGranted
+    const nextConsumed = consumed + granted
+    const result = {
+      granted,
+      consumed: nextConsumed,
+      soft_limit: MEDIA_SOFT_LIMIT,
+      hard_limit: MEDIA_HARD_LIMIT,
+    }
+    const reservation: MediaReservation = {
+      date,
+      budget_date: budgetDate,
+      requested,
+      privileged_requested: privilegedRequested,
+      job_ids: jobIds,
+      result,
+      submission: granted > 0 ? 'reserved' : 'not_needed',
+    }
+
+    const budgetWrite = this.storage.put(MEDIA_BUDGET_KEY, { date: budgetDate, consumed: nextConsumed })
+    const reservationWrite = this.storage.put(reservationKey, reservation)
+    await Promise.all([budgetWrite, reservationWrite])
+    if (granted === 0) return { ...result, submission: 'not_needed' }
+
+    if (!this.queue) {
+      await this.storage.put(reservationKey, { ...reservation, submission: 'uncertain' })
+      return { ...result, submission: 'uncertain' }
+    }
+    try {
+      await this.queue.sendBatch(jobs.slice(0, granted).map((body) => ({ body, contentType: 'json' as const })))
+    } catch {
+      await this.storage.put(reservationKey, { ...reservation, submission: 'uncertain' })
+      return { ...result, submission: 'uncertain' }
+    }
+    await this.storage.put(reservationKey, { ...reservation, submission: 'confirmed' })
+    return { ...result, submission: 'confirmed' }
+  }
 }
 
 export class SnapshotCoordinator {
@@ -55,7 +218,7 @@ export class SnapshotCoordinator {
   private tail: Promise<void> = Promise.resolve()
 
   constructor(state: DurableObjectState, env: SnapshotCoordinatorEnv) {
-    this.core = new SnapshotCoordinatorCore(state.storage, env.AIRING_CAL_KV)
+    this.core = new SnapshotCoordinatorCore(state.storage, env.AIRING_CAL_KV, env.MEDIA_QUEUE)
   }
 
   private async serialized<T>(operation: () => Promise<T>): Promise<T> {
@@ -79,6 +242,31 @@ export class SnapshotCoordinator {
       }
       if (url.pathname === '/commit' && typeof body.generation === 'number' && body.manifest) {
         return Response.json(await this.core.commit(body.generation, body.manifest as SnapshotManifest))
+      }
+      if (
+        url.pathname === '/reserve-media'
+        && typeof body.date === 'string'
+        && /^\d{4}-\d{2}-\d{2}$/.test(body.date)
+        && typeof body.reservation_id === 'string'
+        && body.reservation_id.length > 0
+        && typeof body.requested === 'number'
+        && Number.isInteger(body.requested)
+        && body.requested >= 0
+        && typeof body.privileged_requested === 'number'
+        && Number.isInteger(body.privileged_requested)
+        && body.privileged_requested >= 0
+        && body.privileged_requested <= body.requested
+        && Array.isArray(body.jobs)
+        && body.jobs.length === body.requested
+        && body.jobs.every(isMediaRefreshJobV3)
+      ) {
+        return Response.json(await this.core.reserveMedia(
+          body.date,
+          body.reservation_id,
+          body.requested,
+          body.privileged_requested,
+          body.jobs as MediaRefreshJobV3[],
+        ))
       }
       return Response.json({ error: 'Invalid coordinator request' }, { status: 400 })
     })

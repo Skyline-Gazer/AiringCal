@@ -1,5 +1,108 @@
 export const packageBoundary = '@airing-cal/storage'
 
+export {
+  canonicalJson,
+  canonicalize,
+  collectionContentHash,
+  persistedCollectionSubject,
+  sha256Canonical,
+} from './canonical-json.ts'
+export {
+  D1StateStore,
+  StaleCollectionDiffError,
+  SyncRunCheckpointConflictError,
+} from './d1-state-store.ts'
+export {
+  claimDailyBudgetReservation,
+  markBudgetSubmission,
+  reserveDailyBudget,
+  transitionBudgetSubmission,
+} from './d1-budget.ts'
+export type {
+  BudgetReservationClaim,
+  BudgetReservationRequest,
+  BudgetReservationResult,
+  BudgetSubmissionTransition,
+} from './d1-budget.ts'
+export type {
+  CollectionContentInput,
+  PersistedCollectionSubject,
+  SubjectBusinessProjection,
+} from './canonical-json.ts'
+
+export type {
+  AppStateRow,
+  BudgetSubmissionStatus,
+  CollectionDiffPlanLike,
+  CollectionRow,
+  D1DatabaseLike,
+  D1MetaLike,
+  D1PreparedStatementLike,
+  D1ResultLike,
+  PublicCalendarDayV1,
+  PublicCalendarSubjectV1,
+  PublicCollectionItemV1,
+  PublicImageRefV1,
+  PublicationPendingCleanupResult,
+  PublicationSourceWatermarkV1,
+  PublicSnapshotPointerV1,
+  PublicationWriteOwner,
+  PublicSnapshotSummaryV1,
+  PublicSnapshotV1,
+  PublicSubjectImagesV1,
+  SubjectMediaRow,
+  SyncBudgetReservationRow,
+  SyncBudgetResource,
+  SyncBudgetRow,
+  SyncRunRow,
+  SyncRunCheckpointGuard,
+  SyncRunCompletion,
+  SyncRunFailure,
+  SyncTerminalTransitionResult,
+  SyncRunUpdate,
+  Temperature,
+} from './d1-types.ts'
+
+export {
+  MIGRATE_CLEANUP_CURSOR_KEY,
+  MIGRATE_KV_BUDGET_DAILY_KEY,
+  MIGRATE_LEGACY_CURSOR_KEY,
+  MIGRATE_LEGACY_SUMMARY_KEY,
+  MIGRATE_READ_MODE_KEY,
+  MIGRATE_SHADOW_STREAK_KEY,
+  PUBLIC_READ_MODE_KV_KEY,
+  migrateCleanupCursorKey,
+  migrateKvBudgetDailyKey,
+  migrateLegacyCursorKey,
+  migrateLegacySummaryKey,
+  migrateReadModeKey,
+  migrateShadowStreakKey,
+  publicReadModeKvKey,
+} from './legacy-migration-types.ts'
+export type {
+  CleanupCursorV1,
+  KvBudgetDailyV1,
+  MigrationCursorV1,
+  MigrationSummaryV1,
+  ReadModeV1,
+  ShadowStreakV1,
+} from './legacy-migration-types.ts'
+export {
+  importLegacySubjectBatch,
+  readLegacySubjectRecords,
+  type LegacyKvReader,
+  type LegacyMigrationD1,
+  type LegacySubjectRecords,
+} from './legacy-migration.ts'
+export {
+  buildLegacyPublicResult,
+  compareShadowSnapshots,
+  normalizePublicResult,
+  type LegacyHydration,
+  type LegacyPublicResult,
+  type NormalizedPublicResult,
+} from './shadow-compare.ts'
+
 export type CollectionType = 'want' | 'watched' | 'watching' | 'on_hold' | 'dropped'
 export type ImageSourceSize = 'common' | 'large'
 export const SUBJECT_DETAIL_TTL_SECONDS = 60 * 60 * 24 * 7
@@ -24,6 +127,19 @@ export interface SyncRun {
   collection_pages: number
   subject_count: number
   refresh_jobs: number
+  refresh_candidates: number
+  refresh_candidates_by_priority: {
+    new_or_changed: number
+    hot: number
+    cold: number
+    retry: number
+  }
+  refresh_selected: number
+  refresh_granted: number
+  refresh_deferred: number
+  refresh_confirmed: number
+  refresh_uncertain: number
+  refresh_skipped: number
   error: string | null
 }
 
@@ -67,6 +183,87 @@ export interface MediaRefreshJobV2 {
 export interface MediaRefreshJobV3 extends Omit<MediaRefreshJobV2, 'version'> {
   version: 3
   generation: number
+}
+
+export interface MediaRefreshJobV4Generation {
+  observed_at: number
+  run_id: string
+}
+
+export interface MediaRefreshJobV4 extends Omit<MediaRefreshJobV3, 'version' | 'generation'> {
+  version: 4
+  generation: MediaRefreshJobV4Generation
+}
+
+const MEDIA_REFRESH_COMPONENTS = new Set<MediaRefreshComponent>([
+  'detail',
+  'meta',
+  'image_common',
+  'image_large',
+])
+
+function isMediaRefreshJobBase(value: unknown): value is Omit<MediaRefreshJobV2, 'version'> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const job = value as Record<string, unknown>
+  if (
+    typeof job.job_id !== 'string'
+    || job.job_id.length === 0
+    || typeof job.subject_id !== 'number'
+    || !Number.isSafeInteger(job.subject_id)
+    || job.subject_id <= 0
+    || typeof job.title !== 'string'
+    || !Array.isArray(job.components)
+    || !job.components.every((component) => MEDIA_REFRESH_COMPONENTS.has(component as MediaRefreshComponent))
+  ) return false
+  if (job.images === undefined) return true
+  if (typeof job.images !== 'object' || job.images === null || Array.isArray(job.images)) return false
+  const images = job.images as Record<string, unknown>
+  return (images.common === undefined || typeof images.common === 'string')
+    && (images.large === undefined || typeof images.large === 'string')
+}
+
+function hasValidMediaGeneration(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false
+  const generation = (value as { generation?: unknown }).generation
+  return typeof generation === 'number' && Number.isSafeInteger(generation) && generation >= 0
+}
+
+function hasValidV4MediaGeneration(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false
+  const generation = (value as { generation?: unknown }).generation
+  if (typeof generation !== 'object' || generation === null || Array.isArray(generation)) return false
+  const fields = generation as Record<string, unknown>
+  return typeof fields.observed_at === 'number'
+    && Number.isSafeInteger(fields.observed_at)
+    && fields.observed_at >= 0
+    && typeof fields.run_id === 'string'
+    && fields.run_id.length > 0
+}
+
+export function isMediaRefreshJobV2(value: unknown): value is MediaRefreshJobV2 {
+  return isMediaRefreshJobBase(value)
+    && (value as { version?: unknown }).version === 2
+}
+
+export function isMediaRefreshJobV3(value: unknown): value is MediaRefreshJobV3 {
+  return isMediaRefreshJobBase(value)
+    && (value as { version?: unknown }).version === 3
+    && hasValidMediaGeneration(value)
+}
+
+export function isMediaRefreshJobV4(value: unknown): value is MediaRefreshJobV4 {
+  return isMediaRefreshJobBase(value)
+    && (value as { version?: unknown }).version === 4
+    && hasValidV4MediaGeneration(value)
+}
+
+export function hasUnsupportedMediaJobVersion(value: unknown): boolean {
+  return typeof value === 'object'
+    && value !== null
+    && 'version' in value
+    && !isMediaRefreshJobV2(value)
+    && !isMediaRefreshJobV3(value)
+    && !isMediaRefreshJobV4(value)
 }
 
 export interface StorageAdapter {
@@ -199,6 +396,25 @@ export class KVStorage implements StorageAdapter {
   }
 }
 
+function stableJson(value: unknown): string | undefined {
+  return JSON.stringify(value, (_key, candidate) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return candidate
+    return Object.fromEntries(Object.keys(candidate).sort().map((key) => [key, candidate[key]]))
+  })
+}
+
+export async function putJsonIfChanged<T>(
+  storage: StorageAdapter,
+  key: string,
+  next: T,
+  normalize: (value: T) => unknown,
+): Promise<boolean> {
+  const previous = await storage.get<T>(key)
+  if (previous !== null && stableJson(normalize(previous)) === stableJson(normalize(next))) return false
+  await storage.put(key, next)
+  return true
+}
+
 export function nextSubjectRefreshAt(subjectId: number, cachedAt: number): number {
   const sixDays = 6 * 24 * 60 * 60
   const twoDays = 2 * 24 * 60 * 60
@@ -224,8 +440,8 @@ export async function getCachedSubjectDetail<T = any>(
 
   try {
     const subject = await client.getSubject(subjectId)
-    if (!subject) return cached?.subject ?? null
-    await storage.put(subjectDetailKey(subjectId), { cached_at: now, subject })
+    if (!subject) return null
+    await putJsonIfChanged(storage, subjectDetailKey(subjectId), { cached_at: now, subject }, (value) => value.subject)
     return subject
   } catch (error) {
     if (cached?.subject) return cached.subject

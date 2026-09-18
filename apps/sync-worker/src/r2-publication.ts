@@ -1,0 +1,544 @@
+import {
+  buildPublicSnapshot,
+  parsePublicSnapshotV1,
+  type PublicSnapshotInput,
+} from '@airing-cal/domain'
+import {
+  canonicalJson,
+  type PublicationPendingCleanupResult,
+  type PublicationSourceWatermarkV1,
+  type PublicSnapshotPointerV1,
+  type PublicationWriteOwner,
+} from '@airing-cal/storage'
+
+export const POINTER_KEY = 'public:current'
+export const POINTER_KEY_SHADOW = 'public:shadow-current'
+export const PUBLIC_READ_MODE_KV_KEY = 'public:read-mode'
+const LOWERCASE_SHA256 = /^[0-9a-f]{64}$/
+
+export interface PublicationState {
+  getVerifiedPublication(): Promise<PublicSnapshotPointerV1 | undefined>
+  getPendingPublication(): Promise<PublicSnapshotPointerV1 | undefined>
+  commitPendingPublication(
+    candidate: PublicSnapshotPointerV1,
+    source: PublicationSourceWatermarkV1,
+  ): Promise<boolean>
+  cleanupStalePendingPublication(
+    verified: PublicSnapshotPointerV1,
+    source: PublicationSourceWatermarkV1,
+  ): Promise<PublicationPendingCleanupResult>
+  confirmPublicationAuthorized(
+    candidate: PublicSnapshotPointerV1,
+    source: PublicationSourceWatermarkV1,
+  ): Promise<'authorized' | 'already_verified' | 'stale' | 'conflict'>
+  claimPublicationWrite(
+    candidate: PublicSnapshotPointerV1,
+    owner: PublicationWriteOwner,
+    source: PublicationSourceWatermarkV1,
+  ): Promise<'claimed' | 'busy' | 'already_verified' | 'conflict'>
+  confirmPublicationWrite(
+    candidate: PublicSnapshotPointerV1,
+    owner: PublicationWriteOwner,
+    source: PublicationSourceWatermarkV1,
+  ): Promise<'active' | 'expired' | 'already_verified' | 'conflict'>
+  releasePublicationWrite(
+    candidate: PublicSnapshotPointerV1,
+    owner: PublicationWriteOwner,
+  ): Promise<void>
+  markPublicationPublished(
+    candidate: PublicSnapshotPointerV1,
+    owner: PublicationWriteOwner,
+    source: PublicationSourceWatermarkV1,
+  ): Promise<void>
+}
+
+export interface PublicationDataBucket {
+  put(
+    key: string,
+    value: string,
+    options?: { onlyIf?: Headers; httpMetadata?: { contentType?: string } },
+  ): Promise<unknown | null>
+  get(key: string): Promise<{ key: string; text(): Promise<string> } | null>
+}
+
+export interface PublicationPointerKv {
+  get(key: string): Promise<string | null>
+  put(key: string, value: string): Promise<void>
+}
+
+export interface PublicationResult {
+  status: 'unchanged' | 'published' | 'pending'
+  generation: number
+  contentHash: string
+  r2Puts: number
+  pointerPuts: number
+}
+
+export interface PublishPublicSnapshotArguments {
+  state: PublicationState
+  dataBucket: PublicationDataBucket
+  pointerKv: PublicationPointerKv
+  pointerKey?: string
+  input: PublicSnapshotInput & { content_hash: string }
+  now: number
+  sourceObservedAt: number
+  publicationId: string
+}
+
+function parsePointer(value: unknown, label: string): PublicSnapshotPointerV1 {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error(`Invalid ${label} publication state`)
+  }
+  const pointer = value as Record<string, unknown>
+  const keys = Object.keys(pointer)
+  const required = ['schema_version', 'generation', 'content_hash', 'r2_key', 'published_at']
+  if (
+    pointer.schema_version !== 1
+    || !required.every((key) => Object.hasOwn(pointer, key))
+    || keys.some((key) => !required.includes(key))
+    || !Number.isSafeInteger(pointer.generation)
+    || (pointer.generation as number) < 0
+    || typeof pointer.content_hash !== 'string'
+    || !LOWERCASE_SHA256.test(pointer.content_hash)
+    || typeof pointer.r2_key !== 'string'
+    || !Number.isSafeInteger(pointer.published_at)
+    || (pointer.published_at as number) < 0
+  ) {
+    throw new Error(`Invalid ${label} publication state`)
+  }
+  const expectedKey = `snapshots/v1/${pointer.generation}-${pointer.content_hash}.json`
+  if (pointer.r2_key !== expectedKey) throw new Error(`Invalid ${label} publication object key`)
+  return pointer as unknown as PublicSnapshotPointerV1
+}
+
+async function readVerified(state: PublicationState): Promise<PublicSnapshotPointerV1 | undefined> {
+  const value = await state.getVerifiedPublication()
+  return value === undefined ? undefined : parsePointer(value, 'verified')
+}
+
+async function readPending(state: PublicationState): Promise<PublicSnapshotPointerV1 | undefined> {
+  const value = await state.getPendingPublication()
+  return value === undefined ? undefined : parsePointer(value, 'pending')
+}
+
+async function prepareCandidate(
+  state: PublicationState,
+  verified: PublicSnapshotPointerV1 | undefined,
+  contentHash: string,
+  now: number,
+  source: PublicationSourceWatermarkV1,
+): Promise<
+  | PublicSnapshotPointerV1
+  | { unchanged: PublicSnapshotPointerV1 }
+  | { blocked: { generation: number; contentHash: string } }
+> {
+  const pending = await readPending(state)
+  if (verified?.content_hash === contentHash) return { unchanged: verified }
+  if (pending?.content_hash === contentHash) {
+    if (await state.commitPendingPublication(pending, source)) return pending
+    return {
+      blocked: {
+        generation: pending.generation,
+        contentHash,
+      },
+    }
+  }
+
+  const generation = (verified?.generation ?? 0) + 1
+  if (!Number.isSafeInteger(generation)) throw new Error('Public snapshot generation exhausted')
+  const candidate: PublicSnapshotPointerV1 = {
+    schema_version: 1,
+    generation,
+    content_hash: contentHash,
+    r2_key: `snapshots/v1/${generation}-${contentHash}.json`,
+    published_at: now,
+  }
+  if (await state.commitPendingPublication(candidate, source)) return candidate
+
+  const currentVerified = await readVerified(state)
+  const currentPending = await readPending(state)
+  if (currentVerified?.content_hash === contentHash) return { unchanged: currentVerified }
+  if (currentPending?.content_hash === contentHash) {
+    if (await state.commitPendingPublication(currentPending, source)) return currentPending
+    return {
+      blocked: {
+        generation: currentPending.generation,
+        contentHash,
+      },
+    }
+  }
+  return {
+    blocked: {
+      generation: currentPending?.generation ?? generation,
+      contentHash,
+    },
+  }
+}
+
+function isUnchangedCandidate(
+  value:
+    | PublicSnapshotPointerV1
+    | { unchanged: PublicSnapshotPointerV1 }
+    | { blocked: { generation: number; contentHash: string } },
+): value is { unchanged: PublicSnapshotPointerV1 } {
+  return Object.hasOwn(value, 'unchanged')
+}
+
+function isBlockedCandidate(
+  value: PublicSnapshotPointerV1 | { blocked: { generation: number; contentHash: string } },
+): value is { blocked: { generation: number; contentHash: string } } {
+  return Object.hasOwn(value, 'blocked')
+}
+
+function unchangedResult(verified: PublicSnapshotPointerV1): PublicationResult {
+  return {
+    status: 'unchanged',
+    generation: verified.generation,
+    contentHash: verified.content_hash,
+    r2Puts: 0,
+    pointerPuts: 0,
+  }
+}
+
+function pendingResult(generation: number, contentHash: string): PublicationResult {
+  return {
+    status: 'pending',
+    generation,
+    contentHash,
+    r2Puts: 0,
+    pointerPuts: 0,
+  }
+}
+
+async function reconcileVerifiedNoOp(
+  state: PublicationState,
+  verified: PublicSnapshotPointerV1,
+  contentHash: string,
+  source: PublicationSourceWatermarkV1,
+): Promise<
+  | { result: PublicationResult }
+  | { verified: PublicSnapshotPointerV1 | undefined }
+> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const cleanup = await state.cleanupStalePendingPublication(verified, source)
+    if (cleanup === 'clean') return { result: unchangedResult(verified) }
+    if (cleanup === 'cleaned') continue
+    if (cleanup === 'stale') {
+      const pending = await readPending(state)
+      return {
+        result: pendingResult(pending?.generation ?? verified.generation, contentHash),
+      }
+    }
+
+    const currentVerified = await readVerified(state)
+    if (
+      currentVerified === undefined
+      || canonicalJson(currentVerified) !== canonicalJson(verified)
+    ) return { verified: currentVerified }
+    if (cleanup === 'active') {
+      const pending = await readPending(state)
+      if (pending !== undefined) {
+        return { result: pendingResult(pending.generation, contentHash) }
+      }
+    }
+    return { verified: currentVerified }
+  }
+
+  const pending = await readPending(state)
+  return {
+    result: pendingResult(
+      pending?.generation ?? verified.generation + 1,
+      contentHash,
+    ),
+  }
+}
+
+async function putPointerAndConfirm(
+  pointerKv: PublicationPointerKv,
+  pointerBytes: string,
+  pointerKey = POINTER_KEY,
+): Promise<0 | 1> {
+  try {
+    await pointerKv.put(pointerKey, pointerBytes)
+    return 1
+  } catch {
+    try {
+      return await pointerKv.get(pointerKey) === pointerBytes ? 1 : 0
+    } catch {
+      return 0
+    }
+  }
+}
+
+export async function promoteShadowPointer(
+  pointerKv: PublicationPointerKv,
+  now: number,
+): Promise<{ promoted: boolean; generation: number }> {
+  const raw = await pointerKv.get(POINTER_KEY_SHADOW)
+  if (raw === null) return { promoted: false, generation: 0 }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+    parsePointer(parsed, 'shadow')
+  } catch {
+    return { promoted: false, generation: 0 }
+  }
+  const pointer = parsed as PublicSnapshotPointerV1
+  const pointerBytes = canonicalJson(pointer)
+  const alreadyCurrent = await pointerKv.get(POINTER_KEY)
+  if (alreadyCurrent !== pointerBytes) {
+    const pointerPuts = await putPointerAndConfirm(pointerKv, pointerBytes, POINTER_KEY)
+    if (pointerPuts === 0) return { promoted: false, generation: pointer.generation }
+  }
+  try {
+    await pointerKv.put(
+      PUBLIC_READ_MODE_KV_KEY,
+      canonicalJson({ mode: 'r2', switched_at: now }),
+    )
+  } catch {
+    // The read-mode mirror is best effort; the D1 authority and pointer are
+    // already advanced and the next scheduled run retries the mirror.
+  }
+  return { promoted: true, generation: pointer.generation }
+}
+
+async function releasePublicationWrite(
+  state: PublicationState,
+  candidate: PublicSnapshotPointerV1,
+  owner: PublicationWriteOwner,
+): Promise<void> {
+  try {
+    await state.releasePublicationWrite(candidate, owner)
+  } catch {
+    // Retaining the claim is safer than allowing an unfenced stale pointer write.
+  }
+}
+
+export async function publishPublicSnapshot(
+  {
+    state,
+    dataBucket,
+    pointerKv,
+    pointerKey,
+    input,
+    now,
+    sourceObservedAt,
+    publicationId,
+  }: PublishPublicSnapshotArguments,
+): Promise<PublicationResult> {
+  if (!Number.isSafeInteger(now) || now < 0) throw new Error('Invalid publication time')
+  if (!Number.isSafeInteger(sourceObservedAt) || sourceObservedAt < 0) {
+    throw new Error('Invalid publication source observation')
+  }
+  if (
+    typeof publicationId !== 'string'
+    || publicationId.length === 0
+    || publicationId.length > 128
+  ) throw new Error('Invalid publication identity')
+  const validationSnapshot = await buildPublicSnapshot({ ...input, published_at: now }, 0)
+  await parsePublicSnapshotV1(validationSnapshot)
+  if (validationSnapshot.content_hash !== input.content_hash) {
+    throw new Error('Invalid publication input content_hash')
+  }
+  const publicationSource: PublicationSourceWatermarkV1 = {
+    schema_version: 1,
+    source_observed_at: sourceObservedAt,
+    publication_id: publicationId,
+    content_hash: validationSnapshot.content_hash,
+  }
+
+  let verified = await readVerified(state)
+  let prepared:
+    | PublicSnapshotPointerV1
+    | { blocked: { generation: number; contentHash: string } }
+    | undefined
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (verified?.content_hash === validationSnapshot.content_hash) {
+      const resolution = await reconcileVerifiedNoOp(
+        state,
+        verified,
+        validationSnapshot.content_hash,
+        publicationSource,
+      )
+      if ('result' in resolution) return resolution.result
+      verified = resolution.verified
+      if (verified?.content_hash === validationSnapshot.content_hash) continue
+    }
+
+    const next = await prepareCandidate(
+      state,
+      verified,
+      validationSnapshot.content_hash,
+      now,
+      publicationSource,
+    )
+    if (isUnchangedCandidate(next)) {
+      const resolution = await reconcileVerifiedNoOp(
+        state,
+        next.unchanged,
+        validationSnapshot.content_hash,
+        publicationSource,
+      )
+      if ('result' in resolution) return resolution.result
+      verified = resolution.verified
+      continue
+    }
+    prepared = next
+    break
+  }
+  if (prepared === undefined) {
+    const pending = await readPending(state)
+    return pendingResult(
+      pending?.generation ?? (verified?.generation ?? 0) + 1,
+      validationSnapshot.content_hash,
+    )
+  }
+  if (isBlockedCandidate(prepared)) {
+    return pendingResult(prepared.blocked.generation, prepared.blocked.contentHash)
+  }
+  const candidate = prepared
+  const initialAuthorization = await state.confirmPublicationAuthorized(
+    candidate,
+    publicationSource,
+  )
+  if (initialAuthorization === 'stale') {
+    return pendingResult(candidate.generation, candidate.content_hash)
+  }
+  if (initialAuthorization === 'conflict') throw new Error('Publication authorization conflict')
+  if (initialAuthorization === 'already_verified') {
+    return {
+      status: 'published',
+      generation: candidate.generation,
+      contentHash: candidate.content_hash,
+      r2Puts: 0,
+      pointerPuts: 0,
+    }
+  }
+  const snapshot = await buildPublicSnapshot({
+    ...input,
+    published_at: candidate.published_at,
+  }, candidate.generation)
+  if (snapshot.content_hash !== candidate.content_hash) {
+    throw new Error('Pending publication content_hash mismatch')
+  }
+  const expectedKey = `snapshots/v1/${snapshot.generation}-${snapshot.content_hash}.json`
+  if (candidate.r2_key !== expectedKey) throw new Error('Pending publication object key mismatch')
+
+  const objectBytes = canonicalJson(snapshot)
+  const putResult = await dataBucket.put(candidate.r2_key, objectBytes, {
+    onlyIf: new Headers({ 'If-None-Match': '*' }),
+    httpMetadata: { contentType: 'application/json' },
+  })
+  const r2Puts = putResult === null ? 0 : 1
+
+  const stored = await dataBucket.get(candidate.r2_key)
+  if (stored === null) throw new Error('Published R2 snapshot is missing')
+  const storedBytes = await stored.text()
+  let storedValue: unknown
+  try {
+    storedValue = JSON.parse(storedBytes)
+  } catch {
+    throw new Error('Published R2 snapshot is not valid JSON')
+  }
+  const parsed = await parsePublicSnapshotV1(storedValue)
+  if (parsed.generation !== candidate.generation) {
+    throw new Error('Published R2 snapshot generation mismatch')
+  }
+  if (parsed.content_hash !== candidate.content_hash) {
+    throw new Error('Published R2 snapshot content_hash mismatch')
+  }
+  if (stored.key !== candidate.r2_key) throw new Error('Published R2 snapshot object key mismatch')
+  if (storedBytes !== objectBytes) throw new Error('Published R2 snapshot bytes mismatch')
+
+  const owner: PublicationWriteOwner = {
+    publication_id: publicationId,
+    attempt_token: crypto.randomUUID(),
+  }
+  const claim = await state.claimPublicationWrite(candidate, owner, publicationSource)
+  if (claim === 'conflict') throw new Error('Publication authorization conflict')
+  if (claim === 'already_verified') {
+    return {
+      status: 'published',
+      generation: candidate.generation,
+      contentHash: candidate.content_hash,
+      r2Puts,
+      pointerPuts: 0,
+    }
+  }
+  if (claim === 'busy') {
+    return {
+      status: 'pending',
+      generation: candidate.generation,
+      contentHash: candidate.content_hash,
+      r2Puts,
+      pointerPuts: 0,
+    }
+  }
+
+  const confirmation = await state.confirmPublicationWrite(
+    candidate,
+    owner,
+    publicationSource,
+  )
+  if (confirmation === 'already_verified') {
+    return {
+      status: 'published',
+      generation: candidate.generation,
+      contentHash: candidate.content_hash,
+      r2Puts,
+      pointerPuts: 0,
+    }
+  }
+  if (confirmation !== 'active') {
+    await releasePublicationWrite(state, candidate, owner)
+    return {
+      status: 'pending',
+      generation: candidate.generation,
+      contentHash: candidate.content_hash,
+      r2Puts,
+      pointerPuts: 0,
+    }
+  }
+
+  const pointerBytes = canonicalJson(candidate)
+  const pointerPuts = await putPointerAndConfirm(pointerKv, pointerBytes, pointerKey ?? POINTER_KEY)
+  if (pointerPuts === 0) {
+    await releasePublicationWrite(state, candidate, owner)
+    return {
+      status: 'pending',
+      generation: candidate.generation,
+      contentHash: candidate.content_hash,
+      r2Puts,
+      pointerPuts,
+    }
+  }
+
+  try {
+    await state.markPublicationPublished(candidate, owner, publicationSource)
+  } catch {
+    let observed: PublicSnapshotPointerV1 | undefined
+    try {
+      observed = await readVerified(state)
+    } catch {
+      await releasePublicationWrite(state, candidate, owner)
+      throw new Error('Publication verified-state readback failed')
+    }
+    if (canonicalJson(observed) !== pointerBytes) {
+      await releasePublicationWrite(state, candidate, owner)
+      return {
+        status: 'pending',
+        generation: candidate.generation,
+        contentHash: candidate.content_hash,
+        r2Puts,
+        pointerPuts,
+      }
+    }
+  }
+  return {
+    status: 'published',
+    generation: candidate.generation,
+    contentHash: candidate.content_hash,
+    r2Puts,
+    pointerPuts,
+  }
+}
