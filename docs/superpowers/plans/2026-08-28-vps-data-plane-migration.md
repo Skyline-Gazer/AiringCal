@@ -287,11 +287,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - `workflow_dispatch` explicit debug input builds only target `debug` and a tag matching `[0-9a-f]{40}-debug`；production Compose validator rejects it。
 
-- [ ] **Step 1: RED tests** — 普通 push 无 debug build；manual debug 无 production overwrite；debug tag exact；Compose debug ref rejected。
-- [ ] **Step 2: 运行 RED** — 两个 validator test files 预期新 cases FAIL。
-- [ ] **Step 3: GREEN** — 添加 job condition/target/tag，保留 production immutable enforcement。
-- [ ] **Step 4: REFACTOR/验证** — workflow/compose validators 与 `git diff --check` PASS。
-- [ ] **Step 5: 文档、提交与推送** — 写人工 debug 构建/禁用于生产；commit `ci: publish manual VPS debug image` 后 push。
+- [x] **Step 1: RED tests** — 普通 push 无 debug build；manual debug 无 production overwrite；debug tag exact；Compose debug ref rejected。
+- [x] **Step 2: 运行 RED** — 两个 validator test files 预期新 cases FAIL。
+- [x] **Step 3: GREEN** — 添加 job condition/target/tag，保留 production immutable enforcement。
+- [x] **Step 4: REFACTOR/验证** — workflow/compose validators 与 `git diff --check` PASS。
+- [x] **Step 5: 文档、提交与推送** — 写人工 debug 构建/禁用于生产；commit `ci: publish manual VPS debug image` 后 push。
 
 ### Task 9.1: 用户与运维文档全量同步
 

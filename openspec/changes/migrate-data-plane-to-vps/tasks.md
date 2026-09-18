@@ -36,7 +36,7 @@
 ## 8. GHCR Delivery
 
 - [x] 8.1 Verify GitHub Actions and GHCR contracts, then add production image CI with test gates, resolved Node/Alpine/base-digest metadata, immutable full-SHA tags, and non-overwrite enforcement
-- [ ] 8.2 Add manual debug-image workflow publishing only `<git-sha>-debug`, and verify production Compose cannot select floating or debug tags
+- [x] 8.2 Add manual debug-image workflow publishing only `<git-sha>-debug`, and verify production Compose cannot select floating or debug tags
 
 ## 9. Documentation, Verification, and Cutover
 
