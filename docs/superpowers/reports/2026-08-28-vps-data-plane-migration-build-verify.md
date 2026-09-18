@@ -31,21 +31,130 @@ current environment has no Docker CLI or disposable PostgreSQL service.
 
 ## Audit evidence
 
-- High-confidence credential-pattern scan over tracked implementation/config
-  files found no private-key, access-key, token-prefix, or long Bearer-token
-  matches.
-- Compose environment audit found all 12 variables from
-  `deploy/vps/compose.yaml` in `.env.example`, `README.md`, the runbook, and
-  the VPS architecture document.
-- The exact CLI help contract
-  `Usage: sync [--mode=shadow|live] [--source=scheduled|manual]` is present in
-  `apps/vps-sync/src/cli.ts` and the three VPS-facing documents.
-- The local `docs/example/api/bgm-api.json` contains every BGM endpoint/method
-  used by the VPS runtime path: collections, subject detail, calendar,
-  collection patch/post, and episode get/patch. The API contract tests passed
-  29/29. Existing OAuth helpers were not changed by this task.
-- The docs contract tests, Compose validator, workflow validator, and image
-  verifier cover the checked-in README/config/API-facing delivery claims.
+### Secret scan
+
+Command (tracked files only; the regex covers private-key headers, AWS access-key
+prefixes, common token prefixes, and long Bearer values):
+
+```sh
+set +e
+tracked_files=$(git ls-files | wc -l | tr -d ' ')
+git ls-files -z | xargs -0 rg -n --no-heading --color=never --pcre2 \
+  '(?:-----BEGIN [A-Z ]+PRIVATE KEY-----|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|sk-[A-Za-z0-9]{20,})\b|Bearer[[:space:]]+[A-Za-z0-9._-]{32,})' \
+  > /tmp/vps-secret-scan.out
+rg_exit=$?
+match_lines=$(wc -l < /tmp/vps-secret-scan.out | tr -d ' ')
+printf 'tracked_files=%s\nrg_exit=%s\nmatch_lines=%s\n' "$tracked_files" "$rg_exit" "$match_lines"
+if [ "$rg_exit" -eq 1 ] && [ "$match_lines" -eq 0 ]; then
+  printf 'audit_exit=0 (no high-confidence matches)\n'
+  exit 0
+fi
+printf 'audit_exit=1\n'
+exit 1
+```
+
+Fresh output: `tracked_files=549`, `rg_exit=1` (ripgrep's no-match code),
+`match_lines=0`, `audit_exit=0`.
+
+### Compose environment audit
+
+Command (extracts the variable names from the checked-in Compose file and
+checks each required name in every operator-facing configuration/document):
+
+```sh
+set +e
+vars="$(rg -o '\$\{[A-Z][A-Z0-9_]*' deploy/vps/compose.yaml | sed 's/.*{//' | sort -u)"
+var_count=$(printf '%s\n' "$vars" | awk 'NF { count++ } END { print count + 0 }')
+printf 'compose_contract_vars=%s\n' "$var_count"
+audit_exit=0
+for file in deploy/vps/.env.example README.md docs/runbook/vps-data-plane.md docs/architecture/vps-data-plane.md; do
+  covered=0
+  missing=""
+  while IFS= read -r var; do
+    [ -n "$var" ] || continue
+    if rg -q --fixed-strings "$var" "$file"; then
+      covered=$((covered + 1))
+    else
+      missing="$missing $var"
+      audit_exit=1
+    fi
+  done <<EOF
+$vars
+EOF
+  printf '%s covered=%s/%s missing=%s\n' "$file" "$covered" "$var_count" "${missing# }"
+done
+printf 'audit_exit=%s\n' "$audit_exit"
+exit "$audit_exit"
+```
+
+Fresh output: `compose_contract_vars=12`; `.env.example`, `README.md`, the
+runbook, and the architecture document each covered `12/12`, with no missing
+names; `audit_exit=0`.
+
+### CLI/API audit
+
+The CLI command and documentation contract were checked with:
+
+```sh
+set +e
+contract='Usage: sync [--mode=shadow|live] [--source=scheduled|manual]'
+help_output="$(node --import tsx/esm apps/vps-sync/src/cli.ts --help 2>&1)"
+help_exit=$?
+printf 'cli_help_exit=%s\ncli_help_output=%s\n' "$help_exit" "$help_output"
+audit_exit=$help_exit
+[ "$help_output" = "$contract" ] && printf 'cli_help_contract=match\n' || audit_exit=1
+contract_hits=0
+for file in apps/vps-sync/src/cli.ts README.md docs/runbook/vps-data-plane.md docs/architecture/vps-data-plane.md; do
+  if rg -Fq "$contract" "$file"; then
+    contract_hits=$((contract_hits + 1))
+  else
+    audit_exit=1
+  fi
+done
+printf 'contract_files=%s/4\naudit_exit=%s\n' "$contract_hits" "$audit_exit"
+exit "$audit_exit"
+```
+
+Fresh output: `cli_help_exit=0`, the exact usage line, `cli_help_contract=match`,
+`contract_files=4/4`, `audit_exit=0`.
+
+The local BGM OpenAPI and client contract were checked with:
+
+```sh
+set +e
+node --input-type=module <<'NODE'
+import { readFileSync } from 'node:fs'
+const spec = JSON.parse(readFileSync('docs/example/api/bgm-api.json', 'utf8'))
+const required = [
+  ['GET', '/v0/users/{username}/collections'],
+  ['GET', '/v0/subjects/{subject_id}'],
+  ['GET', '/calendar'],
+  ['PATCH', '/v0/users/-/collections/{subject_id}'],
+  ['POST', '/v0/users/-/collections/{subject_id}'],
+  ['GET', '/v0/users/-/collections/{subject_id}/episodes'],
+  ['PATCH', '/v0/users/-/collections/{subject_id}/episodes'],
+]
+const missing = required.filter(([method, path]) => !spec.paths[path]?.[method.toLowerCase()])
+console.log(`runtime_endpoint_method_pairs=${required.length}`)
+console.log(`openapi_paths=${Object.keys(spec.paths).length}`)
+console.log(`missing_pairs=${missing.length}`)
+if (missing.length) process.exitCode = 1
+NODE
+spec_exit=$?
+node --import tsx/esm --test packages/bgm-api/src/*.test.ts > /tmp/bgm-api-audit-all.out 2>&1
+suite_exit=$?
+rg '^ℹ (tests|pass|fail|skipped) ' /tmp/bgm-api-audit-all.out | tail -4
+printf 'api_spec_audit_exit=%s\napi_contract_suite_exit=%s\n' "$spec_exit" "$suite_exit"
+[ "$spec_exit" -eq 0 ] && [ "$suite_exit" -eq 0 ]
+```
+
+Fresh output: `runtime_endpoint_method_pairs=7`, `openapi_paths=47`,
+`missing_pairs=0`; the BGM client contract suite reported `tests 29`,
+`pass 29`, `fail 0`, `skipped 0`; both exit codes were `0`. OAuth helper
+endpoints are outside this VPS-facing audit and were not changed by this task.
+
+The docs contract tests, Compose validator, workflow validator, and image
+verifier cover the checked-in README/config/API-facing delivery claims.
 
 ## Explicitly unexecuted gates
 
