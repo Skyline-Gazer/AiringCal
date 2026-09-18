@@ -273,11 +273,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Push builds production after tests and publishes immutable full `${GITHUB_SHA}` plus non-authoritative discovery tag；records Node/Alpine/base digest/pnpm/git metadata；never SSH/deploys。CI 的 `setup-node` 大版本必须与构建时 `node:alpine` 实际解析到的 Node 大版本一致。当前仓库 CI 固定为 Node 24，但浮动 `node:alpine` 跟随 Node Current，两者可能不一致。实施时必须先通过官方 image metadata 或在具备 Docker 的环境中验证实际解析版本，再决定同步升级 `setup-node`，或者改用明确的 `node:<major>-alpine`；不得在计划中预设当前大版本或未经验证的命令输出格式。
 
-- [ ] **Step 1: Actions contract 验证** — 读取官方 action README/metadata 与现有 workflows，确认 checkout/setup-buildx/login/metadata/build-push inputs、GHCR permissions、concurrency；所有 action pin 使用已验证 commit SHA。
-- [ ] **Step 2: RED tests** — workflow parser 断言 test/typecheck/build gates 先于 push、tag 为完整 SHA、无 VPS secrets/SSH、已有 SHA package 不覆盖。
-- [ ] **Step 3: 运行 RED** — `node --test scripts/validate-vps-image-workflow.test.mjs` 预期 FAIL。
-- [ ] **Step 4: GREEN** — 添加 workflow 与 metadata artifact/summary；本地 validator、`git diff --check` PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步 GHCR 权限/tag/人工部署；commit `ci: publish immutable VPS sync image` 后 push。
+- [x] **Step 1: Actions contract 验证** — 读取官方 action README/metadata 与现有 workflows，确认 checkout/setup-buildx/login/metadata/build-push inputs、GHCR permissions、concurrency；所有 action pin 使用已验证 commit SHA。Docker/DNS 不可用，已记录官方文档/commit 页面 fallback。
+- [x] **Step 2: RED tests** — workflow parser 断言 test/typecheck/build gates 先于 push、tag 为完整 SHA、无 VPS secrets/SSH、已有 SHA package 不覆盖。
+- [x] **Step 3: 运行 RED** — `node --test scripts/validate-vps-image-workflow.test.mjs` 预期 FAIL。
+- [x] **Step 4: GREEN** — 添加 workflow 与 metadata artifact/summary；本地 validator、`git diff --check` PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步 GHCR 权限/tag/人工部署；commit `ci: publish immutable VPS sync image` 后 push。
 
 ### Task 8.2: 手动 debug image 与 production tag isolation
 
