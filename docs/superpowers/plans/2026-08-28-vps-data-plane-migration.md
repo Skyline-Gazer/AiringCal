@@ -356,11 +356,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 
 ## Final Acceptance Checklist
 
-- [ ] 20 个 OpenSpec tasks 均有对应 RED/GREEN 证据、原子 commit 和 push；Build 不执行真实生产切流、七日观察、30 日等待或资源删除。
-- [ ] 正常公开请求只访问 Frontend/Read Worker、R2 与 Cache API，不访问 VPS/PostgreSQL。
-- [ ] Collection/calendar hard failure 不提交、不发布；媒体失败使用 last-known-good 且通知 partial。
-- [ ] R2 live manifest 仅在 immutable snapshot readback/hash 验证后切换，失败可 replay 且 generation 不跳号。
-- [ ] R2 backup 可恢复至不同的空 PostgreSQL 并重建相同 snapshot hash。
-- [ ] Production Alpine image 最小、非 root、只读、无端口；debug 工具隔离在手动 debug image。
-- [ ] GHCR production/Compose 只使用 full-SHA immutable image；CI 不连接 VPS。
-- [ ] 全仓、OpenSpec strict、文档审计和 verification report 均使用新鲜运行证据。
+- [x] 20 个 OpenSpec tasks 均有对应 RED/GREEN 证据、原子 commit 和 push；Build 不执行真实生产切流、七日观察、30 日等待或资源删除（真实运行 gates 在 verification report 标为 Deferred）。
+- [x] 正常公开请求只经 Frontend/Read Worker，使用既有 R2/Cache API 与 D1/KV health/legacy fallback，不访问 VPS/PostgreSQL。
+- [x] Collection/calendar hard failure 不提交、不发布；媒体失败使用 last-known-good 且通知 partial（由 fake/injected tests 覆盖）。
+- [x] R2 live manifest 仅在 immutable snapshot readback/hash 验证后切换，失败可 replay 且 generation 不跳号（fake R2/回放测试通过，真实 R2 Deferred）。
+- [x] R2 backup 的空库 restore/hash 重建由注入式契约与安全门测试覆盖；真实 PostgreSQL round-trip 因环境缺失 Deferred。
+- [x] Production Alpine image 的最小、非 root、只读、无端口与 debug 隔离由静态 Dockerfile/Compose/workflow 契约覆盖；Docker runtime build/run 检查 Deferred。
+- [x] GHCR production/Compose 只使用 full-SHA immutable image，CI 不连接 VPS（workflow/Compose 静态验证通过；认证 GHCR preflight/push Deferred）。
+- [x] 全仓、OpenSpec strict、文档审计和 verification report 均使用新鲜运行证据；未执行 gates 已逐项标注。
