@@ -65,41 +65,63 @@ export type LegacyCleanupGateResult = Readonly<{
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1_000
 
-function toEpochMs(value: string | number | Date): number | null {
-  const timestamp = value instanceof Date
-    ? value.getTime()
-    : typeof value === 'number'
-      ? value
-      : Date.parse(value)
-  return Number.isFinite(timestamp) ? timestamp : null
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function toEpochMs(value: unknown): number | null {
+  try {
+    const timestamp = value instanceof Date
+      ? Date.prototype.getTime.call(value)
+      : typeof value === 'number'
+        ? value
+        : typeof value === 'string'
+          ? Date.parse(value)
+          : Number.NaN
+    return Number.isFinite(timestamp) ? timestamp : null
+  } catch {
+    return null
+  }
 }
 
 function hasObservationEvidence(
-  evidence: CleanupEvidenceRecord | null | undefined,
+  evidence: unknown,
   cutoverMs: number | null,
   nowMs: number | null,
 ): boolean {
-  if (!evidence?.evidenceRef?.trim() || cutoverMs === null || nowMs === null) return false
+  if (!isRecord(evidence) || !isNonEmptyString(evidence.evidenceRef) || cutoverMs === null || nowMs === null) {
+    return false
+  }
   const completedAt = evidence.completedAt === undefined ? null : toEpochMs(evidence.completedAt)
   return completedAt !== null && completedAt >= cutoverMs + SEVEN_DAYS_MS && completedAt <= nowMs
 }
 
 function hasRestoreEvidence(
-  evidence: CleanupEvidenceRecord | null | undefined,
+  evidence: unknown,
   nowMs: number | null,
 ): boolean {
-  if (!evidence?.evidenceRef?.trim() || nowMs === null) return false
+  if (!isRecord(evidence) || !isNonEmptyString(evidence.evidenceRef) || nowMs === null) return false
   const verifiedAt = evidence.verifiedAt === undefined ? null : toEpochMs(evidence.verifiedAt)
   return verifiedAt !== null && verifiedAt <= nowMs
 }
 
 function hasApprovalEvidence(
-  evidence: (CleanupEvidenceRecord & Readonly<{ changeId?: string }>) | null | undefined,
+  evidence: unknown,
   nowMs: number | null,
 ): boolean {
-  if (!evidence?.changeId?.trim() || nowMs === null) return false
+  if (!isRecord(evidence) || !isNonEmptyString(evidence.changeId) || nowMs === null) return false
   const approvedAt = evidence.approvedAt === undefined ? null : toEpochMs(evidence.approvedAt)
   return approvedAt !== null && approvedAt <= nowMs
+}
+
+function hasRollbackDependencies(evidence: unknown): boolean {
+  if (!isRecord(evidence) || !Array.isArray(evidence.rollbackDependencies)) return false
+  if (!evidence.rollbackDependencies.every((dependency) => typeof dependency === 'string')) return false
+  return evidence.rollbackDependencies.some((dependency) => dependency.trim().length > 0)
 }
 
 /**
@@ -118,17 +140,21 @@ export function evaluateLegacyCleanupGate(
   if (cutoverMs === null || nowMs === null || nowMs < cutoverMs + THIRTY_DAYS_MS) {
     reasons.push('retention_period_incomplete')
   }
-  if (!hasObservationEvidence(evidence.sevenDayObservation, cutoverMs, nowMs)) {
-    reasons.push('seven_day_observation_missing')
-  }
-  if (!hasRestoreEvidence(evidence.restoreEvidence, nowMs)) {
-    reasons.push('restore_evidence_missing')
-  }
-  if (!evidence.rollbackDependencies?.some((dependency) => dependency.trim().length > 0)) {
-    reasons.push('rollback_dependency_missing')
-  }
-  if (!hasApprovalEvidence(evidence.independentOpenSpecApproval, nowMs)) {
-    reasons.push('independent_openspec_approval_missing')
+  if (!isRecord(evidence)) {
+    reasons.push('seven_day_observation_missing', 'restore_evidence_missing', 'rollback_dependency_missing', 'independent_openspec_approval_missing')
+  } else {
+    if (!hasObservationEvidence(evidence.sevenDayObservation, cutoverMs, nowMs)) {
+      reasons.push('seven_day_observation_missing')
+    }
+    if (!hasRestoreEvidence(evidence.restoreEvidence, nowMs)) {
+      reasons.push('restore_evidence_missing')
+    }
+    if (!hasRollbackDependencies(evidence)) {
+      reasons.push('rollback_dependency_missing')
+    }
+    if (!hasApprovalEvidence(evidence.independentOpenSpecApproval, nowMs)) {
+      reasons.push('independent_openspec_approval_missing')
+    }
   }
 
   return {

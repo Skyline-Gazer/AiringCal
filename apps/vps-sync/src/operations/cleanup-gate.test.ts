@@ -91,6 +91,29 @@ test('approves cleanup only after every retention and evidence gate passes', asy
   assert.deepEqual(result, { status: 'approved', reasons: [] })
 })
 
+test('fails closed without throwing for malformed caller input', async () => {
+  const { evaluateLegacyCleanupGate } = await cleanupGateApi()
+  const evaluate = (cutover: unknown, now: unknown, evidence: unknown) =>
+    evaluateLegacyCleanupGate(cutover as never, now as never, evidence as never)
+  const malformedInputs: Array<[unknown, unknown, unknown]> = [
+    [null, afterThirtyDays, completeEvidence],
+    [cutoverAt, {}, completeEvidence],
+    [cutoverAt, afterThirtyDays, null],
+    [cutoverAt, afterThirtyDays, 'evidence'],
+    [cutoverAt, afterThirtyDays, { ...completeEvidence, sevenDayObservation: 'evidence' }],
+    [cutoverAt, afterThirtyDays, { ...completeEvidence, restoreEvidence: 42 }],
+    [cutoverAt, afterThirtyDays, { ...completeEvidence, rollbackDependencies: ['valid', 42] }],
+    [cutoverAt, afterThirtyDays, { ...completeEvidence, independentOpenSpecApproval: 'approval' }],
+    [Symbol('cutover'), afterThirtyDays, completeEvidence],
+  ]
+
+  for (const [cutover, now, evidence] of malformedInputs) {
+    assert.doesNotThrow(() => {
+      assert.equal(evaluate(cutover, now, evidence).status, 'blocked')
+    })
+  }
+})
+
 test('resource inventory template is read-only and covers every legacy resource kind', async () => {
   const { LEGACY_RESOURCE_KINDS, LEGACY_RESOURCE_INVENTORY_TEMPLATE } = await cleanupGateApi()
 

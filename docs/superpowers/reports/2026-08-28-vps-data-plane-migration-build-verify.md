@@ -2,7 +2,7 @@
 
 Date: 2026-09-18 (Asia/Shanghai)
 Change: `migrate-data-plane-to-vps`
-Base: `2cabe20` (`docs(vps-sync): check off documentation sync`)
+Base: `ce6137a` (`docs: gate legacy Cloudflare resource cleanup`)
 
 ## Result
 
@@ -23,10 +23,10 @@ a separately approved OpenSpec change.
 - RED: `node --import tsx/esm --test apps/vps-sync/src/operations/cleanup-gate.test.ts`
   failed before the evaluator existed, with all seven cases reporting the
   expected missing-module guard.
-- GREEN: the same command passed 7/7 cases, covering the thirty-day threshold,
+- GREEN: the same command passed 8/8 cases, covering the thirty-day threshold,
   seven-day observation, restore evidence, rollback dependencies, independent
-  OpenSpec approval, and the credential-free D1/KV/Queue/Workflow/DO/R2
-  inventory template.
+  OpenSpec approval, malformed caller input fail-closed behavior, and the
+  credential-free D1/KV/Queue/Workflow/DO/R2 inventory template.
 - The implementation contains no Cloudflare client, delete method, sleep, or
   production resource call. `git diff --check` and the vps-sync typecheck were
   run after the GREEN change.
@@ -39,7 +39,7 @@ a separately approved OpenSpec change.
 | Full typecheck | `CI=true pnpm typecheck` | exit 0; all 10 checked workspace packages passed |
 | Full build check | `CI=true pnpm build:check` | exit 0; all worker dry-run/type checks and VPS typecheck passed |
 | VPS package wrapper | `CI=true pnpm -F @airing-cal/vps-sync test` | exit 1 because `tsx` could not create its IPC pipe (`listen EPERM`) in the sandbox |
-| VPS native fallback | `node --import tsx/esm --test src/**/*.test.ts` from `apps/vps-sync` | exit 0; 162 tests, 155 passed, 7 PostgreSQL integration tests skipped |
+| VPS native fallback | `node --import tsx/esm --test src/**/*.test.ts` from `apps/vps-sync` | exit 0; 170 tests, 163 passed, 7 PostgreSQL integration tests skipped |
 | PostgreSQL integration selection | `node --import tsx/esm --test src/postgres/migrate.test.ts src/postgres/repositories.test.ts` | exit 0; 7 passed, 7 skipped because `DATABASE_URL`/`VPS_SYNC_TEST_DATABASE=1` were not configured |
 | R2 failure-injection suite | `node --import tsx/esm --test apps/vps-sync/src/publication/publish.test.ts apps/read-worker/src/r2-snapshot.test.ts apps/sync-worker/src/r2-publication.test.ts` | exit 0; 90 passed |
 | Image/Compose/workflow validators | `node --test scripts/verify-vps-sync-image.test.mjs scripts/validate-vps-compose.test.mjs scripts/validate-vps-image-workflow.test.mjs` | exit 0; 24 passed |
@@ -72,7 +72,7 @@ printf 'audit_exit=1\n'
 exit 1
 ```
 
-Fresh output: `tracked_files=549`, `rg_exit=1` (ripgrep's no-match code),
+Fresh output: `tracked_files=553`, `rg_exit=1` (ripgrep's no-match code),
 `match_lines=0`, `audit_exit=0`.
 
 ### Compose environment audit
@@ -180,7 +180,7 @@ verifier cover the checked-in README/config/API-facing delivery claims.
 ### Task 9.3 operation evidence
 
 - `node --import tsx/esm --test apps/vps-sync/src/operations/migration.test.ts` — exit 0; 8 tests, 8 passed. This includes three fake shadow rounds, field-level JSON-pointer diffs, restore dry-run, cutover approval-token rejection, and verified-manifest-only rollback.
-- `node --import tsx/esm --test src/**/*.test.ts` from `apps/vps-sync` — exit 0; 162 tests, 155 passed, 7 PostgreSQL integration tests skipped because no disposable service/credentials were configured.
+- `node --import tsx/esm --test src/**/*.test.ts` from `apps/vps-sync` — exit 0; 170 tests, 163 passed, 7 PostgreSQL integration tests skipped because no disposable service/credentials were configured.
 - `pnpm -F @airing-cal/vps-sync typecheck` and `pnpm -F @airing-cal/vps-sync build:check` — exit 0.
 - `CI=true pnpm build:check` — exit 0; workspace checks completed. Wrangler emitted the existing sandbox `EPERM` log-file diagnostics while dry-run builds still completed; no VPS operation connects to a production service.
 - CLI help was run for `shadow-compare`, `restore-verify`, `cutover`, and `rollback`; each exited 0 and printed the checked-in command contract. The new parser accepts environment variable names, never database URLs or approval secrets, and missing injected runtime ports fail closed.

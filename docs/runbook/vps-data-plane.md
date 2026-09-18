@@ -196,7 +196,9 @@ Task 9.4 的 `evaluateLegacyCleanupGate(cutoverAt, now, evidence)` 是纯函数�
 已满 30 个 24 小时周期（恰好到达阈值也可以）、七日观察记录、restore verification
 记录、rollback dependencies 记录和独立 OpenSpec change approval 全部存在且时间不在
 未来时才返回 `approved`；任一缺失都返回 `blocked` 和稳定 reason。Build 阶段只用
-固定测试时间验证该函数，不开始真实 30 日计时。
+固定测试时间验证该函数，不开始真实 30 日计时。调用方传入的 null、非对象或非字符串
+证据、含非字符串项的 rollback dependencies，以及 malformed 的 cutover/now 时间值均
+按未知输入处理并 fail closed 返回 `blocked`，不会因 `.trim()` 或日期解析抛异常。
 
 实际保留计时发生在 Archive 之后：真实生产切流、七日观察和 rollback evidence
 完成并归档本 change 后，Archive 记录的 cutover 时间才是 30 日保留周期的起点。清理
