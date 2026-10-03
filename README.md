@@ -71,13 +71,15 @@ Cache API 在各边缘位置分别缓存，首次请求回源 R2。更新无需�
 | 图片 R2 | `airing-cal-images`；read-worker 的 `AIRING_CAL_R2` |
 | 私有 SQL 备份 R2 | `airing-cal-backups`；无 Worker 公共读取 binding |
 
+Staging uses separate Workers (`airing-cal-staging-*`) and the supplied D1 UUID. Its frontend custom domain is `airingcal-staging.q9m3.com`. The test run uses the existing private `bangumi-tv-images` bucket for images, snapshots and SQL backups under separate key prefixes; the Worker only reads image and validated snapshot paths. `Deploy staging to Cloudflare` is manual and applies migrations only to that staging D1.
+
 `migrations/0001`、`0002` 保留为已有数据库的迁移历史；`0003` 新增有过期索引的账号操作日志表，日志保留 24 小时；`0004` 新增 Stor 的租约、运行、完整输入和媒体状态表，与 Stor `jobs/airingcal-sync/schema.sql` 一致。业务数据重新采集，不导入 PostgreSQL 数据。本轮没有清理线上旧表或资源。
 
 部署使用 GitHub **Repository secrets**：`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`。Token 需有对应账号的 D1、R2、Workers 部署权限。首次创建与日常解析使用 `scripts/provision-cloudflare-resources.mjs`、`scripts/resolve-cloudflare-resources.mjs`：bootstrap 创建或复用 D1 和三个 R2 桶；日常部署只解析既有在线资源。脚本不配置桶的公共访问。
 
-Stor 配置见各 Job 的 `secrets.example.env` 和 README。`AIRINGCAL_D1_DATABASE_ID` 对应同一 D1；`AIRINGCAL_PUBLIC_BUCKET=airing-cal-data`、`AIRINGCAL_IMAGES_BUCKET=airing-cal-images`、`AIRINGCAL_BACKUP_BUCKET=airing-cal-backups`。Bangumi 用户、可选采集 Token 和 R2 S3 凭据在 xyOps Secret Vault 配置。采集与备份共用 D1 租约防止重叠，xyOps 单任务并发上限为 1。自动触发默认关闭，目标端 Manual Run 通过后再启用。
+Stor 配置见各 Job 的 `secrets.example.env` 和 README。Staging 的 xyOps Vault 使用 `AIRINGCAL_D1_DATABASE_ID` 指向同一 D1、`AIRINGCAL_R2_BUCKET=bangumi-tv-images`，以及 Bangumi 测试用户 `1an`。R2 对象按前缀隔离，Worker 不提供 `backups/d1/` 读取路由；Staging 共享 R2 凭据的边界较宽，正式环境可拆分备份桶。采集与备份共用 D1 租约防止重叠，xyOps 单任务并发上限为 1。自动触发默认关闭，目标端 Manual Run 通过后再启用。
 
-备份桶必须与快照、图片桶分离，且不配置公共访问或公共域名。备份只包含 D1 SQL；R2 图片与快照独立保留。默认建议每天备份、保留 30 天，保留期通过限定 `backups/d1/` 前缀的 R2 原生 lifecycle 设置，恢复验证属于 P2/P3。
+备份只包含 D1 SQL，存放在 `backups/d1/` 并设置 `private, no-store`。Staging 共用一个私有 R2 桶；备份 lifecycle 仍只应限定 `backups/d1/` 前缀。
 
 可选 `NSFW_SHOW=false` 在 `airing-cal-read` 配置；前端构建信息为 `BANGUMI_GIT_COMMIT_SHA`、`BANGUMI_GIT_REPOSITORY_URL`，部署脚本会注入。已有站点验证变量继续由前端使用。
 
@@ -99,7 +101,7 @@ P2 本地验证通过：`pnpm typecheck`、`pnpm test`（111 项）、`pnpm buil
 
 ## 部署与阶段
 
-`Deploy to Cloudflare` 只允许手动执行。revision 必须已在 `dev` 历史中，流水线固定同一 commit：先验证，再应用 D1 迁移，部署 read / sync，最后部署 frontend。失败时停止后续步骤，修复后重跑同一 revision。部署不触发业务采集。
+`Deploy to Cloudflare` 只部署现有资源。`Deploy staging to Cloudflare` 为独立的手动流程，先验证选定 revision，再对 staging D1 应用迁移并依次部署三个 staging Workers。前端使用 `airingcal-staging.q9m3.com` Custom Domain；部署不触发业务采集。自动同步和备份触发器仍关闭。
 
 | 阶段 | 完成条件 |
 | --- | --- |

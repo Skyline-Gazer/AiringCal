@@ -1,0 +1,17 @@
+name = "airing-cal-staging-frontend"
+main = "src/index.ts"
+compatibility_date = "2026-06-17"
+workers_dev = false
+keep_vars = true
+
+[[services]]
+binding = "READ_WORKER"
+service = "airing-cal-staging-read"
+
+[[services]]
+binding = "SYNC_WORKER"
+service = "airing-cal-staging-sync"
+
+[[routes]]
+pattern = "airingcal-staging.q9m3.com"
+custom_domain = true

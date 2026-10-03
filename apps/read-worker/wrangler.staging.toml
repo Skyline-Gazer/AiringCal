@@ -1,0 +1,13 @@
+name = "airing-cal-staging-read"
+main = "src/index.ts"
+compatibility_date = "2026-06-17"
+workers_dev = false
+keep_vars = true
+
+[[r2_buckets]]
+binding = "AIRING_CAL_R2"
+bucket_name = "bangumi-tv-images"
+
+[[r2_buckets]]
+binding = "AIRING_CAL_DATA_R2"
+bucket_name = "bangumi-tv-images"

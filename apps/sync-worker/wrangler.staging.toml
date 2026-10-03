@@ -1,0 +1,10 @@
+name = "airing-cal-staging-sync"
+main = "src/index.ts"
+compatibility_date = "2026-06-17"
+workers_dev = false
+keep_vars = true
+
+[[d1_databases]]
+binding = "AIRING_CAL_D1"
+database_id = "f7cb0cb7-d70a-47c6-953f-5b31e54794d2"
+migrations_dir = "../../migrations"

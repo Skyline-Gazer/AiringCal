@@ -34,6 +34,10 @@ test('latest pointer advances independently of immutable cached snapshots and bo
   assert.equal((await (await read.fetch(new Request('https://front.local/manifest'), env)).json() as typeof pointer).source_observed_at, new Date(200000).toISOString())
   objects.set(pointer.snapshot_key, JSON.stringify({ ...snapshot, summary: { ...snapshot.summary, _total: 1 } }))
   await assert.rejects(snapshotResponse(pointer.snapshot_key, bucket, { match: async () => undefined, put: async () => {} }, 'https://fresh.local'))
+  const readsBeforeBackupRequest = reads
+  const backup = await frontend.fetch(new Request('https://front.local/api/snapshots/v1/backups/d1/private.sql'), frontEnv)
+  assert.equal(backup.status, 400)
+  assert.equal(reads, readsBeforeBackupRequest)
   assert.equal((await read.fetch(new Request('https://front.local/collections?type=__proto__'), env)).status >= 400, true)
   const invalid = await sync.fetch(new Request('https://front.local/internal/sync/apply', { method: 'POST', body: 'null' }), {} as never)
   assert.equal(invalid.status, 400)
