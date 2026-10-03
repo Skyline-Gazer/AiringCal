@@ -3,7 +3,6 @@ packages:
   - 'packages/*'
 
 allowBuilds:
-  '@fission-ai/openspec': true
   esbuild: true
   sharp: true
   workerd: true
