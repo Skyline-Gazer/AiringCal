@@ -1,5 +1,3 @@
-export const appBoundary = 'sync-worker'
-
 import { BgmPlatformClient } from '@airing-cal/bgm-api'
 import { compareAccounts, executeSync, validateSyncRequest, SyncValidationError } from '@airing-cal/domain'
 import type { D1DatabaseLike } from '@airing-cal/storage'

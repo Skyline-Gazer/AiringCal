@@ -1,5 +1,3 @@
-export const appBoundary = 'read-worker'
-
 import { parsePublicSnapshotManifestV1, type PublicSnapshotManifestV1 } from '@airing-cal/domain'
 import { publicError } from '@airing-cal/worker-common'
 import { snapshotResponse, type SnapshotBucket, type SnapshotCache } from './r2-snapshot.ts'

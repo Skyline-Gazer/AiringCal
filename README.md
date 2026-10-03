@@ -2,7 +2,7 @@
 
 展示 Bangumi 收藏与放送日历，提供用户主动发起的双账号对比、同步。
 
-当前分支完成 P1 代码收敛；运行验证和生产切换尚未完成。开发采用 Ponytail，优先复用现有代码与平台能力，保留校验、超时、错误脱敏和发布完整性检查。
+当前分支完成 P1 代码收敛，P2 正在运行验证；生产切换尚未完成。开发采用 Ponytail，优先复用现有代码与平台能力，保留校验、超时、错误脱敏和发布完整性检查。
 
 ## 模块边界
 
@@ -95,7 +95,7 @@ Worker binding 类型用 `pnpm -r --filter './apps/*' cf:types` 生成。页面�
 
 本地账号 API 需要有效 D1 ID：通过 `AIRING_CAL_D1_DATABASE_ID` 交给 `scripts/materialize-wrangler-config.mjs` 生成临时配置。开发时启动 read-worker、sync-worker 后，再启动 frontend-worker，service binding 使用同一组 Worker 名。改 Bangumi 交互前查阅 [API 定义](docs/example/api/bgm-api.json)。
 
-P2 命令已保留，**本轮未执行**：`pnpm test`、`pnpm build:check`。最小离线链路检查为 `apps/read-worker/src/public-flow.test.ts`；浏览器刷新检查为 `packages/widget/src/public-refresh.test.ts`；Stor 离线检查为 `node jobs/airingcal-sync/test/offline.mjs`，均不使用云资源。
+P2 本地验证通过：`pnpm typecheck`、`pnpm test`（111 项）、`pnpm build:check`；实际浏览器已验证快照从第 1 版切到第 2 版、日历跟随更新、缺失新版本时保留已显示内容，并在快照可用后恢复。`scripts/worker-runtime.test.mjs` 使用 Wrangler 已安装的 Miniflare/workerd，实际启动三个 Worker 并验证 service binding、R2 和固定版本缓存；账号 API 集成测试调用真实 Worker / bgm client / SQLite SQL，外部 Bangumi 请求使用本地响应。隔离 Wrangler D1 已应用全部四个迁移，SQL 导出恢复到另一空 D1 后逐表比较一致。均未使用线上资源。目标 Cloudflare 账户权限与目标 xyOps Manual Run 留待 P3。
 
 ## 部署与阶段
 

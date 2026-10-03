@@ -1,5 +1,3 @@
-export const appBoundary = 'frontend-worker'
-
 import { cacheJs, renderIndexPage, widgetCss, widgetJs, type BuildInfo } from '@airing-cal/widget'
 
 interface FrontendEnv {
