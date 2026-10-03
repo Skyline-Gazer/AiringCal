@@ -4,8 +4,8 @@
   "type": "module",
   "main": "./src/index.ts",
   "scripts": {
-    "build:check": "wrangler types worker-configuration.d.ts --check --config wrangler.toml && wrangler deploy --dry-run --outdir dist --config wrangler.toml",
-    "cf:types": "wrangler types worker-configuration.d.ts --config wrangler.toml",
+    "build:check": "wrangler types worker-configuration.d.ts --include-runtime false --check --config wrangler.toml && wrangler deploy --dry-run --outdir dist --config wrangler.toml",
+    "cf:types": "wrangler types worker-configuration.d.ts --include-runtime false --config wrangler.toml",
     "deploy": "wrangler deploy --config wrangler.toml",
     "dev": "wrangler dev --config wrangler.toml",
     "typecheck": "tsc --noEmit",

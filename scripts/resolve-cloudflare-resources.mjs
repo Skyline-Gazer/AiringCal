@@ -79,52 +79,38 @@ export async function resolveCloudflareResources({ env = process.env, fetchImpl 
   if (!fetchImpl) throw new Error('fetch is required')
 
   const context = { fetchImpl, token }
-  const [databases, namespaces, r2Result, queues] = await Promise.all([
+  const [databases, r2Result] = await Promise.all([
     listAll(context, `/accounts/${accountId}/d1/database`, {
       property: 'databases',
       query: new URLSearchParams({ per_page: '10000' }),
-    }),
-    listAll(context, `/accounts/${accountId}/storage/kv/namespaces`, {
-      property: 'namespaces',
-      query: new URLSearchParams({ per_page: '1000', order: 'title', direction: 'asc' }),
     }),
     listAll(context, `/accounts/${accountId}/r2/buckets`, {
       property: 'buckets',
       query: new URLSearchParams({ per_page: '1000' }),
       pagination: 'cursor',
     }),
-    listAll(context, `/accounts/${accountId}/queues`, { property: 'queues' }),
   ])
 
   const database = databases.find((item) => item?.name === CLOUDFLARE_RESOURCES.d1DatabaseName)
   if (!database?.uuid) throw missingResource(`D1 database ${CLOUDFLARE_RESOURCES.d1DatabaseName}`)
-  const namespace = namespaces.find((item) => item?.title === CLOUDFLARE_RESOURCES.kvNamespaceTitle)
-  if (!namespace?.id) throw missingResource(`KV namespace ${CLOUDFLARE_RESOURCES.kvNamespaceTitle}`)
   const dataBucket = r2Result.find((item) => item?.name === CLOUDFLARE_RESOURCES.dataBucketName)
   if (!dataBucket) throw missingResource(`data R2 bucket ${CLOUDFLARE_RESOURCES.dataBucketName}`)
   const imageBucket = r2Result.find((item) => item?.name === CLOUDFLARE_RESOURCES.imageBucketName)
   if (!imageBucket) throw missingResource(`image R2 bucket ${CLOUDFLARE_RESOURCES.imageBucketName}`)
-  for (const queueName of CLOUDFLARE_RESOURCES.queueNames) {
-    if (!queues.some((item) => item?.queue_name === queueName || item?.name === queueName)) {
-      throw missingResource(`Queue ${queueName}`)
-    }
-  }
 
   return {
     d1DatabaseId: database.uuid,
-    kvNamespaceId: namespace.id,
     dataBucketName: CLOUDFLARE_RESOURCES.dataBucketName,
     imageBucketName: CLOUDFLARE_RESOURCES.imageBucketName,
-    queueNames: CLOUDFLARE_RESOURCES.queueNames,
   }
 }
 
 async function main() {
   const result = await resolveCloudflareResources()
   if (process.env.GITHUB_OUTPUT) {
-    await appendFile(process.env.GITHUB_OUTPUT, `d1_database_id=${result.d1DatabaseId}\nkv_namespace_id=${result.kvNamespaceId}\n`)
+    await appendFile(process.env.GITHUB_OUTPUT, `d1_database_id=${result.d1DatabaseId}\n`)
   }
-  console.log(`Resolved Cloudflare resources for ${result.dataBucketName}, ${result.imageBucketName}, ${result.queueNames.join(', ')}`)
+  console.log(`Resolved Cloudflare resources for ${result.dataBucketName}, ${result.imageBucketName}`)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -308,19 +308,14 @@ test('widgetJs sends compare items to apply in bounded batches', () => {
   assert.match(widgetJs, /SYNC_BATCH_SIZE = 5/)
 })
 
-test('pages load cacheJs which fills the footer runtime status slot from health', () => {
+test('pages display collection status supplied by the shared publication reader', () => {
   assert.match(renderIndexPage(), /<script src="\/src\/cache\.js"><\/script>/)
-  assert.match(cacheJs, /\/api\/health/)
+  assert.match(cacheJs, /bgm-public-state/)
   assert.match(cacheJs, /data-runtime-status/)
-  assert.match(cacheJs, /response\.ok/)
-  assert.match(cacheJs, /Next cron/)
-  assert.match(cacheJs, /Last cron/)
-  assert.match(cacheJs, /setInterval/)
-  assert.match(cacheJs, /refreshRuntimeStatus/)
-  assert.match(cacheJs, /Date\.now/)
-  assert.match(cacheJs, /inFlight/)
+  assert.match(cacheJs, /textContent/)
+  assert.match(widgetJs, /\/api\/manifest/)
+  assert.match(widgetJs, /refreshInFlight/)
 })
-
 test('widgetCss styles the shared footer', () => {
   assert.match(widgetCss, /\.bgm-footer\s*\{/)
   assert.match(widgetCss, /\.bgm-footer a\s*\{/)

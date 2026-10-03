@@ -68,7 +68,7 @@ test('frontend-worker serves widget assets from widget package', async () => {
   assert.equal(jsBody.includes("'??') + ' 话'"), false)
   assert.equal(css.headers.get('Content-Type'), 'text/css; charset=utf-8')
   assert.equal(cache.headers.get('Content-Type'), 'application/javascript; charset=utf-8')
-  assert.match(await cache.text(), /\/api\/health/)
+  assert.match(await cache.text(), /bgm-public-state/)
 })
 
 test('frontend-worker forwards public JSON reads to read-worker service binding', async () => {

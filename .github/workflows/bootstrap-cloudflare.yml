@@ -25,4 +25,3 @@ jobs:
       - name: Report verified resource ids
         run: |
           echo "d1_database_id=${{ steps.resolve.outputs.d1_database_id }}"
-          echo "kv_namespace_id=${{ steps.resolve.outputs.kv_namespace_id }}"

@@ -91,23 +91,12 @@ function listD1Databases(context) {
   })
 }
 
-function listKvNamespaces(context) {
-  return listAll(context, `/accounts/${context.accountId}/storage/kv/namespaces`, {
-    property: 'namespaces',
-    query: new URLSearchParams({ per_page: '1000', order: 'title', direction: 'asc' }),
-  })
-}
-
 function listR2Buckets(context) {
   return listAll(context, `/accounts/${context.accountId}/r2/buckets`, {
     property: 'buckets',
     query: new URLSearchParams({ per_page: '1000' }),
     pagination: 'cursor',
   })
-}
-
-function listQueues(context) {
-  return listAll(context, `/accounts/${context.accountId}/queues`, { property: 'queues' })
 }
 
 async function ensureD1Database(context, name) {
@@ -125,26 +114,6 @@ async function ensureD1Database(context, name) {
     if (error.errors?.some((item) => item.code === 10014 || /already exists/i.test(item.message ?? ''))) {
       const createdByRace = findByName(await list(), ['name'], name)
       if (createdByRace?.uuid) return createdByRace
-    }
-    throw error
-  }
-}
-
-async function ensureKvNamespace(context, title) {
-  const { fetchImpl, token, accountId } = context
-  const list = () => listKvNamespaces(context)
-  const existing = findByName(await list(), ['title'], title)
-  if (existing?.id) return existing
-
-  try {
-    return await apiRequest(fetchImpl, token, `/accounts/${accountId}/storage/kv/namespaces`, {
-      method: 'POST',
-      body: JSON.stringify({ title }),
-    })
-  } catch (error) {
-    if (error.errors?.some((item) => item.code === 10014)) {
-      const createdByRace = findByName(await list(), ['title'], title)
-      if (createdByRace?.id) return createdByRace
     }
     throw error
   }
@@ -170,26 +139,6 @@ async function ensureR2Bucket(context, name) {
   }
 }
 
-async function ensureQueue(context, queueName) {
-  const { fetchImpl, token, accountId } = context
-  const list = () => listQueues(context)
-  const existing = findByName(await list(), ['queue_name', 'name'], queueName)
-  if (existing) return existing
-
-  try {
-    return await apiRequest(fetchImpl, token, `/accounts/${accountId}/queues`, {
-      method: 'POST',
-      body: JSON.stringify({ queue_name: queueName }),
-    })
-  } catch (error) {
-    if (error.errors?.some((item) => /already exists/i.test(item.message ?? ''))) {
-      const createdByRace = findByName(await list(), ['queue_name', 'name'], queueName)
-      if (createdByRace) return createdByRace
-    }
-    throw error
-  }
-}
-
 export async function provisionCloudflareResources({
   env = process.env,
   fetchImpl = globalThis.fetch,
@@ -202,20 +151,15 @@ export async function provisionCloudflareResources({
   const context = { fetchImpl, token, accountId }
   const database = await ensureD1Database(context, resources.d1DatabaseName)
   if (!database?.uuid) throw new Error(`D1 database ${resources.d1DatabaseName} did not return a uuid`)
-  const namespace = await ensureKvNamespace(context, resources.kvNamespaceTitle)
-  if (!namespace?.id) throw new Error(`KV namespace ${resources.kvNamespaceTitle} did not return an id`)
   await ensureR2Bucket(context, resources.dataBucketName)
   await ensureR2Bucket(context, resources.imageBucketName)
-  for (const queueName of resources.queueNames) {
-    await ensureQueue(context, queueName)
-  }
+  await ensureR2Bucket(context, resources.backupBucketName)
   return {
     d1DatabaseId: database.uuid,
     d1DatabaseName: resources.d1DatabaseName,
     dataBucketName: resources.dataBucketName,
     imageBucketName: resources.imageBucketName,
-    kvNamespaceId: namespace.id,
-    queueNames: resources.queueNames,
+    backupBucketName: resources.backupBucketName,
   }
 }
 
@@ -223,13 +167,12 @@ async function main() {
   const result = await provisionCloudflareResources()
   const lines = [
     `AIRING_CAL_D1_DATABASE_ID=${result.d1DatabaseId}`,
-    `AIRING_CAL_KV_NAMESPACE_ID=${result.kvNamespaceId}`,
   ]
   if (process.env.GITHUB_ENV) await appendFile(process.env.GITHUB_ENV, `${lines.join('\n')}\n`)
   if (process.env.GITHUB_OUTPUT) {
-    await appendFile(process.env.GITHUB_OUTPUT, `d1_database_id=${result.d1DatabaseId}\nkv_namespace_id=${result.kvNamespaceId}\n`)
+    await appendFile(process.env.GITHUB_OUTPUT, `d1_database_id=${result.d1DatabaseId}\n`)
   }
-  console.log(`Provisioned Cloudflare resources for ${result.d1DatabaseName}, ${result.dataBucketName}, ${result.imageBucketName}, ${result.queueNames.join(', ')}`)
+  console.log(`Provisioned Cloudflare resources for ${result.d1DatabaseName}, ${result.dataBucketName}, ${result.imageBucketName}, ${result.backupBucketName}`)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

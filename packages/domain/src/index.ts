@@ -16,92 +16,6 @@ export type {
   PublicSnapshotManifestMetadata,
   PublicSnapshotManifestV1,
 } from './public-manifest.ts'
-export { normalizeCollection, planCollectionDiff } from './collection-diff.ts'
-export type {
-  CollectionDiffInput,
-  CollectionDiffPlan,
-  CollectionInput,
-  NormalizedCollection,
-} from './collection-diff.ts'
-
-export type CollectionType = 'want' | 'watched' | 'watching' | 'on_hold' | 'dropped'
-
-export interface ImageRef {
-  hash: string
-  uri: string
-  r2_key: string
-}
-
-export interface SubjectImages {
-  common: ImageRef | null
-  large: ImageRef | null
-}
-
-export interface SubjectMeta {
-  subject_id: number
-  exists: boolean | null
-  nsfw: boolean
-  checked_at: number
-  expires_at?: number | null
-  reason: 'subject_detail' | 'not_found' | 'not_found_or_restricted' | 'network_error' | 'upstream_error'
-}
-
-export interface BgmCollectionLike {
-  subject_id: number
-  subject_type: number
-  rate: number
-  type: number
-  comment: string
-  tags: string[]
-  ep_status: number
-  vol_status: number
-  updated_at: string
-  private: boolean
-  subject?: {
-    id: number
-    name: string
-    name_cn: string
-    summary: string
-    date: string
-    eps: number
-    total_episodes: number
-    images?: { large?: string; common?: string }
-    nsfw?: boolean
-  }
-}
-
-export interface MergedEntry {
-  subject_id: number
-  name: string
-  name_cn: string
-  summary: string
-  images: SubjectImages
-  eps: number
-  total_episodes: number
-  ep_status: number
-  vol_status: number
-  type: number
-  collection_type: number
-  rate: number
-  nsfw: boolean
-  date: string
-  tags: string[]
-  updated_at: string
-}
-
-export interface MergedCollections {
-  want: MergedEntry[]
-  watched: MergedEntry[]
-  watching: MergedEntry[]
-  on_hold: MergedEntry[]
-  dropped: MergedEntry[]
-  updated_at: string
-}
-
-export type SubjectImageMap = Map<number, SubjectImages>
-export type SubjectMetaMap = Map<number, Pick<SubjectMeta, 'nsfw'>>
-export type SubjectDetailMap = Map<number, SubjectDetailLike>
-
 export type PlatformId = 'bgm'
 
 export enum WatchStatus {
@@ -230,279 +144,6 @@ export class SyncValidationError extends Error {
   }
 }
 
-export interface BgmCalendarSubjectLike {
-  id: number
-  type: number
-  name: string
-  name_cn: string
-  summary: string
-  nsfw?: boolean
-  date: string
-  eps?: number
-  eps_count?: number
-  total_episodes?: number
-  images?: { large?: string; common?: string; medium?: string; small?: string; grid?: string }
-  rank?: number
-  rating?: { score: number; rank?: number; total: number }
-}
-
-export interface SubjectDetailLike {
-  id?: number
-  type?: number
-  name?: string
-  name_cn?: string
-  summary?: string
-  nsfw?: boolean
-  date?: string
-  eps?: number
-  eps_count?: number
-  total_episodes?: number
-  images?: { large?: string; common?: string; medium?: string; small?: string; grid?: string }
-  rating?: { score: number; rank: number; total: number }
-}
-
-export interface BgmCalendarDayLike {
-  weekday: { en: string; cn: string; ja: string; id: number }
-  items: BgmCalendarSubjectLike[]
-}
-
-export interface CalendarSubjectSnapshot {
-  subject_id: number
-  id: number
-  type: number
-  name: string
-  name_cn: string
-  summary: string
-  images: SubjectImages
-  nsfw: boolean
-  date: string
-  eps: number
-  total_episodes: number
-  rating?: { score: number; rank: number; total: number }
-}
-
-export interface CalendarDaySnapshot {
-  weekday: BgmCalendarDayLike['weekday']
-  items: CalendarSubjectSnapshot[]
-}
-
-interface CachedImageStatusLike {
-  status?: string
-  hash?: string | null
-  uri?: string | null
-  r2_key?: string | null
-}
-
-interface ImageStatusLike {
-  common?: CachedImageStatusLike | null
-  large?: CachedImageStatusLike | null
-}
-
-const TYPE_MAP: Record<number, CollectionType> = {
-  1: 'want',
-  2: 'watched',
-  3: 'watching',
-  4: 'on_hold',
-  5: 'dropped',
-}
-
-export function imageRef(hash: string): ImageRef {
-  return {
-    hash,
-    uri: `/image/${hash}`,
-    r2_key: `images/${hash}/original`,
-  }
-}
-
-export function subjectMetaFromNotFound(subjectId: number, checkedAt: number): SubjectMeta {
-  return {
-    subject_id: subjectId,
-    exists: false,
-    nsfw: true,
-    checked_at: checkedAt,
-    expires_at: checkedAt + 86400,
-    reason: 'not_found',
-  }
-}
-
-export function isActiveNotFoundSubjectMeta(meta: SubjectMeta | null | undefined, now: number): meta is SubjectMeta & { exists: false; reason: 'not_found'; expires_at: number } {
-  return meta?.exists === false
-    && meta.reason === 'not_found'
-    && typeof meta.expires_at === 'number'
-    && now < meta.expires_at
-}
-
-export function isConfirmedNotFoundSubjectMeta(meta: SubjectMeta | null | undefined): meta is SubjectMeta & { exists: false; reason: 'not_found' | 'not_found_or_restricted' } {
-  return meta?.exists === false && (meta.reason === 'not_found' || meta.reason === 'not_found_or_restricted')
-}
-
-export function subjectMetaFromDetail(subjectId: number, subject: SubjectDetailLike, checkedAt: number): SubjectMeta {
-  return {
-    subject_id: subjectId,
-    exists: true,
-    nsfw: subject.nsfw === true,
-    checked_at: checkedAt,
-    expires_at: null,
-    reason: 'subject_detail',
-  }
-}
-
-export function subjectDetailImages(subject: SubjectDetailLike | null | undefined): { common?: string; large?: string } {
-  const images = subject?.images && typeof subject.images === 'object' ? subject.images : {}
-  return {
-    common: images.common,
-    large: images.large,
-  }
-}
-
-export function imageRefsFromStatus(status: ImageStatusLike | null | undefined): SubjectImages {
-  return {
-    common: cachedImageRef(status?.common),
-    large: cachedImageRef(status?.large),
-  }
-}
-
-function cachedImageRef(status: CachedImageStatusLike | null | undefined): ImageRef | null {
-  if (status?.status !== 'cached' || !status.hash || !status.uri || !status.r2_key) return null
-  return { hash: status.hash, uri: status.uri, r2_key: status.r2_key }
-}
-
-function toTimestamp(value: string | undefined): number {
-  if (!value) return 0
-  const timestamp = new Date(value).getTime()
-  return Number.isNaN(timestamp) ? 0 : timestamp
-}
-
-function calendarEpisodeCount(subject: BgmCalendarSubjectLike): number {
-  for (const value of [subject.eps, subject.eps_count, subject.total_episodes]) {
-    if (typeof value === 'number' && value > 0) return value
-  }
-  return 0
-}
-
-function positiveEpisodeCount(...values: unknown[]): number | undefined {
-  for (const value of values) {
-    if (typeof value === 'number' && value > 0) return value
-  }
-}
-
-export function withSubjectDetail<T extends BgmCalendarSubjectLike>(subject: T, detail: SubjectDetailLike | null | undefined): T {
-  if (!detail || typeof detail !== 'object') return subject
-  const eps = positiveEpisodeCount(
-    detail.eps,
-    detail.eps_count,
-    detail.total_episodes,
-    subject.eps,
-    subject.eps_count,
-    subject.total_episodes,
-  )
-  const totalEpisodes = positiveEpisodeCount(
-    detail.total_episodes,
-    detail.eps,
-    detail.eps_count,
-    subject.total_episodes,
-    subject.eps,
-    subject.eps_count,
-  )
-  return {
-    ...subject,
-    type: detail.type ?? subject.type,
-    name: detail.name ?? subject.name,
-    name_cn: detail.name_cn ?? subject.name_cn,
-    summary: detail.summary ?? subject.summary,
-    nsfw: detail.nsfw ?? subject.nsfw,
-    date: detail.date ?? subject.date,
-    eps: eps ?? subject.eps,
-    eps_count: eps ?? subject.eps_count,
-    total_episodes: totalEpisodes ?? subject.total_episodes,
-    images: detail.images ?? subject.images,
-    rating: detail.rating ?? subject.rating,
-  }
-}
-
-function toMergedEntry(collection: BgmCollectionLike, imageMap?: SubjectImageMap, subjectMetaMap?: SubjectMetaMap, subjectDetailMap?: SubjectDetailMap): MergedEntry {
-  const subject = collection.subject
-  const detail = subjectDetailMap?.get(collection.subject_id)
-  const eps = positiveEpisodeCount(detail?.eps, detail?.eps_count, detail?.total_episodes, subject?.eps)
-  const totalEpisodes = positiveEpisodeCount(detail?.total_episodes, detail?.eps, detail?.eps_count, subject?.total_episodes, subject?.eps)
-  return {
-    subject_id: collection.subject_id,
-    name: detail?.name ?? subject?.name ?? '',
-    name_cn: detail?.name_cn ?? subject?.name_cn ?? '',
-    summary: detail?.summary ?? subject?.summary ?? '',
-    images: imageMap?.get(collection.subject_id) ?? { common: null, large: null },
-    eps: eps ?? 0,
-    total_episodes: totalEpisodes ?? 0,
-    ep_status: collection.ep_status,
-    vol_status: collection.vol_status,
-    type: collection.subject_type,
-    collection_type: collection.type,
-    rate: collection.rate,
-    nsfw: subjectMetaMap?.get(collection.subject_id)?.nsfw ?? detail?.nsfw ?? subject?.nsfw ?? false,
-    date: detail?.date ?? subject?.date ?? '',
-    tags: collection.tags ?? [],
-    updated_at: collection.updated_at,
-  }
-}
-
-export function mergeCollections(collections: BgmCollectionLike[], imageMap?: SubjectImageMap, subjectMetaMap?: SubjectMetaMap, subjectDetailMap?: SubjectDetailMap): MergedCollections {
-  const latestBySubject = new Map<number, MergedEntry>()
-
-  for (const collection of collections) {
-    const entry = toMergedEntry(collection, imageMap, subjectMetaMap, subjectDetailMap)
-    const existing = latestBySubject.get(collection.subject_id)
-    if (!existing || toTimestamp(collection.updated_at) > toTimestamp(existing.updated_at)) {
-      latestBySubject.set(collection.subject_id, entry)
-    }
-  }
-
-  const merged: MergedCollections = {
-    want: [],
-    watched: [],
-    watching: [],
-    on_hold: [],
-    dropped: [],
-    updated_at: new Date().toISOString(),
-  }
-  for (const entry of latestBySubject.values()) {
-    merged[TYPE_MAP[entry.collection_type] ?? 'want'].push(entry)
-  }
-  return merged
-}
-
-export function transformCalendar(calendar: BgmCalendarDayLike[], imageMap?: SubjectImageMap, subjectMetaMap?: SubjectMetaMap): CalendarDaySnapshot[] {
-  return calendar.map((day) => ({
-    weekday: day.weekday,
-    items: day.items.map((subject) => {
-      const episodeCount = calendarEpisodeCount(subject)
-      const ratingRank = typeof subject.rank === 'number' ? subject.rank : subject.rating?.rank
-      const rating = typeof subject.rating?.score === 'number'
-        && typeof ratingRank === 'number'
-        && typeof subject.rating.total === 'number'
-        ? {
-            score: subject.rating.score,
-            rank: ratingRank,
-            total: subject.rating.total,
-          }
-        : undefined
-      return {
-        subject_id: subject.id,
-        id: subject.id,
-        type: subject.type,
-        name: subject.name,
-        name_cn: subject.name_cn,
-        summary: subject.summary,
-        images: imageMap?.get(subject.id) ?? { common: null, large: null },
-        nsfw: subjectMetaMap?.get(subject.id)?.nsfw ?? subject.nsfw === true,
-        date: subject.date,
-        eps: episodeCount,
-        total_episodes: typeof subject.total_episodes === 'number' && subject.total_episodes > 0 ? subject.total_episodes : episodeCount,
-        ...(rating ? { rating } : {}),
-      }
-    }),
-  }))
-}
-
 function statusLabel(status: string | null | undefined): string {
   if (!status || status === '—') return '未收藏'
   return ({
@@ -624,10 +265,10 @@ export async function executeSync(
   } else {
     const sourceAccount = await clientA.getMe(fromToken)
     const sourceCollections = await clientA.fetchCollections(fromToken, sourceAccount.username)
-    targets = request.mode === 'full'
-      ? sourceCollections
-      : sourceCollections.filter((item) => new Set(request.subject_ids ?? []).has(item.externalId))
+    const selected = new Set(request.subject_ids)
+    targets = sourceCollections.filter((item) => selected.has(item.externalId))
   }
+  if (targets.length > 5 || new Set(targets.map((item) => item.externalId)).size !== targets.length) throw new SyncValidationError('Invalid sync batch')
   const baselineMap = new Map((request.baseline ?? []).map((entry) => [entry.externalId, entry]))
   const results: SyncResult[] = []
 
@@ -683,22 +324,29 @@ function isEpisodePatchPartialError(error: unknown): error is {
       .every((id) => Number.isSafeInteger(id) && (id as number) > 0)
 }
 
-function validateSyncRequest(request: SyncRequest): void {
+export function validateSyncRequest(request: SyncRequest): void {
   if (request.mode !== 'full' && request.mode !== 'partial') throw new SyncValidationError('Invalid sync mode')
-  if (!request.from?.trim() || !request.to?.trim()) throw new SyncValidationError('Missing source/target user')
+  if (typeof request.from !== 'string' || !request.from.trim() || typeof request.to !== 'string' || !request.to.trim()) throw new SyncValidationError('Missing source/target user')
   if (request.items !== undefined) {
     if (!Array.isArray(request.items) || request.items.length === 0) throw new SyncValidationError('Sync requires at least one item')
     if (request.items.length > 5) throw new SyncValidationError('Sync accepts at most 5 items')
+    if (new Set(request.items.map((item) => item?.externalId)).size !== request.items.length) throw new SyncValidationError('Duplicate sync item')
     if (!request.items.every(isComparisonItem)) throw new SyncValidationError('Invalid sync item')
   }
   if (request.subject_ids !== undefined) {
-    if (!Array.isArray(request.subject_ids) || request.subject_ids.some((id) => typeof id !== 'string' || !id.trim())) {
+    if (!Array.isArray(request.subject_ids) || request.subject_ids.some((id) => typeof id !== 'string' || !/^[1-9][0-9]*$/.test(id) || !Number.isSafeInteger(Number(id)))) {
       throw new SyncValidationError('Invalid subject_ids')
     }
+    if (new Set(request.subject_ids).size !== request.subject_ids.length) throw new SyncValidationError('Duplicate subject_ids')
     if (request.subject_ids.length > 5) throw new SyncValidationError('Sync accepts at most 5 subject_ids')
   }
-  if (request.mode === 'partial' && !request.items?.length && !request.subject_ids?.length) {
-    throw new SyncValidationError('Partial sync requires items or subject_ids')
+  if (request.baseline !== undefined && (!Array.isArray(request.baseline) || request.baseline.length > 5
+    || request.baseline.some(entry => !entry || typeof entry !== 'object' || typeof entry.externalId !== 'string'
+      || !/^[1-9][0-9]*$/.test(entry.externalId) || (entry.status != null && (typeof entry.status !== 'string' || entry.status.length > 80))
+      || (['progress', 'totalEpisodes', 'score'] as const).some(key => entry[key] != null
+        && (typeof entry[key] !== 'number' || !Number.isFinite(entry[key]) || entry[key]! < 0 || (key === 'score' && entry[key]! > 10)))))) throw new SyncValidationError('Invalid baseline')
+  if (!request.items?.length && !request.subject_ids?.length) {
+    throw new SyncValidationError('Sync requires items or subject_ids')
   }
 }
 
@@ -706,7 +354,8 @@ function isComparisonItem(value: unknown): value is ComparisonItem {
   if (!value || typeof value !== 'object') return false
   const item = value as Record<string, unknown>
   return typeof item.externalId === 'string'
-    && item.externalId.trim().length > 0
+    && /^[1-9][0-9]*$/.test(item.externalId)
+    && Number.isSafeInteger(Number(item.externalId))
     && typeof item.title === 'string'
     && Object.values(WatchStatus).includes(item.status as WatchStatus)
     && typeof item.progress === 'number'

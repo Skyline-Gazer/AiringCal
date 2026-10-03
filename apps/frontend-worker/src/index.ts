@@ -55,18 +55,12 @@ function html(body: string): Response {
   return new Response(body, {
     headers: {
       'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'public, max-age=300',
+      'Cache-Control': 'no-cache',
       'Content-Security-Policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
       'X-Content-Type-Options': 'nosniff',
       'X-Frame-Options': 'DENY',
     },
   })
-}
-
-function readWorkerRequest(url: URL, path: string, request: Request): Request {
-  const target = new URL(url)
-  target.pathname = path
-  return new Request(target, request)
 }
 
 function serviceRequest(url: URL, path: string, request: Request): Request {
@@ -82,12 +76,15 @@ async function fetch(request: Request, env: FrontendEnv): Promise<Response> {
   if (url.pathname === '/src/bangumi.css') return text(widgetCss, 'text/css; charset=utf-8')
   if (url.pathname === '/src/cache.js') return text(cacheJs, 'application/javascript; charset=utf-8')
 
-  if (url.pathname === '/api/collections') return env.READ_WORKER.fetch(readWorkerRequest(url, '/collections', request))
-  if (url.pathname === '/api/calendar') return env.READ_WORKER.fetch(readWorkerRequest(url, '/calendar', request))
-  if (url.pathname === '/api/config') return env.READ_WORKER.fetch(readWorkerRequest(url, '/config', request))
-  if (url.pathname === '/api/health') return env.READ_WORKER.fetch(readWorkerRequest(url, '/health', request))
-  if (url.pathname === '/api/cache') return env.READ_WORKER.fetch(readWorkerRequest(url, '/cache', request))
-  if (url.pathname.startsWith('/image/')) return env.READ_WORKER.fetch(readWorkerRequest(url, url.pathname, request))
+  if (url.pathname === '/api/collections') return env.READ_WORKER.fetch(serviceRequest(url, '/collections', request))
+  if (url.pathname === '/api/calendar') return env.READ_WORKER.fetch(serviceRequest(url, '/calendar', request))
+  if (url.pathname === '/api/config') return env.READ_WORKER.fetch(serviceRequest(url, '/config', request))
+  if (url.pathname === '/api/health') return env.READ_WORKER.fetch(serviceRequest(url, '/health', request))
+  if (url.pathname === '/api/cache') return env.READ_WORKER.fetch(serviceRequest(url, '/cache', request))
+  if (url.pathname === '/api/manifest') return env.READ_WORKER.fetch(serviceRequest(url, '/manifest', request))
+  if (url.pathname === '/api/status') return env.READ_WORKER.fetch(serviceRequest(url, '/status', request))
+  if (url.pathname.startsWith('/api/snapshots/v1/')) return env.READ_WORKER.fetch(serviceRequest(url, url.pathname.slice('/api'.length), request))
+  if (url.pathname.startsWith('/image/')) return env.READ_WORKER.fetch(serviceRequest(url, url.pathname, request))
   if (url.pathname === '/api/sync/compare') return env.SYNC_WORKER.fetch(serviceRequest(url, '/internal/sync/compare', request))
   if (url.pathname === '/api/sync/apply') return env.SYNC_WORKER.fetch(serviceRequest(url, '/internal/sync/apply', request))
   if (url.pathname.startsWith('/api/check/')) {

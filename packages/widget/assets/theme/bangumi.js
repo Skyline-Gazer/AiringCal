@@ -154,128 +154,140 @@
     })
   }
 
-  // ---------------------------------------------------------------
-  // 收藏视图（原 render 逻辑，封装进一个容器）
-  // ---------------------------------------------------------------
+  // A single in-flight read keeps both public views on the same published generation.
+  var snapshot = null
+  var latestManifest = null
+  var collectionStatus = null
+  var refreshError = ''
+  var refreshInFlight = null
+  var publicViews = []
+
+  function notifyPublicViews() {
+    publicViews.forEach(function(view) { view.update() })
+    window.dispatchEvent(new CustomEvent('bgm-public-state', { detail: {
+      manifest: latestManifest, status: collectionStatus, error: refreshError,
+    } }))
+  }
+
+  function refreshSnapshot() {
+    if (refreshInFlight) return refreshInFlight
+    refreshInFlight = (async function() {
+      var statusRead = fetch(API + '/api/status', { cache: 'no-store', signal: AbortSignal.timeout(15000) })
+        .then(function(res) { if (!res.ok) throw new Error(); return res.json() })
+        .then(function(value) { collectionStatus = value })
+        .catch(function() { /* A status outage must not block a valid publication. */ })
+      try {
+        var res = await fetch(API + '/api/manifest', { cache: 'no-store', signal: AbortSignal.timeout(15000) })
+        if (!res.ok) {
+          var error = await res.json().catch(function() { return {} })
+          throw new Error(error.error && error.error.code === 'NO_PUBLISHED_SNAPSHOT'
+            ? '等待首次采集发布' : '最新快照暂时不可用，稍后自动重试')
+        }
+        var next = await res.json()
+        if (next.schema_version !== 1 || !Number.isSafeInteger(next.generation) || next.generation < 0
+          || !/^[0-9a-f]{64}$/.test(next.content_sha256)
+          || next.snapshot_key !== 'snapshots/v1/' + next.generation + '-' + next.content_sha256 + '.json') {
+          throw new Error('最新快照格式无效')
+        }
+        // Ignore an older response; a successful publication only advances generations.
+        if (!latestManifest || next.generation >= latestManifest.generation) {
+          if (!snapshot || next.snapshot_key !== latestManifest.snapshot_key) {
+            var version = await fetch(API + '/api/' + next.snapshot_key, { signal: AbortSignal.timeout(30000) })
+            if (!version.ok) throw new Error('新快照加载失败，保留已显示内容')
+            var data = await version.json()
+            if (data.schema_version !== 1 || data.generation !== next.generation
+              || data.content_hash !== next.content_sha256 || !data.collections || !Array.isArray(data.calendar)
+              || (!data.summary || data.summary._total !== next.item_count)
+              || data.published_at * 1000 !== Date.parse(next.published_at)) throw new Error('新快照校验失败')
+            snapshot = data
+          }
+          latestManifest = next
+        }
+        refreshError = ''
+      } catch (error) {
+        refreshError = error.message || '最新数据加载失败，稍后自动重试'
+      } finally {
+        await statusRead
+        notifyPublicViews()
+      }
+    })().finally(function() { refreshInFlight = null })
+    return refreshInFlight
+  }
+
+  function publicMessage() {
+    if (!snapshot) return refreshError || '正在读取最新快照…'
+    var message = '条目 ' + snapshot.summary._total + ' | 发布于 ' + new Date(latestManifest.published_at).toLocaleString()
+    return message + (refreshError ? ' | ' + refreshError : '')
+  }
+
   function buildCollectionView() {
     var view = document.createElement('div')
     view.className = 'bgm-view bgm-view-collection'
-
+    var statusBar = document.createElement('div')
+    statusBar.className = 'bgm-status'
+    view.appendChild(statusBar)
     var nav = document.createElement('div')
     nav.className = 'bgm-nav'
-    var keys = Object.keys(TYPE_NAMES)
-    var navHtml = ''
-    for (var i = 0; i < keys.length; i++) {
-      var navActive = keys[i] === 'watching' ? ' class="active"' : ''
-      navHtml += '<button data-type="' + keys[i] + '"' + navActive + '>' + TYPE_NAMES[keys[i]] + '</button>'
-    }
-    nav.innerHTML = navHtml
+    nav.innerHTML = Object.keys(TYPE_NAMES).map(function(key) {
+      return '<button data-type="' + key + '"' + (key === 'watching' ? ' class="active"' : '') + '>' + TYPE_NAMES[key] + '</button>'
+    }).join('')
     view.appendChild(nav)
-
     var grid = document.createElement('div')
     grid.className = 'bgm-grid'
     view.appendChild(grid)
-
     var pagination = document.createElement('div')
     pagination.className = 'bgm-pagination'
     view.appendChild(pagination)
-
     var currentType = 'watching'
     var currentPage = 1
-    var loaded = false
+    var renderedVersion = ''
 
-    async function load(type, page) {
-      try {
-        var res = await fetch(API + '/api/collections?type=' + type + '&page=' + page + '&limit=24')
-        if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText)
-        var data = await res.json()
-        if (data.total === 0) {
-          grid.innerHTML = '<p class="bgm-empty">暂无数据 — 同步可能尚未执行，请在动画同步视图配置 token 并触发同步</p>'
-          pagination.innerHTML = ''
-          return
-        }
-        var cardsHtml = ''
-        for (var i = 0; i < data.data.length; i++) {
-          cardsHtml += renderCard(data.data[i])
-        }
-        grid.innerHTML = cardsHtml
-
-        var totalPages = Math.ceil(data.total / 24)
-        pagination.innerHTML = ''
-        for (var i = 1; i <= totalPages; i++) {
-          var btn = document.createElement('button')
-          btn.textContent = i
-          if (i === page) btn.classList.add('active')
-          ;(function(p) { btn.addEventListener('click', function() { currentPage = p; load(currentType, p) }) })(i)
-          pagination.appendChild(btn)
-        }
-      } catch (e) {
-        grid.innerHTML = '<p class="bgm-error">加载失败: ' + escapeHtml(e.message || '未知错误') + '<br><small>API: ' + escapeHtml(API) + '</small></p>'
+    function update() {
+      statusBar.textContent = publicMessage()
+      if (!snapshot) return
+      var version = latestManifest.snapshot_key + ':' + currentType + ':' + currentPage
+      if (renderedVersion === version) return
+      var entries = snapshot.collections[currentType]
+      var totalPages = Math.ceil(entries.length / 24)
+      currentPage = Math.min(currentPage, Math.max(1, totalPages))
+      grid.innerHTML = entries.length
+        ? entries.slice((currentPage - 1) * 24, currentPage * 24).map(renderCard).join('')
+        : '<p class="bgm-empty">当前快照暂无此类收藏</p>'
+      pagination.innerHTML = ''
+      for (var i = 1; i <= totalPages; i++) {
+        var btn = document.createElement('button')
+        btn.textContent = i
+        if (i === currentPage) btn.classList.add('active')
+        ;(function(page) { btn.addEventListener('click', function() { currentPage = page; update() }) })(i)
+        pagination.appendChild(btn)
       }
+      renderedVersion = latestManifest.snapshot_key + ':' + currentType + ':' + currentPage
     }
-
-    nav.addEventListener('click', function(e) {
-      if (e.target.tagName === 'BUTTON') {
-        var navBtns = nav.querySelectorAll('button')
-        for (var n = 0; n < navBtns.length; n++) {
-          navBtns[n].classList.toggle('active', navBtns[n] === e.target)
-        }
-        currentType = e.target.dataset.type
-        currentPage = 1
-        load(currentType, 1)
-      }
+    nav.addEventListener('click', function(event) {
+      if (event.target.tagName !== 'BUTTON') return
+      nav.querySelectorAll('button').forEach(function(button) { button.classList.toggle('active', button === event.target) })
+      currentType = event.target.dataset.type
+      currentPage = 1
+      update()
     })
-
-    return {
-      el: view,
-      // 首次切换到该视图时再加载（含健康检查）
-      async activate() {
-        if (loaded) return
-        loaded = true
-        var statusBar = document.createElement('div')
-        statusBar.className = 'bgm-status'
-        statusBar.innerHTML = '<p>正在连接...</p>'
-        view.insertBefore(statusBar, nav)
-        try {
-          var healthRes = await fetch(API + '/api/health')
-          var health = await healthRes.json()
-          if (health.ok && health.data && health.data.collections) {
-            var c = health.data.collections
-            statusBar.innerHTML = '<p>已连接 | 条目 ' + safeNumber(c.types && c.types._total, 0) + ' | 更新于 ' + escapeHtml((c.updated_at || '?').slice(0, 10)) + '</p>'
-          } else if (health.ok) {
-            var hint = '请在动画同步视图配置 token 并触发同步'
-            if (health.data && health.data.last_error) hint += '<br>上次同步错误: ' + escapeHtml(health.data.last_error)
-            statusBar.innerHTML = '<p class="bgm-status-warn">已连接，但 KV 无数据。' + hint + '</p>'
-          } else {
-            statusBar.innerHTML = '<p class="bgm-status-warn">健康检查失败: ' + escapeHtml(health.error || '') + '</p>'
-          }
-        } catch (e) {
-          statusBar.innerHTML = '<p class="bgm-status-warn">无法连接 Worker: ' + escapeHtml(e.message || '') + '</p>'
-        }
-        setTimeout(function () { statusBar.style.opacity = '0.4' }, 3000)
-        load(currentType, 1)
-      },
-    }
+    return { el: view, update: update, activate: function() { update(); return refreshSnapshot() } }
   }
 
-  // ---------------------------------------------------------------
-  // 放送日历视图（新增）：fetch /api/calendar，按星期分组渲染
-  // ---------------------------------------------------------------
   function buildCalendarView() {
     var view = document.createElement('div')
     view.className = 'bgm-view bgm-view-calendar'
-
+    var statusBar = document.createElement('div')
+    statusBar.className = 'bgm-status'
+    view.appendChild(statusBar)
     var cal = document.createElement('div')
     cal.className = 'bgm-calendar'
     view.appendChild(cal)
-
-    var loaded = false
-    // bgm.tv weekday.id: 1=周一 ... 7=周日；JS getDay(): 0=周日
+    var renderedVersion = ''
     var todayId = (new Date().getDay() === 0) ? 7 : new Date().getDay()
 
     function renderCalendar(days) {
       if (!days || !days.length) {
-        cal.innerHTML = '<p class="bgm-empty">暂无日历数据 — 同步可能尚未执行，请在动画同步视图配置 token 并触发同步</p>'
+        cal.innerHTML = '<p class="bgm-empty">当前快照暂无日历数据</p>'
         return
       }
       var html = ''
@@ -299,23 +311,13 @@
       cal.innerHTML = html
     }
 
-    return {
-      el: view,
-      async activate() {
-        if (loaded) return
-        loaded = true
-        cal.innerHTML = '<p class="bgm-status"><span>正在加载放送日历...</span></p>'
-        try {
-          var res = await fetch(API + '/api/calendar')
-          if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText)
-          var days = await res.json()
-          renderCalendar(days)
-        } catch (e) {
-          cal.innerHTML = '<p class="bgm-error">日历加载失败: ' + escapeHtml(e.message || '未知错误') + '<br><small>API: ' + escapeHtml(API) + '</small></p>'
-          loaded = false // 允许下次重试
-        }
-      },
+    function update() {
+      statusBar.textContent = publicMessage()
+      if (!snapshot || renderedVersion === latestManifest.snapshot_key) return
+      renderCalendar(snapshot.calendar)
+      renderedVersion = latestManifest.snapshot_key
     }
+    return { el: view, update: update, activate: function() { update(); return refreshSnapshot() } }
   }
 
   // ---------------------------------------------------------------
@@ -775,6 +777,7 @@
         var err = results.filter(function(r) { return r.status === 'error' }).length
         document.getElementById('sync-progress-fill').style.width = '100%'
         var msg = '\u540c\u6b65\u5b8c\u6210\uff1a' + ok + ' \u6210\u529f\uff0c' + err + ' \u5931\u8d25'
+        msg += '<br><small>展示数据将在下一次定时采集成功发布后更新。</small>'
         msg += '<br><small>\u8bf7\u6c42\u6a21\u5f0f: ' + mode + '\uff1b\u9884\u8ba1: ' + expected + '\uff1b\u540e\u7aef\u8fd4\u56de: ' + results.length + '</small>'
         msg += renderInlineSyncLog(results, operationLinks)
         if (err > 0) {
@@ -848,6 +851,7 @@ function statusBadgeColor(s) {
     var calendarView = buildCalendarView()
     var syncView = buildSyncView()
     var views = { collection: collectionView, calendar: calendarView, sync: syncView }
+    publicViews = [collectionView, calendarView]
 
     var switcher = document.createElement('div')
     switcher.className = 'bgm-view-switch'
@@ -878,6 +882,9 @@ function statusBadgeColor(s) {
 
     await checkNSFW()
     activate('collection')
+    document.addEventListener('visibilitychange', function() { if (!document.hidden) refreshSnapshot() })
+    window.addEventListener('focus', function() { if (!document.hidden) refreshSnapshot() })
+    setInterval(function() { if (!document.hidden) refreshSnapshot() }, 30000)
   }
 
   render()

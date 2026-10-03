@@ -8,7 +8,6 @@ if (!sourcePath || !outputPath) {
   process.exit(1)
 }
 
-const namespaceId = process.env.AIRING_CAL_KV_NAMESPACE_ID
 const d1DatabaseId = process.env.AIRING_CAL_D1_DATABASE_ID
 const buildVars = {
   BANGUMI_GIT_COMMIT_SHA: process.env.BANGUMI_GIT_COMMIT_SHA,
@@ -16,18 +15,7 @@ const buildVars = {
 }
 
 const source = await readFile(sourcePath, 'utf8')
-const needsNamespaceId = source.includes('<AIRING_CAL_KV_NAMESPACE_ID>')
 const needsD1DatabaseId = source.includes('<AIRING_CAL_D1_DATABASE_ID>')
-
-if (needsNamespaceId && !namespaceId) {
-  console.error('AIRING_CAL_KV_NAMESPACE_ID is required')
-  process.exit(1)
-}
-
-if (needsNamespaceId && !/^[0-9a-f]{32}$/i.test(namespaceId ?? '')) {
-  console.error('AIRING_CAL_KV_NAMESPACE_ID must be a 32 character hexadecimal Cloudflare KV namespace id')
-  process.exit(1)
-}
 
 if (needsD1DatabaseId && !d1DatabaseId) {
   console.error('AIRING_CAL_D1_DATABASE_ID is required')
@@ -43,7 +31,6 @@ const target = resolve(outputPath)
 const sourceDir = dirname(resolve(sourcePath))
 const targetDir = dirname(target)
 let config = source
-  .replaceAll('<AIRING_CAL_KV_NAMESPACE_ID>', namespaceId ?? '')
   .replaceAll('<AIRING_CAL_D1_DATABASE_ID>', d1DatabaseId ?? '')
   .replace(/^main\s*=\s*"([^"]+)"/m, (_, mainPath) => {
     const rewrittenMain = relative(targetDir, resolve(sourceDir, mainPath)).split(sep).join('/')
