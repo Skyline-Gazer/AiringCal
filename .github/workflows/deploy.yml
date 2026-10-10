@@ -131,6 +131,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       BANGUMI_GIT_COMMIT_SHA: ${{ needs.resolve_ref.outputs.sha }}
       BANGUMI_GIT_REPOSITORY_URL: https://github.com/${{ github.repository }}
+      BANGUMI_BUILD_TIME: ${{ github.event.head_commit.timestamp }}
       AIRING_CAL_D1_DATABASE_ID: ${{ needs.resolve_cloudflare.outputs.d1_database_id }}
       AIRING_CAL_KV_NAMESPACE_ID: ${{ needs.resolve_cloudflare.outputs.kv_namespace_id }}
     steps:

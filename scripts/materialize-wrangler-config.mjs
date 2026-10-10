@@ -13,6 +13,7 @@ const d1DatabaseId = process.env.AIRING_CAL_D1_DATABASE_ID
 const buildVars = {
   BANGUMI_GIT_COMMIT_SHA: process.env.BANGUMI_GIT_COMMIT_SHA,
   BANGUMI_GIT_REPOSITORY_URL: process.env.BANGUMI_GIT_REPOSITORY_URL,
+  BANGUMI_BUILD_TIME: process.env.BANGUMI_BUILD_TIME,
 }
 
 const source = await readFile(sourcePath, 'utf8')
