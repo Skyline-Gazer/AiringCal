@@ -2,15 +2,38 @@
 
 > 在静态页面中渲染你的 Bangumi 追番进度。
 
-AiringCal 是一个 Cloudflare Workers monorepo。它把公开访问、只读数据、定时同步、媒体补全拆成 4 个独立 Worker，让公开页面、legacy KV 读取、D1/data R2 shadow 同步、bgm.tv 抓取和图片下载分别使用自己的 Worker 调用预算。
+AiringCal 是一个 Cloudflare Workers monorepo。**当前 `dev` 部署（Phase 0）** 只上传合并后的 [`apps/web-worker`](apps/web-worker/)，Wrangler 服务名仍为 **`airing-cal-frontend`**（自定义域名无需改动）。详细计划见 [docs/plans/phase-0-web-worker.md](docs/plans/phase-0-web-worker.md)。
+
+Phase 0 把公开页面、只读 API 与 `/image/:hash` 合进同一个 Worker；Cloudflare 上的定时同步与媒体队列 **不再由本仓库 deploy 写入**（`/api/sync/*`、`/api/check/*` 返回 410）。后续由 Phase 1 `apps/node-jobs` + 青龙脚本接管写路径。
+
+历史上曾把公开访问、只读数据、定时同步、媒体补全拆成 4 个独立 Worker；对应目录已归档（各包内 `ARCHIVED.md`），下文仍保留运维与迁移参考。
 
 ## 架构
 
-部署后会有 4 个独立 Worker：
+### 当前生产（Phase 0）
 
 | Worker | 目录 | 职责 |
 |--------|------|------|
-| `airing-cal-frontend` | `apps/frontend-worker` | 唯一公开入口，提供页面、widget 静态资源、BFF JSON route 和 `/image/:hash` 代理 |
+| `airing-cal-frontend` | `apps/web-worker` | 唯一公开入口：页面、`/src/*` 静态资源、`/api/*` 只读 JSON、`/image/:hash`；D1/KV/双 R2 绑定在本 Worker 内直接处理 read 路径 |
+
+```text
+浏览器 / CDN
+    │
+    ▼
+airing-cal-frontend (apps/web-worker)
+    ├── HTML + widget (/ , /src/*)
+    ├── /api/collections|calendar|config|health|cache
+    └── /image/:hash  → AIRING_CAL_R2
+            read-mode → legacy KV 或 R2 PublicSnapshotV1（见 packages/storage）
+```
+
+本地开发：`pnpm dev`（等价于 `pnpm -F @airing-cal/web-worker dev`）。
+
+### 历史四 Worker 拆分（已归档，routine deploy 不再上传）
+
+| Worker | 目录 | 职责 |
+|--------|------|------|
+| `airing-cal-frontend` | `apps/frontend-worker` | 旧公开入口，经 service binding 转发 read/sync |
 | `airing-cal-read` | `apps/read-worker` | 内部只读 API；公开响应按 `public:read-mode` 从 legacy KV snapshot/状态或验证过的 R2 `PublicSnapshotV1` 读取（迁移期默认 legacy，切换后 R2，带 Cache API 最后验证版与 legacy KV 双层 fallback）；`/api/health` 暴露 generation/source/budget/migration 摘要 |
 | `airing-cal-sync` | `apps/sync-worker` | Cloudflare Workflow 编排 collection/calendar；每日 20:00 UTC cron 的 live 发布后追加 D1 shadow 阶段：增量同步、legacy 导入、shadow 等价比较、KV 预算记录、门禁通过后提升 shadow pointer 并切换 read-mode、14 天后限速清理 legacy key |
 | `airing-cal-media` | `apps/media-worker` | Queue consumer；D1-only V4 任务以 D1 保存媒体权威状态并写 image R2，live V3 与 V2/legacy 任务保留 KV 兼容路径 |
@@ -47,15 +70,15 @@ adapter 仅创建手工 root/stage spans，属性只包含 mode、source、stage
 
 ## 外部访问入口
 
-外部只访问 `airing-cal-frontend`。如果使用 workers.dev，地址通常是：
+外部只访问 `airing-cal-frontend`（Phase 0 由 `apps/web-worker` 部署）。如果使用 workers.dev，地址通常是：
 
 ```text
 https://airing-cal-frontend.<你的 workers.dev 子域>.workers.dev
 ```
 
-如果绑定自定义域，也绑定到 `airing-cal-frontend`，不要绑定到 read/sync/media Worker。
+如果绑定自定义域，也绑定到 `airing-cal-frontend`，不要绑定到已归档的 read/sync/media Worker。
 
-公开 route：
+公开 route（Phase 0，`apps/web-worker`）：
 
 | Route | 说明 |
 |-------|------|
@@ -63,21 +86,28 @@ https://airing-cal-frontend.<你的 workers.dev 子域>.workers.dev
 | `/src/bangumi.js` | Widget script |
 | `/src/bangumi.css` | Widget styles |
 | `/src/cache.js` | Footer runtime status script |
-| `/api/collections?type=watching&page=1&limit=24` | 通过 `READ_WORKER` 分页读取 collection snapshot；`type` 必须是五种已发布类型之一，`limit` 最大 100 |
-| `/api/calendar` | 通过 `READ_WORKER` 读取 calendar snapshot |
-| `/api/config?key=nsfw` | 通过 `READ_WORKER` 读取公开配置 |
-| `/api/health` | 通过 `READ_WORKER` 读取健康状态、轻量 cache 摘要、cron 兼容状态和最近 Workflow run |
-| `/api/cache?limit=100&cursor=<opaque>` | 通过 `READ_WORKER` 分页读取脱敏缓存 JSON；`limit` 最大 100，当前页数量字段为 `page_subjects` |
-| `/api/sync/compare` | 通过 `SYNC_WORKER` 执行动画收藏对比 |
-| `/api/sync/apply` | 通过 `SYNC_WORKER` 执行动画收藏同步并写操作日志 |
-| `/api/check/:id` | 通过 `SYNC_WORKER` 查询 24 小时内的同步操作日志 |
-| `/image/:hash` | 通过 `READ_WORKER` 读取 R2 图片 |
+| `/api/collections?type=watching&page=1&limit=24` | 分页读取 collection snapshot；`type` 必须是五种已发布类型之一，`limit` 最大 100 |
+| `/api/calendar` | 读取 calendar snapshot |
+| `/api/config?key=nsfw` | 读取公开配置 |
+| `/api/health` | 健康状态、轻量 cache 摘要、cron 兼容状态和最近 Workflow run（读路径仍暴露 migration 字段） |
+| `/api/cache?limit=100&cursor=<opaque>` | 分页读取脱敏缓存 JSON；`limit` 最大 100，当前页数量字段为 `page_subjects` |
+| `/api/sync/compare` | **已移除** — HTTP 410 `DEPRECATED`（账号同步改由青龙 + node-jobs，见 Phase 1） |
+| `/api/sync/apply` | **已移除** — HTTP 410 `DEPRECATED` |
+| `/api/check/:id` | **已移除** — HTTP 410 `DEPRECATED` |
+| `/image/:hash` | 从 R2 读取图片 |
+
+Widget 已去掉页内「动画同步」Tab；历史 compare/apply/check 行为见归档的 `apps/sync-worker` 与 OpenSpec，不再从公网 Worker 暴露。
+
+<details>
+<summary>历史：页内账号 sync API（frontend-worker + SYNC_WORKER，已废弃）</summary>
 
 账号 compare 返回的差异条目包含规范化 `itemA` / `itemB`。页面按方向选择源 item，并以最多 5 条一批提交给 `/api/sync/apply`；apply 直接复用这些 items，不会为每批重新拉取全部源收藏。旧 `subject_ids` 输入暂时兼容一个版本且同样限制为 5 条。用户 token 只存在于当前请求内，不写入 KV operation log、Queue 或其他异步载荷；compare、apply 和 check 响应统一使用 `Cache-Control: no-store`。
 
 compare 会先认证两个账户；身份或收藏请求中任一账户返回 401/403 时，compare 都会停止且不会返回部分或空成功，并以相同 HTTP 状态返回稳定的 `AUTHENTICATION_FAILED` 错误 code。错误响应不会包含账户 token；限流、网络或其他 bgm.tv 上游故障仍使用 `REQUEST_FAILED` 或既有的部分结果语义。
 
 apply 同步章节进度时，会以 `limit=1000`、递增 offset 读取源/目标账户的全部章节收藏，再按目标章节状态分组并以每批最多 100 个 episode ID PATCH。某一批失败时，该条目返回 `status: "error"`、`code: "EPISODE_PATCH_PARTIAL"`、已经成功更新的 `succeeded` 数量和失败批次 `failedBatch`；此前成功批次不会被描述成整体成功。
+
+</details>
 
 `airing-cal-sync` 没有公开同步 URL。Cloudflare Workflows Free Plan 不支持原生 Workflow schedule，因此生产定时入口是同一个 sync Worker 的轻量 Cron；Cron 每天 04:00 Asia/Shanghai（前一 UTC 日 20:00）只创建一个 live Workflow instance，不拉取 bgm.tv、不读写业务缓存。Cloudflare Cron 按 UTC 执行，所以 checked-in 表达式是：
 
@@ -118,7 +148,7 @@ pnpm exec wrangler workflows instances terminate airing-cal-sync <instance-id> -
 
 Workflow 每个 collections 页、calendar、发布类型和 refresh chunk 都使用确定性 step 名；大 payload 写 staging KV，step 只返回 key、数量和 SHA-256 摘要。live initialize 通过 `SNAPSHOT_COORDINATOR` 分配单调 generation 并立即写 `sync:current`；refresh planning 每 10 个 subject 有界读取现有 detail、metadata、image 与 refresh 状态，只为缺失、源变化、重试到期或确定性刷新时间已到的组件生成幂等 V3 候选。候选按 new/changed、hot due、cold shard、retry 排序；普通任务受 soft limit 50 限制，只有 new/changed 可扩展到 hard limit 100。cold 候选按 `subject_id mod 7` 分散到 7 个 UTC 日。
 
-scheduled live 与 manual live 共享同一个 UTC 自然日预算，没有强制绕过 hard limit 的参数。`SNAPSHOT_COORDINATOR` 先以稳定 reservation 预留逻辑预算，再最多调用一次 Queue producer；Queue 确认结果不确定时按 fail-closed 保留预算并标记 uncertain，不重发同一 reservation，但仍提交 collection/calendar snapshot。未变化 subject 不产生逐 subject KV 写入，也不投递媒体任务。Workflow 只读逐 subject 媒体状态，实际 detail/meta/image/refresh 写入仍由 Media Worker 执行。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。部署顺序固定为资源 resolve/Cron preflight → D1 migration → read/media → sync + Workflow → `workflows describe` → frontend，部署完成仍不会自动创建业务 instance。
+scheduled live 与 manual live 共享同一个 UTC 自然日预算，没有强制绕过 hard limit 的参数。`SNAPSHOT_COORDINATOR` 先以稳定 reservation 预留逻辑预算，再最多调用一次 Queue producer；Queue 确认结果不确定时按 fail-closed 保留预算并标记 uncertain，不重发同一 reservation，但仍提交 collection/calendar snapshot。未变化 subject 不产生逐 subject KV 写入，也不投递媒体任务。Workflow 只读逐 subject 媒体状态，实际 detail/meta/image/refresh 写入仍由 Media Worker 执行。401/403 立即终止，429、5xx、timeout 和网络错误由网络 step 最多重试 3 次。历史部署顺序为资源 resolve/Cron preflight → D1 migration → read/media → sync + Workflow → `workflows describe` → frontend；Phase 0 仅 deploy `apps/web-worker`，部署完成仍不会自动创建业务 instance。
 
 收藏页不会在每次浏览页面时实时请求 bgm.tv。Workflow 以 `limit=50` 获取 collections 并按 bgm.tv `type` 发布 `want`、`watched`、`watching`、`on_hold`、`dropped` 版本化快照；读取端跟随 `snapshot:active` 读取同一个 instance 的五类 collections、calendar 和 summary，并在返回数据前验证 manifest 恰好列出这 7 个 required key 及其 SHA-256 digest。带有任一 V3 字段（`generation`、`required_keys`、`digests`）的 active manifest、key 或 digest 不完整时返回 HTTP 503 `SNAPSHOT_INCOMPLETE`，绝不逐 key 混入 legacy 数据；active 完全不存在，或旧 active pointer 同时不含上述三个 V3 字段时，才整套读取 legacy snapshot。Workflow 不请求 subject detail；detail、metadata 和图片由 Media Queue 以 stale-while-revalidate 方式异步收敛。
 
@@ -193,7 +223,11 @@ database_id = "<AIRING_CAL_D1_DATABASE_ID>"
 
 CI 不上传运行时 secret，也不会手写 `curl` 修改 schedule。定时配置只来自 `apps/sync-worker/wrangler.toml` 的 `[triggers].crons`；Cron handler 只创建 Workflow instance。
 
-部署流水线只负责 typecheck/test/build、解析已有资源、在任何 Worker upload 前应用 remote D1 migrations，再按 read/media → sync + Workflow → control-plane describe → frontend 的顺序部署。migration、resolve 或任一 deploy job 失败时，下游 upload 由 `needs` 链阻断，`recovery_report` 汇总部署版本与精确同-SHA收敛命令。部署完成后不会触发业务同步、不会轮询 KV，也不等待媒体缓存收敛；首次部署无数据时等待下一次 Worker Cron，或显式触发 live instance。
+部署流水线（Phase 0）在 validate 之后：`resolve_cloudflare`（含 Cron 配额 preflight）→ `apply_d1_migrations`（materialize `apps/web-worker/wrangler.toml`）→ **`deploy_web_worker`** 上传 `airing-cal-frontend`。migration、resolve 或 deploy 失败时，下游 upload 由 `needs` 链阻断，`recovery_report` 只汇总 `airing-cal-frontend` 的版本与精确同-SHA 收敛命令。
+
+历史流水线曾按 read/media → sync + Workflow → control-plane describe → frontend 的顺序部署四个 Worker；归档包仍保留 checked-in config 供对照。
+
+无论 Phase 0 或历史形态，routine deploy **不会触发业务同步、不会轮询 KV，也不等待媒体缓存收敛**；首次部署无数据时，写路径需等待 Phase 1 青龙/node-jobs，或（仅历史栈）等待 Worker Cron / 手动 Workflow。
 
 ## 最小配置
 

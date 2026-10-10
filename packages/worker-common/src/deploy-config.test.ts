@@ -7,6 +7,7 @@ import { dirname, resolve } from 'node:path'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 
 const appConfigs = [
+  ['web-worker', ['[[d1_databases]]', 'binding = "AIRING_CAL_D1"', '[[kv_namespaces]]', 'binding = "AIRING_CAL_KV"', 'binding = "AIRING_CAL_R2"', 'binding = "AIRING_CAL_DATA_R2"']],
   ['frontend-worker', ['[[services]]', 'READ_WORKER', 'SYNC_WORKER']],
   ['read-worker', ['[[d1_databases]]', 'binding = "AIRING_CAL_D1"', '[[kv_namespaces]]', 'binding = "AIRING_CAL_KV"', 'binding = "AIRING_CAL_R2"', 'binding = "AIRING_CAL_DATA_R2"']],
   ['sync-worker', ['[[d1_databases]]', 'binding = "AIRING_CAL_D1"', 'binding = "AIRING_CAL_DATA_R2"', 'binding = "AIRING_CAL_KV"', 'binding = "MEDIA_QUEUE"', '[[workflows]]', 'binding = "SYNC_WORKFLOW"', 'class_name = "SyncWorkflow"', '[triggers]', 'crons = ["0 20 * * *"]']],
@@ -26,6 +27,7 @@ test('each target worker has a checked-in Wrangler config with required bindings
 
 test('Cloudflare resource names use the AiringCal prefix', () => {
   const expected = new Map([
+    ['web-worker', ['name = "airing-cal-frontend"', 'database_name = "airing-cal-state"', 'database_id = "<AIRING_CAL_D1_DATABASE_ID>"', 'migrations_dir = "../../migrations"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-images"', 'bucket_name = "airing-cal-data"']],
     ['frontend-worker', ['name = "airing-cal-frontend"', 'service = "airing-cal-read"']],
     ['read-worker', ['name = "airing-cal-read"', 'database_name = "airing-cal-state"', 'database_id = "<AIRING_CAL_D1_DATABASE_ID>"', 'migrations_dir = "../../migrations"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-images"', 'bucket_name = "airing-cal-data"']],
     ['sync-worker', ['name = "airing-cal-sync"', 'database_name = "airing-cal-state"', 'database_id = "<AIRING_CAL_D1_DATABASE_ID>"', 'migrations_dir = "../../migrations"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-data"', 'queue = "airing-cal-media"']],
@@ -97,11 +99,11 @@ test('deploy workflow resolves existing resources without waiting for business s
     jobs.set(match[1], needs)
   }
   const deployOrder = ['resolve_cloudflare']
-  for (const nextJob of ['apply_d1_migrations', 'deploy_read_media_workers', 'deploy_sync_worker', 'deploy_frontend_worker']) {
+  for (const nextJob of ['apply_d1_migrations', 'deploy_web_worker']) {
     assert.ok(jobs.get(nextJob)?.includes(deployOrder.at(-1) ?? ''), `${nextJob} should need ${deployOrder.at(-1)}`)
     deployOrder.push(nextJob)
   }
-  assert.deepEqual(deployOrder, ['resolve_cloudflare', 'apply_d1_migrations', 'deploy_read_media_workers', 'deploy_sync_worker', 'deploy_frontend_worker'])
+  assert.deepEqual(deployOrder, ['resolve_cloudflare', 'apply_d1_migrations', 'deploy_web_worker'])
 
   assert.match(workflow, /push:\s*\n\s+branches:\s*\[dev\]/, 'only dev should deploy automatically')
   assert.doesNotMatch(workflow, /branches:\s*\[[^\]]*main/, 'main should not compete for the same workers')
@@ -109,10 +111,7 @@ test('deploy workflow resolves existing resources without waiting for business s
   assert.match(workflow, /resolve_ref:[\s\S]*?outputs:[\s\S]*?sha:\s*\$\{\{ steps\.resolve\.outputs\.sha \}\}/, 'a no-secret job should resolve one immutable deployment SHA')
   assert.match(workflow, /git merge-base --is-ancestor "\$sha" origin\/dev/, 'manual refs must already be ancestors of dev')
   assert.doesNotMatch(workflow.match(/resolve_ref:[\s\S]*?\n  validate:/)?.[0] ?? '', /secrets\./, 'ref validation must not receive production secrets')
-  for (const app of ['read-worker', 'sync-worker', 'media-worker']) {
-    assert.match(workflow, new RegExp(`apps/${app}/wrangler\\.toml`), `workflow should deploy checked-in ${app} config`)
-  }
-  assert.match(workflow, /apps\/frontend-worker\/wrangler\.toml/, 'workflow should deploy frontend config')
+  assert.match(workflow, /apps\/web-worker\/wrangler\.toml/, 'workflow should deploy checked-in web-worker config')
   assert.match(workflow, /CLOUDFLARE_API_TOKEN:\s*\$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/, 'workflow should expose CLOUDFLARE_API_TOKEN to wrangler')
   assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID:\s*\$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/, 'workflow should expose CLOUDFLARE_ACCOUNT_ID to wrangler')
   assert.match(workflow, /resolve_cloudflare:/, 'workflow should resolve existing Cloudflare resources before deploy')
@@ -121,32 +120,27 @@ test('deploy workflow resolves existing resources without waiting for business s
   assert.match(workflow, /d1_database_id:\s*\$\{\{ steps\.resolve\.outputs\.d1_database_id \}\}/, 'workflow should expose the resolved D1 database id as a job output')
   assert.match(workflow, /apply_d1_migrations:[\s\S]*?needs:\s*\[resolve_ref, validate, resolve_cloudflare\]/, 'D1 migration should wait for resource resolution')
   assert.match(workflow, /apply_d1_migrations:[\s\S]*?AIRING_CAL_D1_DATABASE_ID:\s*\$\{\{ needs\.resolve_cloudflare\.outputs\.d1_database_id \}\}/, 'D1 migration should materialize the resolved database id')
-  assert.match(workflow, /apply_d1_migrations:[\s\S]*?node scripts\/materialize-wrangler-config\.mjs apps\/sync-worker\/wrangler\.toml "\$RUNNER_TEMP\/wrangler-sync-worker\.toml"/, 'D1 migration should materialize its config before applying migrations')
-  assert.match(workflow, /pnpm exec wrangler d1 migrations apply AIRING_CAL_D1 --remote --config "\$RUNNER_TEMP\/wrangler-sync-worker\.toml"/, 'D1 migration should use the verified remote migration command')
-  assert.match(workflow, /deploy_read_media_workers:/, 'workflow should deploy read and media workers through a matrix job')
-  assert.match(workflow, /deploy_read_media_workers:[\s\S]*?needs:\s*\[resolve_ref, validate, resolve_cloudflare, apply_d1_migrations\]/, 'read and media uploads should wait for D1 migration')
-  assert.match(workflow, /deploy_sync_worker:/, 'workflow should deploy sync worker after read and media workers')
-  assert.match(workflow, /deploy_sync_worker:[\s\S]*?needs:\s*\[resolve_ref, validate, resolve_cloudflare, apply_d1_migrations, deploy_read_media_workers\]/, 'sync worker should wait for migration plus read and media workers')
-  assert.match(workflow, /pnpm exec wrangler workflows describe airing-cal-sync/, 'workflow should verify the deployed Workflow control plane')
-  assert.match(workflow, /deploy_frontend_worker:/, 'workflow should deploy the public frontend after internal workers')
-  assert.match(workflow, /deploy_frontend_worker:[\s\S]*?needs:\s*\[resolve_ref, validate, resolve_cloudflare, deploy_sync_worker\]/, 'frontend should wait for the Workflow control-plane check')
-  for (const job of ['resolve_ref', 'validate', 'resolve_cloudflare', 'apply_d1_migrations', 'deploy_read_media_workers', 'deploy_sync_worker', 'deploy_frontend_worker']) {
+  assert.match(workflow, /apply_d1_migrations:[\s\S]*?node scripts\/materialize-wrangler-config\.mjs apps\/web-worker\/wrangler\.toml "\$RUNNER_TEMP\/wrangler-web-worker\.toml"/, 'D1 migration should materialize its config before applying migrations')
+  assert.match(workflow, /pnpm exec wrangler d1 migrations apply AIRING_CAL_D1 --remote --config "\$RUNNER_TEMP\/wrangler-web-worker\.toml"/, 'D1 migration should use the verified remote migration command')
+  assert.match(workflow, /deploy_web_worker:/, 'workflow should deploy the merged web worker')
+  assert.match(workflow, /deploy_web_worker:[\s\S]*?needs:\s*\[resolve_ref, validate, resolve_cloudflare, apply_d1_migrations\]/, 'web worker deploy should wait for D1 migration')
+  for (const job of ['resolve_ref', 'validate', 'resolve_cloudflare', 'apply_d1_migrations', 'deploy_web_worker']) {
     assert.match(workflow, new RegExp(`${job}:[\\s\\S]*?timeout-minutes:`), `${job} should have a timeout`)
   }
-  assert.match(workflow, /BANGUMI_GIT_COMMIT_SHA:\s*\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/, 'frontend deploy should stamp the resolved deployment sha')
+  assert.match(workflow, /BANGUMI_GIT_COMMIT_SHA:\s*\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/, 'web worker deploy should stamp the resolved deployment sha')
   assert.match(workflow, /BANGUMI_GIT_REPOSITORY_URL:\s*https:\/\/github\.com\/\$\{\{ github\.repository \}\}/, 'frontend deploy should stamp the repository URL')
   assert.match(workflow, /AIRING_CAL_KV_NAMESPACE_ID:\s*\$\{\{ needs\.resolve_cloudflare\.outputs\.kv_namespace_id \}\}/, 'workflow should pass the resolved KV namespace id to materialize deploy configs')
   assert.match(workflow, /AIRING_CAL_D1_DATABASE_ID:\s*\$\{\{ needs\.resolve_cloudflare\.outputs\.d1_database_id \}\}/, 'workflow should pass the resolved D1 database id to materialize deploy configs')
-  assert.match(workflow, /node scripts\/materialize-wrangler-config\.mjs \$\{\{ matrix\.config \}\} \$\{\{ runner\.temp \}\}\/wrangler-\$\{\{ matrix\.app \}\}\.toml/, 'workflow should materialize internal worker configs before deploying')
-  assert.match(workflow, /pnpm exec wrangler deploy --config \$\{\{ runner\.temp \}\}\/wrangler-\$\{\{ matrix\.app \}\}\.toml/, 'workflow should deploy internal workers with materialized Wrangler configs')
-  assert.match(workflow, /WRANGLER_LOG_PATH:\s*\$\{\{ runner\.temp \}\}\/wrangler-\$\{\{ matrix\.app \}\}\.log/, 'workflow should save Wrangler debug logs for matrix deploys')
+  assert.match(workflow, /node scripts\/materialize-wrangler-config\.mjs apps\/web-worker\/wrangler\.toml \$\{\{ runner\.temp \}\}\/wrangler-web-worker\.toml/, 'workflow should materialize web-worker config before deploying')
+  assert.match(workflow, /pnpm exec wrangler deploy --config \$\{\{ runner\.temp \}\}\/wrangler-web-worker\.toml/, 'workflow should deploy web-worker with materialized Wrangler config')
+  assert.match(workflow, /WRANGLER_LOG_PATH:\s*\$\{\{ runner\.temp \}\}\/wrangler-web-worker\.log/, 'workflow should save Wrangler debug logs for web-worker deploy')
   assert.match(workflow, /WRANGLER_LOG_SANITIZE:\s*"false"/, 'workflow should include unsanitized Wrangler response bodies for failed deploy diagnosis')
   assert.match(workflow, /node scripts\/list-cloudflare-crons\.mjs/, 'cron quota must be checked before deploying any worker')
   assert.ok(workflow.indexOf('node scripts/list-cloudflare-crons.mjs') < workflow.indexOf('pnpm exec wrangler deploy --config'), 'cron quota preflight must run before the first worker upload')
   const checkoutRefs = [...workflow.matchAll(/ref:\s*\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/g)]
-  assert.equal(checkoutRefs.length, 7, 'every post-resolution job, including migration and recovery reporting, must checkout the same immutable SHA')
+  assert.equal(checkoutRefs.length, 5, 'every post-resolution job, including migration and recovery reporting, must checkout the same immutable SHA')
   assert.match(workflow, /recovery_report:[\s\S]*?if:\s*\$\{\{ always\(\) &&/, 'partial failures should produce an always-evaluated recovery report')
-  for (const worker of ['airing-cal-read', 'airing-cal-media', 'airing-cal-sync', 'airing-cal-frontend']) {
+  for (const worker of ['airing-cal-frontend']) {
     assert.match(workflow, new RegExp(`for worker in [^\n]*${worker}`), `recovery report should include ${worker}`)
   }
   assert.match(workflow, /wrangler deployments list --name "\$worker" --json/, 'recovery report should query each deployed worker version')

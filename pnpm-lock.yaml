@@ -126,6 +126,25 @@ importers:
         specifier: 0.28.2
         version: 0.28.2
 
+  apps/web-worker:
+    dependencies:
+      '@airing-cal/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@airing-cal/storage':
+        specifier: workspace:*
+        version: link:../../packages/storage
+      '@airing-cal/widget':
+        specifier: workspace:*
+        version: link:../../packages/widget
+      '@airing-cal/worker-common':
+        specifier: workspace:*
+        version: link:../../packages/worker-common
+    devDependencies:
+      '@types/node':
+        specifier: ^26.0.0
+        version: 26.4.0
+
   packages/bgm-api:
     dependencies:
       '@airing-cal/domain':
