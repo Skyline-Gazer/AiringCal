@@ -50,20 +50,11 @@ function loadWidgetProductionRenderers() {
     'renderCover',
     'renderSubjectCard',
     'renderCalendarCard',
-    'getTitle',
-    'canSyncSection',
-    'getFilteredEntries',
-    'renderCards',
-    'formatEpisodeProgress',
-    'formatFieldChange',
-    'renderInlineSyncLog',
-    'statusLabel',
-    'statusBadgeColor',
   ].map((name) => extractFunction(widgetJs, name)).join('\n')
 
   return Function(
     'location',
-    `var syncState, resultArea, document, API = ''
+    `var API = location.origin
     ${source}
     return {
       renderSubjectCard,
@@ -74,28 +65,10 @@ function loadWidgetProductionRenderers() {
         renderCalendar(days)
         return cal.innerHTML
       },
-      renderSyncCards(data) {
-        var sink = { innerHTML: '' }
-        resultArea = {
-          querySelector() { return sink },
-          querySelectorAll() { return [] },
-        }
-        document = { getElementById() { return { value: 'A->B' } } }
-        syncState = { data, page: 1, filter: 'all', search: '' }
-        renderCards('all', 1, 20, '')
-        return sink.innerHTML
-      },
-      renderInlineSyncLog,
-      statusLabel,
-      statusBadgeColor,
     }`,
   )({ origin: 'https://widget.example' }) as {
     renderSubjectCard(card: Record<string, unknown>): string
     renderCalendar(days: unknown[]): string
-    renderSyncCards(data: Record<string, unknown>): string
-    renderInlineSyncLog(results: unknown[], operationLinks: string[]): string
-    statusLabel(status: unknown): string
-    statusBadgeColor(status: unknown): string
   }
 }
 
@@ -220,11 +193,10 @@ test('widgetJs renders precise cache status text when image cache is unavailable
   assert.equal(widgetJs.includes('data:image'), false)
 })
 
-test('widgetJs includes animation sync UI and public sync endpoints', () => {
-  assert.match(widgetJs, /动画同步/)
-  assert.match(widgetJs, /\/api\/sync\/compare/)
-  assert.match(widgetJs, /\/api\/sync\/apply/)
-  assert.match(widgetJs, /\/api\/check\//)
+test('widgetJs no longer ships in-page account sync UI', () => {
+  assert.doesNotMatch(widgetJs, /动画同步/)
+  assert.doesNotMatch(widgetJs, /\/api\/sync\/compare/)
+  assert.doesNotMatch(widgetJs, /\/api\/sync\/apply/)
 })
 
 test('production widget renderers encode every hostile API sink', () => {
@@ -235,12 +207,6 @@ test('production widget renderers encode every hostile API sink', () => {
     const outputs = [
       renderers.renderSubjectCard({ subjectId: 1, name: payload, progress: 0 }),
       renderers.renderCalendar([{ weekday: { id: 1, cn: payload, en: payload }, items: [] }]),
-      renderers.renderSyncCards({
-        userA: { name: payload },
-        userB: { name: payload },
-        differences: [{ externalId: payload, title: payload, statusA: 'watching', statusB: 'completed', progressA: 1, progressB: 2 }],
-      }),
-      renderers.renderInlineSyncLog([{ externalId: payload, title: payload, status: 'error', error: payload }], ['javascript:alert(1)']),
     ]
     for (const output of outputs) {
       assert.doesNotMatch(output, /<script|<img|["']\s(?:onerror|onmouseover)=/i)
@@ -249,33 +215,8 @@ test('production widget renderers encode every hostile API sink', () => {
   }
 })
 
-test('widget tokens remain in page memory and legacy session tokens are only removed', () => {
-  assert.match(widgetJs, /sessionStorage\.removeItem\(['"]sync-tokenA['"]\)/)
-  assert.match(widgetJs, /sessionStorage\.removeItem\(['"]sync-tokenB['"]\)/)
-  assert.doesNotMatch(widgetJs, /sessionStorage\.(?:getItem|setItem)\(['"]sync-token[AB]['"]\)/)
-})
-
-test('production sync renderer rejects out-of-range scores and unknown statuses', () => {
+test('production widget renderers reject non-finite scores in cards', () => {
   const renderers = loadWidgetProductionRenderers()
-  const html = renderers.renderSyncCards({
-    userA: { name: 'A' },
-    userB: { name: 'B' },
-    differences: [{
-      externalId: '1',
-      title: 'unsafe values',
-      statusA: '__proto__',
-      statusB: '<img src=x onerror=alert(1)>',
-      scoreA: 11,
-      scoreB: -1,
-      progressA: 0,
-      progressB: 0,
-    }],
-  })
-
-  assert.equal(renderers.statusLabel('__proto__'), '—')
-  assert.equal(renderers.statusBadgeColor('__proto__'), '#666')
-  assert.equal(renderers.statusLabel('<img src=x onerror=alert(1)>'), '—')
-  assert.doesNotMatch(html, /__proto__|onerror|★\s*(?:11|-1)/i)
   assert.doesNotMatch(renderers.renderSubjectCard({ subjectId: 1, name: 'non-finite', score: Number.POSITIVE_INFINITY }), /Infinity/)
 })
 
@@ -288,24 +229,15 @@ test('widget rejects dangerous URLs and contains no inline click handlers', () =
   assert.match(widgetJs, /addEventListener\(['"]click['"]/)
 })
 
-test('production widget renderers reject blob and data URLs in link and image sinks', () => {
+test('production widget renderers reject blob and data URLs in image sinks', () => {
   const renderers = loadWidgetProductionRenderers()
-  const linkHtml = renderers.renderInlineSyncLog([], ['blob:https://widget.example/secret', 'data:text/html,<script>alert(1)</script>'])
   const imageHtml = renderers.renderSubjectCard({
     subjectId: 1,
     name: 'unsafe cover',
     images: { common: { uri: 'blob:https://widget.example/secret' } },
   })
 
-  assert.doesNotMatch(linkHtml, /href=["'](?:blob|data):/i)
   assert.doesNotMatch(imageHtml, /src=["'](?:blob|data):/i)
-})
-
-test('widgetJs sends compare items to apply in bounded batches', () => {
-  assert.match(widgetJs, /function buildSyncItems\(dir, ids\)/)
-  assert.match(widgetJs, /payload\.items = items/)
-  assert.match(widgetJs, /items\.length === chunk\.length/)
-  assert.match(widgetJs, /SYNC_BATCH_SIZE = 5/)
 })
 
 test('pages load cacheJs which fills the footer runtime status slot from health', () => {

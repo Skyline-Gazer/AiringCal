@@ -1,8 +1,6 @@
 (function () {
   const config = window.bgmConfig || { apiUrl: '', quote: '' }
   const API = (config.apiUrl || window.location.origin).replace(/\/$/, '')
-  sessionStorage.removeItem('sync-tokenA')
-  sessionStorage.removeItem('sync-tokenB')
   const container = document.querySelector('.bgm-container')
   if (!container) return
 
@@ -44,11 +42,10 @@
     if (card) card.classList.toggle('bgm-nsfw-reveal')
   })
 
-  // 顶部视图切换：番组计划（收藏列表） / 放送日历（/api/calendar） / 动画同步
+  // 顶部视图切换：番组计划（收藏列表） / 放送日历（/api/calendar）
   const VIEWS = [
     { key: 'collection', label: '番组计划' },
     { key: 'calendar', label: '放送日历' },
-    { key: 'sync', label: '动画同步' },
   ]
 
   // ---------------------------------------------------------------
@@ -190,7 +187,7 @@
         if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText)
         var data = await res.json()
         if (data.total === 0) {
-          grid.innerHTML = '<p class="bgm-empty">暂无数据 — 同步可能尚未执行，请在动画同步视图配置 token 并触发同步</p>'
+          grid.innerHTML = '<p class="bgm-empty">暂无数据 — 同步可能尚未执行，数据尚未发布，请稍后再试</p>'
           pagination.innerHTML = ''
           return
         }
@@ -243,7 +240,7 @@
             var c = health.data.collections
             statusBar.innerHTML = '<p>已连接 | 条目 ' + safeNumber(c.types && c.types._total, 0) + ' | 更新于 ' + escapeHtml((c.updated_at || '?').slice(0, 10)) + '</p>'
           } else if (health.ok) {
-            var hint = '请在动画同步视图配置 token 并触发同步'
+            var hint = '数据尚未发布，请稍后再试'
             if (health.data && health.data.last_error) hint += '<br>上次同步错误: ' + escapeHtml(health.data.last_error)
             statusBar.innerHTML = '<p class="bgm-status-warn">已连接，但 KV 无数据。' + hint + '</p>'
           } else {
@@ -275,7 +272,7 @@
 
     function renderCalendar(days) {
       if (!days || !days.length) {
-        cal.innerHTML = '<p class="bgm-empty">暂无日历数据 — 同步可能尚未执行，请在动画同步视图配置 token 并触发同步</p>'
+        cal.innerHTML = '<p class="bgm-empty">暂无日历数据 — 同步可能尚未执行，数据尚未发布，请稍后再试</p>'
         return
       }
       var html = ''
@@ -318,519 +315,6 @@
     }
   }
 
-  // ---------------------------------------------------------------
-  // 动画同步视图（多账户对比 + 同步）
-  // ---------------------------------------------------------------
-  function buildSyncView() {
-    var view = document.createElement('div')
-    view.className = 'bgm-view bgm-view-sync'
-
-    // ── Token area ──
-    var tok = document.createElement('div')
-    tok.className = 'sync-token-area'
-    tok.innerHTML = '<h3>多账户动画同步</h3>' +
-      '<p class="muted" style="font-size:12px;margin-bottom:8px;">粘贴 <a href="https://bgm.tv/dev" target="_blank" rel="noopener noreferrer">bgm.tv Access Token</a>，两个账号各一个；同步动画条目、状态、评分和章节进度</p>'
-    view.appendChild(tok)
-
-    var syncState = { tokenA: '', tokenB: '', data: null, page: 1, filter: 'all', search: '' }
-
-    function buildTokenRow(side, idSuffix) {
-      var row = document.createElement('div')
-      row.className = 'sync-token-row'
-      var saved = syncState['token' + idSuffix]
-      if (saved) {
-        row.innerHTML = '<span class="sync-token-ok">\u2713 ' + escapeHtml(side) + ' token 已就绪</span>' +
-          ' <button class="sync-token-clear" data-side="' + escapeAttribute(idSuffix) + '">清除</button>'
-      } else {
-        row.innerHTML = '<div class="sync-token-fields">' +
-          '<label class="sync-token-label sync-token-label-grow">' + escapeHtml(side) + ' Token' +
-          '<input type="password" class="sync-token-input" data-side="' + escapeAttribute(idSuffix) + '" placeholder="Access Token"></label>' +
-          '<label class="sync-token-label">平台<select class="sync-platform" data-side="' + escapeAttribute(idSuffix) + '"><option value="bgm">bgm.tv</option></select></label>' +
-          '</div>'
-      }
-      return row
-    }
-
-    var rowA = buildTokenRow('Account A', 'A')
-    var rowB = buildTokenRow('Account B', 'B')
-    tok.appendChild(rowA)
-    tok.appendChild(rowB)
-
-    var compareBtn = document.createElement('button')
-    compareBtn.id = 'sync-compare-btn'
-    compareBtn.className = 'bgm-nav-button'
-    compareBtn.textContent = '对比收藏'
-    compareBtn.style.cssText = 'margin-top:8px;width:100%;'
-    tok.appendChild(compareBtn)
-
-    // ── Result area ──
-    var resultArea = document.createElement('div')
-    resultArea.id = 'sync-result'
-    view.appendChild(resultArea)
-
-    var loaded = false
-    var SYNC_BATCH_SIZE = 5
-
-    // ── Token clear handler ──
-    tok.addEventListener('click', function(e) {
-      if (e.target.classList.contains('sync-token-clear')) {
-        var side = e.target.dataset.side
-        syncState['token' + side] = ''
-        var row = e.target.closest('.sync-token-row')
-        var newRow = buildTokenRow(side === 'A' ? 'Account A' : 'Account B', side)
-        row.parentNode.replaceChild(newRow, row)
-      }
-    })
-
-    // ── Card renderer ──
-    function getTitle(entry) {
-      return entry.title || entry.name_cn || entry.name || '#' + (entry.externalId || entry.subject_id)
-    }
-
-    function canSyncSection(dir, section) {
-      if (section === 'diff') return true
-      if (section === 'onlyA') return dir === 'A->B'
-      if (section === 'onlyB') return dir === 'B->A'
-      return false
-    }
-
-    function getFilteredEntries(filter, search) {
-      var data = syncState.data; if (!data) return
-      var all = []
-      function push(d, section) {
-        if (search && getTitle(d).toLowerCase().indexOf(search.toLowerCase()) === -1) return
-        var entry = Object.assign({}, d)
-        entry._section = section
-        all.push(entry)
-      }
-
-      if (filter === 'all' || filter === 'diff') {
-        ;(data.differences || []).forEach(function(d) { push(d, 'diff') })
-      }
-      if (filter === 'all' || filter === 'onlyA') {
-        ;(data.onlyA || []).forEach(function(d) { push(d, 'onlyA') })
-      }
-      if (filter === 'all' || filter === 'onlyB') {
-        ;(data.onlyB || []).forEach(function(d) { push(d, 'onlyB') })
-      }
-      if (filter === 'same') {
-        ;(data.same || []).forEach(function(d) { push(d, 'same') })
-      }
-      return all
-    }
-
-    function renderCards(filter, page, pageSize, search) {
-      var data = syncState.data; if (!data) return
-      var nameA = (data.userA && data.userA.name) || 'A'
-      var nameB = (data.userB && data.userB.name) || 'B'
-      var dir = (document.getElementById('sync-direction') || {}).value || 'A->B'
-      var all = getFilteredEntries(filter, search) || []
-
-      var tp = Math.ceil(all.length / pageSize) || 1
-      var start = (page - 1) * pageSize
-      var pageItems = all.slice(start, start + pageSize)
-
-      var h = ''
-      h += '<div class="sync-cards">'
-      if (!pageItems.length) {
-        h += '<p class="bgm-empty" style="padding:20px;text-align:center;">无匹配条目</p>'
-      } else {
-        pageItems.forEach(function(d) {
-          var isDiff = d._section === 'diff'
-          var isOnlyA = d._section === 'onlyA'
-          var isOnlyB = d._section === 'onlyB'
-          var isSame = d._section === 'same'; if (isSame) { d.statusA = d.statusB = d.status; d.progressA = d.progressB = d.progress; d.scoreA = d.scoreB = d.score; }
-          var canSync = canSyncSection(dir, d._section)
-
-          var borderColor = ''
-          if (isDiff && d.statusA !== d.statusB) borderColor = '#e94560'
-          else if (isDiff && d.progressA !== d.progressB) borderColor = '#ff9800'
-          else if (isOnlyA || isOnlyB) borderColor = '#4caf50'
-
-          h += '<div class="sync-card" style="' + (borderColor ? 'border-left:4px solid ' + borderColor : '') + '">'
-
-          // Title row
-          var scoreA = safeScore(d.scoreA)
-          var scoreB = safeScore(d.scoreB)
-          var progressA = safeNumber(d.progressA, 0)
-          var progressB = safeNumber(d.progressB, 0)
-          var totalEpisodes = safeNumber(d.totalEpisodes, 0)
-          var highScore = Math.max(scoreA, scoreB, safeScore(d.score))
-          var highEp = Math.max(totalEpisodes || progressA || progressB || safeNumber(d.progress, 0))
-          var titleExtras = ''
-          if (highEp > 0 || highScore > 0) {
-            titleExtras = '<span class="sync-card-meta">'
-            if (highEp > 0) titleExtras += highEp + '话'
-            if (highScore > 0) titleExtras += (highEp > 0 ? ' / ' : '') + '\u2605 ' + highScore
-            titleExtras += '</span>'
-          }
-          var titleName = getTitle(d)
-          h += '<div class="sync-card-title">' + escapeHtml(titleName) + titleExtras + '</div>'
-
-          // Side-by-side columns
-          h += '<div class="sync-card-cols">'
-
-          // Column A
-          h += '<div class="sync-card-col">'
-          h += '<div class="sync-col-label">' + escapeHtml(nameA) + '</div>'
-          if (isOnlyB) {
-            h += '<div class="sync-col-empty">\u2014</div>'
-          } else {
-            h += '<span class="sync-badge" style="background:' + statusBadgeColor(d.statusA) + '">' + escapeHtml(statusLabel(d.statusA)) + '</span>'
-            var pctA = (totalEpisodes || progressA) > 0 ? Math.round(progressA / Math.max(totalEpisodes || progressA, 1) * 100) : 0
-            h += '<div class="sync-progress-bar"><span style="width:' + pctA + '%"></span></div>'
-            h += '<span class="sync-progress-text">' + progressA + '话</span>'
-            if (scoreA > 0) {
-              var arrow = (scoreA > scoreB) ? ' <span style="color:#e94560;">\u2191</span>' : ''
-              h += '<span class="sync-score">\u2605 ' + scoreA + arrow + '</span>'
-            }
-          }
-          h += '</div>'
-
-          // Column B
-          h += '<div class="sync-card-col">'
-          h += '<div class="sync-col-label">' + escapeHtml(nameB) + '</div>'
-          if (isOnlyA) {
-            h += '<div class="sync-col-empty">\u2014</div>'
-          } else {
-            h += '<span class="sync-badge" style="background:' + statusBadgeColor(d.statusB) + '">' + escapeHtml(statusLabel(d.statusB)) + '</span>'
-            var pctB = (totalEpisodes || progressB) > 0 ? Math.round(progressB / Math.max(totalEpisodes || progressB, 1) * 100) : 0
-            h += '<div class="sync-progress-bar"><span style="width:' + pctB + '%"></span></div>'
-            h += '<span class="sync-progress-text">' + progressB + '话</span>'
-            if (scoreB > 0) {
-              var arrowB = (scoreB > scoreA) ? ' <span style="color:#e94560;">\u2191</span>' : ''
-              h += '<span class="sync-score">\u2605 ' + scoreB + arrowB + '</span>'
-            }
-          }
-          h += '</div>'
-
-          h += '</div>' // sync-card-cols
-
-          // Checkbox row
-          if (canSync) {
-            var cid = d.externalId || d.subject_id
-            h += '<div class="sync-card-check"><label><input type="checkbox" checked data-id="' + escapeAttribute(cid) + '"> \u540c\u6b65\u6b64\u9879</label></div>'
-          } else if (!isSame) {
-            h += '<div class="sync-card-check"><span class="sync-card-nosync">\u5f53\u524d\u65b9\u5411\u4e0d\u53ef\u540c\u6b65</span></div>'
-          }
-
-          h += '</div>' // sync-card
-        })
-      }
-      h += '</div>' // sync-cards
-
-      // Pagination
-      if (tp > 1) {
-        h += '<div class="sync-pagination">'
-        var pages = [1]
-        for (var p = Math.max(2, page - 2); p <= Math.min(tp - 1, page + 2); p++) pages.push(p)
-        pages.push(tp)
-        pages.forEach(function(p, i) {
-          if (i > 0 && pages[i-1] !== '...' && p - pages[i-1] > 1) h += '<span>...</span>'
-          if (p === page) h += '<span class="sync-pg-active">' + p + '</span>'
-          else h += '<button class="sync-pg-btn" data-pg="' + p + '">' + p + '</button>'
-        })
-        h += '</div>'
-      }
-
-      resultArea.querySelector('.sync-cards-wrap').innerHTML = h
-
-      // Wire pagination
-      resultArea.querySelectorAll('.sync-pg-btn').forEach(function(b) {
-        b.addEventListener('click', function() {
-          syncState.page = parseInt(this.dataset.pg)
-          renderCards(syncState.filter, syncState.page, parseInt(document.getElementById('sync-pagesize').value), syncState.search)
-        })
-      })
-    }
-
-    function renderCompareResult(data) {
-      var nameA = (data.userA && data.userA.name) || 'A'
-      var nameB = (data.userB && data.userB.name) || 'B'
-      var sameLen = (data.same || []).length
-      var diffLen = (data.differences || []).length
-      var onlyALen = (data.onlyA || []).length
-      var onlyBLen = (data.onlyB || []).length
-      var allLen = diffLen + onlyALen + onlyBLen
-
-      syncState.data = data
-      syncState.filter = 'all'
-      syncState.page = 1
-      syncState.search = ''
-
-      var h = ''
-
-      // Pill navigation
-      h += '<div class="sync-pills">'
-      h += '<button class="sync-pill active" data-filter="all">\u5168\u90e8 ' + allLen + '</button>'
-      if (diffLen) h += '<button class="sync-pill" data-filter="diff">\u5dee\u5f02 ' + diffLen + '</button>'
-      if (onlyALen) h += '<button class="sync-pill" data-filter="onlyA">\u4ec5' + escapeHtml(nameA) + ' ' + onlyALen + '</button>'
-      if (onlyBLen) h += '<button class="sync-pill" data-filter="onlyB">\u4ec5' + escapeHtml(nameB) + ' ' + onlyBLen + '</button>'
-      if (sameLen) h += '<button class="sync-pill" data-filter="same">\u76f8\u540c ' + sameLen + '</button>'
-      h += '</div>'
-
-      // Progress bar (top)
-      h += '<div id="sync-progress" style="display:none;margin-bottom:12px;"><div class="bgm-progress"><span id="sync-progress-fill" style="width:0%"></span></div>' +
-        '<p id="sync-progress-text" class="muted" style="font-size:12px;margin-top:4px;"></p></div>'
-
-      // Toolbar
-      h += '<div class="sync-toolbar">'
-      h += '<button id="sync-sel-all" class="sync-tool-btn">\u5168\u9009</button>'
-      h += '<button id="sync-sel-rev" class="sync-tool-btn">\u53cd\u9009</button>'
-      h += '<select id="sync-pagesize" class="sync-select"><option value="20">20/\u9875</option><option value="50">50/\u9875</option><option value="100">100/\u9875</option></select>'
-      h += '<input type="text" id="sync-search" class="sync-search" placeholder="\u641c\u7d22\u6761\u76ee...">'
-      h += '<span style="flex:1;"></span>'
-      h += '<select id="sync-direction" class="sync-select">'
-      h += '<option value="A->B">' + escapeHtml(nameA) + ' \u2192 ' + escapeHtml(nameB) + '</option>'
-      h += '<option value="B->A">' + escapeHtml(nameB) + ' \u2192 ' + escapeHtml(nameA) + '</option></select>'
-      h += '<button id="sync-full-btn" class="sync-tool-btn sync-tool-btn-primary">\u540c\u6b65\u7b5b\u9009\u5168\u90e8</button>'
-      h += '<button id="sync-sel-btn" class="sync-tool-btn">\u9009\u4e2d\u540c\u6b65</button>'
-      h += '</div>'
-
-      // Cards container
-      h += '<div class="sync-cards-wrap"></div>'
-
-      resultArea.innerHTML = h
-
-      // Wire events
-      resultArea.querySelectorAll('.sync-pill').forEach(function(pill) {
-        pill.addEventListener('click', function() {
-          resultArea.querySelectorAll('.sync-pill').forEach(function(p) { p.classList.remove('active') })
-          this.classList.add('active')
-          syncState.filter = this.dataset.filter
-          syncState.page = 1
-          renderCards(syncState.filter, 1, parseInt(document.getElementById('sync-pagesize').value), syncState.search)
-        })
-      })
-
-      document.getElementById('sync-pagesize').addEventListener('change', function() {
-        syncState.page = 1
-        renderCards(syncState.filter, 1, parseInt(this.value), syncState.search)
-      })
-
-      document.getElementById('sync-search').addEventListener('input', function() {
-        syncState.search = this.value
-        syncState.page = 1
-        renderCards(syncState.filter, 1, parseInt(document.getElementById('sync-pagesize').value), this.value)
-      })
-
-      document.getElementById('sync-sel-all').addEventListener('click', function() {
-        resultArea.querySelectorAll('input[type=checkbox]').forEach(function(c) { c.checked = true })
-      })
-      document.getElementById('sync-sel-rev').addEventListener('click', function() {
-        resultArea.querySelectorAll('input[type=checkbox]').forEach(function(c) { c.checked = !c.checked })
-      })
-      document.getElementById('sync-direction').addEventListener('change', function() {
-        renderCards(syncState.filter, 1, parseInt(document.getElementById('sync-pagesize').value), syncState.search)
-      })
-
-      document.getElementById('sync-full-btn').addEventListener('click', function() { doSyncOp('full', []) })
-      document.getElementById('sync-sel-btn').addEventListener('click', function() {
-        var ids = Array.from(resultArea.querySelectorAll('input[type=checkbox]:checked')).map(function(c) { return c.dataset.id })
-        if (!ids.length) return alert('\u8bf7\u81f3\u5c11\u9009\u4e2d\u4e00\u4e2a\u6761\u76ee')
-        doSyncOp('partial', ids)
-      })
-
-      renderCards('all', 1, 20, '')
-    }
-
-    function getEntryId(entry) {
-      return entry && (entry.externalId || entry.subject_id)
-    }
-
-    function uniqueIds(entries) {
-      var seen = {}
-      var ids = []
-      entries.forEach(function(entry) {
-        var id = String(getEntryId(entry) || '')
-        if (!id || seen[id]) return
-        seen[id] = true
-        ids.push(id)
-      })
-      return ids
-    }
-
-    function getSyncableFilteredIds(dir, filter, search) {
-      return uniqueIds((getFilteredEntries(filter, search) || []).filter(function(entry) {
-        return canSyncSection(dir, entry._section)
-      }))
-    }
-
-    function formatEpisodeProgress(progress) {
-      if (!progress) return ''
-      var delta = progress.after - progress.before
-      var suffix = delta === 0 ? '\u65e0\u53d8\u5316' : ((delta > 0 ? '+' : '') + delta)
-      if (progress.total > 0) return progress.before + '/' + progress.total + ' -> ' + progress.after + '/' + progress.total + ' (' + suffix + ')'
-      return progress.before + ' -> ' + progress.after + ' (' + suffix + ')'
-    }
-
-    function formatFieldChange(change) {
-      if (!change) return ''
-      var before = change.before == null ? '\u2014' : change.before
-      var after = change.after == null ? '\u2014' : change.after
-      return before + ' -> ' + after
-    }
-
-    function buildSyncBaseline(dir, ids) {
-      var wanted = {}
-      ids.forEach(function(id) { wanted[String(id)] = true })
-      return (getFilteredEntries(syncState.filter, syncState.search) || []).filter(function(entry) {
-        return wanted[String(getEntryId(entry) || '')]
-      }).map(function(entry) {
-        var targetIsB = dir === 'A->B'
-        return {
-          externalId: String(getEntryId(entry) || ''),
-          status: targetIsB ? entry.statusB : entry.statusA,
-          score: safeScore(targetIsB ? entry.scoreB : entry.scoreA),
-          progress: targetIsB ? entry.progressB : entry.progressA,
-          totalEpisodes: entry.totalEpisodes || Math.max(entry.progressA || 0, entry.progressB || 0),
-        }
-      })
-    }
-
-    function buildSyncItems(dir, ids) {
-      var wanted = {}
-      ids.forEach(function(id) { wanted[String(id)] = true })
-      var sourceKey = dir === 'A->B' ? 'itemA' : 'itemB'
-      return (getFilteredEntries(syncState.filter, syncState.search) || []).filter(function(entry) {
-        return wanted[String(getEntryId(entry) || '')]
-      }).map(function(entry) {
-        return entry[sourceKey]
-      }).filter(Boolean)
-    }
-
-    function renderInlineSyncLog(results, operationLinks) {
-      var rows = results.map(function(r) {
-        var cls = r.status === 'ok' ? 'ok' : 'error'
-        return '<tr>' +
-          '<td>' + escapeHtml(r.externalId) + '</td>' +
-          '<td>' + escapeHtml(r.title || '') + '</td>' +
-          '<td class="' + cls + '">' + escapeHtml(r.status) + '</td>' +
-          '<td>' + escapeHtml(formatFieldChange(r.collectionStatus)) + '</td>' +
-          '<td>' + escapeHtml(formatFieldChange(r.scoreChange)) + '</td>' +
-          '<td>' + escapeHtml(formatEpisodeProgress(r.episodeProgress)) + '</td>' +
-          '<td>' + escapeHtml(r.error || '') + '</td>' +
-          '</tr>'
-      }).join('')
-      var links = operationLinks.length ? '<div class="sync-log-links">\u5b8c\u6574\u65e5\u5fd7: ' + operationLinks.map(function(url, index) {
-        return '<a href="' + escapeAttribute(safeUrl(url, '#')) + '" target="_blank" rel="noopener noreferrer">#' + (index + 1) + '</a>'
-      }).join(' ') + '</div>' : ''
-      return '<div class="sync-inline-log"><h4>\u672c\u6b21\u64cd\u4f5c\u65e5\u5fd7</h4>' + links +
-        '<table><thead><tr><th>Subject ID</th><th>\u6807\u9898</th><th>\u7ed3\u679c</th><th>\u6536\u85cf\u72b6\u6001</th><th>\u8bc4\u5206</th><th>\u7ae0\u8282\u8fdb\u5ea6</th><th>\u9519\u8bef</th></tr></thead><tbody>' +
-        (rows || '<tr><td colspan="7">\u6ca1\u6709\u8fd4\u56de\u6761\u76ee</td></tr>') +
-        '</tbody></table></div>'
-    }
-
-    async function doSyncOp(mode, subjectIds) {
-      var dir = document.getElementById('sync-direction').value
-      var fromToken = dir === 'A->B' ? syncState.tokenA : syncState.tokenB
-      var toToken = dir === 'A->B' ? syncState.tokenB : syncState.tokenA
-      var nameA = (syncState.data && syncState.data.userA && syncState.data.userA.name) || 'Account A'
-      var nameB = (syncState.data && syncState.data.userB && syncState.data.userB.name) || 'Account B'
-      var fromUser = dir === 'A->B' ? nameA : nameB
-      var toUser = dir === 'A->B' ? nameB : nameA
-      var ids = mode === 'full' ? getSyncableFilteredIds(dir, syncState.filter, syncState.search) : subjectIds
-      var expected = ids.length
-      var platformA = (resultArea.querySelector('.sync-platform[data-side="A"]') || {}).value || 'bgm'
-      var platformB = (resultArea.querySelector('.sync-platform[data-side="B"]') || {}).value || 'bgm'
-      var allResults = []
-      var operationLinks = []
-
-      if (!ids.length) return alert('\u6ca1\u6709\u53ef\u540c\u6b65\u7684\u6761\u76ee')
-
-      document.getElementById('sync-progress').style.display = ''
-      document.getElementById('sync-progress-fill').style.width = '0%'
-      document.getElementById('sync-progress-text').textContent = '\u6b63\u5728\u540c\u6b65... \u6a21\u5f0f ' + mode + '\uff0c\u9884\u8ba1 ' + expected + ' \u9879'
-
-      try {
-        for (var start = 0; start < ids.length; start += SYNC_BATCH_SIZE) {
-          var chunk = ids.slice(start, start + SYNC_BATCH_SIZE)
-          var baseline = buildSyncBaseline(dir, chunk)
-          var items = buildSyncItems(dir, chunk)
-          var payload = { tokenA: fromToken, platformA: platformA, from: fromUser, tokenB: toToken, platformB: platformB, to: toUser, mode: 'partial', baseline: baseline }
-          if (items.length === chunk.length) payload.items = items
-          else payload.subject_ids = chunk
-          var res = await fetch(API + '/api/sync/apply', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          })
-          var operationId = res.headers.get('X-Sync-Operation-Id')
-          if (operationId) operationLinks.push('/api/check/' + operationId)
-          var batchResults = await res.json().catch(function() { return null })
-          if (!res.ok) {
-            var errMsg = (batchResults && batchResults.error && batchResults.error.message) || ('HTTP ' + res.status + ' ' + res.statusText)
-            document.getElementById('sync-progress-fill').style.width = '0%'
-            document.getElementById('sync-progress-text').innerHTML = '<span style="color:#e94560;">\u540c\u6b65\u5931\u8d25: ' + escapeHtml(errMsg) + '</span>'
-            return
-          }
-          if (!Array.isArray(batchResults)) throw new Error('Invalid response')
-          allResults = allResults.concat(batchResults)
-          var done = Math.min(start + chunk.length, expected)
-          document.getElementById('sync-progress-fill').style.width = Math.round(done / expected * 100) + '%'
-          document.getElementById('sync-progress-text').textContent = '\u6b63\u5728\u540c\u6b65... \u6a21\u5f0f ' + mode + '\uff0c' + done + '/' + expected + ' \u9879'
-        }
-        var results = allResults
-        var ok = results.filter(function(r) { return r.status === 'ok' }).length
-        var err = results.filter(function(r) { return r.status === 'error' }).length
-        document.getElementById('sync-progress-fill').style.width = '100%'
-        var msg = '\u540c\u6b65\u5b8c\u6210\uff1a' + ok + ' \u6210\u529f\uff0c' + err + ' \u5931\u8d25'
-        msg += '<br><small>\u8bf7\u6c42\u6a21\u5f0f: ' + mode + '\uff1b\u9884\u8ba1: ' + expected + '\uff1b\u540e\u7aef\u8fd4\u56de: ' + results.length + '</small>'
-        msg += renderInlineSyncLog(results, operationLinks)
-        if (err > 0) {
-          var failed = results.filter(function(r) { return r.status === 'error' }).slice(0, 3).map(function(r) { return (r.title || r.externalId) + ': ' + (r.error || 'unknown') }).join('; ')
-          msg += '<br><small style="color:#e94560;">\u5931\u8d25\u6761\u76ee: ' + escapeHtml(failed) + (err > 3 ? ' \u7b49' + err + '\u9879' : '') + '</small>'
-        }
-        document.getElementById('sync-progress-text').innerHTML = msg
-      } catch (e) {
-        document.getElementById('sync-progress-fill').style.width = '0%'
-        document.getElementById('sync-progress-text').innerHTML = '<span style="color:#e94560;">\u540c\u6b65\u5931\u8d25: ' + escapeHtml(e.message || '\u672a\u77e5\u9519\u8bef') + '</span>'
-      }
-    }
-
-    return {
-      el: view,
-      activate: function() {
-        if (loaded) return
-        loaded = true
-        compareBtn.addEventListener('click', async function() {
-          var inputA = tok.querySelector('.sync-token-input[data-side="A"]')
-          var inputB = tok.querySelector('.sync-token-input[data-side="B"]')
-          var selA = tok.querySelector('.sync-platform[data-side="A"]')
-          var selB = tok.querySelector('.sync-platform[data-side="B"]')
-          var ta = inputA ? inputA.value.trim() : ''
-          var tb = inputB ? inputB.value.trim() : ''
-          if (!ta) ta = syncState.tokenA
-          if (!tb) tb = syncState.tokenB
-          if (!ta || !tb) return alert('\u8bf7\u586b\u5199\u4e24\u4e2a\u8d26\u53f7\u7684 Access Token')
-
-          syncState.tokenA = ta; syncState.tokenB = tb
-
-          resultArea.innerHTML = '<p class="bgm-status">\u6b63\u5728\u52a0\u8f7d\u53cc\u65b9\u6536\u85cf\u6570\u636e...</p>'
-          try {
-            var platformA = selA ? selA.value : 'bgm'
-            var platformB = selB ? selB.value : 'bgm'
-            var res = await fetch(API + '/api/sync/compare', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ tokenA: ta, platformA: platformA, tokenB: tb, platformB: platformB }),
-            })
-            var data = await res.json()
-            if (!res.ok) throw new Error(data.error || '\u8bf7\u6c42\u5931\u8d25')
-
-            // Update token row display
-            var rows = tok.querySelectorAll('.sync-token-row')
-            if (rows[0]) { var nrA = buildTokenRow('Account A', 'A'); rows[0].parentNode.replaceChild(nrA, rows[0]) }
-            if (rows[1]) { var nrB = buildTokenRow('Account B', 'B'); rows[1].parentNode.replaceChild(nrB, rows[1]) }
-
-            renderCompareResult(data)
-          } catch (e) {
-            resultArea.innerHTML = '<p class="bgm-error">\u5bf9\u6bd4\u5931\u8d25: ' + escapeHtml(e.message || '\u672a\u77e5\u9519\u8bef') + '</p>'
-          }
-        })
-      },
-    }
-  }
   function statusLabel(s) {
   var map = { watching: '在看', completed: '看过', plan_to_watch: '想看', on_hold: '搁置', dropped: '抛弃' }
   return Object.prototype.hasOwnProperty.call(map, s) ? map[s] : '—'
@@ -846,8 +330,7 @@ function statusBadgeColor(s) {
   async function render() {
     var collectionView = buildCollectionView()
     var calendarView = buildCalendarView()
-    var syncView = buildSyncView()
-    var views = { collection: collectionView, calendar: calendarView, sync: syncView }
+    var views = { collection: collectionView, calendar: calendarView }
 
     var switcher = document.createElement('div')
     switcher.className = 'bgm-view-switch'
@@ -859,7 +342,6 @@ function statusBadgeColor(s) {
     container.appendChild(switcher)
     container.appendChild(collectionView.el)
     container.appendChild(calendarView.el)
-    container.appendChild(syncView.el)
 
     function activate(key) {
       var btns = switcher.querySelectorAll('button')
@@ -868,7 +350,6 @@ function statusBadgeColor(s) {
       }
       collectionView.el.style.display = key === 'collection' ? '' : 'none'
       calendarView.el.style.display = key === 'calendar' ? '' : 'none'
-      syncView.el.style.display = key === 'sync' ? '' : 'none'
       views[key].activate()
     }
 
