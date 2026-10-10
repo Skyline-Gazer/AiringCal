@@ -143,7 +143,7 @@ importers:
     devDependencies:
       '@types/node':
         specifier: ^26.0.0
-        version: 26.0.0
+        version: 26.4.0
 
   packages/bgm-api:
     dependencies:
