@@ -11,6 +11,7 @@ export interface NodeJobsConfig {
   r2Bucket: string
   r2AccessKeyId: string
   r2SecretAccessKey: string
+  kvNamespaceId?: string
 }
 
 function required(env: Record<string, string | undefined>, ...names: string[]): string {
@@ -28,9 +29,12 @@ export function readNodeJobsConfig(env: Record<string, string | undefined> = pro
   const r2Bucket = required(env, 'AIRING_CAL_R2_BUCKET', 'AIRINGCAL_R2_BUCKET')
   const r2AccessKeyId = required(env, 'R2_ACCESS_KEY_ID')
   const r2SecretAccessKey = required(env, 'R2_SECRET_ACCESS_KEY')
+  const kvRaw = env.AIRING_CAL_KV_NAMESPACE_ID?.trim() || env.AIRINGCAL_KV_NAMESPACE_ID?.trim()
+  const kvNamespaceId = kvRaw || undefined
   if (!ACCOUNT_ID.test(cloudflareAccountId) || !D1_UUID.test(d1DatabaseId) || !R2_BUCKET.test(r2Bucket)) {
     fail('CONFIG_INVALID')
   }
+  if (kvNamespaceId && !D1_UUID.test(kvNamespaceId)) fail('CONFIG_INVALID')
   return {
     cloudflareAccountId,
     d1DatabaseId,
@@ -38,5 +42,6 @@ export function readNodeJobsConfig(env: Record<string, string | undefined> = pro
     r2Bucket,
     r2AccessKeyId,
     r2SecretAccessKey,
+    kvNamespaceId,
   }
 }

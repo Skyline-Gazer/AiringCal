@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import {
   createCloudflareD1Client,
+  createCloudflareKvClient,
   createR2Store,
   createRunContext,
   readNodeJobsConfig,
@@ -28,6 +29,7 @@ export async function runSync(env: Record<string, string | undefined> = process.
   })
   const db = createCloudflareD1Client(nodeConfig, run)
   const store = createR2Store(nodeConfig, run)
+  const kv = nodeConfig.kvNamespaceId ? createCloudflareKvClient(nodeConfig, run) : null
   try {
     const client = createUpstreamBgmClient(env.BGM_TOKEN?.trim())
     const result = await runSyncPipeline({
@@ -43,6 +45,7 @@ export async function runSync(env: Record<string, string | undefined> = process.
         () => Date.now(),
       ),
       media: noopMediaRefresh,
+      kv,
       now: () => Date.now(),
     })
     return {

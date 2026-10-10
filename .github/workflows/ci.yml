@@ -27,6 +27,30 @@ jobs:
       - run: pnpm test
       - run: pnpm build:check
 
+  node-jobs-bundle:
+    needs: validate
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -F @airing-cal/node-jobs build
+      - run: |
+          test -f apps/node-jobs/dist/qinglong-bundle/airingcal-sync.mjs
+          test -f apps/node-jobs/dist/qinglong-bundle/airingcal-backup.mjs
+          test -f apps/node-jobs/dist/qinglong-bundle/manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qinglong-bundle
+          path: apps/node-jobs/dist/qinglong-bundle/
+
   vps-sync-image:
     needs: validate
     timeout-minutes: 20

@@ -402,6 +402,43 @@ async function handleCache(url: URL, env: ReadEnv): Promise<Response> {
 }
 
 async function handleHealth(env: ReadEnv): Promise<Response> {
+  const migrationHealth = await buildMigrationHealth(migrationHealthEnvFor(env))
+  if (migrationHealth.migration.read_mode === 'r2') {
+    const source = await snapshotSourceFor(env)
+    if (source.mode === 'r2') {
+      const summary = source.snapshot.summary
+      const publishedAt = migrationHealth.snapshot.verified_at
+      return json({
+        ok: true,
+        worker: 'web-worker',
+        data: {
+          collections: {
+            types: { ...summary },
+            updated_at: publishedAt ? new Date(publishedAt * 1000).toISOString() : null,
+            users: [],
+          },
+          cache: {
+            total_subjects: summary._total ?? 0,
+            source: 'r2_snapshot',
+          },
+          cron: {
+            scheduler: 'qinglong',
+            next_at: nextCronAt(),
+            last: publishedAt
+              ? { status: 'published', source: 'qinglong', completed_at: publishedAt }
+              : null,
+          },
+          workflow: null,
+          publish: {
+            generation: migrationHealth.snapshot.generation,
+            r2_key: migrationHealth.snapshot.r2_key,
+          },
+        },
+        ...migrationHealth,
+      })
+    }
+  }
+
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const active = await activeSnapshot(storage)
   const activeInstance = activeSnapshotInstanceFrom(active)
@@ -421,7 +458,6 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
         stale: workflowStale,
       })
     : null
-  const migrationHealth = await buildMigrationHealth(migrationHealthEnvFor(env))
   return json({
     ok: true,
     worker: 'web-worker',
@@ -438,6 +474,7 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
             source: 'snapshot_summary',
           },
           cron: {
+            scheduler: 'cloudflare-workflows',
             next_at: nextCronAt(),
             last: scheduledWorkflowCronStatus(workflowRun, cronLastStatus(meta), effectiveWorkflowStatus),
           },

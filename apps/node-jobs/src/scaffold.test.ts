@@ -11,8 +11,10 @@ test('sync exits 0 when user config is absent', async () => {
   assert.equal(exitCode(summary), 0)
 })
 
-test('backup scaffold exits 0 with skipped summary', async () => {
-  const summary = await runBackup()
+test('backup reports failed when cloudflare config is absent', async () => {
+  const summary = await runBackup({})
   assert.equal(summary.job, 'airingcal-backup')
-  assert.equal(exitCode(summary), 0)
+  assert.equal(summary.status, 'failed')
+  assert.equal(summary.message, 'CONFIG_INVALID')
+  assert.equal(exitCode(summary), 1)
 })
