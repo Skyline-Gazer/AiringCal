@@ -12,7 +12,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 
 **Architecture:** 新增 `apps/vps-sync` 作为 Node composition root，以端口驱动的 sync core 组合 PostgreSQL、bgm.tv、S3-compatible R2、`pg_dump`/`pg_restore` 和飞书适配器；纯 snapshot/manifest/retry/retention 规则留在共享包。Read Worker 只验证 R2 manifest/snapshot 并执行 R2 → Cache API → legacy KV fallback，绝不访问 VPS 或 PostgreSQL。
 
-**Tech Stack:** TypeScript 6、Node.js `node:alpine`、pnpm workspace、`pg`、AWS SDK S3 client、PostgreSQL、Cloudflare R2/Workers Cache API、Docker Compose、GitHub Actions/GHCR、`tsx --test`。
+**Tech Stack:** TypeScript 6、Node.js `node:alpine`、pnpm workspace、`pg`、`@sentry/node`、AWS SDK S3 client、PostgreSQL、Cloudflare R2/Workers Cache API、Docker Compose、GitHub Actions/GHCR、`tsx --test`。
 
 ## Global Constraints
 
@@ -35,6 +35,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 - Create `apps/vps-sync/src/publication/` — S3 adapter 与 pending/verified 发布状态机。
 - Create `apps/vps-sync/src/backup/` — dump、manifest、retention 与 restore verification。
 - Create `apps/vps-sync/src/notification/` — 飞书消息、签名、投递与 redaction。
+- Create `apps/vps-sync/src/observability/` — SDK-neutral tracing port 的 Sentry Node adapter、配置解析与 bounded flush。
 - Create `apps/vps-sync/src/run.ts` / `cli.ts` — 一次性协调器与 `sync|migrate|backup|restore-verify` 命令。
 - Modify `packages/domain/src/public-snapshot.ts` — manifest contract、canonical bytes/hash 与精确验证。
 - Modify `apps/read-worker/src/r2-snapshot.ts` — manifest 驱动读取及最后验证 envelope fallback。
@@ -53,53 +54,63 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `applyMigrations(pool: Pool): Promise<void>`；`withSessionLock<T>(client: PoolClient, key: bigint, work: () => Promise<T>): Promise<{ acquired: boolean; value?: T }>`；不可变 `schema_migrations(name text primary key, checksum text, applied_at timestamptz)`。
 
-- [ ] **Step 1: 验证依赖与 PostgreSQL API** — 执行 `pnpm view pg version`、检查 `node_modules/pg` types，并在临时 PostgreSQL 上执行 `psql --help` 与 `SELECT pg_try_advisory_lock(1);`；把确认的版本和签名记录在实现注释/PR notes。集成测试环境（需先具备 Docker）：本地用 `docker run --rm -e POSTGRES_PASSWORD=test -p 54329:5432 postgres:17-alpine` 启动 disposable 实例，CI 用 `services: postgres:17-alpine` 加 health check；`DATABASE_URL` 指向该实例，测试结束销毁。启动命令写进 `docs/runbook/vps-data-plane.md`。本地无 Docker 时这些集成测试标记为环境前置，不在本机强制执行。
-- [ ] **Step 2: 写 RED 测试** — 测试按文件名顺序应用 migration、重复执行 no-op、checksum 改变时报 `MIGRATION_CHECKSUM_MISMATCH`、两个连接仅一个获得相同 session lock。
+- [ ] **Step 1: 验证依赖与 PostgreSQL API** — 已拆分为 Node `pg` 运行时门禁与独立的 CLI/container 前置检查，避免将未执行的 `psql` 或 Docker 检查写成通过。
+  - [x] **Node `pg` dependency/types and real-server API/lock validation** — 已检查 `pg` 类型签名；2026-08-31 的 PostgreSQL 18.6 直连 TLS real-server integration 以两个 `pg` connections 验证 `pg_try_advisory_lock` 的 session 语义，并通过 migration 与 authority boundary 全套门禁。证据见 `docs/verification/2026-08-31-vps-sync-postgresql-18-integration.md`。`psql` 不参与已实现的 Node `pg` migration 路径，因此此前的 `psql` preflight 由实际 API 测试取代为该路径的验收证据。
+  - [ ] **CLI/container-specific preflight** — 未执行 `psql --help`，也未启动 Docker disposable instance 或 CI PostgreSQL service。若为容器/CLI 覆盖重新引入该环境，使用已核验存在的官方 `postgres:18-alpine` tag，并先验证 Docker/CI 配置及命令参数；这不是当前 Node `pg` 验收的替代项。
+- [x] **Step 2: 写 RED 测试** — 测试按文件名顺序应用 migration、重复执行 no-op、checksum 改变时报 `MIGRATION_CHECKSUM_MISMATCH`、两个连接仅一个获得相同 session lock。
   ```ts
   await applyMigrations(pool)
   await assert.rejects(() => applyMigrations(poolWithChangedChecksum), /MIGRATION_CHECKSUM_MISMATCH/)
   assert.deepEqual(await Promise.all([claim(a), claim(b)]).then(xs => xs.map(x => x.acquired).sort()), [false, true])
   ```
-- [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- migrate.test.ts`，预期因 `applyMigrations` 不存在而 FAIL。
-- [ ] **Step 4: 最小 GREEN + REFACTOR** — 实现 checksum、migration lock、逐文件事务和 schema ahead/behind 拒绝；运行同一测试与 `pnpm -F @airing-cal/vps-sync typecheck`，预期 PASS。
-- [ ] **Step 5: 文档、提交与推送** — 在 `docs/runbook/vps-data-plane.md` 记录 migration 前置条件与不可逆策略；`git add ... && git commit -m "feat(vps-sync): add PostgreSQL migration runner" && git push`。
+- [x] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- migrate.test.ts`，预期因 `applyMigrations` 不存在而 FAIL。
+- [x] **Step 4: 最小 GREEN + REFACTOR** — 实现 checksum、migration lock、逐文件事务和 schema ahead/behind 拒绝；运行同一测试与 `pnpm -F @airing-cal/vps-sync typecheck`，预期 PASS。
+- [x] **Step 5: 文档、提交与推送** — 在 `docs/runbook/vps-data-plane.md` 记录 migration 前置条件与不可逆策略；`git add ... && git commit -m "feat(vps-sync): add PostgreSQL migration runner" && git push`。
 
 ### Task 1.2: 规范化 PostgreSQL repositories
 
 **Files:**
 - Create: `apps/vps-sync/src/postgres/repositories.ts`, `apps/vps-sync/src/postgres/repositories.test.ts`
-- Modify: `apps/vps-sync/src/postgres/migrations/0001_initial.sql`, `docs/runbook/vps-data-plane.md`
+- Create: `apps/vps-sync/src/postgres/migrations/0002_authority_constraints.sql`, `apps/vps-sync/src/postgres/postgres.integration.test.ts`, `apps/vps-sync/tsconfig.build.json`
+- Modify: `apps/vps-sync/package.json`, `apps/vps-sync/src/postgres/migrate.ts`, `apps/vps-sync/src/postgres/migrate.test.ts`, `docs/runbook/vps-data-plane.md`
+- Preserve byte-for-byte: `apps/vps-sync/src/postgres/migrations/0001_initial.sql` as committed by Task 1.1; all later schema changes are forward-only migrations
 
 **Interfaces:**
 - Produces: `PostgresAuthority` methods `beginRun`、`commitCompleteState`、`listDueMedia`、`applyMediaResult`、`getPublicationState`、`savePendingPublication`、`verifyPublication`、`finishRun`；rows use `users/subjects/collection_items/subject_media/calendar_entries/sync_runs/publications`.
 
-- [ ] **Step 1: RED tests** — 用真实临时 PG 验证完整 transaction rollback、两次完整 observation 才确认删除、恢复条目取消 missing、旧 `observed_at/run_id` media 写入被拒、pending replay/generation conflict、所有 text/json 列扫描不到测试 secrets。
+- [x] **Step 1: RED tests** — 已在真实 PostgreSQL 18.6 直连 TLS server 验证不可变 `0001` 升级到最新 schema、完整 transaction rollback、calendar-only subject 外键、两次完整 observation 才确认删除、恢复条目取消 missing、旧 `observed_at/run_id` media 写入被拒、pending replay/generation conflict、所有 text/JSON 列 secret scan。`pnpm -F @airing-cal/vps-sync test:integration` 在 2026-08-31 退出 0（9 pass、0 fail、0 skipped、25,756.220958 ms）；证据见 `docs/verification/2026-08-31-vps-sync-postgresql-18-integration.md`。普通 `test` 跳过 PostgreSQL 测试，不能替代该门禁。
   ```ts
   await authority.commitCompleteState(firstMissing)
   assert.equal(await authority.collectionExists('u', 1), true)
   await authority.commitCompleteState(secondMissing)
   assert.equal(await authority.collectionExists('u', 1), false)
   ```
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- repositories.test.ts`，预期因 repository 未定义而 FAIL。
-- [ ] **Step 3: GREEN** — 增加约束、upserts、删除观察、calendar replace、publication singleton/pending 和 sanitized run persistence；事务中不得发网络请求。
-- [ ] **Step 4: REFACTOR/验证** — `pnpm -F @airing-cal/vps-sync test -- repositories.test.ts && pnpm -F @airing-cal/vps-sync typecheck` PASS；检查 SQL 参数全部参数化。
-- [ ] **Step 5: 文档、提交与推送** — 同步 schema/secret 禁存规则；commit `feat(vps-sync): add normalized PostgreSQL authority` 后 push。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- repositories.test.ts`，预期因 repository 未定义而 FAIL。
+- [x] **Step 3: GREEN** — 增加约束、upserts、删除观察、calendar replace、publication singleton/pending 和 sanitized run persistence；事务中不得发网络请求。
+- [x] **Step 4: REFACTOR/验证** — `pnpm -F @airing-cal/vps-sync test -- repositories.test.ts && pnpm -F @airing-cal/vps-sync typecheck` PASS；检查 SQL 参数全部参数化。
+- [x] **Step 5: 文档、提交与推送** — 同步 schema/secret 禁存规则；commit `feat(vps-sync): add normalized PostgreSQL authority` 后 push。
 
 ### Task 2.1: 完整上游抓取与有界 retry
 
 **Files:**
 - Create: `apps/vps-sync/src/upstream/retry.ts`, `apps/vps-sync/src/upstream/retry.test.ts`, `apps/vps-sync/src/upstream/fetch.ts`, `apps/vps-sync/src/upstream/fetch.test.ts`
-- Modify: `apps/vps-sync/package.json`, `docs/runbook/vps-data-plane.md`
+- Create: `apps/vps-sync/src/build-output.test.ts`, `packages/bgm-api/src/full-fetch-boundary.ts`
+- Modify: `apps/vps-sync/package.json`, `pnpm-lock.yaml`, `docs/runbook/vps-data-plane.md`, `packages/bgm-api/src/index.ts`, `packages/bgm-api/src/bgm-client.ts`, `packages/bgm-api/src/bgm-client.test.ts`, `apps/sync-worker/src/full-fetch-boundary.ts`, `apps/sync-worker/src/full-fetch-boundary.test.ts`
+- Shared adaptation: pure completeness validation moved to bgm-api with the legacy Worker path retained as a compatibility re-export; HTTP errors expose optional Retry-After metadata. VPS build bundles both upstream entrypoints into Node ESM with shared chunks, preserving error class identity and existing PostgreSQL migration paths.
 
 **Interfaces:**
 - Consumes: `BgmClient`、`assembleFullFetch(...)`；`BgmClient` 必须以 `maxGetRetries: 0` 构造以关闭内置 retry，retry 只在 `withRetry` 单层发生。
 - Produces: `fetchCompleteInput(config, client, clock): Promise<CompleteFullFetch>`；`withRetry<T>(operation, policy): Promise<T>`；分类码 `auth|not_found|rate_limited|upstream|timeout|network|contract`。
 
-- [ ] **Step 1: API 验证** — 在 `docs/example/api/bgm-api.json` 搜索 collection/calendar/detail 端点、method、Bearer mode、limit/offset 与 response schema；再读 `packages/bgm-api/src/bgm-client.ts` 的真实方法签名。
-- [ ] **Step 2: RED tests** — 覆盖 401/403 一次即失败，429/5xx/timeout/network 最多三次且合法 `Retry-After` 有上限，invalid JSON/schema 终止；primary user/任一分页/calendar 不完整时不返回 `CompleteFullFetch`；断言 429 只触发外层 `withRetry` 的三次尝试，而非 client 内置 retry 与外层叠加。
-- [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- retry.test.ts fetch.test.ts` 预期 FAIL。
-- [ ] **Step 4: GREEN/REFACTOR** — 复用 client 和 `assembleFullFetch`，注入 sleep/random 使 jitter 可测，错误只携带 stable code/stage/attempt；局部与 package tests/typecheck PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步 retry 表；commit `feat(vps-sync): fetch complete upstream state` 后 push。
+- [x] **Step 1: API 验证** — 在 `docs/example/api/bgm-api.json` 搜索 collection/calendar/detail 端点、method、Bearer mode、limit/offset 与 response schema；再读 `packages/bgm-api/src/bgm-client.ts` 的真实方法签名。
+- [x] **Step 2: RED tests** — 覆盖 401/403 一次即失败，429/5xx/timeout/network 最多三次且合法 `Retry-After` 有上限，invalid JSON/schema 终止；primary user/任一分页/calendar 不完整时不返回 `CompleteFullFetch`；断言 429 只触发外层 `withRetry` 的三次尝试，而非 client 内置 retry 与外层叠加。
+- [x] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- src/upstream/retry.test.ts src/upstream/fetch.test.ts` 已观察到缺失模块失败；审查修复另观察到普通 Node 产物加载、正文超时分类、可选 date 校验与 pageLimit 上限的回归失败。
+- [x] **Step 4: GREEN/REFACTOR** — 复用 client 和 `assembleFullFetch`，注入 sleep/random 使 jitter 可测，错误只携带 stable code/stage/attempt；局部与 package tests/typecheck PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步 retry 表；实现 `60245ea` 和审查修复 `d3baec3` 已提交并推送。
+
+验收证据：针对性测试 27/27，bgm-api 23/23，旧 Worker 完整性边界 20/20；VPS emitted build、plain Node 双入口加载及 UpstreamFetchError 构造器一致性、全仓 test/typecheck/build:check、OpenSpec strict 和 diff check 通过。第一轮独立复审 APPROVED（0 CRITICAL / IMPORTANT / MINOR）。未执行真实上游请求或新增数据库验证；这批不包含 Task 2.2、R2 发布或容器验收。创建本批 PR 后必须等待用户合并。
+
+PR #12 await 审查补充：`fcc9c77` 修复 retry-delay 计算/等待异常原样逸出的边界；`9ee4fbf` 补齐 collections/calendar 双阶段测试。先观察新增测试因原始 sleep 异常失败，再通过聚焦 upstream 测试 27/27、VPS typecheck/build 和 emitted Node 复现检查；独立复审 spec/quality 均通过，无待修发现。正常 operation 的认证/限流分类与 attempt 不变，delay 失败脱敏为 `contract:RETRY_DELAY_FAILED` 并终止。仅修复本批 PR，不代表其已合并或允许进入 Task 2.2。
 
 ### Task 2.2: 一次性 coordinator、run outcomes 与媒体生命周期
 
@@ -110,11 +121,31 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `runOnce(deps, request: { mode:'shadow'|'live'; source:'scheduled'|'manual' }): Promise<RunResult>`；status `success|no_change|partial|failed|skipped`；media result components `detail|metadata|image` with last-known-good semantics。
 
-- [ ] **Step 1: RED tests** — 断言 stage 顺序、heartbeat、lock miss 为 skipped 且无上游/R2 写；hard fetch 失败无 authority commit；媒体瞬态失败保留旧引用并发布 partial；404 设置 bounded tombstone；相同图片 bytes 不 PUT；旧 fence 结果不落库。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- refresh.test.ts run.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — 端口注入 coordinator；图片校验 HTTP/MIME/大小后 SHA-256，先 R2 PUT 再 DB reference；refresh 使用固定并发上限和现有 deterministic staggering/priority。
-- [ ] **Step 4: REFACTOR/验证** — 将终态派生收敛为纯函数；局部 tests/typecheck PASS，并确认 process exit mapping：success/no_change/skipped=0，partial/failed 非零。
-- [ ] **Step 5: 文档、提交与推送** — 同步 lifecycle/outcome；commit `feat(vps-sync): coordinate one-shot synchronization` 后 push。
+- [x] **Step 1: RED tests** — 断言 stage 顺序、heartbeat、lock miss 为 skipped 且无上游/R2 写；hard fetch 失败无 authority commit；媒体瞬态失败保留旧引用并发布 partial；404 设置 bounded tombstone；相同图片 bytes 不 PUT；旧 fence 结果不落库。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- refresh.test.ts run.test.ts` 预期 FAIL。
+- [x] **Step 3: GREEN** — 端口注入 coordinator；图片校验 HTTP/MIME/大小后 SHA-256，先 R2 PUT 再 DB reference；refresh 使用固定并发上限和现有 deterministic staggering/priority。
+- [x] **Step 4: REFACTOR/验证** — 将终态派生收敛为纯函数；局部 tests/typecheck PASS，并确认 process exit mapping：success/no_change/skipped=0，partial/failed 非零。
+- [x] **Step 5: 文档、提交与推送** — 同步 lifecycle/outcome；commit `feat(vps-sync): coordinate one-shot synchronization` 后 push。
+
+Task 2.2 projection 收口：`CompleteFullFetch` 保留 calendar 可选字段（包括 `name` 与 nested rating）的 presence，并携带每个完整分页用户的 identity evidence；`projectCompleteFullFetch` 在 authority commit 前要求 evidence 与配置用户为精确无重复同集，再生成严格 `CompleteStateInput`，绝不凭空制造未观测空用户。同一 subject 以 calendar 实际提供字段逐字段优先，collection 只补 calendar 缺失字段，双方均缺失的 `name` 与 rating 字段在 authority JSON/hash 中保持缺失，显式空字符串与显式零仍有 authority；legacy public consumer 只在其旧 shape 边界补 `name: ''`；collection-only、calendar-only 与跨多个配置用户的重复 subject 均稳定合并。未改变 legacy public rating shape：只有三个字段真实齐全时才向该 consumer 暴露 rating，partial authority rating 不补零。projection canonical hash 使用明确 UTF-16 code-unit key ordering，并继续拒绝 undefined/non-finite。authority persistence validators 对所有可选字段（name、rating 及 rating.score/rank/total、images 及嵌套字段、collection tags、media expires_at）在 SQL 前 fail-closed 拒绝显式 own-property `undefined`，防止序列化/hash 分歧；合法缺失、显式空字符串、显式零、partial rating 与 partial images 仍通过。review fix RED 分别观察到缺少空用户 evidence、score-only rating 丢失 collection rank/total、calendar-only/双方 partial rating 被伪造零、`localeCompare` 被调用，以及显式 `undefined` 被持久化校验放行；最终独立复审 APPROVED（0 CRITICAL / 0 IMPORTANT / 0 MINOR），Task 2.2 已勾选。
+
+### Task 2.3: 可选、fail-open 的 VPS Sentry tracing
+
+**Files:**
+- Create: `apps/vps-sync/src/observability/tracing.ts`, `apps/vps-sync/src/observability/tracing.test.ts`, `apps/vps-sync/src/observability/sentry.ts`, `apps/vps-sync/src/observability/sentry.test.ts`
+- Modify: `apps/vps-sync/src/contracts.ts`, `apps/vps-sync/src/run.ts`, `apps/vps-sync/src/run.test.ts`, `apps/vps-sync/package.json`, `pnpm-lock.yaml`, `README.md`, `docs/runbook/vps-data-plane.md`
+
+**Interfaces:**
+- Consumes: Task 2.2 的 `runOnce` 与既有 stage 边界；不得决定或改变 `CompleteFullFetch → CompleteStateInput` projection precedence。
+- Produces: SDK-neutral `TracingPort`，其 `span<T>(input: TraceSpanInput, operation: () => Promise<T>): Promise<T>` 保证 operation 恰好执行一次；`createSentryTracing(env, sdk)` 在无 DSN 或无效 sample rate 时返回 no-op；`flush(): Promise<void>` 为有界、fail-open 退出清理。
+
+- [x] **Step 1: 验证 SDK 与包管理 API** — 运行 `pnpm add --help` 后安装 npm `latest` 对应的稳定 `@sentry/node`；从安装后的本地 types/源码核对 `init`、`startSpan`、`flush`、`tracesSampleRate`、`sendDefaultPii`、integration 与 span attribute 签名。未在 types/官方文档确认的 key 不得写入配置。
+- [x] **Step 2: RED — no-op、配置和 SDK adapter tests** — 先写测试证明无 `SENTRY_DSN` 时不调用 SDK；sample rate 只接受 `[0,1]` 有限数并默认 `1`；初始化失败、`startSpan` 同步/异步失败和 bounded flush 失败均被吞掉且 operation 恰好执行一次。运行 `pnpm -F @airing-cal/vps-sync test -- observability`，预期因 tracing modules 不存在而 FAIL，并在报告中保存该失败摘要。
+- [x] **Step 3: RED — coordinator span 与脱敏 tests** — 以 recording `TracingPort` 断言一个 root span 包含 `mode/source/git_sha`，每个已执行 coordinator stage 产生子 span，终态只追加 `status/count/duration` 白名单；构造包含 DSN、URL、username、subject ID、raw error message 的输入后，序列化 attributes 不得出现 marker。运行 `pnpm -F @airing-cal/vps-sync test -- run.test.ts`，预期因 `RunDependencies.tracing` 与 span 调用不存在而 FAIL。
+- [x] **Step 4: GREEN + REFACTOR** — 实现 no-op-first tracing port 和 Sentry adapter；禁用自动 HTTP/database instrumentation 与 PII，且不调用 raw exception capture。`runOnce` 仅通过 injected port 包裹 root/stage，tracing 抛错时直接执行原 operation，业务 result/notification/exit code不变；短命进程退出前最多等待 2 秒 flush。运行 focused tests 直至 PASS，再运行 VPS 全套 `test`、`typecheck`、`build:check` 与 emitted Node import。
+- [x] **Step 5: 文档、审计、提交与推送** — README/runbook 只记录已经实现的 `SENTRY_DSN`、`SENTRY_TRACES_SAMPLE_RATE`、默认值、脱敏/fail-open 语义及 VPS-only scope，不展示实际 DSN；检查 production dependency 与构建入口包含 adapter。原子 commit `feat(vps-sync): add fail-open Sentry tracing` 后立即 push 当前 PR。
+
+验收证据：初始 RED 覆盖缺失 adapter 与 coordinator spans；两轮审查修复额外覆盖 heartbeat 终态、terminal attributes、root/stage nesting、2 秒 flush、callback early/never/late/repeated settlement 和业务错误优先级。最终独立复审 APPROVED（0 Critical / Important / Minor）；协调者 fresh 验证 VPS 130/130、typecheck、build:check、build、emitted adapter import、OpenSpec strict 与 diff check 全部通过。未连接真实 Sentry 服务。
 
 ### Task 3.1: Manifest V1、canonical hash 与 generation 规则
 
@@ -125,11 +156,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `PublicSnapshotManifestV1` 精确字段；`buildManifest(snapshot, metadata)`；`parsePublicSnapshotManifestV1(value)`；`snapshotKey(generation, hash)`；`canonicalSnapshotBytes(snapshot)`。
 
-- [ ] **Step 1: RED tests** — 精确 keys、ISO UTC、item_count、full git SHA、key/generation/hash 一致；runtime timestamps 不改变 business `content_hash`；相同 content no-op；verified N 的新内容只分配 N+1。新增：`PublicSnapshotV1.published_at` 保持 Unix-second integer 不变；`buildManifest` 的 ISO `published_at` 与该 integer 表示同一时刻；同一 business payload 在不同 wall-clock 时间产生相同 `content_hash`。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/domain test -- public-manifest.test.ts public-snapshot.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — 基于现有 `sha256Canonical`/`buildPublicSnapshot` 实现 exact parser 与 key grammar，保持 `PublicSnapshotV1` response shape。
-- [ ] **Step 4: REFACTOR/验证** — domain tests/typecheck PASS；确认导出名与后续 tasks 完全一致。
-- [ ] **Step 5: 文档、提交与推送** — 在 runbook 写 manifest 示例；commit `feat(domain): define public snapshot manifest` 后 push。
+- [x] **Step 1: RED tests** — 精确 keys、ISO UTC、item_count、full git SHA、key/generation/hash 一致；runtime timestamps 不改变 business `content_hash`；相同 content no-op；verified N 的新内容只分配 N+1。新增：`PublicSnapshotV1.published_at` 保持 Unix-second integer 不变；`buildManifest` 的 ISO `published_at` 与该 integer 表示同一时刻；同一 business payload 在不同 wall-clock 时间产生相同 `content_hash`。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/domain exec tsx --test src/public-manifest.test.ts src/public-snapshot.test.ts` 预期 FAIL。
+- [x] **Step 3: GREEN** — 基于现有 `sha256Canonical`/`buildPublicSnapshot` 实现 exact parser 与 key grammar，保持 `PublicSnapshotV1` response shape。
+- [x] **Step 4: REFACTOR/验证** — domain tests/typecheck PASS；确认导出名与后续 tasks 完全一致。
+- [x] **Step 5: 文档、提交与推送** — 在 runbook 写 manifest 示例；commit `feat(domain): define public snapshot manifest` 后 push。
 
 ### Task 3.2: S3-compatible R2 原子发布与 replay
 
@@ -140,11 +171,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `publishSnapshot(ports, candidate, mode): Promise<'published'|'no_change'|'pending'>`；live key `public/manifest.json`，shadow key `shadow/manifest.json`；S3 port `put/get/list/delete`。
 
-- [ ] **Step 1: SDK 验证** — 读取本地 AWS SDK types/官方文档确认 endpoint、path style、Put/Get/List/Delete command 与 response body；禁止写入未经验证的 option。
-- [ ] **Step 2: RED failure-injection tests** — snapshot PUT→GET/parse/hash→manifest PUT→GET/validate→DB verify 的严格顺序；每个 R2 边界失败保留旧 manifest/pending；重跑相同 pending 不跳 generation；shadow 永不写 live key。
-- [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- publish.test.ts` 预期 FAIL。
-- [ ] **Step 4: GREEN/REFACTOR** — canonical bytes、conditional conflict 处理和 readback verification；局部 tests/typecheck PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步 key/state machine；commit `feat(vps-sync): publish immutable R2 snapshots` 后 push。
+- [x] **Step 1: SDK 验证** — 读取本地 AWS SDK types/官方文档确认 endpoint、path style、Put/Get/List/Delete command 与 response body；禁止写入未经验证的 option。
+- [x] **Step 2: RED failure-injection tests** — snapshot PUT→GET/parse/hash→manifest PUT→GET/validate→DB verify 的严格顺序；每个 R2 边界失败保留旧 manifest/pending；重跑相同 pending 不跳 generation；shadow 永不写 live key。
+- [x] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- publish.test.ts` 预期 FAIL。
+- [x] **Step 4: GREEN/REFACTOR** — canonical bytes、conditional conflict 处理和 readback verification；局部 tests/typecheck PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步 key/state machine；commit `feat(vps-sync): publish immutable R2 snapshots` 后 push。
 
 ### Task 4.1: Read Worker manifest/snapshot 验证切入
 
@@ -154,11 +185,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Replaces legacy pointer parsing with `PublicSnapshotManifestV1` at exact R2 key `public/manifest.json`；public routes/query/response remain unchanged。
 
-- [ ] **Step 1: RED tests** — valid manifest loads immutable object；未知 schema、extra/missing key、bad timestamp/git SHA/item count/key/hash/truncated JSON 均拒绝；现有 endpoint fixtures 深等于切换前 response。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/read-worker test -- r2-snapshot.test.ts read-worker.test.ts` 预期新 manifest cases FAIL。
-- [ ] **Step 3: GREEN** — 从 R2 binding 读 manifest，复用 domain parsers；不得引入 DB driver/VPS URL/env。
-- [ ] **Step 4: REFACTOR/验证** — read-worker test/typecheck/build:check PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步读路径；commit `feat(read-worker): validate R2 publication manifest` 后 push。
+- [x] **Step 1: RED tests** — valid manifest loads immutable object；未知 schema、extra/missing key、bad timestamp/git SHA/item count/key/hash/truncated JSON 均拒绝；现有 endpoint fixtures 深等于切换前 response。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/read-worker test -- r2-snapshot.test.ts read-worker.test.ts` 预期新 manifest cases FAIL。
+- [x] **Step 3: GREEN** — 从 R2 binding 读 manifest，复用 domain parsers；不得引入 DB driver/VPS URL/env。
+- [x] **Step 4: REFACTOR/验证** — read-worker test/typecheck/build:check PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步读路径；commit `feat(read-worker): validate R2 publication manifest` 后 push。
 
 ### Task 4.2: R2 → Cache API → legacy KV fallback
 
@@ -168,11 +199,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces Cache API envelope `{ manifest, snapshot }`；只缓存完整验证 pair；source health `r2|cache|legacy`。
 
-- [ ] **Step 1: RED tests** — R2 missing/corrupt/offline 用重新验证的 envelope；回退 generation 拒绝；无 envelope 才 legacy；禁止混用 R2 manifest 与 cache/legacy payload。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/read-worker test -- r2-snapshot.test.ts health.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — cache key 绑定 manifest generation/hash，保存 last-verified envelope，迁移期开启完整 legacy fallback。
-- [ ] **Step 4: REFACTOR/验证** — read-worker tests/typecheck/build:check PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步 health/fallback；commit `feat(read-worker): add verified snapshot fallback chain` 后 push。
+- [x] **Step 1: RED tests** — R2 missing/corrupt/offline 用重新验证的 envelope；回退 generation 拒绝；无 envelope 才 legacy；禁止混用 R2 manifest 与 cache/legacy payload。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/read-worker test -- r2-snapshot.test.ts health.test.ts` 预期 FAIL。
+- [x] **Step 3: GREEN** — cache key 绑定 manifest generation/hash，保存 last-verified envelope，迁移期开启完整 legacy fallback。
+- [x] **Step 4: REFACTOR/验证** — read-worker tests/typecheck/build:check PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步 health/fallback；commit `feat(read-worker): add verified snapshot fallback chain` 后 push。
 
 ### Task 5.1: custom-format backup、checksum manifest 与 partial outcome
 
@@ -183,11 +214,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `createBackup(deps, run): Promise<BackupResult>`；keys `backups/postgres/YYYY/MM/DD/<timestamp>-<git-sha>.dump|.json`；manifest 包含 schema_version/run_id/git_sha/created_at/object_key/size/sha256。
 
-- [ ] **Step 1: CLI 验证** — 对目标 Alpine PostgreSQL client 执行 `pg_dump --help`、`pg_restore --help`，确认 custom format、输出和 connection 参数；实现不得把 URL 放入 argv/log。
-- [ ] **Step 2: RED tests** — fake command runner 验证 dump→hash/size→dump upload→manifest upload；snapshot published/no_change 后 backup；command/upload 失败使 run partial 且不撤销 publication。
-- [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- backup.test.ts run.test.ts` 预期 FAIL。
-- [ ] **Step 4: GREEN/REFACTOR** — bounded `/tmp/airing-cal`、finally cleanup、canonical backup manifest；tests/typecheck PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步备份格式；commit `feat(vps-sync): upload verified PostgreSQL backups` 后 push。
+- [x] **Step 1: CLI 验证** — PostgreSQL 18.6 `pg_dump --help` 与 `pg_restore --help` 已确认 custom format、输出和 connection 参数；在仅监听 loopback 的可销毁本地集群完成 custom dump → 空库 `pg_restore -e` → 表计数验证，并停止集群和清除精确临时目录。实现不把 URL 放入 argv/log；此项不包含真实 R2 上传或生产环境演练。
+- [x] **Step 2: RED tests** — fake command runner 验证 dump→hash/size→dump upload→manifest upload；snapshot published/no_change 后 backup；command/upload 失败使 run partial 且不撤销 publication。
+- [x] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- backup.test.ts run.test.ts` 预期 FAIL。
+- [x] **Step 4: GREEN/REFACTOR** — bounded `/tmp/airing-cal`、finally cleanup、canonical backup manifest；tests/typecheck PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步备份格式；commit `feat(vps-sync): upload verified PostgreSQL backups` 后 push。
 
 ### Task 5.2: retention 与安全 restore-verify
 
@@ -198,11 +229,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `selectBackupDeletions(entries): string[]` 保留最新 30 日及更早每月最后成功点；`restoreVerify(deps, key, targetUrl): Promise<RestoreReport>`。
 
-- [ ] **Step 1: RED tests** — 跨月/同日多份/非法 key/list uncertainty；只删除显式 grammar keys；target 非空或等于 production URL 均在 pg_restore 前失败；恢复后校验 migration、row counts 与 regenerated snapshot hash。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- retention.test.ts restore.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — retention 纯函数；restore 下载并校验 checksum，再向明确空库执行 verified `pg_restore` flags，绝不 publish/notify user data。
-- [ ] **Step 4: REFACTOR/验证** — backup suite/typecheck PASS；显式测试 production URL 规范化比较。
-- [ ] **Step 5: 文档、提交与推送** — 写完整 restore drill 命令与安全门；commit `feat(vps-sync): retain and verify PostgreSQL backups` 后 push。
+- [x] **Step 1: RED tests** — 跨月/同日多份/非法 key/list uncertainty；只删除显式 grammar keys；target 非空或等于 production URL 均在 pg_restore 前失败；恢复后校验 migration、row counts 与 regenerated snapshot hash。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- retention.test.ts restore.test.ts` 预期 FAIL。
+- [x] **Step 3: GREEN** — retention 纯函数；restore 下载并校验 checksum，再向明确空库执行 verified `pg_restore` flags，绝不 publish/notify user data。
+- [x] **Step 4: REFACTOR/验证** — backup suite/typecheck PASS；显式测试 production URL 规范化比较。
+- [x] **Step 5: 文档、提交与推送** — 写完整 restore drill 命令与安全门；commit `feat(vps-sync): retain and verify PostgreSQL backups` 后 push。
 
 ### Task 6.1: 飞书 payload 与签名
 
@@ -212,11 +243,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `buildFeishuMessage(result, previousFailure?)`；`signFeishu(timestamp, secret)`；五种 status payload，无 raw exception/secrets。
 
-- [ ] **Step 1: 官方契约验证** — 查飞书自定义机器人官方文档，确认 webhook body、timestamp/sign 算法、有效时间窗和成功 response；将链接/访问日期写入 runbook reference。
-- [ ] **Step 2: RED tests** — success/no_change/partial/failed/skipped 都含 run/mode/source/time/generation/hash/count/duration/backup/git/node/alpine；固定 timestamp/secret 的签名 golden；错误串中的 URL/token/header 被替换。
-- [ ] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- feishu.test.ts` 预期 FAIL。
-- [ ] **Step 4: GREEN/REFACTOR** — 只接收 sanitized `RunResult`，Asia/Shanghai 使用 `Intl.DateTimeFormat`，不安装 tzdata；tests/typecheck PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步消息字段；commit `feat(vps-sync): build signed Feishu run messages` 后 push。
+- [x] **Step 1: 官方契约验证** — 查飞书自定义机器人官方文档，确认 webhook body、timestamp/sign 算法、有效时间窗和成功 response；将链接/访问日期写入 runbook reference。
+- [x] **Step 2: RED tests** — success/no_change/partial/failed/skipped 都含 run/mode/source/time/generation/hash/count/duration/backup/git/node/alpine；固定 timestamp/secret 的签名 golden；错误串中的 URL/token/header 被替换。
+- [x] **Step 3: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- feishu.test.ts` 预期 FAIL。
+- [x] **Step 4: GREEN/REFACTOR** — 只接收 sanitized `RunResult`，Asia/Shanghai 使用 `Intl.DateTimeFormat`，不安装 tzdata；tests/typecheck PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步消息字段；commit `feat(vps-sync): build signed Feishu run messages` 后 push。
 
 ### Task 6.2: 飞书投递与 notification_failed persistence
 
@@ -227,11 +258,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Produces: `deliverNotification(config, result): Promise<'sent'|'failed'>`；独立 `notification_failed` 状态和前次未投递摘要。
 
-- [ ] **Step 1: RED tests** — bounded timeout/non-2xx/invalid success body 为 failed；业务终态先持久化；通知失败不改变 publication/backup；下一次成功消息含前次 compact summary；日志无 webhook/signature/DB URL。
-- [ ] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- deliver.test.ts run.test.ts repositories.test.ts` 预期 FAIL。
-- [ ] **Step 3: GREEN** — 注入 fetch/clock，投递一次且失败不抛过业务边界，repository 独立记录结果。
-- [ ] **Step 4: REFACTOR/验证** — notification/run suites/typecheck PASS。
-- [ ] **Step 5: 文档、提交与推送** — 同步 secret 与失败语义；commit `feat(vps-sync): deliver terminal Feishu notifications` 后 push。
+- [x] **Step 1: RED tests** — bounded timeout/non-2xx/invalid success body 为 failed；业务终态先持久化；通知失败不改变 publication/backup；下一次成功消息含前次 compact summary；日志无 webhook/signature/DB URL。
+- [x] **Step 2: 运行 RED** — `pnpm -F @airing-cal/vps-sync test -- deliver.test.ts run.test.ts repositories.test.ts` 预期 FAIL。
+- [x] **Step 3: GREEN** — 注入 fetch/clock，投递一次且失败不抛过业务边界，repository 独立记录结果。
+- [x] **Step 4: REFACTOR/验证** — notification/run suites/typecheck PASS。
+- [x] **Step 5: 文档、提交与推送** — 同步 secret 与失败语义；commit `feat(vps-sync): deliver terminal Feishu notifications` 后 push。
 
 ### Task 7.1: Alpine production/debug images
 
@@ -242,11 +273,11 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 **Interfaces:**
 - Targets: `production` 与 `debug`；CLI entry executes compiled `apps/vps-sync`；production user non-root；Dockerfile 的 build stage 调用 `pnpm -F @airing-cal/vps-sync build`，production stage 只拷贝 `dist/` 与 production dependencies。
 
-- [ ] **Step 1: image/package 验证** — `docker buildx imagetools inspect node:alpine` 确认架构/digest；在临时 `node:alpine` 容器运行 `apk search` 验证 CA、PostgreSQL client 和 debug HTTPS/DNS/TCP/process/network/JSON 包名；`docker buildx build --help` 验证 flags。
-- [ ] **Step 2: RED verifier** — 测试 production 不含 git/curl/python/editor/jq/DNS/build toolchain/source/tests/dev dependencies，uid 非 0、无监听端口；debug 含经验证工具。
-- [ ] **Step 3: 运行 RED** — `node --test scripts/verify-vps-sync-image.test.mjs`，预期 Dockerfile/targets 缺失而 FAIL。
-- [ ] **Step 4: GREEN** — multi-stage deps/build/production/debug；production 仅 compiled app、prod deps、CA、最小 PG client/runtime；清缓存；build 与 verifier PASS。
-- [ ] **Step 5: 文档、提交与推送** — 记录 resolved versions/digest 检查法；commit `build(vps-sync): add minimal Alpine images` 后 push。
+- [x] **Step 1: image/package 验证** — `docker buildx imagetools inspect node:alpine` 确认架构/digest；在临时 `node:alpine` 容器运行 `apk search` 验证 CA、PostgreSQL client 和 debug HTTPS/DNS/TCP/process/network/JSON 包名；`docker buildx build --help` 验证 flags。
+- [x] **Step 2: RED verifier** — 测试 production 不含 git/curl/python/editor/jq/DNS/build toolchain/source/tests/dev dependencies，uid 非 0、无监听端口；debug 含经验证工具。
+- [x] **Step 3: 运行 RED** — `node --test scripts/verify-vps-sync-image.test.mjs`，预期 Dockerfile/targets 缺失而 FAIL。
+- [x] **Step 4: GREEN** — multi-stage deps/build/production/debug；production 仅 compiled app、prod deps、CA、最小 PG client/runtime；清缓存；build 与 verifier PASS。
+- [x] **Step 5: 文档、提交与推送** — 记录 resolved versions/digest 检查法；commit `build(vps-sync): add minimal Alpine images` 后 push。
 
 ### Task 7.2: SHA-pinned Compose、secrets、tmp 与 host cron
 
@@ -269,7 +300,7 @@ base-ref: ab623355210d38a3cd6cae0c5591aca6b4cc271e
 - Modify: `README.md`
 
 **Interfaces:**
-- Push builds production after tests and publishes immutable full `${GITHUB_SHA}` plus non-authoritative discovery tag；records Node/Alpine/base digest/pnpm/git metadata；never SSH/deploys。CI 的 `setup-node` 大版本必须与构建时 `node:alpine` 实际解析到的 Node 大版本一致。当前仓库 CI 固定为 Node 24，但浮动 `node:alpine` 跟随 Node Current，两者可能不一致。实施时必须先通过官方 image metadata 或在具备 Docker 的环境中验证实际解析版本，再决定同步升级 `setup-node`，或者改用明确的 `node:<major>-alpine`；不得在计划中预设当前大版本或未经验证的命令输出格式。
+- Push builds production after tests and publishes immutable full `${GITHUB_SHA}` plus non-authoritative discovery tag；records Node/Alpine/base digest/pnpm/git metadata；never SSH/deploys。CI 的 `setup-node` 大版本必须与构建时 `node:alpine` 实际解析到的 Node 大版本一致。当前仓库 CI 固定为 Node 24，但浮动 `node:alpine` 跟随 Node Current，两者可能不一致。实施时必须先通过官方 image metadata 或在具备 Docker 的环境中验证实际解析版本，再同步升级 `setup-node` 与之对齐；生产构建必须继续使用浮动 `node:alpine`，不得改用 `node:<major>-alpine`，也不得在计划中预设当前大版本或未经验证的命令输出格式。
 
 - [ ] **Step 1: Actions contract 验证** — 读取官方 action README/metadata 与现有 workflows，确认 checkout/setup-buildx/login/metadata/build-push inputs、GHCR permissions、concurrency；所有 action pin 使用已验证 commit SHA。
 - [ ] **Step 2: RED tests** — workflow parser 断言 test/typecheck/build gates 先于 push、tag 为完整 SHA、无 VPS secrets/SSH、已有 SHA package 不覆盖。

@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: 发布后必须生成可恢复数据库备份
-系统 MUST 在成功发布或确认 no-change 后生成 PostgreSQL custom-format dump、校验摘要和备份 manifest，并上传到私有 R2 backup prefix。
+系统 MUST 在成功发布或确认 no-change 后生成 PostgreSQL 18 client 的 custom-format dump、校验摘要和备份 manifest，并上传到私有 R2 backup prefix。该能力在本 change 的 backup task 完成前仍为待实现/待验证契约；实现时必须使用 direct/session-preserving connection，并完成 `pg_dump`/`pg_restore` contract 与真实 restore 验证。
 
 #### Scenario: 完整同步成功
 - **WHEN** 权威事务和 publication 阶段完成

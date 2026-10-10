@@ -78,6 +78,25 @@ test('transformCalendar maps legacy calendar eps_count into public episode total
   assert.equal(calendar[0]?.items[0]?.total_episodes, 13)
 })
 
+test('transformCalendar omits partial authority ratings from the legacy public shape', () => {
+  const calendar = transformCalendar([{
+    weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+    items: [
+      { id: 1, type: 2, rating: { score: 8 } },
+      { id: 2, type: 2, rating: { rank: 12 } },
+      { id: 3, type: 2, rating: { total: 340 } },
+      { id: 4, type: 2, rating: { score: 0, rank: 0, total: 0 } },
+    ],
+  }] as unknown as Parameters<typeof transformCalendar>[0])
+
+  assert.deepEqual(calendar[0]!.items.map(({ rating }) => rating), [
+    undefined,
+    undefined,
+    undefined,
+    { score: 0, rank: 0, total: 0 },
+  ])
+})
+
 test('subject detail projections use full subject response as canonical source', () => {
   const detail = {
     id: 23080,

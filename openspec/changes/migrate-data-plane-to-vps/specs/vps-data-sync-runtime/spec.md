@@ -38,3 +38,18 @@
 #### Scenario: 新 subject 尚无成功图片
 - **WHEN** 新 subject 的图片刷新失败且数据库中没有 last-known-good 图片
 - **THEN** snapshot 使用明确的非 cached 图片状态，不得伪造 R2 引用或阻塞其余主数据发布
+
+### Requirement: VPS tracing 必须可选、脱敏且不影响业务结果
+VPS 同步应用 MUST 在配置 Sentry DSN 时为单轮任务及其协调阶段产生手工 tracing spans，未配置 DSN 时 MUST 不初始化或发送 tracing。Tracing MUST 只包含白名单运行属性，且 tracing 初始化、span 或 flush 失败不得改变同步执行次数、持久化终态、通知终态或退出码。Cloudflare Workers MUST 不依赖该 SDK。
+
+#### Scenario: 未配置 Sentry DSN
+- **WHEN** 一次性同步容器未提供 `SENTRY_DSN`
+- **THEN** 应用使用 no-op tracing 运行完整业务流程且不尝试初始化或发送 Sentry 数据
+
+#### Scenario: tracing 发送失败
+- **WHEN** Sentry 初始化、阶段 span 或进程退出前 flush 失败
+- **THEN** 对应业务操作仍恰好执行一次，run 结果、飞书通知结果和进程退出码与 tracing 成功时一致
+
+#### Scenario: span 属性脱敏
+- **WHEN** root 或 stage span 被发送
+- **THEN** span 只包含 mode、source、stage、status、有限计数、耗时和 git SHA，不包含原始异常、URL、body、账户/subject/数据库标识或任何 credential

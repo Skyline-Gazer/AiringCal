@@ -13,6 +13,6 @@
     "test:d1": "node --import tsx --test src/d1-migration.test.ts"
   },
   "devDependencies": {
-    "@types/node": "^26.0.0"
+    "@types/node": "^26.4.0"
   }
 }

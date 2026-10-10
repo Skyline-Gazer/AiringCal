@@ -1,4 +1,5 @@
 import {
+  canonicalJson,
   sha256Canonical,
   type PublicCalendarDayV1,
   type PublicCalendarSubjectV1,
@@ -27,6 +28,7 @@ const COLLECTION_TYPE_ID: Record<PublicCollectionType, number> = {
   dropped: 5,
 }
 const LOWERCASE_SHA256 = /^[0-9a-f]{64}$/
+const MAX_UNIX_TIMESTAMP_SECONDS = 8_640_000_000_000
 const IMAGE_STATUS_VALUES = new Set([
   'cached',
   'queued',
@@ -87,7 +89,7 @@ export async function buildPublicSnapshot(
   generation: number,
 ): Promise<PublicSnapshotV1> {
   if (!isNonNegativeInteger(generation)) throw new Error('Invalid snapshot generation')
-  if (!isNonNegativeInteger(input.published_at)) throw new Error('Invalid snapshot published_at')
+  if (!isUnixTimestampSeconds(input.published_at)) throw new Error('Invalid snapshot published_at')
   const collections = groupCollections(input.collections)
   const stable = {
     collections,
@@ -118,6 +120,10 @@ function hasExactKeys(value: Record<string, unknown>, required: readonly string[
 
 function isNonNegativeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0
+}
+
+function isUnixTimestampSeconds(value: unknown): value is number {
+  return isNonNegativeInteger(value) && value <= MAX_UNIX_TIMESTAMP_SECONDS
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -250,7 +256,7 @@ function validateSnapshotStructure(value: unknown): PublicSnapshotV1 | null {
       'collections', 'calendar', 'summary',
     ])
     || !isNonNegativeInteger(value.generation)
-    || !isNonNegativeInteger(value.published_at)
+    || !isUnixTimestampSeconds(value.published_at)
     || typeof value.content_hash !== 'string'
     || !LOWERCASE_SHA256.test(value.content_hash)
     || collections === null
@@ -277,4 +283,12 @@ export async function parsePublicSnapshotV1(value: unknown): Promise<PublicSnaps
 
 export function snapshotObjectKey(snapshot: PublicSnapshotV1): string {
   return `snapshots/v1/${snapshot.generation}-${snapshot.content_hash}.json`
+}
+
+/**
+ * Returns the canonical UTF-8 representation stored in immutable snapshot objects.
+ * The public envelope remains present; only content_hash excludes runtime fields.
+ */
+export function canonicalSnapshotBytes(snapshot: PublicSnapshotV1): Uint8Array {
+  return new TextEncoder().encode(canonicalJson(snapshot))
 }

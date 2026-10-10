@@ -49,8 +49,8 @@ The scheduled path is:
 3. Migrations run before the business lock is requested.
 4. The process attempts a PostgreSQL session advisory lock. Failure produces a persisted/skipped outcome without upstream or R2 writes.
 5. A `sync_runs` row is created and becomes the source of health/notification state.
-6. Complete collections and calendar input is fetched and validated.
-7. Authoritative collection/calendar state is committed in one database transaction.
+6. Complete collections and calendar input is fetched and validated, preserving whether optional calendar subject fields were actually present.
+7. The complete fetch is projected into `CompleteStateInput`: calendar fields are canonical when present, collection subjects only fill absent calendar fields, and configured-user order makes repeated cross-user subjects deterministic. The normalized projection is then committed in one authoritative database transaction.
 8. Due subject detail, metadata, and images are refreshed with bounded concurrency.
 9. The public snapshot is built from committed PostgreSQL state and published or classified no-change.
 10. A database backup is attempted only after snapshot publication succeeds or business content is verified unchanged. Runs that fail or skip before reaching either milestone do not trigger a backup. Media degradation does not suppress backup after a successful publication; backup failure independently contributes to a terminal partial result.
@@ -80,6 +80,8 @@ Access tokens, refresh tokens, database URLs, webhook URLs/secrets, R2 credentia
 
 The collection/calendar transaction begins only after all configured users and all pages pass the existing complete-fetch boundary. A page count/offset/total inconsistency, duplicate subject, premature empty page, invalid calendar projection, or primary-account failure aborts before business writes.
 
+`CompleteFullFetch` retains optional calendar-field presence instead of replacing absence with empty/zero/false defaults, including `name` and independent `rating.score`/`rank`/`total` presence. It also carries the ordered identity of every user whose pagination completed, including genuinely empty users. The coordinator requires those observed identities and configured users to be the exact same duplicate-free set before projecting one canonical subject per ID; it never invents an unobserved empty user. A calendar-provided field wins independently at each nested rating/image field, collection data fills only fields absent from calendar, and fields absent from both sources remain absent in PostgreSQL authority JSON and its hash. In particular, a missing `name` is not collapsed into an explicitly supplied empty string; the legacy public collection adapter adds its required empty-string default only while constructing that old shape. Collection-only/calendar-only subjects are both retained. Repeated collection subjects across configured users resolve in configured-user order. Projection hashes recursively use locale-independent UTF-16 code-unit key ordering and reject `undefined` or non-finite numbers. The unchanged legacy public collection shape receives a rating only when all three authority rating fields are present; partial authority ratings are omitted there rather than completed with invented zeroes.
+
 The transaction upserts normalized subjects and collection items, records first missing observations, confirms deletion only under the canonical two-successful-complete-observations rule, replaces the current calendar set, and checkpoints the run. No network or R2 call occurs while this transaction is open.
 
 This rule already exists in `packages/domain/src/collection-diff.ts` (`planCollectionDiff`): the first complete missing observation persists `missing_since`, and a later distinct complete observation confirms `deleted_at`. The PostgreSQL implementation reuses that domain rule and must persist equivalent per-`(user_id, subject_id)` `missing_since`/`deleted_at` state transactionally; it must not introduce a separate consecutive-missing counter.
@@ -91,6 +93,14 @@ The first release assumes a single scheduled writer but still uses row constrain
 Migrations are numbered, forward-only SQL files with immutable checksums. The runner acquires a distinct migration advisory lock, applies each migration in a transaction where PostgreSQL permits it, and refuses a checksum mismatch. Runtime startup refuses to run business work when the schema is behind or ahead of the application-supported version.
 
 Rollback deploys an older compatible image; it does not reverse or delete applied migrations.
+
+### 4.4 Supported PostgreSQL baseline and connection mode
+
+The supported server baseline is PostgreSQL 18. Production and integration environments must stay on a maintained `18.x` patch release. A later PostgreSQL major is not adopted automatically: it requires an explicit compatibility review and a fresh real-server integration run before becoming supported. PostgreSQL 17 compatibility is unverified and is not an acceptance gate for this approved baseline.
+
+`DATABASE_URL` remains the sole, provider-neutral TLS connection contract; the application does not use a provider SDK or control-plane API. The migration runner and runtime session advisory locks require a direct, session-preserving connection. A transaction-pooled endpoint is not acceptable because it can change the server session between transactions and therefore cannot preserve session-level advisory locks. The same direct connection requirement applies to future migration and backup work.
+
+The existing real-server evidence is recorded in [the PostgreSQL 18 integration evidence](../../verification/2026-08-31-vps-sync-postgresql-18-integration.md). It validates the implemented Node `pg` path, not a `psql` or container path.
 
 ## 5. Complete fetch and retry policy
 
@@ -191,7 +201,7 @@ The public URL and response shapes remain unchanged. Public request handlers hav
 
 ## 9. Backup and retention
 
-Backup runs after snapshot publication or a verified no-change result. The production image contains the minimum PostgreSQL client required for custom-format `pg_dump`/`pg_restore` compatibility.
+Backup runs after snapshot publication or a verified no-change result. The planned production image will contain a PostgreSQL 18 client for custom-format `pg_dump`/`pg_restore` compatibility. CLI contract validation and a real backup/restore drill remain pending; this design does not represent those future commands as implemented or verified.
 
 This condition is evaluated at the backup step, before the terminal run status is persisted; it is not conditioned on the final run status. A backup whose own upload or manifest step fails has still been attempted, and that failure contributes to a terminal `partial`.
 
@@ -201,6 +211,12 @@ Retention selection is pure and testable: keep the newest 30 daily restore point
 
 `restore-verify` requires a separate target `DATABASE_URL`, proves the target is empty and not equal to production, restores one selected dump, runs schema/row-count/public-snapshot checks, and never publishes or sends user-facing data.
 
+### 9.1 PostgreSQL references
+
+- PostgreSQL 18 release and supported-version reference: <https://www.postgresql.org/docs/18/release-18.html>
+- PostgreSQL 18 `pg_dump` reference for the pending backup implementation: <https://www.postgresql.org/docs/18/app-pgdump.html>
+- Neon pooling guidance explains why transaction pooling cannot carry session advisory locks and recommends direct connections for migrations and `pg_dump`: <https://neon.com/docs/connect/connection-pooling>
+
 ## 10. Feishu notification and observability
 
 The notifier receives a sanitized terminal result rather than raw exceptions. Each message includes run ID/status, source/mode, source and publication times, generation/hash, collection/media change counts, stage durations, publication/backup outcomes, git SHA, Node/Alpine metadata, retry summary, and a stable sanitized error category when applicable.
@@ -209,7 +225,11 @@ Webhook signing is supported when a secret is configured and omitted otherwise, 
 
 Notification is attempted after persisting the business terminal result. Failure updates `notification_failed` separately and never changes publication or backup state. The next successful notification includes a compact note about the previous undelivered terminal result.
 
-Structured logs use the same sanitized event model and write to stdout/stderr for Docker/host collection. No additional monitoring service is required for v1.
+Structured logs use the same sanitized event model and write to stdout/stderr for Docker/host collection.
+
+The VPS sync application additionally supports optional Sentry tracing through `@sentry/node`. Sentry is disabled when `SENTRY_DSN` is absent. When enabled, the one-shot run and its existing coordinator stages emit manually named spans with only allow-listed operational attributes: mode, source, stage, terminal status, bounded counts, durations, and git SHA. Raw exceptions, URLs, request or response bodies, usernames, subject IDs, database identifiers, tokens, webhook values, and R2 credentials are never attached. Automatic HTTP/database instrumentation and PII collection remain disabled so trace propagation cannot leak into bgm.tv, PostgreSQL, R2, or Feishu calls.
+
+Tracing is an injected, SDK-neutral port at the coordinator boundary. The Node adapter initializes the SDK with an explicitly parsed `SENTRY_TRACES_SAMPLE_RATE` (default `1` for this low-frequency daily job), wraps the root run and individual stage operations, and attempts one bounded flush before the process exits. Missing or invalid tracing configuration, initialization failure, span failure, and flush failure all fail open: the business operation still runs exactly once, and its persisted result, notification result, and exit code are unchanged. Cloudflare Workers are outside this tracing scope.
 
 ## 11. Container and delivery
 
@@ -276,3 +296,9 @@ SQL mocks cannot substitute for these gates.
 8. Retain legacy data resources for at least 30 days. Cleanup is a separate approved change.
 
 Rollback restores the previous verified R2 manifest or legacy read mode and deploys a known-compatible GHCR SHA. It never reverses database migrations, deletes PostgreSQL rows, or removes R2 snapshots/backups/Cloudflare resources.
+
+## 14. Task 3.2 runtime composition
+
+The VPS executable has one dedicated composition entry. It reads only the already-documented PostgreSQL and S3-compatible R2 configuration, constructs `PostgresAuthority` and `createS3Port`, and injects them into the existing `runOnce` boundary. It adds no container, general DI framework, alternate scheduler, or new runtime mode.
+
+The entry maps publication failures to existing sanitized terminal-result categories while leaving the durable pending publication state intact for replay. Tests inject the same ports rather than reading environment variables; the composition test covers required configuration and proves it passes the constructed ports into `runOnce`.

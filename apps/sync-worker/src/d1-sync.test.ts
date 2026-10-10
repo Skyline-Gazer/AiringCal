@@ -177,6 +177,7 @@ function collection(subjectId = 1, userId = 'alice', rate = 7) {
 function completeInput(entries = [collection()]): CompleteFullFetch {
   return {
     collections: entries.map(({ user_id, collection }) => ({ user_id, collection })),
+    observedUsers: [...new Set(entries.map(({ user_id }) => user_id))],
     calendar: [],
     observedAt,
     complete: true,
@@ -805,6 +806,42 @@ test('calendar-only subjects remain eligible for D1 media scheduling', async () 
     observed_at: observedAt,
     run_id: 'run-1',
   }])
+})
+
+test('D1 publication omits partial calendar ratings from the legacy public shape', async () => {
+  const store = new RecordingStore()
+  const input: CompleteFullFetch = {
+    ...completeInput([]),
+    calendar: [{
+      weekday: { en: 'Mon', cn: '星期一', ja: '月曜日', id: 1 },
+      items: [
+        { id: 15, rating: { score: 8 } },
+        { id: 16, rating: { rank: 12 } },
+        { id: 17, rating: { total: 340 } },
+        { id: 18, rating: { score: 0, rank: 0, total: 0 } },
+      ].map(({ id, rating }) => ({
+        id,
+        type: 2,
+        name: `Calendar ${id}`,
+        name_cn: '',
+        summary: '',
+        nsfw: false,
+        date: '',
+        eps: 0,
+        images: { common: '', large: '', medium: '', small: '', grid: '' },
+        rating,
+      })),
+    }] as CompleteFullFetch['calendar'],
+  }
+
+  const result = await run(store, input, undefined, observedAt, 'legacy-partial-rating')
+
+  assert.deepEqual(result.publicationInput.calendar[0]!.items.map(({ rating }) => rating), [
+    undefined,
+    undefined,
+    undefined,
+    { score: 0, rank: 0, total: 0 },
+  ])
 })
 
 test('D1 media generation is replay-stable and ignores the retry clock', async () => {

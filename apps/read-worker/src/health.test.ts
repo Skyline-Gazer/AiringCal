@@ -62,23 +62,44 @@ test('legacy read mode reports legacy source with zeroed migration fields', asyn
   assert.equal(health.degraded, false)
 })
 
-test('r2 read mode reports the current pointer generation', async () => {
+test('r2 read mode reports the resolved snapshot generation', async () => {
   const kv = new FakeHealthKv()
   kv.values.set('public:read-mode', { mode: 'r2', switched_at: 1_234 })
-  kv.values.set('public:current', {
-    schema_version: 1,
-    generation: 9,
-    content_hash: hash,
-    r2_key: `snapshots/v1/9-${hash}.json`,
-    published_at: 1_000,
+  const health = await buildMigrationHealth(env(kv, new FakeHealthD1()), {
+    mode: 'r2',
+    snapshot: {
+      schema_version: 1,
+      generation: 9,
+      content_hash: hash,
+      published_at: 1_000,
+      collections: { want: [], watched: [], watching: [], on_hold: [], dropped: [] },
+      calendar: [],
+      summary: { want: 0, watched: 0, watching: 0, on_hold: 0, dropped: 0, _total: 0 },
+    },
   })
-
-  const health = await buildMigrationHealth(env(kv, new FakeHealthD1()))
 
   assert.equal(health.snapshot.source, 'r2')
   assert.equal(health.snapshot.generation, 9)
   assert.equal(health.snapshot.r2_key, `snapshots/v1/9-${hash}.json`)
   assert.equal(health.migration.read_mode, 'r2')
+})
+
+test('health reports cache when the resolved snapshot source is the verified envelope', async () => {
+  const health = await buildMigrationHealth(env(new FakeHealthKv(), new FakeHealthD1()), {
+    mode: 'cache',
+    snapshot: {
+      schema_version: 1,
+      generation: 9,
+      content_hash: hash,
+      published_at: 1_000,
+      collections: { want: [], watched: [], watching: [], on_hold: [], dropped: [] },
+      calendar: [],
+      summary: { want: 0, watched: 0, watching: 0, on_hold: 0, dropped: 0, _total: 0 },
+    },
+  })
+
+  assert.equal(health.snapshot.source, 'cache')
+  assert.equal(health.snapshot.generation, 9)
 })
 
 test('an unavailable D1 degrades instead of failing health', async () => {
