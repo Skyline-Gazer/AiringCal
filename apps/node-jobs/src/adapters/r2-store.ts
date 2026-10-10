@@ -28,7 +28,14 @@ export function createR2Store(config: NodeJobsConfig, run: RunContext, timeoutMs
     maxAttempts: 3,
   })
 
-  async function send(command: PutObjectCommand | GetObjectCommand) {
+  async function sendGet(command: GetObjectCommand) {
+    run.guard(timeoutMs + 1000)
+    return client.send(command, {
+      abortSignal: AbortSignal.any([run.signal, AbortSignal.timeout(timeoutMs)]),
+    })
+  }
+
+  async function sendPut(command: PutObjectCommand) {
     run.guard(timeoutMs + 1000)
     return client.send(command, {
       abortSignal: AbortSignal.any([run.signal, AbortSignal.timeout(timeoutMs)]),
@@ -38,7 +45,7 @@ export function createR2Store(config: NodeJobsConfig, run: RunContext, timeoutMs
   async function readObject(key: string, maximumBytes: number): Promise<R2ObjectRead | null> {
     let response
     try {
-      response = await send(new GetObjectCommand({ Bucket: config.r2Bucket, Key: key }))
+      response = await sendGet(new GetObjectCommand({ Bucket: config.r2Bucket, Key: key }))
     } catch (error) {
       const status = typeof error === 'object' && error !== null && '$metadata' in error
         ? (error as { $metadata?: { httpStatusCode?: number } }).$metadata?.httpStatusCode
@@ -47,7 +54,6 @@ export function createR2Store(config: NodeJobsConfig, run: RunContext, timeoutMs
       fail('R2_READ_FAILED', status, { cause: error })
     }
     if (!response.Body || (response.ContentLength !== undefined && response.ContentLength > maximumBytes)) {
-      response.Body?.destroy()
       fail('R2_READ_FAILED')
     }
     const bytes = await response.Body.transformToByteArray()
@@ -58,7 +64,7 @@ export function createR2Store(config: NodeJobsConfig, run: RunContext, timeoutMs
   return {
     async put(key, body, contentType = 'application/json', condition = {}) {
       try {
-        await send(new PutObjectCommand({
+        await sendPut(new PutObjectCommand({
           Bucket: config.r2Bucket,
           Key: key,
           Body: body,

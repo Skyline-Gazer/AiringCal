@@ -58,6 +58,7 @@ test('acquireJobLease returns null when another owner holds the lease', async ()
       if (sql.includes('INSERT INTO airingcal_job_leases')) return [{ owner: 'other-run' }]
       return []
     },
+    export: async () => ({}),
   }
   const run = createRunContext({ runId: 'run-1', deadlineAt: Date.now() + 60_000 })
   const lease = await acquireJobLease(db, run, 'airingcal-data-plane', 900)
@@ -70,6 +71,7 @@ test('acquireJobLease guard fails when lease row disappears', async () => {
       if (sql.includes('INSERT INTO airingcal_job_leases')) return [{ owner: 'run-1' }]
       return []
     },
+    export: async () => ({}),
   }
   const run = createRunContext({ runId: 'run-1', deadlineAt: Date.now() + 60_000 })
   const lease = await acquireJobLease(db, run, 'airingcal-data-plane', 900)
