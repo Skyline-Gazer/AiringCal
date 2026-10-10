@@ -18,8 +18,8 @@ Route A: **D1 + R2** write path in `apps/node-jobs` (not `apps/vps-sync` Postgre
 
 | Issue | Work |
 |-------|------|
-| AC-1-02 | ~~Port D1 lease + Cloudflare/R2 adapters~~ (in progress on branch) |
-| AC-1-03 | Sync pipeline (fetch → media → publish) |
+| AC-1-02 | D1 lease + Cloudflare/R2 adapters (merged) |
+| AC-1-03 | Sync pipeline (`runSyncPipeline`: lease → fetch → D1 chunks → media port → R2 publish); media refresh still `noopMediaRefresh` until wired |
 | AC-1-04 | Backup pipeline |
 | AC-1-05 | `schema.sql` + migration docs |
 | AC-1-07 | CI artifact `dist/qinglong-bundle` for QINGLONG-REPO |

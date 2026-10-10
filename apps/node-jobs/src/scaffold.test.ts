@@ -4,8 +4,8 @@ import { exitCode } from './contracts.ts'
 import { runBackup } from './backup/run.ts'
 import { runSync } from './sync/run.ts'
 
-test('sync scaffold exits 0 with skipped summary', async () => {
-  const summary = await runSync()
+test('sync exits 0 when user config is absent', async () => {
+  const summary = await runSync({})
   assert.equal(summary.job, 'airingcal-sync')
   assert.equal(summary.status, 'skipped')
   assert.equal(exitCode(summary), 0)
