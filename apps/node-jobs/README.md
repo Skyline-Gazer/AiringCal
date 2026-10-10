@@ -15,6 +15,7 @@ pnpm -F @airing-cal/node-jobs build    # dist/qinglong-bundle/*.mjs
 |------|------|
 | `src/sync/run.ts` | Sync orchestration (fetch → media → publish) |
 | `src/backup/run.ts` | D1 export → private R2 |
+| `src/adapters/` | D1 HTTP client, job lease, R2 store, env validation |
 | `schema.sql` | D1 additions for job lease/state (apply before first run) |
 | `scripts/build-qinglong-bundle.mjs` | esbuild entries for QingLong |
 
