@@ -32,14 +32,15 @@
     const cron = health.cron || {}
     const last = cron.last || {}
     const totalSubjects = Number(cache.total_subjects || 0)
+    const scheduler = cron.scheduler === 'qinglong' ? 'QingLong' : 'Cron'
     const nextCron = formatTime(cron.next_at) || 'unknown'
     const lastStatus = last.status ? last.status : 'unknown'
     const lastTime = last.completed_at || last.triggered_at
     const lastSuffix = lastTime ? ' @ ' + formatTime(lastTime) : ''
     setTargets(
       '<span>Subjects ' + totalSubjects + '</span>' +
-      '<span>Next cron ' + escapeHtml(nextCron) + '</span>' +
-      '<span>Last cron ' + escapeHtml(lastStatus + lastSuffix) + '</span>',
+      '<span>Next ' + escapeHtml(scheduler) + ' ' + escapeHtml(nextCron) + '</span>' +
+      '<span>Last ' + escapeHtml(scheduler) + ' ' + escapeHtml(lastStatus + lastSuffix) + '</span>',
     )
   }
 

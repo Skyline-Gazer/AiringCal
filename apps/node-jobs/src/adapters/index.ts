@@ -1,4 +1,5 @@
 export { createCloudflareD1Client, type CloudflareD1Client } from './cloudflare-d1.ts'
+export { createCloudflareKvClient, type CloudflareKvClient } from './cloudflare-kv.ts'
 export { readNodeJobsConfig, type NodeJobsConfig } from './env.ts'
 export { JobError, fail, isJobError, type JobErrorCode } from './errors.ts'
 export { acquireJobLease, type JobLease } from './job-lease.ts'

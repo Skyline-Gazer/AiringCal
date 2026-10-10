@@ -8,6 +8,7 @@ import {
 } from '@airing-cal/domain'
 import { canonicalJson } from '@airing-cal/storage'
 import type { CloudflareD1Client } from '../adapters/cloudflare-d1.ts'
+import type { CloudflareKvClient } from '../adapters/cloudflare-kv.ts'
 import { fail, isJobError } from '../adapters/errors.ts'
 import type { JobLease } from '../adapters/job-lease.ts'
 import { acquireJobLease } from '../adapters/job-lease.ts'
@@ -17,6 +18,7 @@ import type { CompleteFullFetch } from '@airing-cal/bgm-api'
 import type { SyncUserConfig } from './config.ts'
 import type { MediaRefreshPort } from './media-port.ts'
 import { nextSnapshotGeneration } from './publish-helpers.ts'
+import { publishPublicReadKv } from './publish-kv.ts'
 import { projectPublicSnapshotInput } from './project-public.ts'
 
 export type SyncRunStatus = 'skipped' | 'ok' | 'no_change' | 'failed'
@@ -36,6 +38,7 @@ export interface SyncPipelineDeps {
   leaseSeconds: number
   fetchInput(): Promise<CompleteFullFetch>
   media: MediaRefreshPort
+  kv?: CloudflareKvClient | null
   now(): number
 }
 
@@ -110,6 +113,10 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
     await deps.store.verifiedPut('public/manifest.json', new TextEncoder().encode(canonicalJson(manifest)), 'application/json')
 
     const completedAt = Math.floor(deps.now() / 1000)
+    if (deps.kv) {
+      await lease.guard()
+      await publishPublicReadKv(deps.kv, published!, completedAt)
+    }
     await deps.db.query(
       'UPDATE airingcal_job_runs SET completed_at=?, status=?, generation=? WHERE id=?',
       [completedAt, 'ok', published!.generation, deps.run.owner],
