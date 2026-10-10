@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node ./scripts/build-qinglong-bundle.mjs",
     "build:check": "tsc --noEmit",
-    "test": "tsx --test",
+    "test": "tsx --test 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

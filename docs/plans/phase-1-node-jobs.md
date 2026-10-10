@@ -7,11 +7,18 @@ Route A: **D1 + R2** write path in `apps/node-jobs` (not `apps/vps-sync` Postgre
 - Package `@airing-cal/node-jobs` with `sync` / `backup` CLI entrypoints and `schema.sql` stub.
 - `pnpm -F @airing-cal/node-jobs build` → `dist/qinglong-bundle/airingcal-{sync,backup}.mjs`.
 
+## Adapters (AC-1-02)
+
+- `readNodeJobsConfig` — `CLOUDFLARE_*`, `AIRING_CAL_D1_DATABASE_ID`, `AIRING_CAL_R2_BUCKET`, `R2_*`.
+- `createCloudflareD1Client` — D1 REST `query` / `export`.
+- `acquireJobLease` — `airingcal_job_leases` mutual exclusion.
+- `createR2Store` — S3-compatible R2 with verified put.
+
 ## Next
 
 | Issue | Work |
 |-------|------|
-| AC-1-02 | Port D1 lease + Cloudflare/R2 adapters |
+| AC-1-02 | ~~Port D1 lease + Cloudflare/R2 adapters~~ (in progress on branch) |
 | AC-1-03 | Sync pipeline (fetch → media → publish) |
 | AC-1-04 | Backup pipeline |
 | AC-1-05 | `schema.sql` + migration docs |
