@@ -90,6 +90,7 @@ https://airing-cal-frontend.<你的 workers.dev 子域>.workers.dev
 | `/api/calendar` | 读取 calendar snapshot |
 | `/api/config?key=nsfw` | 读取公开配置 |
 | `/api/health` | 健康状态、轻量 cache 摘要、cron 兼容状态和最近 Workflow run（读路径仍暴露 migration 字段） |
+| `/api/version` | 部署核对：`@airing-cal/web-worker` 包版本、git commit（Wrangler `[vars]`）、可选构建时间；`Cache-Control: public, max-age=60`。详见 [docs/reference/web-worker-public-api.md](docs/reference/web-worker-public-api.md) |
 | `/api/cache?limit=100&cursor=<opaque>` | 分页读取脱敏缓存 JSON；`limit` 最大 100，当前页数量字段为 `page_subjects` |
 | `/api/sync/compare` | **已移除** — HTTP 410 `DEPRECATED`（账号同步改由青龙 + node-jobs，见 Phase 1） |
 | `/api/sync/apply` | **已移除** — HTTP 410 `DEPRECATED` |
@@ -97,6 +98,8 @@ https://airing-cal-frontend.<你的 workers.dev 子域>.workers.dev
 | `/image/:hash` | 从 R2 读取图片 |
 
 Widget 已去掉页内「动画同步」Tab；历史 compare/apply/check 行为见归档的 `apps/sync-worker` 与 OpenSpec，不再从公网 Worker 暴露。
+
+**部署核对：** 推送 `dev` 或手动运行 Deploy workflow 后，用 `GET /api/version` 确认线上 commit 与包版本，例如 `curl -sS 'https://airingcal.q9m3.com/api/version' | jq '.git.commit_short, .package.version'`。与页面 footer 的 commit 链接应对齐（同一 `BANGUMI_GIT_COMMIT_SHA`）。
 
 <details>
 <summary>历史：页内账号 sync API（frontend-worker + SYNC_WORKER，已废弃）</summary>
@@ -486,21 +489,23 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 
 `.github/workflows/ci.yml` 只在推送到 `dev` 时触发 push 验证，并在没有分支或路径过滤的情况下，按 GitHub 默认活动类型 `opened`、`synchronize`、`reopened` 触发 `pull_request` 验证。这样 PR 分支的后续 push 只由 PR 验证覆盖，合并到 `dev` 后仍会进行一次验证。CI 使用 `${{ github.workflow }}-${{ github.ref }}` 作为 workflow 级并发组并启用取消：同一 workflow 和 ref 的较新提交会取消旧的进行中验证，而不会取消其他 workflow 的运行。
 
-`.github/workflows/deploy.yml` 会按顺序执行：
+**Phase 0（当前 `dev`）** — `.github/workflows/deploy.yml` 只上传 `apps/web-worker`（Wrangler 名 `airing-cal-frontend`）。顺序：
 
-1. 在不接触 production secrets 的 `resolve_ref` job 中把 push SHA 或手动 ref 解析为完整 commit SHA，并验证它已是 `origin/dev` 的 ancestor
-2. 所有后续 job checkout 同一个解析 SHA，运行 `pnpm install --frozen-lockfile`、typecheck、test、build check
-3. 解析既有 Cloudflare 资源，并在任何 Worker 上传前运行 Worker Cron 配额 preflight
-4. 用 resolver 输出 materialize sync config，执行 `wrangler d1 migrations apply AIRING_CAL_D1 --remote`；失败时不开始任何 Worker upload
-5. 并行部署 `airing-cal-read` 与 `airing-cal-media`
-6. 部署 `airing-cal-sync`、`SyncWorkflow` 与 Durable Object migrations，运行 `wrangler workflows describe` 检查控制面
-7. 以解析 SHA 注入 commit/repository build vars，最后部署 `airing-cal-frontend`
+1. `resolve_ref`：把 push SHA 或手动 `ref` 解析为完整 commit SHA，并验证它已是 `origin/dev` 的 ancestor（不接触 production secrets）
+2. `validate`：同一 SHA 上 `pnpm install --frozen-lockfile`、typecheck、test、build check
+3. `resolve_cloudflare`：解析既有 D1/KV id，并运行 Worker Cron 配额 preflight
+4. `apply_d1_migrations`：materialize `apps/web-worker/wrangler.toml`，远程执行 `wrangler d1 migrations apply AIRING_CAL_D1`
+5. `deploy_web_worker`：注入 `BANGUMI_GIT_COMMIT_SHA`、`BANGUMI_GIT_REPOSITORY_URL`、`BANGUMI_BUILD_TIME`（见 [web-worker 公开 API — `/api/version`](docs/reference/web-worker-public-api.md)），`wrangler deploy` 到 `airing-cal-frontend`
 
-手动部署输入可以是 SHA、branch 或 tag，但解析出的 commit 必须已经进入 `dev` 历史；未进入 `dev` 的 ref 会在 secrets 和 Cloudflare job 启动前失败。`dev` 在部署期间继续前进不会改变本次 revision，页面 footer SHA 与实际 checkout/deploy SHA保持一致。Cron trigger 已达到 Free Plan 上限且 `airing-cal-sync` 没有可复用 trigger 时，preflight 会在首个 upload 前终止，避免部分部署。
+手动部署输入可以是 SHA、branch 或 tag，但解析出的 commit 必须已经进入 `dev` 历史。`dev` 在部署期间继续前进不会改变本次 revision；footer、`GET /api/version` 与 checkout SHA 应一致。
 
-部署步骤直接运行 `pnpm exec wrangler deploy`，不再通过 `cloudflare/wrangler-action` 包装。CI 会设置 `WRANGLER_LOG=debug` 和 `WRANGLER_LOG_PATH`；如果部署失败，会打印脱敏后的 Wrangler debug log。随后 `recovery_report` 查询四个 Worker 当前 deployment JSON、汇总各部署 job 结果，并输出使用本次已解析完整 SHA 的精确收敛命令 `gh workflow run deploy.yml --ref dev -f ref=<resolved-sha>`；需要回退时按下方 runbook 操作。
+部署步骤直接运行 `pnpm exec wrangler deploy`。CI 设置 `WRANGLER_LOG=debug` 与 `WRANGLER_LOG_PATH`；失败时打印脱敏 debug log。`recovery_report` 汇总 job 结果并输出 `gh workflow run deploy.yml --ref dev -f ref=<resolved-sha>`。
 
-这个顺序保证 additive D1 migration 先完成，内部 read/media/sync Worker 与 Workflow 控制面再更新，最后才更新公开入口 frontend Worker。部署不创建 live instance；业务同步由 schedule 或显式手动 trigger 独立执行。首次部署时 frontend 的 service binding 需要 read/sync Worker 已存在，所以 frontend 不放进并行 matrix。
+<details>
+<summary>历史：四 Worker 并行 deploy 顺序（已归档，routine deploy 不再执行）</summary>
+
+旧流程在 D1 migration 后并行部署 read/media，再部署 sync + Workflow，最后部署 frontend（service binding 依赖 read/sync 已存在）。见各 `apps/*/ARCHIVED.md`。
+</details>
 
 ### 正式回退 runbook
 
@@ -527,7 +532,7 @@ wrangler deploy --dry-run --outdir dist --config wrangler.toml
 
 Widget 的唯一来源是 `packages/widget`。公开 HTML 页面复用同一个 footer renderer。
 
-CI 部署 frontend 时会把 `BANGUMI_GIT_COMMIT_SHA` 和 `BANGUMI_GIT_REPOSITORY_URL` 注入临时 Wrangler config，footer 会链接到对应 commit；本地或自定义部署没有提供这两个值时会显示 `Build unknown`。这只是页面追踪构建来源的信息，不影响部署和访问。
+CI 部署 `web-worker` 时通过 `materialize-wrangler-config.mjs` 把 `BANGUMI_GIT_COMMIT_SHA`、`BANGUMI_GIT_REPOSITORY_URL` 与可选 `BANGUMI_BUILD_TIME` 写入临时 Wrangler `[vars]`。footer 链接到 commit；`GET /api/version` 返回同一 SHA 与 `package.version`。未注入 git 变量时 footer 显示 `Build unknown`，`/api/version` 的 `git.*` 为 `null`。
 
 浏览器 widget 使用 `images.common.uri` 渲染封面。没有缓存图片时读取 `image_status.common` 显示 `image pending`、`image queued`、`image missing source` 或 `image cache failed`，不内嵌 `data:image` placeholder。
 
