@@ -22,7 +22,7 @@ Phase 0 把公开页面、只读 API 与 `/image/:hash` 合进同一个 Worker�
     ▼
 airing-cal-frontend (apps/web-worker)
     ├── HTML + widget (/ , /src/*)
-    ├── /api/collections|calendar|config|health|cache
+    ├── /api/collections|calendar|config|health|cache|version
     └── /image/:hash  → AIRING_CAL_R2
             read-mode → legacy KV 或 R2 PublicSnapshotV1（见 packages/storage）
 ```

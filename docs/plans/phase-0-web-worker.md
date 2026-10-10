@@ -20,7 +20,7 @@ Bindings (checked-in): `AIRING_CAL_D1`, `AIRING_CAL_KV`, `AIRING_CAL_R2`, `AIRIN
 ## Behavior
 
 - Merges former `frontend-worker` + `read-worker` (`read-api.ts`, `health.ts`, `r2-snapshot.ts`).
-- Public routes: `/`, `/src/*`, `/api/*`, `/image/*`.
+- Public routes: `/`, `/src/*`, `/api/*`, `/image/*`. **`GET /api/version`** returns deploy git SHA (from `BANGUMI_GIT_*` vars) and package version.
 - Removed from product surface: `/api/sync/*`, `/api/check/*` → **410** JSON `DEPRECATED`; widget sync tab removed.
 - Not deployed: `sync-worker`, `media-worker`, legacy `frontend-worker` / `read-worker` (see each `ARCHIVED.md`).
 
