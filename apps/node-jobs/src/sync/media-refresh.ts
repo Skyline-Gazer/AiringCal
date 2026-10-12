@@ -17,7 +17,33 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024
 const DAY_SECONDS = 86_400
 const SUCCESS_SPREAD_SECONDS = 172_801
 const PUBLISH_RESERVE_MS = 30_000
+const PROGRESS_EVERY = 5
+const PROGRESS_MIN_MS = 2_000
 const KEY_PATTERN = /^images\/([0-9a-f]{64})\/original$/
+
+function progressBar(pct: number, width = 20): string {
+  const clamped = Math.min(100, Math.max(0, pct))
+  const filled = Math.min(width, Math.round((width * clamped) / 100))
+  return `${'#'.repeat(filled)}${'·'.repeat(width - filled)}`
+}
+
+function emitMediaProgress(done: number, total: number, succeeded: number, failed: number): void {
+  if (total <= 0) return
+  const pct = (done / total) * 100
+  const bar = progressBar(pct)
+  console.log(
+    `media  [${bar}]  ${pct.toFixed(1)}%  ${done}/${total}  ok=${succeeded} fail=${failed}`,
+  )
+  console.log(JSON.stringify({
+    status: 'info',
+    stage: 'media_progress',
+    done,
+    total,
+    pct: Math.round(pct * 10) / 10,
+    succeeded,
+    failed,
+  }))
+}
 
 const ENSURE_SUBJECT_MEDIA = `CREATE TABLE IF NOT EXISTS subject_media (
   subject_id INTEGER PRIMARY KEY,
@@ -289,6 +315,25 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
         if (!sources.common && !sources.large) return false
         return !shouldSkip(existing.get(subject.subjectId), sources, nowSec)
       })
+      const total = work.length
+      if (total > 0) {
+        console.log(JSON.stringify({
+          status: 'info',
+          stage: 'media',
+          message: `refresh ${total} subject image(s)`,
+          total,
+        }))
+      }
+      let processed = 0
+      let lastProgressAt = 0
+      const maybeProgress = () => {
+        if (total <= 0) return
+        const now = Date.now()
+        if (processed >= total || processed % PROGRESS_EVERY === 0 || now - lastProgressAt >= PROGRESS_MIN_MS) {
+          emitMediaProgress(processed, total, summary.succeeded, summary.failed)
+          lastProgressAt = now
+        }
+      }
       await mapPool(work, concurrency, async (subject) => {
         if (context.signal.aborted || context.deadlineAt - Date.now() <= PUBLISH_RESERVE_MS) return
         summary.selected += 1
@@ -347,8 +392,13 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
         ])
         if (failed) summary.failed += 1
         else summary.succeeded += 1
+        processed += 1
+        maybeProgress()
       })
 
+      if (total > 0 && processed > 0) {
+        emitMediaProgress(processed, total, summary.succeeded, summary.failed)
+      }
       console.log(JSON.stringify({ stage: 'media', ...summary }))
       return summary
     },
