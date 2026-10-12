@@ -9,7 +9,7 @@ import {
 import type { JobSummary } from '../contracts.ts'
 import { createUpstreamBgmClient, fetchCompleteInput } from '../upstream/fetch.ts'
 import { readSyncUserConfig } from './config.ts'
-import { noopMediaRefresh } from './media-port.ts'
+import { createSubjectMediaRefresh } from './media-refresh.ts'
 import { defaultLeaseName, defaultLeaseSeconds, runSyncPipeline } from './pipeline.ts'
 
 /** Full pipeline: lease → fetch → media → publish (AC-1-03). */
@@ -29,6 +29,9 @@ export async function runSync(env: Record<string, string | undefined> = process.
   })
   const db = createCloudflareD1Client(nodeConfig, run)
   const store = createR2Store(nodeConfig, run)
+  const imageStore = nodeConfig.imageBucket === nodeConfig.r2Bucket
+    ? store
+    : createR2Store({ ...nodeConfig, r2Bucket: nodeConfig.imageBucket }, run)
   const kv = nodeConfig.kvNamespaceId ? createCloudflareKvClient(nodeConfig, run) : null
   try {
     const client = createUpstreamBgmClient(env.BGM_TOKEN?.trim())
@@ -44,16 +47,19 @@ export async function runSync(env: Record<string, string | undefined> = process.
         client,
         () => Date.now(),
       ),
-      media: noopMediaRefresh,
+      media: createSubjectMediaRefresh({ db, store: imageStore }),
       kv,
       now: () => Date.now(),
     })
+    const media = `media selected=${result.media.selected} succeeded=${result.media.succeeded} failed=${result.media.failed}`
+    console.log(media)
     return {
       job: 'airingcal-sync',
       status: result.status === 'failed' ? 'failed' : result.status === 'skipped' ? 'skipped' : 'success',
-      message: `${result.stage}${result.generation != null ? ` generation=${result.generation}` : ''}`,
+      message: `${result.stage}${result.generation != null ? ` generation=${result.generation}` : ''} ${media}`,
     }
   } finally {
+    if (imageStore !== store) imageStore.close()
     store.close()
   }
 }

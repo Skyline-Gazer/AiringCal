@@ -5,6 +5,11 @@ import type { RunContext } from './run-context.ts'
 
 export type D1Row = Record<string, unknown>
 
+function d1QueryParam(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  return String(value)
+}
+
 export interface CloudflareD1Client {
   query(sql: string, params?: unknown[]): Promise<D1Row[]>
   export(body: Record<string, unknown>): Promise<unknown>
@@ -40,7 +45,7 @@ export function createCloudflareD1Client(config: NodeJobsConfig, run: RunContext
 
   return {
     async query(sql, params = []) {
-      const result = await call('query', { sql, params: params.map(String) }, 3)
+      const result = await call('query', { sql, params: params.map(d1QueryParam) }, 3)
       if (!Array.isArray(result) || result.length !== 1) fail('D1_RESPONSE_INVALID')
       const first = result[0] as { success?: boolean; results?: D1Row[] }
       if (first.success !== true || !Array.isArray(first.results)) fail('D1_RESPONSE_INVALID')

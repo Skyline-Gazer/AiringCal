@@ -3,6 +3,7 @@ import { fail } from './errors.ts'
 export interface RunContext {
   readonly owner: string
   readonly signal: AbortSignal
+  readonly deadlineAt: number
   guard(extraMs?: number): void
 }
 
@@ -15,6 +16,7 @@ export function createRunContext(input: {
   timer.unref?.()
   return {
     owner: input.runId,
+    deadlineAt: input.deadlineAt,
     signal: controller.signal,
     guard(extraMs = 0) {
       if (controller.signal.aborted) fail('REQUEST_FAILED')

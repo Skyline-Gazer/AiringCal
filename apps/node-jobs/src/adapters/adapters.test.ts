@@ -11,6 +11,7 @@ const config = {
   d1DatabaseId: '12345678-1234-4123-8123-123456789abc',
   cloudflareApiToken: 'token',
   r2Bucket: 'airing-cal-data',
+  imageBucket: 'airing-cal-images',
   r2AccessKeyId: 'key',
   r2SecretAccessKey: 'secret',
 }
@@ -25,6 +26,21 @@ test('readNodeJobsConfig accepts AIRING_CAL_* names', () => {
     R2_SECRET_ACCESS_KEY: config.r2SecretAccessKey,
   })
   assert.equal(parsed.d1DatabaseId, config.d1DatabaseId)
+  assert.equal(parsed.imageBucket, 'airing-cal-images')
+})
+
+test('readNodeJobsConfig accepts AIRING_CAL_IMAGE_BUCKET', () => {
+  const parsed = readNodeJobsConfig({
+    CLOUDFLARE_ACCOUNT_ID: config.cloudflareAccountId,
+    AIRING_CAL_D1_DATABASE_ID: config.d1DatabaseId,
+    CLOUDFLARE_API_TOKEN: config.cloudflareApiToken,
+    AIRING_CAL_R2_BUCKET: config.r2Bucket,
+    AIRING_CAL_IMAGE_BUCKET: 'airing-cal-images',
+    R2_ACCESS_KEY_ID: config.r2AccessKeyId,
+    R2_SECRET_ACCESS_KEY: config.r2SecretAccessKey,
+  })
+  assert.equal(parsed.r2Bucket, 'airing-cal-data')
+  assert.equal(parsed.imageBucket, 'airing-cal-images')
 })
 
 test('readNodeJobsConfig rejects malformed account id', () => {
@@ -32,6 +48,26 @@ test('readNodeJobsConfig rejects malformed account id', () => {
     () => readNodeJobsConfig({ ...process.env, CLOUDFLARE_ACCOUNT_ID: 'short' }),
     (error: unknown) => error instanceof JobError && error.code === 'CONFIG_INVALID',
   )
+})
+
+test('createCloudflareD1Client preserves null query params', async () => {
+  const original = globalThis.fetch
+  let params: unknown
+  globalThis.fetch = async (_url, init) => {
+    params = JSON.parse(String(init?.body)).params
+    return new Response(JSON.stringify({
+      success: true,
+      result: [{ success: true, results: [] }],
+    }), { status: 200 })
+  }
+  try {
+    const run = createRunContext({ runId: 'run-1', deadlineAt: Date.now() + 60_000 })
+    const db = createCloudflareD1Client(config, run)
+    await db.query('INSERT INTO subject_media (detail_json) VALUES (?)', [null])
+    assert.deepEqual(params, [null])
+  } finally {
+    globalThis.fetch = original
+  }
 })
 
 test('createCloudflareD1Client parses query results', async () => {

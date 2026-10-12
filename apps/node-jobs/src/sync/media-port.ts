@@ -6,8 +6,18 @@ export interface MediaRefreshSummary {
   failed: number
 }
 
+export interface MediaSubjectSource {
+  subjectId: number
+  nsfw: boolean
+  images: { common?: string; large?: string }
+}
+
+export interface MediaRefreshRequest {
+  subjects: MediaSubjectSource[]
+}
+
 export interface MediaRefreshPort {
-  refresh(context: RunContext & { observedAt: string }): Promise<MediaRefreshSummary>
+  refresh(context: RunContext & { observedAt: string }, request?: MediaRefreshRequest): Promise<MediaRefreshSummary>
 }
 
 export const noopMediaRefresh: MediaRefreshPort = {

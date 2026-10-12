@@ -16,7 +16,8 @@ import type { R2Store } from '../adapters/r2-store.ts'
 import type { RunContext } from '../adapters/run-context.ts'
 import type { CompleteFullFetch } from '@airing-cal/bgm-api'
 import type { SyncUserConfig } from './config.ts'
-import type { MediaRefreshPort } from './media-port.ts'
+import { loadSubjectImageMap, mediaSubjectsFromFetch } from './media-refresh.ts'
+import type { MediaRefreshPort, MediaRefreshSummary } from './media-port.ts'
 import { nextSnapshotGeneration } from './publish-helpers.ts'
 import { publishPublicReadKv } from './publish-kv.ts'
 import { projectPublicSnapshotInput } from './project-public.ts'
@@ -27,6 +28,7 @@ export interface SyncPipelineResult {
   status: SyncRunStatus
   stage: string
   generation: number | null
+  media: MediaRefreshSummary
 }
 
 export interface SyncPipelineDeps {
@@ -60,7 +62,7 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
   try {
     lease = await acquireJobLease(deps.db, deps.run, deps.leaseName, deps.leaseSeconds)
     if (!lease) {
-      return { status: 'skipped', stage: 'lease_busy', generation: null }
+      return { status: 'skipped', stage: 'lease_busy', generation: null, media: { selected: 0, succeeded: 0, failed: 0 } }
     }
     const startedAt = Math.floor(deps.now() / 1000)
     await deps.db.query(
@@ -85,10 +87,11 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
 
     const mediaContext = { ...deps.run, observedAt: new Date(input.observedAt * 1000).toISOString() }
     await lease.guard()
-    await deps.media.refresh(mediaContext)
+    const media = await deps.media.refresh(mediaContext, { subjects: mediaSubjectsFromFetch(input) })
+    const imageMap = await loadSubjectImageMap(deps.db)
 
     const { previous } = await loadPreviousSnapshot(deps.store)
-    const candidateInput = projectPublicSnapshotInput(input)
+    const candidateInput = projectPublicSnapshotInput(input, imageMap)
     const candidate = await buildPublicSnapshot(candidateInput, 0)
     const generation = nextSnapshotGeneration(previous, candidate.content_hash)
     let published = previous
@@ -127,6 +130,7 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
       status: generation === null ? 'no_change' : 'ok',
       stage: generation === null ? 'no_change' : 'complete',
       generation: published!.generation,
+      media,
     }
   } catch (error) {
     if (isJobError(error)) throw error
