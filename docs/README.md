@@ -37,8 +37,10 @@ Bangumi → node-jobs (bundle) ← QingLong
 
 | File | Purpose |
 | --- | --- |
-| `m2-read-surface.md` | Deploy web-worker, verify APIs/covers (M2) |
+| `m2-read-surface.md` | Deploy web-worker, verify APIs/covers (**homelab M2 done 2026-10-13**) |
 | `migrate-public-reads.md` | KV → R2 read-mode (optional ops) |
+
+Homelab closure (QingLong): [QINGLONG governance](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/governance/2026-10-13-homelab-closure.md)
 
 ## Archive
 
