@@ -22,16 +22,17 @@ export interface EnrichMediaSubjectsOptions {
   concurrency?: number
 }
 
+/** Calendar API often ships only a small `common` URL; still fetch detail for `large`. */
 function hasResolvableImage(subject: MediaSubjectSource): boolean {
-  return Boolean(bangumiImageUrl(subject.images.common) || bangumiImageUrl(subject.images.large))
+  return Boolean(bangumiImageUrl(subject.images.large))
 }
 
 function mergeDetailImages(target: MediaSubjectSource, detail: SubjectDetailFetchResult): void {
+  if (typeof detail.large === 'string' && detail.large) {
+    target.images.large = detail.large
+  }
   if (typeof detail.common === 'string' && detail.common && !target.images.common) {
     target.images.common = detail.common
-  }
-  if (typeof detail.large === 'string' && detail.large && !target.images.large) {
-    target.images.large = detail.large
   }
 }
 

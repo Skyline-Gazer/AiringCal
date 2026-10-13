@@ -1,94 +1,67 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { assembleFullFetch } from '@airing-cal/bgm-api'
-import { createRunContext } from '../adapters/run-context.ts'
-import { bangumiImageUrl, coalesceSubjectImageUrls, mediaSubjectsFromFetch } from './media-refresh.ts'
-import { createEnrichMediaSubjectsFromFetch, enrichMediaSubjectsFromFetch } from './media-subject-resolve.ts'
+import type { CompleteFullFetch } from '@airing-cal/bgm-api'
+import { enrichMediaSubjectsFromFetch } from './media-subject-resolve.ts'
 
-const COMMON_URL = 'https://lain.bgm.tv/pic/cover/c/common.jpg'
-const LARGE_URL = 'https://lain.bgm.tv/pic/cover/l/large.jpg'
-const GRID_URL = 'https://lain.bgm.tv/pic/cover/g/grid.jpg'
-
-test('coalesceSubjectImageUrls maps grid/medium to common when common missing', () => {
-  assert.deepEqual(coalesceSubjectImageUrls({ grid: GRID_URL }), { common: GRID_URL })
-  assert.deepEqual(
-    coalesceSubjectImageUrls({ grid: GRID_URL, large: LARGE_URL }),
-    { common: GRID_URL, large: LARGE_URL },
-  )
-})
-
-test('bangumiImageUrl accepts http lain.bgm.tv and normalizes to https', () => {
-  const http = 'http://lain.bgm.tv/pic/cover/c/1c/b4/390200_Z9jPp.jpg'
-  assert.equal(bangumiImageUrl(http), 'https://lain.bgm.tv/pic/cover/c/1c/b4/390200_Z9jPp.jpg')
-})
-
-test('mediaSubjectsFromFetch coalesces calendar grid into common for media queue', () => {
-  const input = assembleFullFetch(
-    [{ user_id: '1', pageLimit: 50, pages: [{ offset: 0, total: 0, data: [] }] }],
-    [{
-      weekday: { en: 'Mon', cn: '一', ja: '月', id: 1 },
-      items: [{ id: 390200, type: 2, name: 'Cal', images: { grid: GRID_URL } }],
+test('enrich fetches detail when only calendar-sized common URL is present', async () => {
+  const input = {
+    collections: [],
+    calendar: [{
+      weekday: { en: 'Mon', cn: '星期一', ja: '月', id: 1 },
+      items: [{
+        id: 390200,
+        type: 2,
+        name: 'Test',
+        name_cn: '',
+        nsfw: false,
+        images: { common: 'http://lain.bgm.tv/pic/cover/c/xx.jpg' },
+      }],
     }],
-    1_700_000_000,
-  )
-  const subjects = mediaSubjectsFromFetch(input)
-  assert.equal(subjects.length, 1)
-  assert.equal(subjects[0]?.subjectId, 390200)
-  assert.equal(bangumiImageUrl(subjects[0]?.images.common), GRID_URL)
-})
+    observedAt: 1,
+    observedUsers: [],
+    complete: true,
+  } as unknown as CompleteFullFetch
 
-test('mediaSubjectsFromFetch accepts calendar http common/large URLs', () => {
-  const httpCommon = 'http://lain.bgm.tv/pic/cover/c/1c/b4/390200_Z9jPp.jpg'
-  const httpLarge = 'http://lain.bgm.tv/pic/cover/l/1c/b4/390200_Z9jPp.jpg'
-  const input = assembleFullFetch(
-    [{ user_id: '1', pageLimit: 50, pages: [{ offset: 0, total: 0, data: [] }] }],
-    [{
-      weekday: { en: 'Mon', cn: '一', ja: '月', id: 1 },
-      items: [{ id: 390200, type: 2, name: 'Cal', images: { common: httpCommon, large: httpLarge } }],
-    }],
-    1_700_000_000,
-  )
-  const subjects = mediaSubjectsFromFetch(input)
-  assert.equal(bangumiImageUrl(subjects[0]?.images.common), httpCommon.replace('http:', 'https:'))
-  assert.equal(bangumiImageUrl(subjects[0]?.images.large), httpLarge.replace('http:', 'https:'))
-})
-
-test('enrichMediaSubjectsFromFetch fills missing images via subject detail', async () => {
-  const input = assembleFullFetch(
-    [{ user_id: '1', pageLimit: 50, pages: [{ offset: 0, total: 0, data: [] }] }],
-    [{
-      weekday: { en: 'Mon', cn: '一', ja: '月', id: 1 },
-      items: [{ id: 99, type: 2, name: 'Cal-only' }],
-    }],
-    1_700_000_000,
-  )
-  const calls: number[] = []
+  let fetched = 0
   const subjects = await enrichMediaSubjectsFromFetch(input, {
-    fetchSubjectDetail: async (subjectId) => {
-      calls.push(subjectId)
-      if (subjectId !== 99) return null
-      return { common: COMMON_URL, large: LARGE_URL }
+    fetchSubjectDetail: async () => {
+      fetched += 1
+      return { large: 'https://lain.bgm.tv/pic/cover/l/better.jpg' }
     },
   })
-  assert.deepEqual(calls, [99])
-  assert.equal(subjects[0]?.images.common, COMMON_URL)
-  assert.equal(subjects[0]?.images.large, LARGE_URL)
+
+  assert.equal(fetched, 1)
+  assert.equal(subjects[0]?.images.large, 'https://lain.bgm.tv/pic/cover/l/better.jpg')
 })
 
-test('createEnrichMediaSubjectsFromFetch respects run guard and signal', async () => {
-  const input = assembleFullFetch(
-    [{ user_id: '1', pageLimit: 50, pages: [{ offset: 0, total: 0, data: [] }] }],
-    [{
-      weekday: { en: 'Mon', cn: '一', ja: '月', id: 1 },
-      items: [{ id: 1, type: 2, name: 'A' }, { id: 2, type: 2, name: 'B' }],
+test('enrich skips detail when large URL already present', async () => {
+  const input = {
+    collections: [],
+    calendar: [{
+      weekday: { en: 'Mon', cn: '星期一', ja: '月', id: 1 },
+      items: [{
+        id: 1,
+        type: 2,
+        name: 'Test',
+        name_cn: '',
+        nsfw: false,
+        images: {
+          common: 'https://lain.bgm.tv/pic/cover/c/x.jpg',
+          large: 'https://lain.bgm.tv/pic/cover/l/x.jpg',
+        },
+      }],
     }],
-    1_700_000_000,
-  )
-  const run = createRunContext({ runId: 'run-enrich', deadlineAt: Date.now() + 60_000 })
-  const enrich = createEnrichMediaSubjectsFromFetch(async (subjectId) => ({
-    common: `https://lain.bgm.tv/pic/cover/c/${subjectId}.jpg`,
-  }))
-  const subjects = await enrich(input, run)
-  assert.equal(subjects.length, 2)
-  assert.ok(subjects.every((subject) => bangumiImageUrl(subject.images.common)))
+    observedAt: 1,
+    observedUsers: [],
+    complete: true,
+  } as unknown as CompleteFullFetch
+
+  let fetched = 0
+  await enrichMediaSubjectsFromFetch(input, {
+    fetchSubjectDetail: async () => {
+      fetched += 1
+      return null
+    },
+  })
+  assert.equal(fetched, 0)
 })

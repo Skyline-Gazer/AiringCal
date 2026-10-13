@@ -158,8 +158,8 @@ test('renderAnalyticsScripts does not emit placeholder analytics snippets', () =
   assert.equal(html, '')
 })
 
-test('widgetJs consumes new images.common.uri shape', () => {
-  assert.match(widgetJs, /images\?\.common\?\.uri/)
+test('widgetJs prefers images.large.uri over common for covers', () => {
+  assert.match(widgetJs, /images\?\.large\?\.uri/)
   assert.match(widgetJs, /document\.querySelector\('\.bgm-container'\)/)
   assert.equal(widgetJs.includes('hash_large'), false)
 })
