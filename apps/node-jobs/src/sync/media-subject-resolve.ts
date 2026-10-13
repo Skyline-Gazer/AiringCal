@@ -2,9 +2,12 @@ import type { CompleteFullFetch } from '@airing-cal/bgm-api'
 import type { RunContext } from '../adapters/run-context.ts'
 import type { MediaSubjectSource } from './media-port.ts'
 import { bangumiImageUrl, mediaSubjectsFromFetch } from './media-refresh.ts'
+import { emitProgress, emitStage } from './sync-progress.ts'
 
 const DEFAULT_MAX_DETAIL_FETCHES = 120
 const DEFAULT_CONCURRENCY = 4
+const PROGRESS_EVERY = 5
+const PROGRESS_MIN_MS = 2_000
 
 export interface SubjectDetailFetchResult {
   common?: string
@@ -51,33 +54,68 @@ export async function enrichMediaSubjectsFromFetch(
 ): Promise<MediaSubjectSource[]> {
   const subjects = mediaSubjectsFromFetch(input)
   const missing = subjects.filter((subject) => !hasResolvableImage(subject))
-  if (missing.length === 0) return subjects
+  if (missing.length === 0) {
+    emitStage('Subject detail enrich skipped (all sources present)', {
+      stage: 'subject_detail_enrich',
+      missing: 0,
+      subject_total: subjects.length,
+    })
+    return subjects
+  }
 
   const maxDetailFetches = options.maxDetailFetches ?? DEFAULT_MAX_DETAIL_FETCHES
   const toFetch = missing.slice(0, maxDetailFetches)
   const byId = new Map(subjects.map((subject) => [subject.subjectId, subject]))
+  const total = toFetch.length
+
+  emitStage('Subject detail enrich started', {
+    stage: 'subject_detail_enrich',
+    missing: missing.length,
+    fetching: total,
+    capped: missing.length > toFetch.length,
+    cap: maxDetailFetches,
+  })
 
   let fetched = 0
   let notFound = 0
   let failed = 0
+  let processed = 0
+  let lastProgressAt = 0
+  const maybeProgress = () => {
+    if (total <= 0) return
+    const now = Date.now()
+    if (processed >= total || processed % PROGRESS_EVERY === 0 || now - lastProgressAt >= PROGRESS_MIN_MS) {
+      emitProgress('detail', 'subject_detail_progress', processed, total, { fetched, not_found: notFound, failed })
+      lastProgressAt = now
+    }
+  }
 
   await mapPool(toFetch, options.concurrency ?? DEFAULT_CONCURRENCY, async (stub) => {
-    if (options.signal?.aborted) return
-    options.guard?.()
-    const target = byId.get(stub.subjectId)
-    if (!target || hasResolvableImage(target)) return
     try {
-      const detail = await options.fetchSubjectDetail(stub.subjectId)
-      if (!detail) {
-        notFound += 1
-        return
+      if (options.signal?.aborted) return
+      options.guard?.()
+      const target = byId.get(stub.subjectId)
+      if (!target || hasResolvableImage(target)) return
+      try {
+        const detail = await options.fetchSubjectDetail(stub.subjectId)
+        if (!detail) {
+          notFound += 1
+        } else {
+          mergeDetailImages(target, detail)
+          if (hasResolvableImage(target)) fetched += 1
+        }
+      } catch {
+        failed += 1
       }
-      mergeDetailImages(target, detail)
-      if (hasResolvableImage(target)) fetched += 1
-    } catch {
-      failed += 1
+    } finally {
+      processed += 1
+      maybeProgress()
     }
   })
+
+  if (total > 0 && processed > 0) {
+    emitProgress('detail', 'subject_detail_progress', processed, total, { fetched, not_found: notFound, failed })
+  }
 
   console.log(JSON.stringify({
     status: 'info',

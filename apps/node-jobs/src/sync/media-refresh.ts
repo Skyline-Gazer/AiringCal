@@ -11,6 +11,7 @@ import {
   type MediaRefreshSummary,
   type MediaSubjectSource,
 } from './media-port.ts'
+import { emitProgress } from './sync-progress.ts'
 
 const USER_AGENT = 'markd3ng/AiringCal (https://github.com/markd3ng/AiringCal)'
 const IMAGE_HOSTS = new Set(['lain.bgm.tv', 'lain.bangumi.tv'])
@@ -22,28 +23,8 @@ const PROGRESS_EVERY = 5
 const PROGRESS_MIN_MS = 2_000
 const KEY_PATTERN = /^images\/([0-9a-f]{64})\/original$/
 
-function progressBar(pct: number, width = 20): string {
-  const clamped = Math.min(100, Math.max(0, pct))
-  const filled = Math.min(width, Math.round((width * clamped) / 100))
-  return `${'#'.repeat(filled)}${'·'.repeat(width - filled)}`
-}
-
 function emitMediaProgress(done: number, total: number, succeeded: number, failed: number): void {
-  if (total <= 0) return
-  const pct = (done / total) * 100
-  const bar = progressBar(pct)
-  console.log(
-    `media  [${bar}]  ${pct.toFixed(1)}%  ${done}/${total}  ok=${succeeded} fail=${failed}`,
-  )
-  console.log(JSON.stringify({
-    status: 'info',
-    stage: 'media_progress',
-    done,
-    total,
-    pct: Math.round(pct * 10) / 10,
-    succeeded,
-    failed,
-  }))
+  emitProgress('media', 'media_progress', done, total, { succeeded, failed })
 }
 
 const ENSURE_SUBJECT_MEDIA = `CREATE TABLE IF NOT EXISTS subject_media (

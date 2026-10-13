@@ -39,6 +39,6 @@ Route A: **D1 + R2** write path in `apps/node-jobs` (not `apps/vps-sync` Postgre
 |-------|------|
 | AC-1-05 | Migration apply docs for `schema.sql` |
 | AC-1-06 | Broader integration harness (mocked CF/Bangumi). Media publish is covered by `src/sync/media-refresh.test.ts`. |
-| Media | Done in `src/sync/media-refresh.ts` |
+| Media | Done in `src/sync/media-refresh.ts`; task logs emit `media  [##··] pct` + JSON `media_progress` during backfill |
 
 QINGLONG-REPO thin scripts consume the CI artifact (blocks QL-2-01).

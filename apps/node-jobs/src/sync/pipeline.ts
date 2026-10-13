@@ -21,6 +21,7 @@ import type { MediaRefreshPort, MediaRefreshSummary, MediaSubjectSource } from '
 import { nextSnapshotGeneration } from './publish-helpers.ts'
 import { publishPublicReadKv } from './publish-kv.ts'
 import { projectPublicSnapshotInput } from './project-public.ts'
+import { emitStage } from './sync-progress.ts'
 
 export type SyncRunStatus = 'skipped' | 'ok' | 'no_change' | 'failed'
 
@@ -71,7 +72,14 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
       [deps.run.owner, startedAt, 'running'],
     )
 
+    emitStage('Sync pipeline: fetching Bangumi input', { stage: 'sync_pipeline', step: 'fetch_input' })
     const input = await deps.fetchInput()
+    emitStage('Sync pipeline: persisting fetch chunks to D1', {
+      stage: 'sync_pipeline',
+      step: 'd1_chunks',
+      collections: input.collections.length,
+      calendar_days: input.calendar.length,
+    })
     const chunks: unknown[] = []
     for (let offset = 0; offset < input.collections.length; offset += 50) {
       chunks.push({ collections: input.collections.slice(offset, offset + 50) })
@@ -88,9 +96,15 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
 
     const mediaContext = { ...deps.run, observedAt: new Date(input.observedAt * 1000).toISOString() }
     await lease.guard()
+    emitStage('Sync pipeline: resolving media subjects', { stage: 'sync_pipeline', step: 'resolve_media_subjects' })
     const resolveMediaSubjects = deps.resolveMediaSubjects
       ?? ((fetch: CompleteFullFetch) => Promise.resolve(mediaSubjectsFromFetch(fetch)))
     const mediaSubjects = await resolveMediaSubjects(input, deps.run)
+    emitStage('Sync pipeline: media refresh started', {
+      stage: 'sync_pipeline',
+      step: 'media_refresh',
+      subject_count: mediaSubjects.length,
+    })
     const media = await deps.media.refresh(mediaContext, { subjects: mediaSubjects })
     const imageMap = await loadSubjectImageMap(deps.db)
     const mediaHints = await loadSubjectMediaPublishHints(deps.db)
@@ -101,6 +115,12 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
     const generation = nextSnapshotGeneration(previous, candidate.content_hash)
     let published = previous
     if (generation !== null) {
+      emitStage('Sync pipeline: publishing snapshot', {
+        stage: 'sync_pipeline',
+        step: 'publish_snapshot',
+        generation,
+        previous_generation: previous?.generation ?? null,
+      })
       const snapshot = await buildPublicSnapshot(candidateInput, generation)
       await parsePublicSnapshotV1(snapshot)
       const key = snapshotObjectKey(snapshot)
@@ -123,6 +143,7 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
     const completedAt = Math.floor(deps.now() / 1000)
     if (deps.kv) {
       await lease.guard()
+      emitStage('Sync pipeline: updating KV read pointer', { stage: 'sync_pipeline', step: 'publish_kv' })
       await publishPublicReadKv(deps.kv, published!, completedAt)
     }
     await deps.db.query(
