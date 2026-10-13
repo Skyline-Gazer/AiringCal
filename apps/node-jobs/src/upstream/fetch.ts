@@ -5,6 +5,7 @@ import {
   type CollectionFetchGroup,
   type CompleteFullFetch,
 } from '@airing-cal/bgm-api'
+import { emitProgress, emitStage } from '../sync/sync-progress.ts'
 import { UpstreamFetchError, withRetry, type RetryPolicy, type UpstreamStage } from './retry.ts'
 
 export { UpstreamFetchError } from './retry.ts'
@@ -87,6 +88,7 @@ export async function fetchCompleteInput(config: CompleteFetchConfig, client: Bg
   if (!validConfig(config) || !Number.isSafeInteger(pageLimit) || pageLimit < 1 || pageLimit > 50 || !Number.isFinite(clock()) || clock() < 0 || (client instanceof BgmClient && client.maxGetRetries !== 0)) throw contract('config')
   const groups: CollectionFetchGroup[] = []
   for (const user of config.users) {
+    emitStage('Bangumi collections fetch started', { stage: 'upstream_fetch', step: 'collections', username: user.username })
     const firstRaw = await withRetry(() => client.getCollections(user.username, 0, pageLimit), { ...config.retry, stage: 'collections' })
     let first: { total: number; data: BgmCollection[] }
     try {
@@ -94,6 +96,13 @@ export async function fetchCompleteInput(config: CompleteFetchConfig, client: Bg
     } catch {
       throw contract('collections')
     }
+    const pageCount = Math.max(1, Math.ceil(first.total / pageLimit))
+    let pagesDone = 1
+    emitProgress('fetch', 'upstream_fetch_progress', pagesDone, pageCount, {
+      step: 'collections',
+      username: user.username,
+      collection_total: first.total,
+    })
     const pages = [{ offset: 0, total: first.total, data: first.data }]
     const subjectIds = new Set(first.data.map((entry) => entry.subject_id))
     if (subjectIds.size !== first.data.length) throw contract('collections')
@@ -108,12 +117,41 @@ export async function fetchCompleteInput(config: CompleteFetchConfig, client: Bg
       if (page.data.some((entry) => subjectIds.has(entry.subject_id))) throw contract('collections')
       for (const entry of page.data) subjectIds.add(entry.subject_id)
       pages.push({ offset, total: page.total, data: page.data })
+      pagesDone += 1
+      emitProgress('fetch', 'upstream_fetch_progress', pagesDone, pageCount, {
+        step: 'collections',
+        username: user.username,
+        collection_total: first.total,
+        offset,
+      })
     }
     groups.push({ user_id: user.userId, pageLimit, pages })
+    emitStage('Bangumi collections fetch complete', {
+      stage: 'upstream_fetch',
+      step: 'collections',
+      username: user.username,
+      collection_total: first.total,
+      pages: pageCount,
+    })
   }
+  emitStage('Bangumi calendar fetch started', { stage: 'upstream_fetch', step: 'calendar' })
   const calendar = await withRetry(() => client.getCalendar(), { ...config.retry, stage: 'calendar' })
+  const calendarItems = calendar.reduce((count, day) => count + day.items.length, 0)
+  emitStage('Bangumi calendar fetch complete', {
+    stage: 'upstream_fetch',
+    step: 'calendar',
+    calendar_days: calendar.length,
+    calendar_items: calendarItems,
+  })
   try {
-    return assembleFullFetch(groups, calendar, Math.floor(clock() / 1_000))
+    const assembled = assembleFullFetch(groups, calendar, Math.floor(clock() / 1_000))
+    emitStage('Bangumi full fetch assembled', {
+      stage: 'upstream_fetch',
+      step: 'complete',
+      collections: assembled.collections.length,
+      calendar_items: calendarItems,
+    })
+    return assembled
   } catch {
     throw contract('complete')
   }

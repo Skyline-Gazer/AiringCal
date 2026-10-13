@@ -14,22 +14,43 @@ import type {
   PublicCollectionItemV1,
   PublicImageRefV1,
 } from '@airing-cal/storage'
+import type { SubjectMediaPublishHint } from './media-refresh.ts'
 
-function imageStatus(images: { common: PublicImageRefV1 | null; large: PublicImageRefV1 | null }) {
+type PublicImageStatus = 'cached' | 'pending_next_cron' | 'failed' | 'missing_source'
+
+function imageStatusForSize(
+  size: 'common' | 'large',
+  images: { common: PublicImageRefV1 | null; large: PublicImageRefV1 | null },
+  hint: SubjectMediaPublishHint | undefined,
+): PublicImageStatus {
+  if (images[size]) return 'cached'
+  const hasSource = size === 'common' ? hint?.hasSourceCommon : hint?.hasSourceLarge
+  if (!hasSource) return 'missing_source'
+  if (hint?.errorCode) return 'failed'
+  return 'pending_next_cron'
+}
+
+function imageStatus(
+  images: { common: PublicImageRefV1 | null; large: PublicImageRefV1 | null },
+  hint?: SubjectMediaPublishHint,
+) {
   return {
-    common: images.common ? 'cached' as const : 'pending_next_cron' as const,
-    large: images.large ? 'cached' as const : 'pending_next_cron' as const,
+    common: imageStatusForSize('common', images, hint),
+    large: imageStatusForSize('large', images, hint),
   }
 }
 
-function toPublicCollectionItem(entry: ReturnType<typeof mergeCollections>['watching'][number]): PublicCollectionItemV1 {
+function toPublicCollectionItem(
+  entry: ReturnType<typeof mergeCollections>['watching'][number],
+  hint?: SubjectMediaPublishHint,
+): PublicCollectionItemV1 {
   return {
     subject_id: entry.subject_id,
     name: entry.name,
     name_cn: entry.name_cn,
     summary: entry.summary,
     images: entry.images,
-    image_status: imageStatus(entry.images),
+    image_status: imageStatus(entry.images, hint),
     eps: entry.eps,
     total_episodes: entry.total_episodes,
     ep_status: entry.ep_status,
@@ -44,7 +65,10 @@ function toPublicCollectionItem(entry: ReturnType<typeof mergeCollections>['watc
   }
 }
 
-function toPublicCalendarDay(day: ReturnType<typeof transformCalendar>[number]): PublicCalendarDayV1 {
+function toPublicCalendarDay(
+  day: ReturnType<typeof transformCalendar>[number],
+  hints: Map<number, SubjectMediaPublishHint>,
+): PublicCalendarDayV1 {
   const items: PublicCalendarSubjectV1[] = day.items.map((item) => ({
     subject_id: item.subject_id,
     id: item.id,
@@ -53,7 +77,7 @@ function toPublicCalendarDay(day: ReturnType<typeof transformCalendar>[number]):
     name_cn: item.name_cn,
     summary: item.summary,
     images: item.images,
-    image_status: imageStatus(item.images),
+    image_status: imageStatus(item.images, hints.get(item.subject_id)),
     nsfw: item.nsfw,
     date: item.date,
     eps: item.eps,
@@ -68,6 +92,7 @@ export function projectPublicSnapshotInput(
   imageMap: SubjectImageMap = new Map(),
   subjectMetaMap: SubjectMetaMap = new Map(),
   subjectDetailMap: SubjectDetailMap = new Map(),
+  mediaHints: Map<number, SubjectMediaPublishHint> = new Map(),
 ): PublicSnapshotInput {
   const collections: BgmCollectionLike[] = input.collections
     .filter((entry) => entry.collection.private !== true)
@@ -80,10 +105,10 @@ export function projectPublicSnapshotInput(
     ...merged.watching,
     ...merged.on_hold,
     ...merged.dropped,
-  ].map(toPublicCollectionItem)
+  ].map((entry) => toPublicCollectionItem(entry, mediaHints.get(entry.subject_id)))
   return {
     collections: flatCollections,
-    calendar: calendar.map(toPublicCalendarDay),
+    calendar: calendar.map((day) => toPublicCalendarDay(day, mediaHints)),
     published_at: input.observedAt,
   }
 }

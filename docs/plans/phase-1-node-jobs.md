@@ -1,6 +1,6 @@
 # Phase 1 — node-jobs + QingLong bundle
 
-Route A: **D1 + R2** write path in `apps/node-jobs` (not `apps/vps-sync` PostgreSQL).
+Route A: **D1 + R2** write path in `apps/node-jobs`. The VPS PostgreSQL route (`apps/vps-sync`) is **abandoned** — see [abandoned-vps-route.md](./abandoned-vps-route.md).
 
 ## Scaffold (AC-1-01)
 
@@ -18,7 +18,7 @@ Route A: **D1 + R2** write path in `apps/node-jobs` (not `apps/vps-sync` Postgre
 
 - `runSyncPipeline`: lease → fetch → D1 input chunks → media port → R2 manifest/snapshot.
 - Optional `AIRING_CAL_KV_NAMESPACE_ID`: writes `public:read-mode` + `public:current` for `apps/web-worker` R2 reads.
-- Media refresh remains `noopMediaRefresh` until wired from vps-sync/xyOps.
+- Media refresh downloads Bangumi covers into `AIRING_CAL_IMAGE_BUCKET` (default `airing-cal-images`), upserts D1 `subject_media`, and passes that image map into `projectPublicSnapshotInput`. `noopMediaRefresh` remains for tests. Archived `apps/media-worker` is not on this path.
 
 ## Backup (AC-1-04)
 
@@ -38,7 +38,7 @@ Route A: **D1 + R2** write path in `apps/node-jobs` (not `apps/vps-sync` Postgre
 | Issue | Work |
 |-------|------|
 | AC-1-05 | Migration apply docs for `schema.sql` |
-| AC-1-06 | Integration tests (mocked CF/Bangumi) |
-| Media | Replace `noopMediaRefresh` |
+| AC-1-06 | Broader integration harness (mocked CF/Bangumi). Media publish is covered by `src/sync/media-refresh.test.ts`. |
+| Media | Done in `src/sync/media-refresh.ts`; task logs emit `media  [##··] pct` + JSON `media_progress` during backfill |
 
 QINGLONG-REPO thin scripts consume the CI artifact (blocks QL-2-01).

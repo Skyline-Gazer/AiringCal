@@ -1,5 +1,7 @@
 # VPS 数据平面运行手册
 
+> **已放弃（2026-10-13）：** 不再维护 VPS 容器/cron 写路径。生产写侧为 QingLong + `apps/node-jobs`。本文档仅作历史参考。见 [abandoned-vps-route.md](../plans/abandoned-vps-route.md)。
+
 ## PostgreSQL migration 前置条件
 
 `apps/vps-sync` 仅使用标准 TLS `DATABASE_URL` 连接 PostgreSQL，且不使用供应商 SDK 或控制面 API。当前支持的 server baseline 是 PostgreSQL 18；运行环境必须保持在受维护的 `18.x` patch release。不得自动升级到未来 major，升级前必须完成显式兼容性评审和新的 real-server integration。PostgreSQL 17 compatibility 未验证，也不属于本次已批准 baseline 的验收门禁。

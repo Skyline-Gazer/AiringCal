@@ -9,6 +9,8 @@ export interface NodeJobsConfig {
   d1DatabaseId: string
   cloudflareApiToken: string
   r2Bucket: string
+  /** Byte bucket for `/image/:hash`. web-worker binding `AIRING_CAL_R2` is `airing-cal-images`. */
+  imageBucket: string
   r2AccessKeyId: string
   r2SecretAccessKey: string
   kvNamespaceId?: string
@@ -31,7 +33,8 @@ export function readNodeJobsConfig(env: Record<string, string | undefined> = pro
   const r2SecretAccessKey = required(env, 'R2_SECRET_ACCESS_KEY')
   const kvRaw = env.AIRING_CAL_KV_NAMESPACE_ID?.trim() || env.AIRINGCAL_KV_NAMESPACE_ID?.trim()
   const kvNamespaceId = kvRaw || undefined
-  if (!ACCOUNT_ID.test(cloudflareAccountId) || !D1_UUID.test(d1DatabaseId) || !R2_BUCKET.test(r2Bucket)) {
+  const imageBucket = env.AIRING_CAL_IMAGE_BUCKET?.trim() || env.AIRINGCAL_IMAGE_BUCKET?.trim() || 'airing-cal-images'
+  if (!ACCOUNT_ID.test(cloudflareAccountId) || !D1_UUID.test(d1DatabaseId) || !R2_BUCKET.test(r2Bucket) || !R2_BUCKET.test(imageBucket)) {
     fail('CONFIG_INVALID')
   }
   if (kvNamespaceId && !D1_UUID.test(kvNamespaceId)) fail('CONFIG_INVALID')
@@ -40,6 +43,7 @@ export function readNodeJobsConfig(env: Record<string, string | undefined> = pro
     d1DatabaseId,
     cloudflareApiToken,
     r2Bucket,
+    imageBucket,
     r2AccessKeyId,
     r2SecretAccessKey,
     kvNamespaceId,

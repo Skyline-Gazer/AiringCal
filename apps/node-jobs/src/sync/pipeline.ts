@@ -16,10 +16,12 @@ import type { R2Store } from '../adapters/r2-store.ts'
 import type { RunContext } from '../adapters/run-context.ts'
 import type { CompleteFullFetch } from '@airing-cal/bgm-api'
 import type { SyncUserConfig } from './config.ts'
-import type { MediaRefreshPort } from './media-port.ts'
+import { loadSubjectImageMap, loadSubjectMediaPublishHints, mediaSubjectsFromFetch } from './media-refresh.ts'
+import type { MediaRefreshPort, MediaRefreshSummary, MediaSubjectSource } from './media-port.ts'
 import { nextSnapshotGeneration } from './publish-helpers.ts'
 import { publishPublicReadKv } from './publish-kv.ts'
 import { projectPublicSnapshotInput } from './project-public.ts'
+import { emitStage } from './sync-progress.ts'
 
 export type SyncRunStatus = 'skipped' | 'ok' | 'no_change' | 'failed'
 
@@ -27,6 +29,7 @@ export interface SyncPipelineResult {
   status: SyncRunStatus
   stage: string
   generation: number | null
+  media: MediaRefreshSummary
 }
 
 export interface SyncPipelineDeps {
@@ -37,6 +40,7 @@ export interface SyncPipelineDeps {
   leaseName: string
   leaseSeconds: number
   fetchInput(): Promise<CompleteFullFetch>
+  resolveMediaSubjects?: (input: CompleteFullFetch, run: RunContext) => Promise<MediaSubjectSource[]>
   media: MediaRefreshPort
   kv?: CloudflareKvClient | null
   now(): number
@@ -60,7 +64,7 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
   try {
     lease = await acquireJobLease(deps.db, deps.run, deps.leaseName, deps.leaseSeconds)
     if (!lease) {
-      return { status: 'skipped', stage: 'lease_busy', generation: null }
+      return { status: 'skipped', stage: 'lease_busy', generation: null, media: { selected: 0, succeeded: 0, failed: 0, failures: [] } }
     }
     const startedAt = Math.floor(deps.now() / 1000)
     await deps.db.query(
@@ -68,7 +72,14 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
       [deps.run.owner, startedAt, 'running'],
     )
 
+    emitStage('Sync pipeline: fetching Bangumi input', { stage: 'sync_pipeline', step: 'fetch_input' })
     const input = await deps.fetchInput()
+    emitStage('Sync pipeline: persisting fetch chunks to D1', {
+      stage: 'sync_pipeline',
+      step: 'd1_chunks',
+      collections: input.collections.length,
+      calendar_days: input.calendar.length,
+    })
     const chunks: unknown[] = []
     for (let offset = 0; offset < input.collections.length; offset += 50) {
       chunks.push({ collections: input.collections.slice(offset, offset + 50) })
@@ -85,14 +96,31 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
 
     const mediaContext = { ...deps.run, observedAt: new Date(input.observedAt * 1000).toISOString() }
     await lease.guard()
-    await deps.media.refresh(mediaContext)
+    emitStage('Sync pipeline: resolving media subjects', { stage: 'sync_pipeline', step: 'resolve_media_subjects' })
+    const resolveMediaSubjects = deps.resolveMediaSubjects
+      ?? ((fetch: CompleteFullFetch) => Promise.resolve(mediaSubjectsFromFetch(fetch)))
+    const mediaSubjects = await resolveMediaSubjects(input, deps.run)
+    emitStage('Sync pipeline: media refresh started', {
+      stage: 'sync_pipeline',
+      step: 'media_refresh',
+      subject_count: mediaSubjects.length,
+    })
+    const media = await deps.media.refresh(mediaContext, { subjects: mediaSubjects })
+    const imageMap = await loadSubjectImageMap(deps.db)
+    const mediaHints = await loadSubjectMediaPublishHints(deps.db)
 
     const { previous } = await loadPreviousSnapshot(deps.store)
-    const candidateInput = projectPublicSnapshotInput(input)
+    const candidateInput = projectPublicSnapshotInput(input, imageMap, new Map(), new Map(), mediaHints)
     const candidate = await buildPublicSnapshot(candidateInput, 0)
     const generation = nextSnapshotGeneration(previous, candidate.content_hash)
     let published = previous
     if (generation !== null) {
+      emitStage('Sync pipeline: publishing snapshot', {
+        stage: 'sync_pipeline',
+        step: 'publish_snapshot',
+        generation,
+        previous_generation: previous?.generation ?? null,
+      })
       const snapshot = await buildPublicSnapshot(candidateInput, generation)
       await parsePublicSnapshotV1(snapshot)
       const key = snapshotObjectKey(snapshot)
@@ -115,6 +143,7 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
     const completedAt = Math.floor(deps.now() / 1000)
     if (deps.kv) {
       await lease.guard()
+      emitStage('Sync pipeline: updating KV read pointer', { stage: 'sync_pipeline', step: 'publish_kv' })
       await publishPublicReadKv(deps.kv, published!, completedAt)
     }
     await deps.db.query(
@@ -127,6 +156,7 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
       status: generation === null ? 'no_change' : 'ok',
       stage: generation === null ? 'no_change' : 'complete',
       generation: published!.generation,
+      media,
     }
   } catch (error) {
     if (isJobError(error)) throw error
