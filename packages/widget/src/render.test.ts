@@ -45,7 +45,9 @@ function loadWidgetProductionRenderers() {
     'safeUrl',
     'safeNumber',
     'safeScore',
+    'subjectImageRef',
     'subjectImageUrl',
+    'subjectImageThumbUrl',
     'imageCacheLabel',
     'renderCover',
     'renderSubjectCard',
@@ -158,10 +160,31 @@ test('renderAnalyticsScripts does not emit placeholder analytics snippets', () =
   assert.equal(html, '')
 })
 
-test('widgetJs prefers images.large.uri over common for covers', () => {
+test('widgetJs prefers thumb URL when large ref has hash, else large/common uri', () => {
+  assert.match(widgetJs, /function subjectImageThumbUrl\(images\)/)
+  assert.match(widgetJs, /\/image\/' \+ large\.hash \+ '\/thumb/)
+  assert.match(widgetJs, /data-fallback-large/)
+  assert.match(widgetJs, /bgm-cover-img/)
   assert.match(widgetJs, /images\?\.large\?\.uri/)
   assert.match(widgetJs, /document\.querySelector\('\.bgm-container'\)/)
   assert.equal(widgetJs.includes('hash_large'), false)
+})
+
+test('production widget renderers use thumb src for large covers with hash', () => {
+  const renderers = loadWidgetProductionRenderers()
+  const hash = 'abc123def4567890123456789012345678901234567890123456789012345678'
+  const html = renderers.renderSubjectCard({
+    subjectId: 1,
+    name: 'thumb cover',
+    images: {
+      large: { hash, uri: '/image/' + hash, r2_key: 'images/' + hash + '/original' },
+      common: { hash: 'c', uri: '/image/c', r2_key: 'images/c/original' },
+    },
+  })
+
+  assert.match(html, new RegExp('src="https://widget\\.example/image/' + hash + '/thumb"'))
+  assert.match(html, /data-fallback-large="https:\/\/widget\.example\/image\//)
+  assert.match(html, /class="bgm-cover-img"/)
 })
 
 test('widgetJs uses eps as the collection total episode fallback', () => {

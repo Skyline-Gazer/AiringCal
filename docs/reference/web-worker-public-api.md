@@ -95,6 +95,8 @@ Pre-materialized cover thumb only (`images/{hash}/thumb.v1.webp` in R2). No on-t
 
 `GET /image/:hash` 仍返回 `images/{hash}/original`，行为不变。
 
+Widget 列表/日历封面：当 API 条目含 `images.large`（`hash` + `uri`）时，`<img>` 优先请求 `/image/{large.hash}/thumb`；加载失败（如 thumb 尚未生成，**404**）时依次回退 `images.large.uri`、再 `images.common.uri`。仅 `common` 时仍直接用 `common.uri`。
+
 ## `POST /api/thumb-gen`（Bearer，内部）
 
 Materialize thumbs after sync writes large originals. Implemented in `apps/web-worker/src/thumb-gen.ts`.

@@ -42,6 +42,27 @@
     if (card) card.classList.toggle('bgm-nsfw-reveal')
   })
 
+  function bgmCoverImageError(img) {
+    if (!img) return
+    var large = img.getAttribute('data-fallback-large')
+    if (large) {
+      img.removeAttribute('data-fallback-large')
+      img.src = large
+      return
+    }
+    var common = img.getAttribute('data-fallback-common')
+    if (common) {
+      img.removeAttribute('data-fallback-common')
+      img.src = common
+    }
+  }
+
+  container.addEventListener('error', function(event) {
+    var img = event.target
+    if (!img || img.tagName !== 'IMG' || !img.classList.contains('bgm-cover-img')) return
+    bgmCoverImageError(img)
+  }, true)
+
   // 顶部视图切换：番组计划（收藏列表） / 放送日历（/api/calendar）
   const VIEWS = [
     { key: 'collection', label: '番组计划' },
@@ -72,9 +93,19 @@
     window.location.href = 'https://www.google.com'
   }
 
+  function subjectImageRef(images) {
+    return images?.large?.uri ? images.large : images?.common
+  }
+
   function subjectImageUrl(images) {
-    const ref = images?.large?.uri ? images.large : images?.common
+    const ref = subjectImageRef(images)
     return ref?.uri ? safeUrl(API + ref.uri, '') : null
+  }
+
+  function subjectImageThumbUrl(images) {
+    const large = images?.large
+    if (!large?.uri || !large?.hash) return null
+    return safeUrl(API + '/image/' + large.hash + '/thumb', '')
   }
 
   function imageCacheLabel(imageStatus) {
@@ -87,10 +118,21 @@
   }
 
   function renderCover(images, imageStatus, alt, attrs) {
-    const imgUrl = subjectImageUrl(images)
-    return imgUrl
-      ? '<img src="' + escapeAttribute(imgUrl) + '" alt="' + escapeAttribute(alt) + '" ' + attrs + '>'
-      : '<span class="bgm-image-cache-failed">' + escapeHtml(imageCacheLabel(imageStatus)) + '</span>'
+    const thumbUrl = subjectImageThumbUrl(images)
+    const imgUrl = thumbUrl || subjectImageUrl(images)
+    if (!imgUrl) {
+      return '<span class="bgm-image-cache-failed">' + escapeHtml(imageCacheLabel(imageStatus)) + '</span>'
+    }
+    var dataAttrs = ''
+    if (thumbUrl) {
+      var largeUrl = images?.large?.uri ? safeUrl(API + images.large.uri, '') : ''
+      var commonUrl = images?.common?.uri ? safeUrl(API + images.common.uri, '') : ''
+      if (largeUrl) dataAttrs += ' data-fallback-large="' + escapeAttribute(largeUrl) + '"'
+      if (commonUrl && commonUrl !== largeUrl) {
+        dataAttrs += ' data-fallback-common="' + escapeAttribute(commonUrl) + '"'
+      }
+    }
+    return '<img class="bgm-cover-img" src="' + escapeAttribute(imgUrl) + '"' + dataAttrs + ' alt="' + escapeAttribute(alt) + '" ' + attrs + '>'
   }
 
   function renderSubjectCard(card) {
