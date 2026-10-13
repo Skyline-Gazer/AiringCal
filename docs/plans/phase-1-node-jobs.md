@@ -1,6 +1,6 @@
 # Phase 1 — node-jobs + QingLong bundle
 
-Route A: **D1 + R2** write path in `apps/node-jobs` (not `apps/vps-sync` PostgreSQL).
+Route A: **D1 + R2** write path in `apps/node-jobs`. The VPS PostgreSQL route (`apps/vps-sync`) is **abandoned** — see [abandoned-vps-route.md](./abandoned-vps-route.md).
 
 ## Scaffold (AC-1-01)
 

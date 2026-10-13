@@ -47,7 +47,7 @@ airing-cal-frontend (apps/web-worker)
 | `@airing-cal/storage` | KV/D1/R2 adapter、迁移、typed state contract 和 key builder |
 | `@airing-cal/widget` | HTML shell、footer runtime status、widget JS/CSS assets |
 | `@airing-cal/worker-common` | public error、安全 header、敏感信息清理、部署/文档守护测试 |
-| `@airing-cal/vps-sync` | VPS Node 同步 coordinator、PostgreSQL 与上游适配器 |
+| `@airing-cal/vps-sync` | **已归档** — 原 VPS PostgreSQL 写路径；见 `apps/vps-sync/ARCHIVED.md` |
 
 Widget 资产的唯一手写源是 `packages/widget/assets/theme/{bangumi.js,bangumi.css,cache.js}`，唯一运行时生成产物是 `packages/widget/src/generated-assets.ts`。修改主题源后运行：
 
@@ -57,16 +57,9 @@ pnpm -F @airing-cal/widget generate
 
 生成链测试会拒绝生成产物漂移，也会拒绝重新引入 `assets/public` 或 `assets/theme/v1` 副本。
 
-## VPS sync 可选 Sentry tracing
+## 数据平面写路径（Phase 1）
 
-`@airing-cal/vps-sync` 的 Node tracing adapter 只供 VPS 同步 coordinator 使用；Cloudflare Workers 不读取这些变量，也不依赖 `@sentry/node`。
-
-| 变量 | 已实现行为 |
-|------|------------|
-| `SENTRY_DSN` | 未设置时不初始化 Sentry，也不发送 tracing；设置后启用 VPS adapter。 |
-| `SENTRY_TRACES_SAMPLE_RATE` | 可选的有限 `[0, 1]` 数值；未设置默认 `1`，无效值会禁用 adapter。 |
-
-adapter 仅创建手工 root/stage spans，属性只包含 mode、source、stage、终态、有限计数、耗时和 git SHA。它禁用默认自动 integrations 和 PII；不会记录原始异常、URL、request/response body、用户名、subject/数据库标识或 credential。初始化、span 和最多 2 秒的 flush 失败均 fail-open，不改变同步、持久化、通知或退出码。
+周期同步与 D1 备份由 **`apps/node-jobs`** 实现，CI 产出 **`qinglong-bundle`**，青龙 `airingcal-sync.js` / `airingcal-backup.js` 加载执行。原 VPS PostgreSQL + Docker 路线已放弃，见 [docs/plans/abandoned-vps-route.md](docs/plans/abandoned-vps-route.md)。
 
 ## 外部访问入口
 
