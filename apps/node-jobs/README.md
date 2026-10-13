@@ -20,7 +20,7 @@ pnpm -F @airing-cal/node-jobs build    # dist/qinglong-bundle/*.mjs
 | `schema.sql` | D1 additions for job lease/state (apply before first run) |
 | `scripts/build-qinglong-bundle.mjs` | esbuild entries for QingLong |
 
-Phase 1 issues: Project #5 AC-1-*.
+Phase 1 **closed** — [`docs/plans/phase-1-node-jobs.md`](../../docs/plans/phase-1-node-jobs.md). Operator: [`docs/d1-schema.md`](docs/d1-schema.md), [`docs/operator-contract.md`](docs/operator-contract.md).
 
 ## Media
 

@@ -1,0 +1,90 @@
+# node-jobs operator contract (AC-1-08)
+
+Canonical env, timeouts, and exit behavior for **QingLong** and local CLI. QingLong wrapper codes: [QINGLONG errors/airingcal-sync](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/errors/airingcal-sync.md).
+
+## CLI
+
+| Command | Entry |
+| --- | --- |
+| Sync | `airingcal-sync.mjs` → `runSync()` |
+| Backup | `airingcal-backup.mjs` → `runBackup()` |
+
+Build: `pnpm -F @airing-cal/node-jobs build` → `dist/qinglong-bundle/`.
+
+## Timeouts
+
+| Job | Run deadline | Notes |
+| --- | --- | --- |
+| **sync** | **25 min** (`deadlineAt = now + 1_500_000 ms`) | Media stops when under 30s left; snapshot may still publish |
+| **backup** | **10 min** (`600_000 ms`) | D1 export poll + download ≤ **256 MiB** |
+| HTTP (adapters) | Per-request via `RunContext.signal` | Abort → `REQUEST_FAILED` |
+
+Lease default: **`airingcal-data-plane`**, **900s** (sync and backup).
+
+## Process exit codes
+
+| Exit | Meaning |
+| --- | --- |
+| **0** | Last line JSON `status`: `success` or `skipped` |
+| **1** | `status`: `failed`, or uncaught exception |
+
+### JSON summary (`stdout` last line)
+
+```json
+{ "job": "airingcal-sync", "status": "success|skipped|failed", "message": "..." }
+```
+
+`exitCode()` in `src/contracts.ts`: failed → 1, else 0.
+
+### Skip (exit 0)
+
+| Condition | message hint |
+| --- | --- |
+| `AIRINGCAL_USERS_JSON` empty | not configured |
+| Lease held | `lease_busy` / skipped stage |
+
+## Bundle `JobError.code` (sync/backup)
+
+| Code | Typical cause |
+| --- | --- |
+| `CONFIG_INVALID` | Missing/malformed env |
+| `D1_REQUEST_FAILED` | D1 REST error |
+| `D1_EXPORT_*` | Backup export poll/download |
+| `KV_REQUEST_FAILED` | KV write/read (sync publish) |
+| `LEASE_LOST` | Lease expired mid-run |
+| `R2_*` | Snapshot or image bucket S3 |
+| `REQUEST_FAILED` | Bangumi/upstream or deadline |
+| `UPSTREAM_UNAVAILABLE` | BGM client |
+
+Full enum: `src/adapters/errors.ts`.
+
+## Required env (sync)
+
+See [`../env.example`](../env.example). Summary:
+
+| Variable | Required |
+| --- | --- |
+| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | yes |
+| `AIRING_CAL_D1_DATABASE_ID` | yes |
+| `AIRING_CAL_R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | yes |
+| `AIRING_CAL_IMAGE_BUCKET` | default `airing-cal-images` |
+| `AIRING_CAL_KV_NAMESPACE_ID` | **yes for production read path** (writes `public:current`, `public:read-mode`) |
+| `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `BANGUMI_GIT_COMMIT_SHA` | yes |
+| `BGM_TOKEN` | optional |
+
+Backup uses same Cloudflare/R2/D1 vars; no Bangumi user JSON.
+
+## Integration tests (AC-1-06)
+
+Mock D1/R2 pipelines (no live CF/Bangumi):
+
+- `src/sync/pipeline.test.ts`
+- `src/backup/pipeline.test.ts`
+- `src/sync/media-refresh.test.ts`
+- `src/integration/lease.integration.test.ts`
+
+Run: `pnpm -F @airing-cal/node-jobs test`.
+
+## D1 setup
+
+[`d1-schema.md`](d1-schema.md)

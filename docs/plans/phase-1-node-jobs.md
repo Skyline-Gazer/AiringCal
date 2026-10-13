@@ -1,44 +1,33 @@
 # Phase 1 — node-jobs + QingLong bundle
 
-Route A: **D1 + R2** write path in `apps/node-jobs`. The VPS PostgreSQL route (`apps/vps-sync`) is **abandoned** — see [abandoned-vps-route.md](./abandoned-vps-route.md).
+**Status: closed (2026-10-13).** Write path = D1 + R2 (+ KV pointers). VPS abandoned — [abandoned-vps-route.md](./abandoned-vps-route.md).
 
-## Scaffold (AC-1-01)
+## Delivered
 
-- Package `@airing-cal/node-jobs` with `sync` / `backup` CLI entrypoints and `schema.sql` stub.
-- `pnpm -F @airing-cal/node-jobs build` → `dist/qinglong-bundle/airingcal-{sync,backup}.mjs`.
+| AC | Item |
+| --- | --- |
+| AC-1-01 | Package, CLI, `schema.sql`, bundle build |
+| AC-1-02 | D1, lease, R2, env |
+| AC-1-03 | Sync pipeline (fetch → media → publish) |
+| AC-1-04 | Backup pipeline |
+| AC-1-05 | [d1-schema.md](../../apps/node-jobs/docs/d1-schema.md) |
+| AC-1-06 | Mock integration tests — [operator-contract.md § Integration tests](../../apps/node-jobs/docs/operator-contract.md#integration-tests-ac-1-06) |
+| AC-1-07 | CI `qinglong-bundle` artifact |
+| AC-1-08 | [operator-contract.md](../../apps/node-jobs/docs/operator-contract.md) |
+| AC-3-01 | [no-cf-write-path.md](./no-cf-write-path.md) |
+| AC-3-03 | [kv-binding-decision.md](./kv-binding-decision.md) |
 
-## Adapters (AC-1-02)
+## Commands
 
-- `readNodeJobsConfig` — `CLOUDFLARE_*`, `AIRING_CAL_D1_DATABASE_ID`, `AIRING_CAL_R2_BUCKET`, `R2_*`.
-- `createCloudflareD1Client` — D1 REST `query` / `export`.
-- `acquireJobLease` — `airingcal_job_leases` mutual exclusion.
-- `createR2Store` — S3-compatible R2 with verified put.
+```bash
+pnpm -F @airing-cal/node-jobs test
+pnpm -F @airing-cal/node-jobs build
+```
 
-## Sync orchestration (AC-1-03)
+## QingLong
 
-- `runSyncPipeline`: lease → fetch → D1 input chunks → media port → R2 manifest/snapshot.
-- Optional `AIRING_CAL_KV_NAMESPACE_ID`: writes `public:read-mode` + `public:current` for `apps/web-worker` R2 reads.
-- Media refresh downloads Bangumi covers into `AIRING_CAL_IMAGE_BUCKET` (default `airing-cal-images`), upserts D1 `subject_media`, and passes that image map into `projectPublicSnapshotInput`. `noopMediaRefresh` remains for tests. Archived `apps/media-worker` is not on this path.
+Thin scripts: [QINGLONG-REPO `ql`](https://github.com/Skyline-Gazer/QINGLONG-REPO/tree/ql/scripts). Joint milestone: [airingcal-qinglong.md](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/plans/airingcal-qinglong.md).
 
-## Backup (AC-1-04)
+## M2 (ops, not Phase 1 code)
 
-- `runBackupPipeline`: shared lease `airingcal-data-plane` (900s) → D1 export polling → HTTPS download (≤256 MiB) → `backups/d1/<iso>-<run>.sql` on R2 with readback verify.
-- Staging file under `QL_DATA_DIR` or OS temp; mode `0600`, removed after run.
-
-## CI (AC-1-07)
-
-- Workflow job `node-jobs-bundle`: `pnpm -F @airing-cal/node-jobs build`, verifies `dist/qinglong-bundle/*`, uploads artifact `qinglong-bundle`.
-
-## Env template (AC-1-08)
-
-- See [apps/node-jobs/env.example](../../apps/node-jobs/env.example).
-
-## Remaining
-
-| Issue | Work |
-|-------|------|
-| AC-1-05 | Migration apply docs for `schema.sql` |
-| AC-1-06 | Broader integration harness (mocked CF/Bangumi). Media publish is covered by `src/sync/media-refresh.test.ts`. |
-| Media | Done in `src/sync/media-refresh.ts`; task logs emit `media  [##··] pct` + JSON `media_progress` during backfill |
-
-QINGLONG-REPO thin scripts consume the CI artifact (blocks QL-2-01).
+[../runbook/m2-read-surface.md](../runbook/m2-read-surface.md)

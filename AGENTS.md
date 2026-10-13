@@ -1,5 +1,7 @@
 # BangumiTV Subagent Constraints
 
+**Doc entry (AI):** [`START_HERE_FOR_AI.md`](START_HERE_FOR_AI.md) → [`docs/README.md`](docs/README.md). node-jobs contract: [`apps/node-jobs/docs/operator-contract.md`](apps/node-jobs/docs/operator-contract.md).
+
 ## Verify Before Writing (HIGHEST PRIORITY)
 
 **Rule §零:** [`docs/rules/docs-sync.md`](docs/rules/docs-sync.md#零修改前验证最高优先级)
