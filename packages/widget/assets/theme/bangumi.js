@@ -73,9 +73,8 @@
   }
 
   function subjectImageUrl(images) {
-    return images?.common?.uri
-      ? safeUrl(API + images.common.uri, '')
-      : null
+    const ref = images?.large?.uri ? images.large : images?.common
+    return ref?.uri ? safeUrl(API + ref.uri, '') : null
   }
 
   function imageCacheLabel(imageStatus) {

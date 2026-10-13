@@ -130,9 +130,11 @@ function mergeImageFields(
   into: { common?: string; large?: string },
   from: BangumiImageSizes | undefined,
 ): void {
-  const coalesced = coalesceSubjectImageUrls(from)
-  if (coalesced.common && !into.common) into.common = coalesced.common
-  if (coalesced.large && !into.large) into.large = coalesced.large
+  if (!from) return
+  for (const size of ['common', 'large'] as const) {
+    const value = from[size]
+    if (typeof value === 'string' && value && !into[size]) into[size] = value
+  }
 }
 
 export function bangumiImageUrl(value: string | undefined): string | null {
@@ -180,8 +182,10 @@ function storedFromRow(row: Record<string, unknown>): StoredMedia {
 }
 
 function sourcesFor(subject: MediaSubjectSource): Record<ImageSize, string | null> {
+  const coalesced = coalesceSubjectImageUrls(subject.images)
   return {
-    common: bangumiImageUrl(subject.images.common),
+    common: bangumiImageUrl(coalesced.common),
+    // Do not treat calendar `common` as `large`; detail enrich supplies real large URLs.
     large: bangumiImageUrl(subject.images.large),
   }
 }
