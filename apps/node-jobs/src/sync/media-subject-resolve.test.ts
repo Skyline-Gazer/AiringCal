@@ -17,6 +17,11 @@ test('coalesceSubjectImageUrls maps grid/medium to common when common missing', 
   )
 })
 
+test('bangumiImageUrl accepts http lain.bgm.tv and normalizes to https', () => {
+  const http = 'http://lain.bgm.tv/pic/cover/c/1c/b4/390200_Z9jPp.jpg'
+  assert.equal(bangumiImageUrl(http), 'https://lain.bgm.tv/pic/cover/c/1c/b4/390200_Z9jPp.jpg')
+})
+
 test('mediaSubjectsFromFetch coalesces calendar grid into common for media queue', () => {
   const input = assembleFullFetch(
     [{ user_id: '1', pageLimit: 50, pages: [{ offset: 0, total: 0, data: [] }] }],
@@ -30,6 +35,22 @@ test('mediaSubjectsFromFetch coalesces calendar grid into common for media queue
   assert.equal(subjects.length, 1)
   assert.equal(subjects[0]?.subjectId, 390200)
   assert.equal(bangumiImageUrl(subjects[0]?.images.common), GRID_URL)
+})
+
+test('mediaSubjectsFromFetch accepts calendar http common/large URLs', () => {
+  const httpCommon = 'http://lain.bgm.tv/pic/cover/c/1c/b4/390200_Z9jPp.jpg'
+  const httpLarge = 'http://lain.bgm.tv/pic/cover/l/1c/b4/390200_Z9jPp.jpg'
+  const input = assembleFullFetch(
+    [{ user_id: '1', pageLimit: 50, pages: [{ offset: 0, total: 0, data: [] }] }],
+    [{
+      weekday: { en: 'Mon', cn: '一', ja: '月', id: 1 },
+      items: [{ id: 390200, type: 2, name: 'Cal', images: { common: httpCommon, large: httpLarge } }],
+    }],
+    1_700_000_000,
+  )
+  const subjects = mediaSubjectsFromFetch(input)
+  assert.equal(bangumiImageUrl(subjects[0]?.images.common), httpCommon.replace('http:', 'https:'))
+  assert.equal(bangumiImageUrl(subjects[0]?.images.large), httpLarge.replace('http:', 'https:'))
 })
 
 test('enrichMediaSubjectsFromFetch fills missing images via subject detail', async () => {

@@ -163,7 +163,12 @@ export function bangumiImageUrl(value: string | undefined): string | null {
   } catch {
     return null
   }
-  if (url.protocol !== 'https:' || url.username || url.password || url.port || !IMAGE_HOSTS.has(url.hostname)) return null
+  if (!IMAGE_HOSTS.has(url.hostname) || url.username || url.password || url.port) return null
+  if (url.protocol === 'http:') {
+    url = new URL(url.href.replace(/^http:/i, 'https:'))
+  } else if (url.protocol !== 'https:') {
+    return null
+  }
   return url.href
 }
 

@@ -219,7 +219,7 @@ test('media refresh skips fresh subject_media rows and rejects non-Bangumi hosts
   assert.deepEqual(fresh, { selected: 0, succeeded: 0, failed: 0, failures: [] })
 
   const rejected = await refresh.refresh(context, {
-    subjects: [{ subjectId: 8, nsfw: false, images: { common: 'https://example.com/a.jpg', large: 'http://lain.bgm.tv/insecure.jpg' } }],
+    subjects: [{ subjectId: 8, nsfw: false, images: { common: 'https://example.com/a.jpg', large: 'https://example.com/b.jpg' } }],
   })
   assert.deepEqual(rejected, { selected: 0, succeeded: 0, failed: 0, failures: [] })
   assert.deepEqual(fetched, [])
