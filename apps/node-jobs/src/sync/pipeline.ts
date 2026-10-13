@@ -64,7 +64,7 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
   try {
     lease = await acquireJobLease(deps.db, deps.run, deps.leaseName, deps.leaseSeconds)
     if (!lease) {
-      return { status: 'skipped', stage: 'lease_busy', generation: null, media: { selected: 0, succeeded: 0, failed: 0, failures: [] } }
+      return { status: 'skipped', stage: 'lease_busy', generation: null, media: { selected: 0, succeeded: 0, failed: 0, failures: [], large_hashes_persisted: [] } }
     }
     const startedAt = Math.floor(deps.now() / 1000)
     await deps.db.query(

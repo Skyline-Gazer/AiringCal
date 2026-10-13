@@ -2,9 +2,10 @@ export const appBoundary = 'web-worker'
 
 import { cacheJs, renderIndexPage, widgetCss, widgetJs, type BuildInfo } from '@airing-cal/widget'
 import { handleReadRequest, type WebWorkerEnv } from './read-api.ts'
+import { handleThumbGenRequest, type ThumbGenEnv } from './thumb-gen.ts'
 import { versionResponse } from './version.ts'
 
-interface WebEnv extends WebWorkerEnv {
+interface WebEnv extends WebWorkerEnv, ThumbGenEnv {
   BANGUMI_GIT_COMMIT_SHA?: string
   BANGUMI_GIT_REPOSITORY_URL?: string
   BANGUMI_BUILD_TIME?: string
@@ -110,6 +111,9 @@ async function fetch(request: Request, env: WebEnv): Promise<Response> {
   }
   if (url.pathname === '/api/version') {
     return versionResponse(env)
+  }
+  if (url.pathname === '/api/thumb-gen') {
+    return handleThumbGenRequest(request, env)
   }
   if (url.pathname === '/api/cache') {
     return (await handleReadRequest(apiRequest(url, '/cache', request), env)) ?? new Response('Not found', { status: 404 })

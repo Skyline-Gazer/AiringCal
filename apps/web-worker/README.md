@@ -1,6 +1,8 @@
 # `@airing-cal/web-worker`
 
-Phase 0 唯一公网 Worker：`airing-cal-frontend`（页面、`/src/*`、只读 `/api/*`、`/image/:hash`）。
+Phase 0 唯一公网 Worker：`airing-cal-frontend`（页面、`/src/*`、只读 `/api/*`、`/image/:hash`、`/image/:hash/thumb`）。
+
+Cover thumb pipeline：`POST /api/thumb-gen`（Wrangler secret `THUMB_GEN_BEARER` + `[images]` binding `IMAGES`）。契约见 [web-worker-public-api.md](../../docs/reference/web-worker-public-api.md)。
 
 ## 本地
 

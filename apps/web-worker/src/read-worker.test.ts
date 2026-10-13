@@ -34,13 +34,21 @@ class MockKV {
 }
 
 class MockR2 {
-  async get(hash: string) {
-    if (hash !== `images/${'a'.repeat(64)}/original`) return null
-    return {
-      arrayBuffer: async () => new TextEncoder().encode('image').buffer,
-      httpMetadata: { contentType: 'image/png' },
-      customMetadata: { bytes: '5', source_size: 'common' },
+  async get(key: string) {
+    if (key === `images/${'a'.repeat(64)}/original`) {
+      return {
+        arrayBuffer: async () => new TextEncoder().encode('image').buffer,
+        httpMetadata: { contentType: 'image/png' },
+        customMetadata: { bytes: '5', source_size: 'common' },
+      }
     }
+    if (key === `images/${'b'.repeat(64)}/thumb.v1.webp`) {
+      return {
+        arrayBuffer: async () => new TextEncoder().encode('thumb').buffer,
+        httpMetadata: { contentType: 'image/webp' },
+      }
+    }
+    return null
   }
 }
 
@@ -362,6 +370,19 @@ test('read-worker serves images from R2 by hash', async () => {
   assert.equal(response.status, 200)
   assert.equal(response.headers.get('Content-Type'), 'image/png')
   assert.equal(await response.text(), 'image')
+})
+
+test('read-worker serves pre-materialized thumb webp only', async () => {
+  const response = await worker.fetch(new Request(`https://read.local/image/${'b'.repeat(64)}/thumb`), env() as any)
+
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('Content-Type'), 'image/webp')
+  assert.equal(await response.text(), 'thumb')
+})
+
+test('read-worker returns 404 for missing thumb', async () => {
+  const response = await worker.fetch(new Request(`https://read.local/image/${'c'.repeat(64)}/thumb`), env() as any)
+  assert.equal(response.status, 404)
 })
 
 test('read-worker health reports collection snapshot status when KV has data', async () => {

@@ -172,10 +172,10 @@ test('media refresh stores Bangumi images in R2 and subject_media', async () => 
     { subjects: mediaSubjectsFromFetch(input) },
   )
 
-  assert.deepEqual(summary, { selected: 1, succeeded: 1, failed: 0, failures: [] })
-  assert.deepEqual(fetched.sort(), [COMMON_URL, LARGE_URL].sort())
   const commonHash = sha256(COMMON_BYTES)
   const largeHash = sha256(LARGE_BYTES)
+  assert.deepEqual(summary, { selected: 1, succeeded: 1, failed: 0, failures: [], large_hashes_persisted: [largeHash] })
+  assert.deepEqual(fetched.sort(), [COMMON_URL, LARGE_URL].sort())
   assert.ok(store.objects.has(`images/${commonHash}/original`))
   assert.equal(store.objects.get(`images/${commonHash}/original`)?.contentType, 'image/jpeg')
   const row = db.media.get(42)
@@ -216,12 +216,12 @@ test('media refresh skips fresh subject_media rows and rejects non-Bangumi hosts
   const fresh = await refresh.refresh(context, {
     subjects: mediaSubjectsFromFetch(fetchInput(collection(7, { common: COMMON_URL, large: LARGE_URL }))),
   })
-  assert.deepEqual(fresh, { selected: 0, succeeded: 0, failed: 0, failures: [] })
+  assert.deepEqual(fresh, { selected: 0, succeeded: 0, failed: 0, failures: [], large_hashes_persisted: [] })
 
   const rejected = await refresh.refresh(context, {
     subjects: [{ subjectId: 8, nsfw: false, images: { common: 'https://example.com/a.jpg', large: 'https://example.com/b.jpg' } }],
   })
-  assert.deepEqual(rejected, { selected: 0, succeeded: 0, failed: 0, failures: [] })
+  assert.deepEqual(rejected, { selected: 0, succeeded: 0, failed: 0, failures: [], large_hashes_persisted: [] })
   assert.deepEqual(fetched, [])
 })
 
@@ -239,7 +239,7 @@ test('media refresh leaves time to publish when the run deadline is close', asyn
     { ...createRunContext({ runId: 'run-deadline', deadlineAt: Date.now() + 1000 }), observedAt: '2023-11-14T22:13:20.000Z' },
     { subjects: mediaSubjectsFromFetch(fetchInput(collection(42, { common: COMMON_URL, large: LARGE_URL }))) },
   )
-  assert.deepEqual(summary, { selected: 0, succeeded: 0, failed: 0, failures: [] })
+  assert.deepEqual(summary, { selected: 0, succeeded: 0, failed: 0, failures: [], large_hashes_persisted: [] })
   assert.deepEqual(fetched, [])
 })
 

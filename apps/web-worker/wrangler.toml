@@ -20,3 +20,6 @@ bucket_name = "airing-cal-images"
 [[r2_buckets]]
 binding = "AIRING_CAL_DATA_R2"
 bucket_name = "airing-cal-data"
+
+[images]
+binding = "IMAGES"

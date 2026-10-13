@@ -13,6 +13,7 @@ import { readSyncUserConfig } from './config.ts'
 import { createSubjectMediaRefresh } from './media-refresh.ts'
 import { createEnrichMediaSubjectsFromFetch } from './media-subject-resolve.ts'
 import { defaultLeaseName, defaultLeaseSeconds, runSyncPipeline } from './pipeline.ts'
+import { fireAndForgetThumbGen } from './thumb-gen-client.ts'
 
 /** Full pipeline: lease → fetch → media → publish (AC-1-03). */
 export async function runSync(env: Record<string, string | undefined> = process.env): Promise<JobSummary> {
@@ -64,6 +65,7 @@ export async function runSync(env: Record<string, string | undefined> = process.
     if (result.media.failures.length > 0) {
       console.log(JSON.stringify({ status: 'info', stage: 'media_failures', failures: result.media.failures }))
     }
+    fireAndForgetThumbGen(result.media.large_hashes_persisted, env)
     return {
       job: 'airingcal-sync',
       status: result.status === 'failed' ? 'failed' : result.status === 'skipped' ? 'skipped' : 'success',

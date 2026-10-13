@@ -1,6 +1,6 @@
 export const readApiBoundary = 'web-worker-read-api'
 
-import { D1StateStore, imageOriginalKey, imageStatusKey, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncCurrentKey, syncMetaKey, syncRunKey, type D1DatabaseLike, type SnapshotManifest, type SyncRun } from '@airing-cal/storage'
+import { D1StateStore, imageOriginalKey, imageStatusKey, imageThumbV1Key, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncCurrentKey, syncMetaKey, syncRunKey, type D1DatabaseLike, type SnapshotManifest, type SyncRun } from '@airing-cal/storage'
 import { isConfirmedNotFoundSubjectMeta, type SubjectMeta } from '@airing-cal/domain'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 import {
@@ -485,16 +485,21 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
 }
 
 async function handleImage(pathname: string, env: ReadEnv): Promise<Response> {
-  const hash = pathname.split('/').pop() ?? ''
-  if (!/^[0-9a-f]{64}$/i.test(hash)) return new Response('Invalid hash', { status: 400 })
-  const object = await env.AIRING_CAL_R2.get(imageOriginalKey(hash))
+  const match = pathname.match(/^\/image\/([0-9a-f]{64})(?:\/(thumb))?\/?$/i)
+  if (!match?.[1]) return new Response('Invalid hash', { status: 400 })
+  const hash = match[1].toLowerCase()
+  const isThumb = match[2] === 'thumb'
+  const objectKey = isThumb ? imageThumbV1Key(hash) : imageOriginalKey(hash)
+  const object = await env.AIRING_CAL_R2.get(objectKey)
   if (!object) return new Response('Not found', { status: 404 })
   const headers = new Headers({
     'Cache-Control': 'public, max-age=31536000, immutable',
-    'Content-Type': object.httpMetadata?.contentType || 'image/jpeg',
+    'Content-Type': isThumb ? 'image/webp' : (object.httpMetadata?.contentType || 'image/jpeg'),
   })
-  const bytes = object.customMetadata?.bytes
-  if (bytes) headers.set('X-Image-Bytes', bytes)
+  if (!isThumb) {
+    const bytes = object.customMetadata?.bytes
+    if (bytes) headers.set('X-Image-Bytes', bytes)
+  }
   return new Response(await object.arrayBuffer(), { headers })
 }
 
