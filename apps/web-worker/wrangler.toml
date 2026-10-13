@@ -21,5 +21,12 @@ bucket_name = "airing-cal-images"
 binding = "AIRING_CAL_DATA_R2"
 bucket_name = "airing-cal-data"
 
+# Cloudflare Images transform for POST /api/thumb-gen (AC-2). Required in every deploy target.
+# Secret (not in Git): THUMB_GEN_BEARER — `wrangler secret put THUMB_GEN_BEARER`
+# Must match QingLong AIRINGCAL_THUMB_GEN_BEARER / node-jobs env. See apps/web-worker/env.example.
 [images]
 binding = "IMAGES"
+
+# AC-2-05: scan D1 subject_media for missing thumb.v1.webp (no public HTTP).
+[triggers]
+crons = ["15 * * * *"]

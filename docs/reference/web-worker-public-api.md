@@ -111,6 +111,16 @@ Materialize thumbs after sync writes large originals. Implemented in `apps/web-w
 
 Per hash: `HeadObject` thumb key → skip；否则 R2 get original → Cloudflare **Images** binding transform → `PutObject`.
 
+**THUMB_SPEC v1：** 420×560 `cover` WebP quality 85 → R2 key `images/{hash}/thumb.v1.webp`（见 `thumb-materialize.ts`）。
+
+### Cron backfill（AC-2-05，无 HTTP）
+
+| 项 | 值 |
+|----|-----|
+| 调度 | `15 * * * *` UTC（`wrangler.toml` `[triggers].crons`） |
+| 逻辑 | D1 `subject_media` 扫描 `r2_image_large_key`，缺 thumb 则 materialize（批大小默认 30，`THUMB_BACKFILL_BATCH` 可选，上限 50） |
+| 实现 | `apps/web-worker/src/thumb-backfill-scheduled.ts` |
+
 ## 其他公开路由
 
 完整路由表与产品说明见仓库根 [README.md](../../README.md)「外部访问入口」。数据类端点（`/api/collections`、`/api/calendar`、`/api/health` 等）行为见 Phase 0 计划 [docs/plans/phase-0-web-worker.md](../plans/phase-0-web-worker.md)。

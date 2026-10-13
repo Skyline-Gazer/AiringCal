@@ -16,7 +16,7 @@ class MockR2 {
     const bytes = this.objects.get(key)
     if (!bytes) return null
     return {
-      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
       httpMetadata: { contentType: 'image/jpeg' },
     }
   }
@@ -28,18 +28,11 @@ class MockR2 {
   }
 }
 
-class MockImages implements ImagesBinding {
-  async info() {
-    throw new Error('not implemented')
-  }
-
-  input(stream: ReadableStream<Uint8Array>): ImageTransformer {
-    return {
-      transform: () => this.input(stream),
-      draw: () => this.input(stream),
+class MockImages {
+  input(stream: ReadableStream<Uint8Array>) {
+    const chain = {
+      transform: () => chain,
       output: async () => ({
-        contentType: () => 'image/webp',
-        response: () => new Response(),
         image: () => new ReadableStream({
           start(controller) {
             controller.enqueue(new Uint8Array([0x52, 0x49, 0x46, 0x46]))
@@ -48,9 +41,9 @@ class MockImages implements ImagesBinding {
         }),
       }),
     }
+    void stream
+    return chain
   }
-
-  readonly hosted = {} as HostedImagesBinding
 }
 
 function env(r2 = new MockR2(), bearer = 'test-secret') {

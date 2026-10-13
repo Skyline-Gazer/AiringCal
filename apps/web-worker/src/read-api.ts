@@ -10,6 +10,7 @@ import {
   type ReadSnapshotKv,
 } from './r2-snapshot.ts'
 import { buildMigrationHealth, type MigrationHealthD1, type MigrationHealthEnv } from './health.ts'
+import type { ImageR2Binding } from './image-r2-binding.ts'
 
 interface ReadEnv {
   AIRING_CAL_D1: D1DatabaseLike
@@ -22,13 +23,7 @@ interface ReadEnv {
     delete(key: string): Promise<void>
     list?(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<{ keys: Array<{ name: string }>; list_complete?: boolean; cursor?: string }>
   }
-  AIRING_CAL_R2: {
-    get(key: string): Promise<{
-      arrayBuffer(): Promise<ArrayBuffer>
-      httpMetadata?: { contentType?: string }
-      customMetadata?: Record<string, string>
-    } | null>
-  }
+  AIRING_CAL_R2: ImageR2Binding
   NSFW_SHOW?: 'true' | 'false'
 }
 

@@ -3,9 +3,10 @@ export const appBoundary = 'web-worker'
 import { cacheJs, renderIndexPage, widgetCss, widgetJs, type BuildInfo } from '@airing-cal/widget'
 import { handleReadRequest, type WebWorkerEnv } from './read-api.ts'
 import { handleThumbGenRequest, type ThumbGenEnv } from './thumb-gen.ts'
+import { handleThumbBackfillScheduled, type ThumbBackfillEnv } from './thumb-backfill-scheduled.ts'
 import { versionResponse } from './version.ts'
 
-interface WebEnv extends WebWorkerEnv, ThumbGenEnv {
+interface WebEnv extends WebWorkerEnv, ThumbGenEnv, ThumbBackfillEnv {
   BANGUMI_GIT_COMMIT_SHA?: string
   BANGUMI_GIT_REPOSITORY_URL?: string
   BANGUMI_BUILD_TIME?: string
@@ -125,4 +126,7 @@ async function fetch(request: Request, env: WebEnv): Promise<Response> {
   return new Response('Not found', { status: 404 })
 }
 
-export default { fetch }
+export default {
+  fetch,
+  scheduled: handleThumbBackfillScheduled,
+}
