@@ -16,8 +16,8 @@ import type { R2Store } from '../adapters/r2-store.ts'
 import type { RunContext } from '../adapters/run-context.ts'
 import type { CompleteFullFetch } from '@airing-cal/bgm-api'
 import type { SyncUserConfig } from './config.ts'
-import { loadSubjectImageMap, mediaSubjectsFromFetch } from './media-refresh.ts'
-import type { MediaRefreshPort, MediaRefreshSummary } from './media-port.ts'
+import { loadSubjectImageMap, loadSubjectMediaPublishHints, mediaSubjectsFromFetch } from './media-refresh.ts'
+import type { MediaRefreshPort, MediaRefreshSummary, MediaSubjectSource } from './media-port.ts'
 import { nextSnapshotGeneration } from './publish-helpers.ts'
 import { publishPublicReadKv } from './publish-kv.ts'
 import { projectPublicSnapshotInput } from './project-public.ts'
@@ -39,6 +39,7 @@ export interface SyncPipelineDeps {
   leaseName: string
   leaseSeconds: number
   fetchInput(): Promise<CompleteFullFetch>
+  resolveMediaSubjects?: (input: CompleteFullFetch, run: RunContext) => Promise<MediaSubjectSource[]>
   media: MediaRefreshPort
   kv?: CloudflareKvClient | null
   now(): number
@@ -62,7 +63,7 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
   try {
     lease = await acquireJobLease(deps.db, deps.run, deps.leaseName, deps.leaseSeconds)
     if (!lease) {
-      return { status: 'skipped', stage: 'lease_busy', generation: null, media: { selected: 0, succeeded: 0, failed: 0 } }
+      return { status: 'skipped', stage: 'lease_busy', generation: null, media: { selected: 0, succeeded: 0, failed: 0, failures: [] } }
     }
     const startedAt = Math.floor(deps.now() / 1000)
     await deps.db.query(
@@ -87,11 +88,15 @@ export async function runSyncPipeline(deps: SyncPipelineDeps): Promise<SyncPipel
 
     const mediaContext = { ...deps.run, observedAt: new Date(input.observedAt * 1000).toISOString() }
     await lease.guard()
-    const media = await deps.media.refresh(mediaContext, { subjects: mediaSubjectsFromFetch(input) })
+    const resolveMediaSubjects = deps.resolveMediaSubjects
+      ?? ((fetch: CompleteFullFetch) => Promise.resolve(mediaSubjectsFromFetch(fetch)))
+    const mediaSubjects = await resolveMediaSubjects(input, deps.run)
+    const media = await deps.media.refresh(mediaContext, { subjects: mediaSubjects })
     const imageMap = await loadSubjectImageMap(deps.db)
+    const mediaHints = await loadSubjectMediaPublishHints(deps.db)
 
     const { previous } = await loadPreviousSnapshot(deps.store)
-    const candidateInput = projectPublicSnapshotInput(input, imageMap)
+    const candidateInput = projectPublicSnapshotInput(input, imageMap, new Map(), new Map(), mediaHints)
     const candidate = await buildPublicSnapshot(candidateInput, 0)
     const generation = nextSnapshotGeneration(previous, candidate.content_hash)
     let published = previous

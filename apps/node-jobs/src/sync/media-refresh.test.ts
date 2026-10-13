@@ -172,7 +172,7 @@ test('media refresh stores Bangumi images in R2 and subject_media', async () => 
     { subjects: mediaSubjectsFromFetch(input) },
   )
 
-  assert.deepEqual(summary, { selected: 1, succeeded: 1, failed: 0 })
+  assert.deepEqual(summary, { selected: 1, succeeded: 1, failed: 0, failures: [] })
   assert.deepEqual(fetched.sort(), [COMMON_URL, LARGE_URL].sort())
   const commonHash = sha256(COMMON_BYTES)
   const largeHash = sha256(LARGE_BYTES)
@@ -216,12 +216,12 @@ test('media refresh skips fresh subject_media rows and rejects non-Bangumi hosts
   const fresh = await refresh.refresh(context, {
     subjects: mediaSubjectsFromFetch(fetchInput(collection(7, { common: COMMON_URL, large: LARGE_URL }))),
   })
-  assert.deepEqual(fresh, { selected: 0, succeeded: 0, failed: 0 })
+  assert.deepEqual(fresh, { selected: 0, succeeded: 0, failed: 0, failures: [] })
 
   const rejected = await refresh.refresh(context, {
     subjects: [{ subjectId: 8, nsfw: false, images: { common: 'https://example.com/a.jpg', large: 'http://lain.bgm.tv/insecure.jpg' } }],
   })
-  assert.deepEqual(rejected, { selected: 0, succeeded: 0, failed: 0 })
+  assert.deepEqual(rejected, { selected: 0, succeeded: 0, failed: 0, failures: [] })
   assert.deepEqual(fetched, [])
 })
 
@@ -239,8 +239,44 @@ test('media refresh leaves time to publish when the run deadline is close', asyn
     { ...createRunContext({ runId: 'run-deadline', deadlineAt: Date.now() + 1000 }), observedAt: '2023-11-14T22:13:20.000Z' },
     { subjects: mediaSubjectsFromFetch(fetchInput(collection(42, { common: COMMON_URL, large: LARGE_URL }))) },
   )
-  assert.deepEqual(summary, { selected: 0, succeeded: 0, failed: 0 })
+  assert.deepEqual(summary, { selected: 0, succeeded: 0, failed: 0, failures: [] })
   assert.deepEqual(fetched, [])
+})
+
+test('media refresh logs failed subject ids and retries failed rows on the next run', async () => {
+  const store = new MemoryR2()
+  const db = new MemoryD1()
+  const logs: string[] = []
+  const originalLog = console.log
+  console.log = (...args: unknown[]) => {
+    logs.push(args.map((value) => (typeof value === 'string' ? value : JSON.stringify(value))).join(' '))
+    originalLog(...args)
+  }
+  try {
+    const refresh = createSubjectMediaRefresh({
+      db,
+      store,
+      fetchImage: async (url) => {
+        if (url.includes('/c/common')) return new Response('bad', { status: 500 })
+        return imageResponse(url)
+      },
+    })
+    const context = { ...createRunContext({ runId: 'run-fail', deadlineAt: Date.now() + 60_000 }), observedAt: '2023-11-14T22:13:20.000Z' }
+    const first = await refresh.refresh(context, {
+      subjects: mediaSubjectsFromFetch(fetchInput(collection(120224, { common: COMMON_URL, large: LARGE_URL }))),
+    })
+    assert.equal(first.failed, 1)
+    assert.deepEqual(first.failures, [{ subject_id: 120224, error_code: 'MEDIA_IMAGE_FAILED', sizes: ['common'] }])
+    assert.ok(logs.some((line) => line.includes('"stage":"media_failed"') && line.includes('120224')))
+
+    const second = await refresh.refresh(
+      { ...createRunContext({ runId: 'run-fail-2', deadlineAt: Date.now() + 60_000 }), observedAt: '2023-11-15T22:13:20.000Z' },
+      { subjects: mediaSubjectsFromFetch(fetchInput(collection(120224, { common: COMMON_URL, large: LARGE_URL }))) },
+    )
+    assert.equal(second.selected, 1)
+  } finally {
+    console.log = originalLog
+  }
 })
 
 test('mediaSubjectsFromFetch ignores private collections and keeps calendar images', () => {

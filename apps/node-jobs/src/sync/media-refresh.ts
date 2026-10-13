@@ -5,6 +5,7 @@ import type { CloudflareD1Client } from '../adapters/cloudflare-d1.ts'
 import type { R2Store } from '../adapters/r2-store.ts'
 import type { RunContext } from '../adapters/run-context.ts'
 import {
+  type MediaRefreshFailure,
   type MediaRefreshPort,
   type MediaRefreshRequest,
   type MediaRefreshSummary,
@@ -126,6 +127,33 @@ function sniffImage(bytes: Uint8Array): string | null {
   return null
 }
 
+export type BangumiImageSizes = {
+  common?: string
+  large?: string
+  medium?: string
+  small?: string
+  grid?: string
+}
+
+export function coalesceSubjectImageUrls(images: BangumiImageSizes | undefined): { common?: string; large?: string } {
+  if (!images) return {}
+  const common = images.common || images.medium || images.small || images.grid
+  const large = images.large || images.common || images.medium
+  return {
+    ...(typeof common === 'string' && common ? { common } : {}),
+    ...(typeof large === 'string' && large ? { large } : {}),
+  }
+}
+
+function mergeImageFields(
+  into: { common?: string; large?: string },
+  from: BangumiImageSizes | undefined,
+): void {
+  const coalesced = coalesceSubjectImageUrls(from)
+  if (coalesced.common && !into.common) into.common = coalesced.common
+  if (coalesced.large && !into.large) into.large = coalesced.large
+}
+
 export function bangumiImageUrl(value: string | undefined): string | null {
   if (!value?.trim()) return null
   const href = value.trim().startsWith('//') ? `https:${value.trim()}` : value.trim()
@@ -184,6 +212,41 @@ function shouldSkip(row: StoredMedia | undefined, sources: Record<ImageSize, str
   return true
 }
 
+function mediaWorkPriority(
+  subject: MediaSubjectSource,
+  existing: Map<number, StoredMedia>,
+  sources: Record<ImageSize, string | null>,
+): number {
+  const row = existing.get(subject.subjectId)
+  if (row?.errorCode) return 0
+  for (const size of ['common', 'large'] as const) {
+    if (sources[size] && !row?.key[size]) return 1
+  }
+  if (!row) return 2
+  return 3
+}
+
+export interface SubjectMediaPublishHint {
+  errorCode: string | null
+  hasSourceCommon: boolean
+  hasSourceLarge: boolean
+}
+
+export async function loadSubjectMediaPublishHints(db: CloudflareD1Client): Promise<Map<number, SubjectMediaPublishHint>> {
+  await ensureSubjectMedia(db)
+  const hints = new Map<number, SubjectMediaPublishHint>()
+  for (const row of await db.query(SELECT_SUBJECT_MEDIA)) {
+    const subjectId = Number(row.subject_id)
+    if (!Number.isSafeInteger(subjectId) || subjectId <= 0) continue
+    hints.set(subjectId, {
+      errorCode: nullableText(row.error_code),
+      hasSourceCommon: Boolean(nullableText(row.source_image_common_url)),
+      hasSourceLarge: Boolean(nullableText(row.source_image_large_url)),
+    })
+  }
+  return hints
+}
+
 function refFromKey(value: unknown) {
   if (typeof value !== 'string') return null
   const match = KEY_PATTERN.exec(value)
@@ -216,7 +279,7 @@ export function mediaSubjectsFromFetch(input: CompleteFullFetch): MediaSubjectSo
   const touch = (
     subjectId: number,
     nsfw: boolean,
-    images: { common?: string; large?: string } | undefined,
+    images: BangumiImageSizes | undefined,
     pub: boolean,
   ) => {
     if (!Number.isSafeInteger(subjectId) || subjectId <= 0) return
@@ -228,8 +291,7 @@ export function mediaSubjectsFromFetch(input: CompleteFullFetch): MediaSubjectSo
     if (nsfw) row.nsfw = true
     if (!pub) return
     row.pub = true
-    if (typeof images?.common === 'string' && images.common && !row.images.common) row.images.common = images.common
-    if (typeof images?.large === 'string' && images.large && !row.images.large) row.images.large = images.large
+    mergeImageFields(row.images, images)
   }
 
   for (const entry of input.collections) {
@@ -300,7 +362,7 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
 
   return {
     async refresh(context: RunContext & { observedAt: string }, request?: MediaRefreshRequest): Promise<MediaRefreshSummary> {
-      const summary: MediaRefreshSummary = { selected: 0, succeeded: 0, failed: 0 }
+      const summary: MediaRefreshSummary = { selected: 0, succeeded: 0, failed: 0, failures: [] }
       const subjects = request?.subjects ?? []
       await ensureSubjectMedia(deps.db)
       const existing = new Map<number, StoredMedia>()
@@ -314,6 +376,11 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
         const sources = sourcesFor(subject)
         if (!sources.common && !sources.large) return false
         return !shouldSkip(existing.get(subject.subjectId), sources, nowSec)
+      })
+      work.sort((a, b) => {
+        const pa = mediaWorkPriority(a, existing, sourcesFor(a))
+        const pb = mediaWorkPriority(b, existing, sourcesFor(b))
+        return pa - pb || a.subjectId - b.subjectId
       })
       const total = work.length
       if (total > 0) {
@@ -344,6 +411,7 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
           large: current?.key.large ?? null,
         }
         let failed = false
+        const failedSizes: ImageSize[] = []
         const downloaded = new Map<string, { bytes: Uint8Array; contentType: string }>()
         try {
           for (const size of ['common', 'large'] as const) {
@@ -365,6 +433,7 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
               keys[size] = reference.r2_key
             } catch {
               failed = true
+              failedSizes.push(size)
             }
           }
         } catch {
@@ -373,7 +442,9 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
 
         const mediaHash = sha256(JSON.stringify({ common: keys.common, large: keys.large }))
         const retryCount = failed ? (current?.retryCount ?? 0) + 1 : 0
-        const nextRefreshAt = nowSec + (failed ? 3600 : 6 * DAY_SECONDS + (subject.subjectId * 997 % SUCCESS_SPREAD_SECONDS))
+        const nextRefreshAt = failed
+          ? nowSec
+          : nowSec + 6 * DAY_SECONDS + (subject.subjectId * 997 % SUCCESS_SPREAD_SECONDS)
         await deps.db.query(UPSERT_SUBJECT_MEDIA, [
           subject.subjectId,
           null,
@@ -390,8 +461,23 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
           failed ? nextRefreshAt : null,
           failed ? 'MEDIA_IMAGE_FAILED' : null,
         ])
-        if (failed) summary.failed += 1
-        else summary.succeeded += 1
+        if (failed) {
+          summary.failed += 1
+          const failure: MediaRefreshFailure = {
+            subject_id: subject.subjectId,
+            error_code: 'MEDIA_IMAGE_FAILED',
+            sizes: failedSizes.length > 0 ? failedSizes : (['common', 'large'] as const).filter((size) => Boolean(sources[size])),
+          }
+          summary.failures.push(failure)
+          console.log(JSON.stringify({
+            status: 'info',
+            stage: 'media_failed',
+            subject_id: failure.subject_id,
+            error_code: failure.error_code,
+            sizes: failure.sizes,
+            retry_count: retryCount,
+          }))
+        } else summary.succeeded += 1
         processed += 1
         maybeProgress()
       })
@@ -399,7 +485,13 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
       if (total > 0 && processed > 0) {
         emitMediaProgress(processed, total, summary.succeeded, summary.failed)
       }
-      console.log(JSON.stringify({ stage: 'media', ...summary }))
+      console.log(JSON.stringify({
+        stage: 'media',
+        selected: summary.selected,
+        succeeded: summary.succeeded,
+        failed: summary.failed,
+        failures: summary.failures,
+      }))
       return summary
     },
   }

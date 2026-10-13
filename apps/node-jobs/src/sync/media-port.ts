@@ -1,9 +1,17 @@
 import type { RunContext } from '../adapters/run-context.ts'
 
+export interface MediaRefreshFailure {
+  subject_id: number
+  error_code: string
+  sizes: Array<'common' | 'large'>
+}
+
 export interface MediaRefreshSummary {
   selected: number
   succeeded: number
   failed: number
+  /** Failed subjects from this run (for logs / ops). */
+  failures: MediaRefreshFailure[]
 }
 
 export interface MediaSubjectSource {
@@ -22,6 +30,6 @@ export interface MediaRefreshPort {
 
 export const noopMediaRefresh: MediaRefreshPort = {
   async refresh() {
-    return { selected: 0, succeeded: 0, failed: 0 }
+    return { selected: 0, succeeded: 0, failed: 0, failures: [] }
   },
 }

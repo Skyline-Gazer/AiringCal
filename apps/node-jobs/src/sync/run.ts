@@ -7,9 +7,11 @@ import {
   readNodeJobsConfig,
 } from '../adapters/index.ts'
 import type { JobSummary } from '../contracts.ts'
+import { subjectDetailImages } from '@airing-cal/domain'
 import { createUpstreamBgmClient, fetchCompleteInput } from '../upstream/fetch.ts'
 import { readSyncUserConfig } from './config.ts'
 import { createSubjectMediaRefresh } from './media-refresh.ts'
+import { createEnrichMediaSubjectsFromFetch } from './media-subject-resolve.ts'
 import { defaultLeaseName, defaultLeaseSeconds, runSyncPipeline } from './pipeline.ts'
 
 /** Full pipeline: lease → fetch → media → publish (AC-1-03). */
@@ -35,6 +37,10 @@ export async function runSync(env: Record<string, string | undefined> = process.
   const kv = nodeConfig.kvNamespaceId ? createCloudflareKvClient(nodeConfig, run) : null
   try {
     const client = createUpstreamBgmClient(env.BGM_TOKEN?.trim())
+    const resolveMediaSubjects = createEnrichMediaSubjectsFromFetch(async (subjectId) => {
+      const subject = await client.getSubject(subjectId)
+      return subject ? subjectDetailImages(subject) : null
+    })
     const result = await runSyncPipeline({
       run,
       db,
@@ -47,12 +53,17 @@ export async function runSync(env: Record<string, string | undefined> = process.
         client,
         () => Date.now(),
       ),
+      resolveMediaSubjects,
       media: createSubjectMediaRefresh({ db, store: imageStore }),
       kv,
       now: () => Date.now(),
     })
-    const media = `media selected=${result.media.selected} succeeded=${result.media.succeeded} failed=${result.media.failed}`
+    const failIds = result.media.failures.map((entry) => entry.subject_id).join(',')
+    const media = `media selected=${result.media.selected} succeeded=${result.media.succeeded} failed=${result.media.failed}${failIds ? ` failed_subject_ids=${failIds}` : ''}`
     console.log(media)
+    if (result.media.failures.length > 0) {
+      console.log(JSON.stringify({ status: 'info', stage: 'media_failures', failures: result.media.failures }))
+    }
     return {
       job: 'airingcal-sync',
       status: result.status === 'failed' ? 'failed' : result.status === 'skipped' ? 'skipped' : 'success',
