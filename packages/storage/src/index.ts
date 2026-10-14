@@ -377,6 +377,10 @@ export function imageOriginalKey(hash: string): string {
   return `images/${hash}/original`
 }
 
+export function imageThumbV1Key(hash: string): string {
+  return `images/${hash}/thumb.v1.webp`
+}
+
 export class KVStorage implements StorageAdapter {
   constructor(private kv: { get(key: string, type: 'json'): Promise<unknown>; put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>; delete(key: string): Promise<void> }) {}
 

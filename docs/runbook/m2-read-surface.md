@@ -67,6 +67,20 @@ curl -sf "$SITE/api/calendar" | head -c 400; echo
 
 ---
 
+## 5b. Cover thumb（AC-2，可选于 M2+）
+
+前置：AiringCal PR 含 web-worker thumb-gen + node-jobs batch；QINGLONG [QL-4](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/plans/airingcal-thumb-pipeline.md) env 已配。
+
+1. Deploy web-worker：`THUMB_GEN_BEARER` secret + `[images]` binding（见 `apps/web-worker/README.md`）
+2. 青龙 env：`AIRINGCAL_THUMB_GEN_URL`、`AIRINGCAL_THUMB_GEN_BEARER`（与 secret 相同）
+3. 拉含 AC-2-03 的 bundle → 手动 sync 一轮
+4. `curl -sf -o /dev/null -w '%{http_code}\n' -X POST "$SITE/api/thumb-gen"` → **401**
+5. 浏览器 Network：列表封面为 `/image/<hash>/thumb`（WebP），体积明显小于 `/image/<hash>`
+
+Worker Cron `15 * * * *` 会补偿漏掉的 thumb（无公网接口）。
+
+---
+
 ## 6. 开 cron（M2 收尾，M3 运维）
 
 | 青龙任务 | cron |

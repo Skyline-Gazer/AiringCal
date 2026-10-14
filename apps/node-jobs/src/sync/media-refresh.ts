@@ -352,7 +352,8 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
 
   return {
     async refresh(context: RunContext & { observedAt: string }, request?: MediaRefreshRequest): Promise<MediaRefreshSummary> {
-      const summary: MediaRefreshSummary = { selected: 0, succeeded: 0, failed: 0, failures: [] }
+      const summary: MediaRefreshSummary = { selected: 0, succeeded: 0, failed: 0, failures: [], large_hashes_persisted: [] }
+      const largeHashesPersisted = new Set<string>()
       const subjects = request?.subjects ?? []
       await ensureSubjectMedia(deps.db)
       const existing = new Map<number, StoredMedia>()
@@ -451,6 +452,10 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
           failed ? nextRefreshAt : null,
           failed ? 'MEDIA_IMAGE_FAILED' : null,
         ])
+        if (!failed && keys.large && !failedSizes.includes('large')) {
+          const match = KEY_PATTERN.exec(keys.large)
+          if (match?.[1]) largeHashesPersisted.add(match[1])
+        }
         if (failed) {
           summary.failed += 1
           const failure: MediaRefreshFailure = {
@@ -475,12 +480,14 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
       if (total > 0 && processed > 0) {
         emitMediaProgress(processed, total, summary.succeeded, summary.failed)
       }
+      summary.large_hashes_persisted = [...largeHashesPersisted]
       console.log(JSON.stringify({
         stage: 'media',
         selected: summary.selected,
         succeeded: summary.succeeded,
         failed: summary.failed,
         failures: summary.failures,
+        large_hashes_persisted: summary.large_hashes_persisted.length,
       }))
       return summary
     },

@@ -68,7 +68,11 @@ test('/health reports QingLong scheduler when public read mode is r2', async () 
     AIRING_CAL_KV: kv,
     AIRING_CAL_D1: new MockD1() as never,
     AIRING_CAL_DATA_R2: dataR2,
-    AIRING_CAL_R2: { get: async () => null },
+    AIRING_CAL_R2: {
+      get: async () => null,
+      head: async () => null,
+      put: async () => ({}),
+    },
   })
   assert.ok(response)
   const body = await response!.json() as { data: { cron: { scheduler: string; last: { source: string } } } }

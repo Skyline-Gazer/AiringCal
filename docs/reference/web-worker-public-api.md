@@ -81,6 +81,46 @@ curl -sS 'https://<你的域名>/api/version' | jq '.git.commit_short, .package.
 
 与 GitHub Actions 本次 `resolve_ref` 输出的 SHA 前 7 位、`apps/web-worker/package.json` 的 `version` 对照即可。
 
+## `GET /image/:hash/thumb`
+
+Pre-materialized cover thumb only (`images/{hash}/thumb.v1.webp` in R2). No on-the-fly transform.
+
+| 项 | 值 |
+|----|-----|
+| 方法 | `GET` |
+| 认证 | 无 |
+| 成功 HTTP | `200`，`Content-Type: image/webp` |
+| 缺失 | `404` |
+| `Cache-Control` | `public, max-age=31536000, immutable`（与 `/image/:hash` 一致） |
+
+`GET /image/:hash` 仍返回 `images/{hash}/original`，行为不变。
+
+Widget 列表/日历封面：当 API 条目含 `images.large`（`hash` + `uri`）时，`<img>` 优先请求 `/image/{large.hash}/thumb`；加载失败（如 thumb 尚未生成，**404**）时依次回退 `images.large.uri`、再 `images.common.uri`。仅 `common` 时仍直接用 `common.uri`。
+
+## `POST /api/thumb-gen`（Bearer，内部）
+
+Materialize thumbs after sync writes large originals. Implemented in `apps/web-worker/src/thumb-gen.ts`.
+
+| 项 | 值 |
+|----|-----|
+| 方法 | `POST` |
+| 认证 | `Authorization: Bearer <THUMB_GEN_BEARER>`（Wrangler secret，timing-safe compare） |
+| Body | `{ "large_hashes": ["<sha256>", ...] }`，最多 **50** 条/请求 |
+| 成功 | **202** + `{ ok, results[], summary }`（`skipped` / `generated` / `missing_original` / `error`） |
+| 鉴权失败 | **401** |
+
+Per hash: `HeadObject` thumb key → skip；否则 R2 get original → Cloudflare **Images** binding transform → `PutObject`.
+
+**THUMB_SPEC v1：** 420×560 `cover` WebP quality 85 → R2 key `images/{hash}/thumb.v1.webp`（见 `thumb-materialize.ts`）。
+
+### Cron backfill（AC-2-05，无 HTTP）
+
+| 项 | 值 |
+|----|-----|
+| 调度 | `15 * * * *` UTC（`wrangler.toml` `[triggers].crons`） |
+| 逻辑 | D1 `subject_media` 扫描 `r2_image_large_key`，缺 thumb 则 materialize（批大小默认 30，`THUMB_BACKFILL_BATCH` 可选，上限 50） |
+| 实现 | `apps/web-worker/src/thumb-backfill-scheduled.ts` |
+
 ## 其他公开路由
 
 完整路由表与产品说明见仓库根 [README.md](../../README.md)「外部访问入口」。数据类端点（`/api/collections`、`/api/calendar`、`/api/health` 等）行为见 Phase 0 计划 [docs/plans/phase-0-web-worker.md](../plans/phase-0-web-worker.md)。

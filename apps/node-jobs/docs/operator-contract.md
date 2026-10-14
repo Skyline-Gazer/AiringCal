@@ -72,6 +72,18 @@ See [`../env.example`](../env.example). Summary:
 | `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `BANGUMI_GIT_COMMIT_SHA` | yes |
 | `BGM_TOKEN` | optional |
 
+### Cover thumb pipeline (AC-2, optional)
+
+After sync media refresh persists large covers to R2, node-jobs may **fire-and-forget** batch `POST` to web-worker `/api/thumb-gen`. Failures are logged only; sync does **not** fail on 5xx.
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `AIRINGCAL_THUMB_GEN_URL` | no | Full URL to `/api/thumb-gen`; omit to disable |
+| `AIRINGCAL_WEB_ORIGIN` | no | Used when URL unset: `{origin}/api/thumb-gen` |
+| `AIRINGCAL_THUMB_GEN_BEARER` | when URL/origin set | Must match Worker secret **`THUMB_GEN_BEARER`** |
+
+QingLong wrapper preflight (when URL is set) expects unauthenticated `POST` → **401**; see QINGLONG-REPO `AIRINGCAL_SKIP_THUMB_GEN_PROBE`.
+
 Backup uses same Cloudflare/R2/D1 vars; no Bangumi user JSON.
 
 ## Integration tests (AC-1-06)
