@@ -50,6 +50,9 @@ const SELECT_SUBJECT_MEDIA = `SELECT subject_id, source_image_common_url, source
 
 const SELECT_IMAGE_KEYS = 'SELECT subject_id, r2_image_common_key, r2_image_large_key FROM subject_media'
 
+const COUNT_ACCOUNT_LARGES = `SELECT COUNT(*) AS cnt FROM subject_media
+  WHERE r2_image_large_key IS NOT NULL AND trim(r2_image_large_key) != ''`
+
 const UPSERT_SUBJECT_MEDIA = `INSERT INTO subject_media (
   subject_id, detail_json, detail_hash, media_hash, nsfw,
   source_image_common_url, source_image_large_url,
@@ -247,6 +250,13 @@ function refFromKey(value: unknown) {
 
 async function ensureSubjectMedia(db: CloudflareD1Client): Promise<void> {
   await db.query(ENSURE_SUBJECT_MEDIA)
+}
+
+export async function countAccountLargeImages(db: CloudflareD1Client): Promise<number> {
+  await ensureSubjectMedia(db)
+  const rows = await db.query(COUNT_ACCOUNT_LARGES)
+  const n = Number(rows[0]?.cnt)
+  return Number.isFinite(n) && n >= 0 ? n : 0
 }
 
 export async function loadSubjectImageMap(db: CloudflareD1Client): Promise<SubjectImageMap> {
