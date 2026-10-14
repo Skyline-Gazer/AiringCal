@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { fireAndForgetThumbGen, postThumbGenBatch, resolveThumbGenConfig } from './thumb-gen-client.ts'
+import {
+  describeThumbGenConfig,
+  fireAndForgetThumbGen,
+  logThumbGenSyncTail,
+  postThumbGenBatch,
+  resolveThumbGenConfig,
+} from './thumb-gen-client.ts'
 
 test('resolveThumbGenConfig prefers explicit URL', () => {
   assert.deepEqual(
@@ -10,6 +16,58 @@ test('resolveThumbGenConfig prefers explicit URL', () => {
     }),
     { url: 'https://site.example/api/thumb-gen', bearer: 'token' },
   )
+})
+
+test('describeThumbGenConfig reports missing bearer when URL set', () => {
+  assert.deepEqual(
+    describeThumbGenConfig({ AIRINGCAL_THUMB_GEN_URL: 'https://site.example/api/thumb-gen' }),
+    { state: 'missing_bearer', url_present: true, bearer_present: false },
+  )
+})
+
+test('logThumbGenSyncTail warns when new larges but env incomplete', () => {
+  const logs: string[] = []
+  const original = console.log
+  console.log = (...args: unknown[]) => {
+    logs.push(String(args[0]))
+  }
+  try {
+    logThumbGenSyncTail({
+      env: { AIRINGCAL_THUMB_GEN_URL: 'https://x/api/thumb-gen' },
+      large_persisted_this_run: 2,
+      account_large_count: 10,
+    })
+    const line = logs.find((entry) => entry.includes('thumb_gen_tail'))
+    assert.ok(line)
+    assert.match(line!, /"status":"warn"/)
+    assert.match(line!, /missing_bearer/)
+  } finally {
+    console.log = original
+  }
+})
+
+test('logThumbGenSyncTail info when no new large but account has larges', () => {
+  const logs: string[] = []
+  const original = console.log
+  console.log = (...args: unknown[]) => {
+    logs.push(String(args[0]))
+  }
+  try {
+    logThumbGenSyncTail({
+      env: {
+        AIRINGCAL_THUMB_GEN_URL: 'https://x/api/thumb-gen',
+        AIRINGCAL_THUMB_GEN_BEARER: 'secret',
+      },
+      large_persisted_this_run: 0,
+      account_large_count: 5,
+    })
+    const line = logs.find((entry) => entry.includes('thumb_gen_tail'))
+    assert.ok(line)
+    assert.match(line!, /"status":"info"/)
+    assert.match(line!, /cron/)
+  } finally {
+    console.log = original
+  }
 })
 
 test('resolveThumbGenConfig derives URL from web origin', () => {

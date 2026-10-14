@@ -10,10 +10,10 @@ import type { JobSummary } from '../contracts.ts'
 import { subjectDetailImages } from '@airing-cal/domain'
 import { createUpstreamBgmClient, fetchCompleteInput } from '../upstream/fetch.ts'
 import { readSyncUserConfig } from './config.ts'
-import { createSubjectMediaRefresh } from './media-refresh.ts'
+import { countAccountLargeImages, createSubjectMediaRefresh } from './media-refresh.ts'
 import { createEnrichMediaSubjectsFromFetch } from './media-subject-resolve.ts'
 import { defaultLeaseName, defaultLeaseSeconds, runSyncPipeline } from './pipeline.ts'
-import { fireAndForgetThumbGen } from './thumb-gen-client.ts'
+import { fireAndForgetThumbGen, logThumbGenSyncTail } from './thumb-gen-client.ts'
 
 /** Full pipeline: lease → fetch → media → publish (AC-1-03). */
 export async function runSync(env: Record<string, string | undefined> = process.env): Promise<JobSummary> {
@@ -66,6 +66,12 @@ export async function runSync(env: Record<string, string | undefined> = process.
       console.log(JSON.stringify({ status: 'info', stage: 'media_failures', failures: result.media.failures }))
     }
     fireAndForgetThumbGen(result.media.large_hashes_persisted, env)
+    const accountLargeCount = await countAccountLargeImages(db)
+    logThumbGenSyncTail({
+      env,
+      large_persisted_this_run: result.media.large_hashes_persisted.length,
+      account_large_count: accountLargeCount,
+    })
     return {
       job: 'airingcal-sync',
       status: result.status === 'failed' ? 'failed' : result.status === 'skipped' ? 'skipped' : 'success',
