@@ -1,5 +1,6 @@
 import { BgmClient, BgmHttpError, type BgmCollection } from '@airing-cal/bgm-api'
-import { mergeCollections, subjectDetailImages, transformCalendar } from '@airing-cal/domain'
+import { subjectDetailImages } from '@airing-cal/domain'
+import { buildCalendarSnapshotForPublish, buildMergedCollectionsForPublish } from './snapshot-publish-hydration.ts'
 import {
   snapshotActiveKey,
   snapshotVersionKey,
@@ -22,6 +23,7 @@ import {
   type SnapshotManifest,
   type SyncRun,
   type SyncWorkflowParams,
+  KVStorage,
 } from '@airing-cal/storage'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 import {
@@ -368,7 +370,8 @@ export async function runSyncWorkflow(
       )
       const collections = fetched.collections.map(({ collection }) => collection)
       const { calendar } = fetched
-      const merged = mergeCollections(collections)
+      const storage = new KVStorage(env.AIRING_CAL_KV)
+      const merged = await buildMergedCollectionsForPublish(collections, calendar, storage)
       const snapshotKeys: Partial<Record<CollectionType, string>> = {}
       for (const type of COLLECTION_TYPES) {
         const key = syncStagingKey(event.instanceId, `snapshot:collections:${type}`)
@@ -436,7 +439,7 @@ export async function runSyncWorkflow(
     }))
     publishedOutputs.push(await step.do('publish-calendar', STORAGE_STEP, async () => {
       const calendar = await getJson<any[]>(env.AIRING_CAL_KV, prepared.calendarInputKey) ?? []
-      const snapshot = transformCalendar(calendar)
+      const snapshot = await buildCalendarSnapshotForPublish(calendar, new KVStorage(env.AIRING_CAL_KV))
       const key = targetSnapshotKey(mode, event.instanceId, 'calendar')
       await putJson(env.AIRING_CAL_KV, key, snapshot, mode === 'shadow' ? SYNC_RUN_TTL_SECONDS : undefined)
       return { key, count: calendarSubjectIds(calendar).length, digest: await digest(snapshot) }

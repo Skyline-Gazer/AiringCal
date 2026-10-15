@@ -77,7 +77,7 @@ curl -sf "$SITE/api/calendar" | head -c 400; echo
 4. `curl -sf -o /dev/null -w '%{http_code}\n' -X POST "$SITE/api/thumb-gen"` → **401**
 5. 浏览器 Network：列表封面为 `/image/<hash>/thumb`（WebP），体积明显小于 `/image/<hash>`
 
-Worker Cron `15 * * * *` 会补偿漏掉的 thumb（无公网接口）。
+漏掉的 thumb：运维带 Bearer 对 `POST /api/thumb-gen` 重试（公网 Worker 无 Cron）。
 
 ---
 

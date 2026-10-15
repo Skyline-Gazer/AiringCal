@@ -6,6 +6,30 @@
 
   const TYPE_NAMES = { want: '想看', watched: '看过', watching: '在看', on_hold: '搁置', dropped: '抛弃' }
 
+  var healthFlight = null
+  var calendarLazyObserver = null
+  var HEALTH_TTL_MS = 15000
+
+  function fetchHealthJson(force) {
+    var now = Date.now()
+    if (!force && healthFlight && now - healthFlight.started < HEALTH_TTL_MS) {
+      return healthFlight.promise
+    }
+    var started = Date.now()
+    var promise = fetch(API + '/api/health', { cache: 'no-store' })
+      .then(function (res) {
+        if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText)
+        return res.json()
+      })
+    healthFlight = { started: started, promise: promise }
+    return promise
+  }
+
+  window.bgmFetchHealth = fetchHealthJson
+  window.bgmSubscribeHealth = function (onData, opts) {
+    fetchHealthJson(opts && opts.force).then(onData).catch(function () {})
+  }
+
   function escapeHtml(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, function(char) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]
@@ -117,7 +141,7 @@
     return 'image pending'
   }
 
-  function renderCover(images, imageStatus, alt, attrs) {
+  function renderCover(images, imageStatus, alt, attrs, coverOpts) {
     const thumbUrl = subjectImageThumbUrl(images)
     const imgUrl = thumbUrl || subjectImageUrl(images)
     if (!imgUrl) {
@@ -132,16 +156,18 @@
         dataAttrs += ' data-fallback-common="' + escapeAttribute(commonUrl) + '"'
       }
     }
-    return '<img class="bgm-cover-img" src="' + escapeAttribute(imgUrl) + '"' + dataAttrs + ' alt="' + escapeAttribute(alt) + '" ' + attrs + '>'
+    var imgAttrs = attrs || 'width="300" height="400" loading="lazy" decoding="async"'
+    if (coverOpts && coverOpts.priority) imgAttrs += ' fetchpriority="high"'
+    return '<img class="bgm-cover-img" src="' + escapeAttribute(imgUrl) + '"' + dataAttrs + ' alt="' + escapeAttribute(alt) + '" ' + imgAttrs + '>'
   }
 
-  function renderSubjectCard(card) {
+  function renderSubjectCard(card, coverOpts) {
     var subjectId = Math.max(0, Math.trunc(safeNumber(card.subjectId, 0)))
     var html = '<a href="' + escapeAttribute(safeUrl('https://bgm.tv/subject/' + subjectId, '#')) + '" target="_blank" rel="noopener noreferrer" class="bgm-card'
     if (card.nsfw) html += ' bgm-nsfw'
     html += '">' +
       '<div class="bgm-card-cover">' +
-        renderCover(card.images, card.imageStatus, card.name, 'width="300" height="400" loading="lazy"')
+        renderCover(card.images, card.imageStatus, card.name, 'width="300" height="400" loading="lazy" decoding="async"', coverOpts)
     if (card.nsfw) html += '<button type="button" class="bgm-nsfw-overlay">R18</button>'
     html += '</div>' +
       '<div class="bgm-card-info">' +
@@ -155,7 +181,7 @@
     return html
   }
 
-  function renderCard(entry) {
+  function renderCard(entry, coverOpts) {
     const total = entry.eps || entry.total_episodes || 0
     const progress = total > 0 ? Math.round((entry.ep_status / total) * 100) : 0
     return renderSubjectCard({
@@ -167,7 +193,7 @@
       progress: progress,
       score: null,
       meta: entry.ep_status + '/' + ((entry.eps || entry.total_episodes || '??')),
-    })
+    }, coverOpts)
   }
 
   function calendarEpisodeTotal(entry) {
@@ -179,7 +205,7 @@
     return episodeTotal > 0 ? episodeTotal + ' 话' : '集数待定'
   }
 
-  function renderCalendarCard(entry) {
+  function renderCalendarCard(entry, coverOpts) {
     return renderSubjectCard({
       subjectId: entry.id,
       images: entry.images,
@@ -189,7 +215,19 @@
       progress: 0,
       score: entry.rating && entry.rating.score,
       meta: formatCalendarEpisodeMeta(entry),
-    })
+    }, coverOpts)
+  }
+
+  function fillWeekdayGrid(gridEl, items, coverOpts) {
+    if (!gridEl) return
+    var html = ''
+    for (var j = 0; j < items.length; j++) {
+      var priority = coverOpts && coverOpts.priorityFirst && j < 6
+      html += renderCalendarCard(items[j], priority ? { priority: true } : null)
+    }
+    gridEl.innerHTML = html
+    gridEl.classList.remove('bgm-grid-pending')
+    gridEl.removeAttribute('data-bgm-pending')
   }
 
   // ---------------------------------------------------------------
@@ -234,7 +272,7 @@
         }
         var cardsHtml = ''
         for (var i = 0; i < data.data.length; i++) {
-          cardsHtml += renderCard(data.data[i])
+          cardsHtml += renderCard(data.data[i], i < 8 ? { priority: true } : null)
         }
         grid.innerHTML = cardsHtml
 
@@ -274,9 +312,8 @@
         statusBar.className = 'bgm-status'
         statusBar.innerHTML = '<p>正在连接...</p>'
         view.insertBefore(statusBar, nav)
-        try {
-          var healthRes = await fetch(API + '/api/health')
-          var health = await healthRes.json()
+        load(currentType, 1)
+        fetchHealthJson(false).then(function (health) {
           if (health.ok && health.data && health.data.collections) {
             var c = health.data.collections
             statusBar.innerHTML = '<p>已连接 | 条目 ' + safeNumber(c.types && c.types._total, 0) + ' | 更新于 ' + escapeHtml((c.updated_at || '?').slice(0, 10)) + '</p>'
@@ -287,11 +324,10 @@
           } else {
             statusBar.innerHTML = '<p class="bgm-status-warn">健康检查失败: ' + escapeHtml(health.error || '') + '</p>'
           }
-        } catch (e) {
+        }).catch(function (e) {
           statusBar.innerHTML = '<p class="bgm-status-warn">无法连接 Worker: ' + escapeHtml(e.message || '') + '</p>'
-        }
+        })
         setTimeout(function () { statusBar.style.opacity = '0.4' }, 3000)
-        load(currentType, 1)
       },
     }
   }
@@ -312,29 +348,64 @@
     var todayId = (new Date().getDay() === 0) ? 7 : new Date().getDay()
 
     function renderCalendar(days) {
+      if (calendarLazyObserver) {
+        calendarLazyObserver.disconnect()
+        calendarLazyObserver = null
+      }
       if (!days || !days.length) {
         cal.innerHTML = '<p class="bgm-empty">暂无日历数据 — 同步可能尚未执行，数据尚未发布，请稍后再试</p>'
         return
       }
-      var html = ''
+      cal.innerHTML = ''
+      var pendingGrids = []
       for (var i = 0; i < days.length; i++) {
         var day = days[i]
         var wd = day.weekday || {}
         var items = day.items || []
         var isToday = wd.id === todayId
-        html += '<section class="bgm-weekday' + (isToday ? ' is-today' : '') + '">'
-        html += '<div class="bgm-weekday-head">' +
+        var section = document.createElement('section')
+        section.className = 'bgm-weekday' + (isToday ? ' is-today' : '')
+        section.innerHTML = '<div class="bgm-weekday-head">' +
           '<span class="cn">' + escapeHtml(wd.cn || '') + '</span>' +
           '<span class="en">' + escapeHtml(wd.en || '') + '</span>' +
           '<span class="count">' + items.length + '</span>' +
         '</div>'
-        html += '<div class="bgm-grid">'
-        for (var j = 0; j < items.length; j++) {
-          html += renderCalendarCard(items[j])
+        var grid = document.createElement('div')
+        grid.className = 'bgm-grid bgm-grid-pending'
+        grid.setAttribute('data-bgm-pending', '1')
+        section.appendChild(grid)
+        cal.appendChild(section)
+        if (isToday) {
+          fillWeekdayGrid(grid, items, { priorityFirst: true })
+        } else if (items.length) {
+          pendingGrids.push({ grid: grid, items: items })
+        } else {
+          grid.classList.remove('bgm-grid-pending')
+          grid.removeAttribute('data-bgm-pending')
         }
-        html += '</div></section>'
       }
-      cal.innerHTML = html
+      if (pendingGrids.length && typeof IntersectionObserver === 'function') {
+        calendarLazyObserver = new IntersectionObserver(function (entries) {
+          for (var e = 0; e < entries.length; e++) {
+            var entry = entries[e]
+            if (!entry.isIntersecting) continue
+            var target = entry.target
+            var payload = target.__bgmWeekdayItems
+            if (!payload) continue
+            fillWeekdayGrid(target, payload, null)
+            calendarLazyObserver.unobserve(target)
+            target.__bgmWeekdayItems = null
+          }
+        }, { root: null, rootMargin: '240px 0px', threshold: 0.01 })
+        for (var p = 0; p < pendingGrids.length; p++) {
+          pendingGrids[p].grid.__bgmWeekdayItems = pendingGrids[p].items
+          calendarLazyObserver.observe(pendingGrids[p].grid)
+        }
+      } else {
+        for (var f = 0; f < pendingGrids.length; f++) {
+          fillWeekdayGrid(pendingGrids[f].grid, pendingGrids[f].items, null)
+        }
+      }
     }
 
     return {

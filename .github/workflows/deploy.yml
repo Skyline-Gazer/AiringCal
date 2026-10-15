@@ -94,7 +94,7 @@ jobs:
         name: Resolve existing Cloudflare resources
         run: node scripts/resolve-cloudflare-resources.mjs
       - name: Check Worker Cron quota before uploads
-        run: node scripts/list-cloudflare-crons.mjs
+        run: node scripts/list-cloudflare-crons.mjs --deploy apps/web-worker/wrangler.toml
 
   apply_d1_migrations:
     timeout-minutes: 20

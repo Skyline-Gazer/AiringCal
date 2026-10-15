@@ -10,6 +10,7 @@
 | `apps/sync-worker`, `apps/media-worker` | Archived; not deployed |
 | `apps/vps-sync` | Abandoned |
 | Workers Cron / Workflow | **Not configured** for AiringCal write in production |
+| `airing-cal-frontend` Cron | **None** — thumb via `POST /api/thumb-gen` only |
 
 ## Operator check
 

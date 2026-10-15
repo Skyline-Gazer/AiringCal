@@ -105,6 +105,7 @@ test('calendar hydrates cached image refs and subject metadata like collections'
   } as any)
   const body = await response.json() as any
 
+  assert.match(response.headers.get('Cache-Control') ?? '', /s-maxage=600/)
   assert.equal(body[0].items[0].images.common.uri, `/image/${hash}`)
   assert.equal(body[0].items[0].images.large, null)
   assert.equal(body[0].items[0].image_status.common, 'cached')

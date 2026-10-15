@@ -1,16 +1,29 @@
-import { imageOriginalKey, imageThumbV1Key } from '@airing-cal/storage'
+import { imageOriginalKey, imageThumbV2Key } from '@airing-cal/storage'
 import type { ImageR2Binding, ThumbImagesBinding } from './image-r2-binding.ts'
 
-/** THUMB_SPEC v1 — bump R2 suffix / transform when changing. */
-export const THUMB_SPEC_REVISION = 'v1'
+/** Active materialize spec — bump R2 suffix / transform when changing. */
+export const THUMB_SPEC_REVISION = 'v2'
 
-export const THUMB_TRANSFORM = {
+/** Legacy read fallback (existing R2 objects). */
+export const THUMB_TRANSFORM_V1 = {
   width: 420,
   height: 560,
   fit: 'cover' as const,
   format: 'image/webp' as const,
   quality: 85,
 }
+
+/** Grid-oriented cover (~140px column @2x). */
+export const THUMB_TRANSFORM_V2 = {
+  width: 320,
+  height: 427,
+  fit: 'cover' as const,
+  format: 'image/webp' as const,
+  quality: 78,
+}
+
+/** @deprecated Use THUMB_TRANSFORM_V2 */
+export const THUMB_TRANSFORM = THUMB_TRANSFORM_V1
 
 export const MAX_THUMB_BATCH = 50
 
@@ -47,10 +60,10 @@ export function hashFromLargeR2Key(key: string | null | undefined): string | nul
 
 export async function materializeThumb(hash: string, env: ThumbMaterializeEnv): Promise<ThumbGenItemResult> {
   const normalized = hash.toLowerCase()
-  const thumbKey = imageThumbV1Key(normalized)
+  const thumbKey = imageThumbV2Key(normalized)
   const existing = await env.AIRING_CAL_R2.head(thumbKey)
   if (existing) {
-    console.log(JSON.stringify({ stage: 'thumb_gen', hash: normalized, status: 'skipped', reason: 'exists' }))
+    console.log(JSON.stringify({ stage: 'thumb_gen', hash: normalized, status: 'skipped', reason: 'exists', spec: THUMB_SPEC_REVISION }))
     return { hash: normalized, status: 'skipped' }
   }
 
@@ -62,15 +75,22 @@ export async function materializeThumb(hash: string, env: ThumbMaterializeEnv): 
 
   try {
     const bytes = await original.arrayBuffer()
+    const spec = THUMB_TRANSFORM_V2
     const transformed = await env.IMAGES
       .input(streamFromBytes(bytes))
-      .transform({ width: THUMB_TRANSFORM.width, height: THUMB_TRANSFORM.height, fit: THUMB_TRANSFORM.fit })
-      .output({ format: THUMB_TRANSFORM.format, quality: THUMB_TRANSFORM.quality })
+      .transform({ width: spec.width, height: spec.height, fit: spec.fit })
+      .output({ format: spec.format, quality: spec.quality })
     const thumbBytes = await new Response(transformed.image()).arrayBuffer()
     await env.AIRING_CAL_R2.put(thumbKey, thumbBytes, {
       httpMetadata: { contentType: 'image/webp' },
     })
-    console.log(JSON.stringify({ stage: 'thumb_gen', hash: normalized, status: 'generated', bytes: thumbBytes.byteLength }))
+    console.log(JSON.stringify({
+      stage: 'thumb_gen',
+      hash: normalized,
+      status: 'generated',
+      spec: THUMB_SPEC_REVISION,
+      bytes: thumbBytes.byteLength,
+    }))
     return { hash: normalized, status: 'generated' }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'transform_failed'

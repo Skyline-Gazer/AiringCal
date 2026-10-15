@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
 const token = process.env.CLOUDFLARE_API_TOKEN
@@ -14,6 +15,58 @@ export function cronQuotaStatus(rows, workerName = targetWorker, limit = maxCron
     targetHasCron,
     canDeployTargetCron: targetHasCron || rows.length < limit,
   }
+}
+
+/** @param {string} wranglerToml */
+export function parseWranglerCronDeploy(wranglerToml) {
+  const nameMatch = wranglerToml.match(/^name\s*=\s*"([^"]+)"/m)
+  if (!nameMatch) {
+    throw new Error('wrangler.toml is missing name = "..."')
+  }
+  const triggersBlock = wranglerToml.match(/^\[triggers\][\s\S]*?^crons\s*=\s*(\[[^\]]*\])/m)
+  let crons = []
+  if (triggersBlock) {
+    try {
+      crons = JSON.parse(triggersBlock[1].replace(/'/g, '"'))
+    } catch {
+      throw new Error('wrangler.toml [triggers].crons is not valid JSON array')
+    }
+  }
+  if (!Array.isArray(crons)) {
+    throw new Error('wrangler.toml [triggers].crons must be an array')
+  }
+  return { worker: nameMatch[1], crons }
+}
+
+/**
+ * Apply planned Wrangler uploads so preflight matches post-deploy cron occupancy.
+ * @param {{ worker: string, cron: string }[]} accountRows
+ * @param {{ worker: string, crons: string[] }[]} deployPlans
+ */
+export function projectCronRowsAfterDeploy(accountRows, deployPlans) {
+  const planByWorker = new Map(deployPlans.map((plan) => [plan.worker, plan.crons]))
+  const untouched = accountRows.filter((row) => !planByWorker.has(row.worker))
+  const projected = [...untouched]
+  for (const plan of deployPlans) {
+    for (const cron of plan.crons) {
+      projected.push({ worker: plan.worker, cron })
+    }
+  }
+  return projected
+}
+
+function deployPlansFromArgv(argv) {
+  /** @type {{ worker: string, crons: string[] }[]} */
+  const plans = []
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === '--deploy') {
+      const path = argv[index + 1]
+      if (!path) throw new Error('--deploy requires a wrangler.toml path')
+      plans.push(parseWranglerCronDeploy(readFileSync(path, 'utf8')))
+      index += 1
+    }
+  }
+  return plans
 }
 
 async function api(path) {
@@ -54,6 +107,8 @@ async function main() {
     process.exit(1)
   }
 
+  const deployPlans = deployPlansFromArgv(process.argv.slice(2))
+
   const services = []
   for (let page = 1; ; page += 1) {
     const body = await api(`/accounts/${accountId}/workers/services?page=${page}&per_page=100`)
@@ -64,17 +119,24 @@ async function main() {
 
   services.sort((a, b) => serviceName(a).localeCompare(serviceName(b)))
 
-  const rows = []
+  const accountRows = []
   for (const service of services) {
     const name = serviceName(service)
     if (!name) continue
     const body = await api(`/accounts/${accountId}/workers/scripts/${encodeURIComponent(name)}/schedules`)
     for (const schedule of schedulesFromResult(body.result)) {
-      rows.push({ worker: name, cron: schedule.cron })
+      accountRows.push({ worker: name, cron: schedule.cron })
     }
   }
 
+  const rows = deployPlans.length > 0
+    ? projectCronRowsAfterDeploy(accountRows, deployPlans)
+    : accountRows
+
   console.log('Cloudflare Worker Cron Triggers')
+  if (deployPlans.length > 0) {
+    console.log(`(projected after deploy: ${deployPlans.map((plan) => plan.worker).join(', ')})`)
+  }
   if (!rows.length) {
     console.log('(none)')
   } else {
