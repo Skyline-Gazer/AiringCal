@@ -19,7 +19,7 @@ pnpm -F @airing-cal/web-worker test
 
 ## 部署与构建元数据
 
-CI 见 [`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml) 的 `deploy_web_worker`。构建 commit / 时间与 `GET /api/version` 的 JSON 契约见 [docs/reference/web-worker-public-api.md](../../docs/reference/web-worker-public-api.md)。
+CI / deploy 见 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)（`validate` matrix → `deploy_web_worker`）。构建 commit / 时间与 `GET /api/version` 的 JSON 契约见 [docs/reference/web-worker-public-api.md](../../docs/reference/web-worker-public-api.md)。
 
 ## 源码布局
 

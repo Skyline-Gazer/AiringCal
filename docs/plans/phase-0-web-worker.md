@@ -12,7 +12,7 @@ Minimize Cloudflare Workers count on Free Plan: **one** public deploy target tha
 |------|--------|
 | App | [`apps/web-worker`](../../apps/web-worker/) |
 | Wrangler `name` | `airing-cal-frontend` (keep custom domains) |
-| GitHub job | `deploy_web_worker` in [`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml) |
+| GitHub job | `deploy_web_worker` in [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml) |
 | D1 migrations | materialize `apps/web-worker/wrangler.toml` |
 
 Bindings (checked-in): `AIRING_CAL_D1`, `AIRING_CAL_KV`, `AIRING_CAL_R2`, `AIRING_CAL_DATA_R2` — no service bindings.

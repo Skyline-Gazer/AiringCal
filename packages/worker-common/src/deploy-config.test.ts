@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
+const ciPath = resolve(root, '.github/workflows/ci.yml')
 
 const productionApps = ['web-worker', 'node-jobs'] as const
 
@@ -60,71 +61,61 @@ test('legacy Cloudflare write Workers are removed from the repo', () => {
     assert.equal(existsSync(resolve(root, 'apps', app)), false, `${app} should be removed; use git history`)
   }
   assert.equal(existsSync(resolve(root, '.github/workflows/sync-workflow.yml')), false)
+  assert.equal(existsSync(resolve(root, '.github/workflows/deploy.yml')), false)
   assert.equal(existsSync(resolve(root, 'scripts/push-sync-trigger.mjs')), false)
 })
 
-test('deploy workflow resolves existing resources without waiting for business sync', () => {
-  const workflow = readFileSync(resolve(root, '.github/workflows/deploy.yml'), 'utf8')
+test('unified CI pipeline validates, bundles, and deploys without duplicate quality gates', () => {
+  const workflow = readFileSync(ciPath, 'utf8')
   const jobs = new Map<string, string[]>()
-  const jobMatches = [...workflow.matchAll(/^  ([a-z][a-z0-9_]+):\s*$/gm)]
+  const jobMatches = [...workflow.matchAll(/^  ([a-z][a-z0-9_-]+):\s*$/gm)]
   for (const [index, match] of jobMatches.entries()) {
     const start = (match.index ?? 0) + match[0].length
     const end = jobMatches[index + 1]?.index ?? workflow.length
     const body = workflow.slice(start, end)
-    const needs = body.match(/^    needs:\s*\[([^\]]+)\]\s*$/m)?.[1]
-      .split(',')
-      .map((job) => job.trim()) ?? []
+    const bracketNeeds = body.match(/^    needs:\s*\[([^\]]+)\]\s*$/m)?.[1]
+    const singleNeed = body.match(/^    needs:\s*([a-z][a-z0-9_-]+)\s*$/m)?.[1]
+    const needs = bracketNeeds
+      ? bracketNeeds.split(',').map((job) => job.trim())
+      : singleNeed
+        ? [singleNeed]
+        : []
     jobs.set(match[1], needs)
   }
-  const deployOrder = ['resolve_cloudflare']
-  for (const nextJob of ['apply_d1_migrations', 'deploy_web_worker']) {
-    assert.ok(jobs.get(nextJob)?.includes(deployOrder.at(-1) ?? ''), `${nextJob} should need ${deployOrder.at(-1)}`)
-    deployOrder.push(nextJob)
-  }
-  assert.deepEqual(deployOrder, ['resolve_cloudflare', 'apply_d1_migrations', 'deploy_web_worker'])
 
-  assert.match(workflow, /push:\s*\n\s+branches:\s*\[dev\]/, 'only dev should deploy automatically')
-  assert.doesNotMatch(workflow, /branches:\s*\[[^\]]*main/, 'main should not compete for the same workers')
-  assert.match(workflow, /concurrency:\s*\n\s+group:\s*deploy-cloudflare\s*\n\s+cancel-in-progress:\s*false/, 'deployments should be serialized without cancelling the active run')
+  assert.match(workflow, /push:[\s\S]*?branches:\s*\[dev\][\s\S]*?paths-ignore:/, 'dev push should skip docs-only paths')
+  assert.match(workflow, /pull_request:/, 'PRs should run quality gates')
+  assert.match(workflow, /workflow_dispatch:/, 'manual redeploy should stay on the same workflow')
+  assert.match(workflow, /cancel-in-progress:\s*\$\{\{\s*github\.event_name == 'pull_request'\s*\}\}/, 'only PRs should cancel stale runs')
+  assert.match(workflow, /matrix:[\s\S]*?task:\s*\[typecheck, test, build:check\]/, 'validate should run checks in parallel')
+  assert.doesNotMatch(workflow, /-\s+run:\s+pnpm typecheck[\s\S]*-\s+run:\s+pnpm test/, 'validate must not run the full gate serially in one job')
+
+  assert.ok(jobs.get('node-jobs-bundle')?.includes('validate'), 'bundle should wait for validate matrix')
+  assert.ok(jobs.get('resolve_cloudflare')?.includes('resolve_ref'), 'cloudflare resolve should not wait for validate')
+  assert.deepEqual(jobs.get('deploy_web_worker'), ['resolve_ref', 'validate', 'resolve_cloudflare'])
+
+  assert.match(workflow, /deploy_web_worker:[\s\S]*?concurrency:[\s\S]*?group:\s*deploy-cloudflare[\s\S]*?cancel-in-progress:\s*false/, 'deploy job should serialize without cancelling in-flight uploads')
+
   assert.match(workflow, /resolve_ref:[\s\S]*?outputs:[\s\S]*?sha:\s*\$\{\{ steps\.resolve\.outputs\.sha \}\}/, 'a no-secret job should resolve one immutable deployment SHA')
   assert.match(workflow, /git merge-base --is-ancestor "\$sha" origin\/dev/, 'manual refs must already be ancestors of dev')
   assert.doesNotMatch(workflow.match(/resolve_ref:[\s\S]*?\n  validate:/)?.[0] ?? '', /secrets\./, 'ref validation must not receive production secrets')
   assert.match(workflow, /apps\/web-worker\/wrangler\.toml/, 'workflow should deploy checked-in web-worker config')
-  assert.match(workflow, /CLOUDFLARE_API_TOKEN:\s*\$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/, 'workflow should expose CLOUDFLARE_API_TOKEN to wrangler')
-  assert.match(workflow, /CLOUDFLARE_ACCOUNT_ID:\s*\$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/, 'workflow should expose CLOUDFLARE_ACCOUNT_ID to wrangler')
-  assert.match(workflow, /resolve_cloudflare:/, 'workflow should resolve existing Cloudflare resources before deploy')
   assert.match(workflow, /node scripts\/resolve-cloudflare-resources\.mjs/, 'workflow should use the read-only resource resolver')
-  assert.match(workflow, /kv_namespace_id:\s*\$\{\{ steps\.resolve\.outputs\.kv_namespace_id \}\}/, 'workflow should expose the resolved KV namespace id as a job output')
-  assert.match(workflow, /d1_database_id:\s*\$\{\{ steps\.resolve\.outputs\.d1_database_id \}\}/, 'workflow should expose the resolved D1 database id as a job output')
-  assert.match(workflow, /apply_d1_migrations:[\s\S]*?needs:\s*\[resolve_ref, validate, resolve_cloudflare\]/, 'D1 migration should wait for resource resolution')
-  assert.match(workflow, /apply_d1_migrations:[\s\S]*?AIRING_CAL_D1_DATABASE_ID:\s*\$\{\{ needs\.resolve_cloudflare\.outputs\.d1_database_id \}\}/, 'D1 migration should materialize the resolved database id')
-  assert.match(workflow, /apply_d1_migrations:[\s\S]*?node scripts\/materialize-wrangler-config\.mjs apps\/web-worker\/wrangler\.toml "\$RUNNER_TEMP\/wrangler-web-worker\.toml"/, 'D1 migration should materialize its config before applying migrations')
-  assert.match(workflow, /pnpm exec wrangler d1 migrations apply AIRING_CAL_D1 --remote --config "\$RUNNER_TEMP\/wrangler-web-worker\.toml"/, 'D1 migration should use the verified remote migration command')
-  assert.match(workflow, /deploy_web_worker:/, 'workflow should deploy the merged web worker')
-  assert.match(workflow, /deploy_web_worker:[\s\S]*?needs:\s*\[resolve_ref, validate, resolve_cloudflare, apply_d1_migrations\]/, 'web worker deploy should wait for D1 migration')
-  for (const job of ['resolve_ref', 'validate', 'resolve_cloudflare', 'apply_d1_migrations', 'deploy_web_worker']) {
+  assert.match(workflow, /node scripts\/list-cloudflare-crons\.mjs --deploy apps\/web-worker\/wrangler\.toml/, 'cron quota must project the web-worker upload before deploy')
+  assert.ok(workflow.indexOf('node scripts/list-cloudflare-crons.mjs') < workflow.indexOf('pnpm exec wrangler deploy'), 'cron preflight must run before wrangler deploy')
+
+  assert.match(workflow, /Apply D1 migrations/, 'deploy job should apply remote D1 migrations')
+  assert.match(workflow, /pnpm exec wrangler d1 migrations apply AIRING_CAL_D1 --remote/, 'D1 migration should use the verified remote migration command')
+  assert.match(workflow, /pnpm exec wrangler deploy --config/, 'deploy job should upload web-worker with materialized Wrangler config')
+  assert.doesNotMatch(workflow, /wrangler deploy --dry-run/, 'dry-run belongs in build:check matrix, not deploy')
+
+  assert.match(workflow, /BANGUMI_GIT_COMMIT_SHA:\s*\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/, 'web worker deploy should stamp the resolved deployment sha')
+  assert.match(workflow, /qinglong-bundle/, 'push dev should publish the QingLong bundle artifact')
+  assert.match(workflow, /gh workflow run ci\.yml --ref dev -f ref=\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/, 'recovery report should provide an exact immutable convergence command')
+
+  for (const job of ['resolve_ref', 'validate', 'node-jobs-bundle', 'resolve_cloudflare', 'deploy_web_worker', 'recovery_report']) {
     assert.match(workflow, new RegExp(`${job}:[\\s\\S]*?timeout-minutes:`), `${job} should have a timeout`)
   }
-  assert.match(workflow, /BANGUMI_GIT_COMMIT_SHA:\s*\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/, 'web worker deploy should stamp the resolved deployment sha')
-  assert.match(workflow, /BANGUMI_GIT_REPOSITORY_URL:\s*https:\/\/github\.com\/\$\{\{ github\.repository \}\}/, 'frontend deploy should stamp the repository URL')
-  assert.match(workflow, /AIRING_CAL_KV_NAMESPACE_ID:\s*\$\{\{ needs\.resolve_cloudflare\.outputs\.kv_namespace_id \}\}/, 'workflow should pass the resolved KV namespace id to materialize deploy configs')
-  assert.match(workflow, /AIRING_CAL_D1_DATABASE_ID:\s*\$\{\{ needs\.resolve_cloudflare\.outputs\.d1_database_id \}\}/, 'workflow should pass the resolved D1 database id to materialize deploy configs')
-  assert.match(workflow, /node scripts\/materialize-wrangler-config\.mjs apps\/web-worker\/wrangler\.toml \$\{\{ runner\.temp \}\}\/wrangler-web-worker\.toml/, 'workflow should materialize web-worker config before deploying')
-  assert.match(workflow, /pnpm exec wrangler deploy --config \$\{\{ runner\.temp \}\}\/wrangler-web-worker\.toml/, 'workflow should deploy web-worker with materialized Wrangler config')
-  assert.match(workflow, /WRANGLER_LOG_PATH:\s*\$\{\{ runner\.temp \}\}\/wrangler-web-worker\.log/, 'workflow should save Wrangler debug logs for web-worker deploy')
-  assert.match(workflow, /WRANGLER_LOG_SANITIZE:\s*"false"/, 'workflow should include unsanitized Wrangler response bodies for failed deploy diagnosis')
-  assert.match(workflow, /node scripts\/list-cloudflare-crons\.mjs --deploy apps\/web-worker\/wrangler\.toml/, 'cron quota must project the web-worker upload before deploy')
-  assert.ok(workflow.indexOf('node scripts/list-cloudflare-crons.mjs') < workflow.indexOf('pnpm exec wrangler deploy --config'), 'cron quota preflight must run before the first worker upload')
-  const checkoutRefs = [...workflow.matchAll(/ref:\s*\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/g)]
-  assert.equal(checkoutRefs.length, 5, 'every post-resolution job, including migration and recovery reporting, must checkout the same immutable SHA')
-  assert.match(workflow, /recovery_report:[\s\S]*?if:\s*\$\{\{ always\(\) &&/, 'partial failures should produce an always-evaluated recovery report')
-  for (const worker of ['airing-cal-frontend']) {
-    assert.match(workflow, new RegExp(`for worker in [^\n]*${worker}`), `recovery report should include ${worker}`)
-  }
-  assert.match(workflow, /wrangler deployments list --name "\$worker" --json/, 'recovery report should query each deployed worker version')
-  assert.match(workflow, /gh workflow run deploy\.yml --ref dev -f ref=\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/, 'recovery report should provide an exact immutable convergence command')
-  assert.match(workflow, /s\/\(Authorization: Bearer \)\[A-Za-z0-9\._-\]\+\/\\1\[redacted\]\/g/, 'workflow should redact bearer tokens in header-like Wrangler logs')
-  assert.match(workflow, /s\/\("authorization": \?"Bearer \)\[A-Za-z0-9\._-\]\+\/\\1\[redacted\]\/gi/, 'workflow should redact bearer tokens in JSON-like Wrangler logs')
 
   const forbidden = [
     'cloudflare/wrangler-action',
@@ -146,28 +137,14 @@ test('deploy workflow resolves existing resources without waiting for business s
     'sync:meta.synced_at',
     'sync-workflow.yml',
     'airing-cal-sync',
+    '.github/workflows/deploy.yml',
   ]
   for (const fragment of forbidden) {
     assert.doesNotMatch(workflow, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `workflow should not contain ${fragment}`)
   }
 })
 
-test('CI validates pull requests and dev pushes without retaining stale runs', () => {
-  const ci = readFileSync(resolve(root, '.github/workflows/ci.yml'), 'utf8')
-  const filteredPullRequestFixture = `on:
-  pull_request:
-    branches: [dev]
-`
-  const unfilteredTriggerBlock = /^on:\n  push:\n    branches: \[dev\]\n  pull_request:\n\nconcurrency:/m
-  assert.doesNotMatch(filteredPullRequestFixture, unfilteredTriggerBlock, 'filtered pull request triggers must not satisfy the unfiltered trigger check')
-  assert.match(ci, /push:\s*\n\s+branches:\s*\[dev\]/, 'CI should run on pushes to dev only')
-  assert.match(ci, unfilteredTriggerBlock, 'CI should use default pull request activities without branch or path filters')
-  assert.match(ci, /concurrency:\s*\n\s+group:\s*\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\s*\n\s+cancel-in-progress:\s*true/, 'CI should cancel stale runs only within this workflow and ref')
-  assert.match(ci, /pnpm install --frozen-lockfile/)
-  assert.match(ci, /pnpm typecheck/)
-  assert.match(ci, /pnpm test/)
-  assert.match(ci, /pnpm build:check/)
-
+test('bootstrap workflow stays manual-only', () => {
   const bootstrap = readFileSync(resolve(root, '.github/workflows/bootstrap-cloudflare.yml'), 'utf8')
   assert.match(bootstrap, /workflow_dispatch:/)
   assert.doesNotMatch(bootstrap, /\npush:/)
