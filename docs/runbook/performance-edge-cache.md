@@ -29,8 +29,8 @@
 
 ## Thumb v2 回填
 
-- Cron `15 * * * *` UTC 与 `POST /api/thumb-gen` 会写入 `thumb.v2.webp`。  
-- 仅有 v1 的对象会在下次 backfill/gen 时补 v2。  
+- QingLong sync 后 `POST /api/thumb-gen`（或运维 Bearer batch）写入 `thumb.v2.webp`。  
+- 仅有 v1 的对象会在下次 gen 时补 v2。  
 - 读路径在 v2 缺失时仍用 v1，无中断。
 
 ## 验证

@@ -27,6 +27,4 @@ bucket_name = "airing-cal-data"
 [images]
 binding = "IMAGES"
 
-# AC-2-05: scan D1 subject_media for missing thumb.v1.webp (no public HTTP).
-[triggers]
-crons = ["15 * * * *"]
+# Thumb materialization: QingLong/node-jobs POST /api/thumb-gen after sync (no Worker cron).

@@ -7,7 +7,7 @@ import { dirname, resolve } from 'node:path'
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 
 const appConfigs = [
-  ['web-worker', ['[[d1_databases]]', 'binding = "AIRING_CAL_D1"', '[[kv_namespaces]]', 'binding = "AIRING_CAL_KV"', 'binding = "AIRING_CAL_R2"', 'binding = "AIRING_CAL_DATA_R2"']],
+  ['web-worker', ['[[d1_databases]]', 'binding = "AIRING_CAL_D1"', '[[kv_namespaces]]', 'binding = "AIRING_CAL_KV"', 'binding = "AIRING_CAL_R2"', 'binding = "AIRING_CAL_DATA_R2"', 'binding = "IMAGES"']],
   ['frontend-worker', ['[[services]]', 'READ_WORKER', 'SYNC_WORKER']],
   ['read-worker', ['[[d1_databases]]', 'binding = "AIRING_CAL_D1"', '[[kv_namespaces]]', 'binding = "AIRING_CAL_KV"', 'binding = "AIRING_CAL_R2"', 'binding = "AIRING_CAL_DATA_R2"']],
   ['sync-worker', ['[[d1_databases]]', 'binding = "AIRING_CAL_D1"', 'binding = "AIRING_CAL_DATA_R2"', 'binding = "AIRING_CAL_KV"', 'binding = "MEDIA_QUEUE"', '[[workflows]]', 'binding = "SYNC_WORKFLOW"', 'class_name = "SyncWorkflow"', '[triggers]', 'crons = ["0 20 * * *"]']],
@@ -67,6 +67,12 @@ test('media queue consumer uses Free Plan concurrency limits', () => {
   assert.match(config, /^max_batch_timeout = 5$/m)
   assert.match(config, /^max_concurrency = 4$/m)
   assert.match(config, /^max_retries = 3$/m)
+})
+
+test('public web-worker does not register Worker cron triggers', () => {
+  const config = readFileSync(resolve(root, 'apps/web-worker/wrangler.toml'), 'utf8')
+  assert.doesNotMatch(config, /^\[triggers\]$/m, 'web-worker deploy should not consume account cron quota')
+  assert.doesNotMatch(config, /^crons =/m)
 })
 
 test('Free Plan Cron only triggers the Workflow without a legacy Queue consumer', () => {
@@ -135,7 +141,7 @@ test('deploy workflow resolves existing resources without waiting for business s
   assert.match(workflow, /pnpm exec wrangler deploy --config \$\{\{ runner\.temp \}\}\/wrangler-web-worker\.toml/, 'workflow should deploy web-worker with materialized Wrangler config')
   assert.match(workflow, /WRANGLER_LOG_PATH:\s*\$\{\{ runner\.temp \}\}\/wrangler-web-worker\.log/, 'workflow should save Wrangler debug logs for web-worker deploy')
   assert.match(workflow, /WRANGLER_LOG_SANITIZE:\s*"false"/, 'workflow should include unsanitized Wrangler response bodies for failed deploy diagnosis')
-  assert.match(workflow, /node scripts\/list-cloudflare-crons\.mjs/, 'cron quota must be checked before deploying any worker')
+  assert.match(workflow, /node scripts\/list-cloudflare-crons\.mjs --deploy apps\/web-worker\/wrangler\.toml/, 'cron quota must project the web-worker upload before deploy')
   assert.ok(workflow.indexOf('node scripts/list-cloudflare-crons.mjs') < workflow.indexOf('pnpm exec wrangler deploy --config'), 'cron quota preflight must run before the first worker upload')
   const checkoutRefs = [...workflow.matchAll(/ref:\s*\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/g)]
   assert.equal(checkoutRefs.length, 5, 'every post-resolution job, including migration and recovery reporting, must checkout the same immutable SHA')

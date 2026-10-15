@@ -113,13 +113,9 @@ Per hash: `HeadObject` thumb key → skip；否则 R2 get original → Cloudflar
 
 **THUMB_SPEC v2（当前写入）：** 320×427 `cover` WebP quality 78 → `images/{hash}/thumb.v2.webp`。读路径 `/thumb` 优先 v2，否则 v1（420×560 q85）。见 `thumb-materialize.ts` 与 [performance-edge-cache runbook](../runbook/performance-edge-cache.md)。
 
-### Cron backfill（AC-2-05，无 HTTP）
+### Thumb 补偿（无 Worker cron）
 
-| 项 | 值 |
-|----|-----|
-| 调度 | `15 * * * *` UTC（`wrangler.toml` `[triggers].crons`） |
-| 逻辑 | D1 `subject_media` 扫描 `r2_image_large_key`，缺 thumb 则 materialize（批大小默认 30，`THUMB_BACKFILL_BATCH` 可选，上限 50） |
-| 实现 | `apps/web-worker/src/thumb-backfill-scheduled.ts` |
+生产不写 Worker `[triggers].crons`：QingLong sync 后 `node-jobs` 对 `POST /api/thumb-gen` 批量触发；漏网可运维带 Bearer 重 POST。D1 扫描逻辑见 `apps/web-worker/src/thumb-backfill-scheduled.ts`（单元测试，非 Cron 入口）。
 
 ## 其他公开路由
 
