@@ -47,6 +47,18 @@
   function refreshRuntimeStatus() {
     if (inFlight) return
     inFlight = true
+    const finish = () => {
+      inFlight = false
+    }
+    if (typeof window.bgmFetchHealth === 'function') {
+      window.bgmFetchHealth(false)
+        .then(render)
+        .catch((error) => {
+          setTargets('<span>Status unavailable: ' + escapeHtml(error && error.message ? error.message : String(error)) + '</span>')
+        })
+        .finally(finish)
+      return
+    }
     fetch('/api/health?t=' + Date.now(), { cache: 'no-store' })
       .then((response) => {
         if (!response.ok) throw new Error('HTTP ' + response.status + ' ' + response.statusText)
@@ -56,9 +68,7 @@
       .catch((error) => {
         setTargets('<span>Status unavailable: ' + escapeHtml(error && error.message ? error.message : String(error)) + '</span>')
       })
-      .finally(() => {
-        inFlight = false
-      })
+      .finally(finish)
   }
 
   refreshRuntimeStatus()

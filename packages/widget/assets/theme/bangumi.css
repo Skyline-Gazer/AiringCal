@@ -69,6 +69,10 @@ body {
   gap: 18px;
 }
 
+.bgm-grid.bgm-grid-pending {
+  min-height: 120px;
+}
+
 /* ---------- 卡片 ---------- */
 .bgm-card {
   display: block;

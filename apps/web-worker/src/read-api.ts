@@ -1,6 +1,6 @@
 export const readApiBoundary = 'web-worker-read-api'
 
-import { D1StateStore, imageOriginalKey, imageStatusKey, imageThumbV1Key, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncCurrentKey, syncMetaKey, syncRunKey, type D1DatabaseLike, type SnapshotManifest, type SyncRun } from '@airing-cal/storage'
+import { D1StateStore, imageOriginalKey, imageStatusKey, imageThumbV1Key, imageThumbV2Key, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncCurrentKey, syncMetaKey, syncRunKey, type D1DatabaseLike, type SnapshotManifest, type SyncRun } from '@airing-cal/storage'
 import { isConfirmedNotFoundSubjectMeta, type SubjectMeta } from '@airing-cal/domain'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 import {
@@ -29,7 +29,11 @@ interface ReadEnv {
 
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
 const CRON_HOUR_UTC = 20
-const HYDRATION_CONCURRENCY = 8
+const HYDRATION_CONCURRENCY = 12
+const CALENDAR_CACHE_CONTROL = 'public, max-age=60, s-maxage=600, stale-while-revalidate=300'
+const COLLECTIONS_CACHE_CONTROL = 'public, max-age=30, s-maxage=300, stale-while-revalidate=120'
+const IMAGE_CACHE_CONTROL = 'public, max-age=31536000, immutable'
+const IMAGE_CDN_CACHE_CONTROL = 'max-age=31536000'
 const WORKFLOW_STALE_SECONDS = 20 * 60
 const MAX_CURSOR_LENGTH = 1024
 
@@ -346,7 +350,7 @@ async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
       page,
       limit,
       types: { ...source.snapshot.summary },
-    })
+    }, { headers: { 'Cache-Control': COLLECTIONS_CACHE_CONTROL } })
   }
   const activeInstance = await activeSnapshotInstance(storage)
   const data = await readSnapshot<unknown[]>(storage, activeInstance, `collections:${type}`, snapshotCollectionsKey(type)) ?? []
@@ -354,16 +358,18 @@ async function handleCollections(url: URL, env: ReadEnv): Promise<Response> {
   const pageData = data.slice(start, start + limit)
   const types = await readSnapshot<Record<string, number>>(storage, activeInstance, 'summary', snapshotSummaryKey()) ?? {}
   const hydrated = await hydrateCollectionImages(pageData, env)
-  return json({ data: hydrated, total: data.length, page, limit, types })
+  return json({ data: hydrated, total: data.length, page, limit, types }, { headers: { 'Cache-Control': COLLECTIONS_CACHE_CONTROL } })
 }
 
 async function handleCalendar(env: ReadEnv): Promise<Response> {
   const storage = new KVStorage(env.AIRING_CAL_KV)
   const source = await snapshotSourceFor(env)
-  if (source.mode === 'r2') return json(source.snapshot.calendar)
+  if (source.mode === 'r2') {
+    return json(source.snapshot.calendar, { headers: { 'Cache-Control': CALENDAR_CACHE_CONTROL } })
+  }
   const activeInstance = await activeSnapshotInstance(storage)
   const data = await readSnapshot<unknown[]>(storage, activeInstance, 'calendar', snapshotCalendarKey()) ?? []
-  return json(await hydrateCalendarImages(data, env))
+  return json(await hydrateCalendarImages(data, env), { headers: { 'Cache-Control': CALENDAR_CACHE_CONTROL } })
 }
 
 async function handleCache(url: URL, env: ReadEnv): Promise<Response> {
@@ -479,23 +485,40 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
   })
 }
 
-async function handleImage(pathname: string, env: ReadEnv): Promise<Response> {
+async function getThumbR2Object(hash: string, env: ReadEnv) {
+  const v2 = await env.AIRING_CAL_R2.get(imageThumbV2Key(hash))
+  if (v2) return v2
+  return env.AIRING_CAL_R2.get(imageThumbV1Key(hash))
+}
+
+async function handleImage(pathname: string, env: ReadEnv, request: Request): Promise<Response> {
   const match = pathname.match(/^\/image\/([0-9a-f]{64})(?:\/(thumb))?\/?$/i)
   if (!match?.[1]) return new Response('Invalid hash', { status: 400 })
   const hash = match[1].toLowerCase()
   const isThumb = match[2] === 'thumb'
-  const objectKey = isThumb ? imageThumbV1Key(hash) : imageOriginalKey(hash)
-  const object = await env.AIRING_CAL_R2.get(objectKey)
+
+  const edgeCache = typeof caches !== 'undefined' ? caches.default : undefined
+  if (edgeCache && request.method === 'GET') {
+    const cached = await edgeCache.match(request.url)
+    if (cached) return cached
+  }
+
+  const object = isThumb ? await getThumbR2Object(hash, env) : await env.AIRING_CAL_R2.get(imageOriginalKey(hash))
   if (!object) return new Response('Not found', { status: 404 })
   const headers = new Headers({
-    'Cache-Control': 'public, max-age=31536000, immutable',
+    'Cache-Control': IMAGE_CACHE_CONTROL,
+    'CDN-Cache-Control': IMAGE_CDN_CACHE_CONTROL,
     'Content-Type': isThumb ? 'image/webp' : (object.httpMetadata?.contentType || 'image/jpeg'),
   })
   if (!isThumb) {
     const bytes = object.customMetadata?.bytes
     if (bytes) headers.set('X-Image-Bytes', bytes)
   }
-  return new Response(await object.arrayBuffer(), { headers })
+  const response = new Response(await object.arrayBuffer(), { headers })
+  if (edgeCache && request.method === 'GET') {
+    void edgeCache.put(request.url, response.clone())
+  }
+  return response
 }
 
 export type WebWorkerEnv = ReadEnv
@@ -508,7 +531,7 @@ export async function handleReadRequest(request: Request, env: ReadEnv): Promise
   if (path === '/config') return json({ nsfw: env.NSFW_SHOW !== 'false' })
   if (path === '/health') return await handleHealth(env)
   if (path === '/cache') return await handleCache(url, env)
-  if (path.startsWith('/image/')) return await handleImage(path, env)
+  if (path.startsWith('/image/')) return await handleImage(path, env, request)
   return null
 }
 

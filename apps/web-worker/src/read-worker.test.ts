@@ -42,7 +42,7 @@ class MockR2 {
         customMetadata: { bytes: '5', source_size: 'common' },
       }
     }
-    if (key === `images/${'b'.repeat(64)}/thumb.v1.webp`) {
+    if (key === `images/${'b'.repeat(64)}/thumb.v2.webp` || key === `images/${'b'.repeat(64)}/thumb.v1.webp`) {
       return {
         arrayBuffer: async () => new TextEncoder().encode('thumb').buffer,
         httpMetadata: { contentType: 'image/webp' },
@@ -360,7 +360,7 @@ test('read-worker bounds cache status hydration concurrency', async () => {
 
   await worker.fetch(new Request('https://read.local/cache?limit=32'), env(kv) as any)
 
-  assert.equal(kv.maxActiveGets <= 8, true)
+  assert.equal(kv.maxActiveGets <= 12, true)
   assert.equal(kv.maxActiveGets > 1, true)
 })
 
@@ -383,6 +383,15 @@ test('read-worker serves pre-materialized thumb webp only', async () => {
 test('read-worker returns 404 for missing thumb', async () => {
   const response = await worker.fetch(new Request(`https://read.local/image/${'c'.repeat(64)}/thumb`), env() as any)
   assert.equal(response.status, 404)
+})
+
+test('read-worker calendar JSON is edge-cacheable', async () => {
+  const kv = new MockKV()
+  const days = [{ weekday: { id: 1, cn: '一' }, items: [] }]
+  await setActiveSnapshot(kv, 'live-perf', { calendar: days })
+  const response = await worker.fetch(new Request('https://read.local/calendar'), env(kv) as any)
+  assert.equal(response.status, 200)
+  assert.match(response.headers.get('Cache-Control') ?? '', /s-maxage=600/)
 })
 
 test('read-worker health reports collection snapshot status when KV has data', async () => {

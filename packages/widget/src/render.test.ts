@@ -52,20 +52,43 @@ function loadWidgetProductionRenderers() {
     'renderCover',
     'renderSubjectCard',
     'renderCalendarCard',
+    'fillWeekdayGrid',
   ].map((name) => extractFunction(widgetJs, name)).join('\n')
 
   return Function(
     'location',
     `var API = location.origin
+    var calendarLazyObserver = null
     ${source}
+    function mockElement() {
+      var el = {
+        className: '',
+        innerHTML: '',
+        children: [],
+        classList: {
+          remove: function () {},
+          toggle: function () {},
+        },
+        setAttribute: function () {},
+        removeAttribute: function () {},
+        appendChild: function (child) {
+          el.children.push(child)
+          return child
+        },
+      }
+      return el
+    }
+    var document = { createElement: mockElement }
     return {
       renderSubjectCard,
       renderCalendar(days) {
-        var cal = { innerHTML: '' }
+        var cal = mockElement()
         var todayId = 1
         ${extractFunction(widgetJs, 'renderCalendar')}
         renderCalendar(days)
-        return cal.innerHTML
+        return cal.children.map(function (section) {
+          return section.innerHTML + section.children.map(function (child) { return child.innerHTML }).join('')
+        }).join('')
       },
     }`,
   )({ origin: 'https://widget.example' }) as {
@@ -165,6 +188,9 @@ test('widgetJs prefers thumb URL when large ref has hash, else large/common uri'
   assert.match(widgetJs, /\/image\/' \+ large\.hash \+ '\/thumb/)
   assert.match(widgetJs, /data-fallback-large/)
   assert.match(widgetJs, /bgm-cover-img/)
+  assert.match(widgetJs, /bgmFetchHealth/)
+  assert.match(widgetJs, /bgm-grid-pending/)
+  assert.match(widgetJs, /IntersectionObserver/)
   assert.match(widgetJs, /images\?\.large\?\.uri/)
   assert.match(widgetJs, /document\.querySelector\('\.bgm-container'\)/)
   assert.equal(widgetJs.includes('hash_large'), false)

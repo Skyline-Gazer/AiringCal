@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { imageOriginalKey, imageThumbV1Key } from '@airing-cal/storage'
+import { imageOriginalKey, imageThumbV2Key } from '@airing-cal/storage'
 import { authorizeThumbGen, handleThumbGenRequest } from './thumb-gen.ts'
 
 const HASH = 'a'.repeat(64)
@@ -91,13 +91,13 @@ test('POST /api/thumb-gen generates thumb when original exists', async () => {
   const body = await response.json() as { summary: { generated: number } }
   assert.equal(response.status, 202)
   assert.equal(body.summary.generated, 1)
-  assert.ok(r2.objects.has(imageThumbV1Key(HASH)))
+  assert.ok(r2.objects.has(imageThumbV2Key(HASH)))
 })
 
 test('POST /api/thumb-gen skips existing thumb', async () => {
   const r2 = new MockR2()
   r2.objects.set(imageOriginalKey(HASH), new Uint8Array([1, 2, 3]))
-  r2.objects.set(imageThumbV1Key(HASH), new Uint8Array([9, 9]))
+  r2.objects.set(imageThumbV2Key(HASH), new Uint8Array([9, 9]))
   const response = await handleThumbGenRequest(
     new Request('https://example.com/api/thumb-gen', {
       method: 'POST',
@@ -108,7 +108,24 @@ test('POST /api/thumb-gen skips existing thumb', async () => {
   )
   const body = await response.json() as { summary: { skipped: number } }
   assert.equal(body.summary.skipped, 1)
-  assert.equal(r2.objects.get(imageThumbV1Key(HASH))!.length, 2)
+  assert.equal(r2.objects.get(imageThumbV2Key(HASH))!.length, 2)
+})
+
+test('POST /api/thumb-gen generates v2 when only legacy v1 exists', async () => {
+  const r2 = new MockR2()
+  r2.objects.set(imageOriginalKey(HASH), new Uint8Array([1, 2, 3]))
+  r2.objects.set(`images/${HASH}/thumb.v1.webp`, new Uint8Array([9, 9]))
+  const response = await handleThumbGenRequest(
+    new Request('https://example.com/api/thumb-gen', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer test-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ large_hashes: [HASH] }),
+    }),
+    env(r2),
+  )
+  const body = await response.json() as { summary: { generated: number } }
+  assert.equal(body.summary.generated, 1)
+  assert.ok(r2.objects.has(imageThumbV2Key(HASH)))
 })
 
 test('POST /api/thumb-gen rejects batches over 50', async () => {

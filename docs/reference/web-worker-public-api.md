@@ -83,7 +83,7 @@ curl -sS 'https://<你的域名>/api/version' | jq '.git.commit_short, .package.
 
 ## `GET /image/:hash/thumb`
 
-Pre-materialized cover thumb only (`images/{hash}/thumb.v1.webp` in R2). No on-the-fly transform.
+Pre-materialized cover thumb only (`images/{hash}/thumb.v2.webp` preferred, `thumb.v1.webp` fallback). No on-the-fly transform.
 
 | 项 | 值 |
 |----|-----|
@@ -111,7 +111,7 @@ Materialize thumbs after sync writes large originals. Implemented in `apps/web-w
 
 Per hash: `HeadObject` thumb key → skip；否则 R2 get original → Cloudflare **Images** binding transform → `PutObject`.
 
-**THUMB_SPEC v1：** 420×560 `cover` WebP quality 85 → R2 key `images/{hash}/thumb.v1.webp`（见 `thumb-materialize.ts`）。
+**THUMB_SPEC v2（当前写入）：** 320×427 `cover` WebP quality 78 → `images/{hash}/thumb.v2.webp`。读路径 `/thumb` 优先 v2，否则 v1（420×560 q85）。见 `thumb-materialize.ts` 与 [performance-edge-cache runbook](../runbook/performance-edge-cache.md)。
 
 ### Cron backfill（AC-2-05，无 HTTP）
 
