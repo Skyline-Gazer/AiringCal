@@ -288,6 +288,17 @@ function projectSnapshotEntry(entry: any, meta: SubjectMeta | null): any {
   return { ...safe, nsfw: true }
 }
 
+function calendarEntryPrehydrated(entry: any): boolean {
+  if (!entry || typeof entry !== 'object') return false
+  const status = entry.image_status
+  if (!status || typeof status !== 'object') return false
+  const images = entry.images
+  if (!images || typeof images !== 'object') return false
+  const commonReady = status.common && images.common?.hash && images.common?.uri
+  const largeReady = status.large && images.large?.hash && images.large?.uri
+  return Boolean(commonReady || largeReady)
+}
+
 async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unknown[]> {
   const hydrated: unknown[] = []
   for (const day of days as any[]) {
@@ -297,6 +308,7 @@ async function hydrateCalendarImages(days: unknown[], env: ReadEnv): Promise<unk
     }
     const items = await mapConcurrent(day.items, HYDRATION_CONCURRENCY, async (entry: any) => {
       if (!entry || typeof entry !== 'object') return entry
+      if (calendarEntryPrehydrated(entry)) return entry
       const subjectId = typeof entry.subject_id === 'number' ? entry.subject_id : entry.id
       if (typeof subjectId !== 'number') return entry
       const [status, meta, detailEntry] = await Promise.all([

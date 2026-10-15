@@ -8,6 +8,7 @@
 |------|------|
 | P0 前端 | `health` 与 `collections` 并行；footer `cache.js` 复用 `window.bgmFetchHealth`；日历按 weekday `IntersectionObserver` 懒渲染 |
 | P1 API | `/api/calendar`、`/api/collections` 响应带 `s-maxage` + `stale-while-revalidate` |
+| P1 发布 | Workflow `publish-calendar` 与 collection shard 预注水 `images` + `image_status`（`snapshot-publish-hydration.ts`）；读 API 对已预注水条目跳过 KV |
 | P1 Thumb | 新生成 `thumb.v2.webp`（320×427 WebP q78）；`GET …/thumb` 优先 v2，回退 v1 |
 | P2 图片 | Worker `caches.default` 缓存 `GET /image/*`；响应含 `CDN-Cache-Control` |
 

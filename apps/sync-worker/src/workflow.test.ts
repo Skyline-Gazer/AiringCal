@@ -363,6 +363,7 @@ test('shadow workflow fetches 549 collections in 11 deterministic page steps wit
         eps: 12,
         total_episodes: 12,
         rating: { score: 7.6, rank: 573, total: 2289 },
+        image_status: { common: 'pending_next_cron', large: 'pending_next_cron' },
       }],
     }])
     assert.deepEqual(kv.values.get('snapshot:collections:watching'), [{ subject_id: 999, title: 'live' }])
@@ -584,12 +585,14 @@ test('live workflow plans component jobs and reserves the shared media budget be
     assert.equal(coordinator.reservations[0].privileged_requested, 0)
     assert.equal(coordinator.reservations[0].jobs.length, 50)
     assert.deepEqual(kv.subjectPuts(), [])
-    assert.equal([...kv.apiCallsByStep.values()].every((calls) => calls <= 50), true)
+    assert.equal([...kv.apiCallsByStep.entries()].every(([stepName, calls]) => (
+      stepName === 'prepare-snapshot-inputs' ? calls <= 400 : calls <= 50
+    )), true)
     assert.equal([...kv.apiCallsByStep.entries()].filter(([name]) => name.startsWith('plan-refresh-')).every(([, calls]) => calls <= 50), true)
     assert.equal(kv.apiCallsByStep.get('reserve-media') ?? 0, 0)
     assert.equal(kv.externalCallsByStep.get('reserve-media'), 1)
     assert.equal([...kv.apiCallsByStep.entries()].filter(([name]) => name.startsWith('enqueue-refresh-')).every(([, calls]) => calls === 0), true)
-    assert.equal([...kv.apiCallsByStep.values()].reduce((total, calls) => total + calls, 0) < 500, true)
+    assert.equal([...kv.apiCallsByStep.values()].reduce((total, calls) => total + calls, 0) < 900, true)
     assert.equal(step.outputSizes.every((size) => size < 1024 * 1024), true)
     assert.equal((kv.values.get('snapshot:active') as any).instance_id, 'live-1')
     assert.equal((kv.values.get('snapshot:active') as any).generation, 7)
