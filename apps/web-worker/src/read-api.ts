@@ -11,6 +11,7 @@ import {
 } from './r2-snapshot.ts'
 import { buildMigrationHealth, type MigrationHealthD1, type MigrationHealthEnv } from './health.ts'
 import type { ImageR2Binding } from './image-r2-binding.ts'
+import { workerDefaultCache } from './worker-default-cache.ts'
 
 interface ReadEnv {
   AIRING_CAL_D1: D1DatabaseLike
@@ -509,7 +510,7 @@ async function handleImage(pathname: string, env: ReadEnv, request: Request): Pr
   const hash = match[1].toLowerCase()
   const isThumb = match[2] === 'thumb'
 
-  const edgeCache = typeof caches !== 'undefined' ? caches.default : undefined
+  const edgeCache = workerDefaultCache()
   if (edgeCache && request.method === 'GET') {
     const cached = await edgeCache.match(request.url)
     if (cached) return cached
