@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | **Read** | Cloudflare Worker `airing-cal-frontend` | `apps/web-worker` |
 | **Write** | QingLong cron → `qinglong-bundle` | `apps/node-jobs` → artifact; wrappers in **QINGLONG-REPO** |
-| **Not used** | sync/media Workers, VPS Postgres | `apps/*-worker` archived, `apps/vps-sync` abandoned |
+| **Removed from repo** | legacy Workers, VPS Postgres | pre-2026-10-15 `apps/*` — see git history / `docs/archive/` |
 
 ```text
 Bangumi → node-jobs (bundle) ← QingLong

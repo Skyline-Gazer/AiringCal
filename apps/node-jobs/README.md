@@ -30,4 +30,4 @@ Sync downloads `lain.bgm.tv` / `lain.bangumi.tv` covers from the collection and 
 
 A sync whose image map changes the snapshot hash publishes `generation + 1` (`nextSnapshotGeneration`). The first run after this bundle should log `media selected=` greater than 0. Downloads stop when less than 30 seconds remain before the run deadline, so the snapshot can still publish; the next run continues the rest. A later run skips rows whose source URL is unchanged and `next_refresh_at` is still in the future; that skip is `selected=0` with images already in the snapshot. Re-running the previous noop bundle cannot fill images.
 
-`apps/media-worker` is archived and is not this path.
+Legacy Cloudflare media Workers were removed from the monorepo; this bundle is the only write path.

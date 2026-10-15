@@ -25,12 +25,12 @@ test('materialize-wrangler-config replaces the checked-in KV placeholder', () =>
 
 test('materialize-wrangler-config rewrites main relative to the target config', () => {
   const dir = mkdtempSync(join(tmpdir(), 'airing-cal-wrangler-config-'))
-  const source = join(dir, 'apps', 'sync-worker', 'wrangler.toml')
-  const target = join(dir, 'runner-temp', 'wrangler-sync-worker.toml')
+  const source = join(dir, 'apps', 'web-worker', 'wrangler.toml')
+  const target = join(dir, 'runner-temp', 'wrangler-web-worker.toml')
   const namespaceId = '0123456789abcdef0123456789abcdef'
 
-  mkdirSync(join(dir, 'apps', 'sync-worker'), { recursive: true })
-  writeFileSync(source, 'name = "airing-cal-sync"\nmain = "src/index.ts"\nid = "<AIRING_CAL_KV_NAMESPACE_ID>"\n')
+  mkdirSync(join(dir, 'apps', 'web-worker'), { recursive: true })
+  writeFileSync(source, 'name = "airing-cal-frontend"\nmain = "src/index.ts"\nid = "<AIRING_CAL_KV_NAMESPACE_ID>"\n')
 
   execFileSync(process.execPath, [script, source, target], {
     env: { ...process.env, AIRING_CAL_KV_NAMESPACE_ID: namespaceId },
@@ -38,16 +38,16 @@ test('materialize-wrangler-config rewrites main relative to the target config', 
 
   assert.equal(
     readFileSync(target, 'utf8'),
-    `name = "airing-cal-sync"\nmain = "../apps/sync-worker/src/index.ts"\nid = "${namespaceId}"\n`,
+    `name = "airing-cal-frontend"\nmain = "../apps/web-worker/src/index.ts"\nid = "${namespaceId}"\n`,
   )
 })
 
 test('materialize-wrangler-config rewrites migrations_dir relative to the target config', () => {
   const dir = mkdtempSync(join(tmpdir(), 'airing-cal-wrangler-config-'))
-  const source = join(dir, 'apps', 'sync-worker', 'wrangler.toml')
-  const target = join(dir, 'runner-temp', 'wrangler-sync-worker.toml')
+  const source = join(dir, 'apps', 'web-worker', 'wrangler.toml')
+  const target = join(dir, 'runner-temp', 'wrangler-web-worker.toml')
 
-  mkdirSync(join(dir, 'apps', 'sync-worker'), { recursive: true })
+  mkdirSync(join(dir, 'apps', 'web-worker'), { recursive: true })
   writeFileSync(source, 'migrations_dir = "../../migrations"\n')
 
   execFileSync(process.execPath, [script, source, target])
@@ -121,10 +121,10 @@ test('materialize-wrangler-config rejects an unresolved D1 placeholder before cr
 
 test('materialize-wrangler-config injects build vars when provided without requiring KV placeholder', () => {
   const dir = mkdtempSync(join(tmpdir(), 'airing-cal-wrangler-config-'))
-  const source = join(dir, 'apps', 'frontend-worker', 'wrangler.toml')
-  const target = join(dir, 'runner-temp', 'wrangler-frontend-worker.toml')
+  const source = join(dir, 'apps', 'web-worker', 'wrangler.toml')
+  const target = join(dir, 'runner-temp', 'wrangler-web-worker.toml')
 
-  mkdirSync(join(dir, 'apps', 'frontend-worker'), { recursive: true })
+  mkdirSync(join(dir, 'apps', 'web-worker'), { recursive: true })
   writeFileSync(source, 'name = "airing-cal-frontend"\nmain = "src/index.ts"\nkeep_vars = true\n')
 
   execFileSync(process.execPath, [script, source, target], {
@@ -137,6 +137,6 @@ test('materialize-wrangler-config injects build vars when provided without requi
 
   assert.equal(
     readFileSync(target, 'utf8'),
-    `name = "airing-cal-frontend"\nmain = "../apps/frontend-worker/src/index.ts"\nkeep_vars = true\n\n[vars]\nBANGUMI_GIT_COMMIT_SHA = "0123456789abcdef"\nBANGUMI_GIT_REPOSITORY_URL = "https://github.com/markd3ng/AiringCal"\n`,
+    `name = "airing-cal-frontend"\nmain = "../apps/web-worker/src/index.ts"\nkeep_vars = true\n\n[vars]\nBANGUMI_GIT_COMMIT_SHA = "0123456789abcdef"\nBANGUMI_GIT_REPOSITORY_URL = "https://github.com/markd3ng/AiringCal"\n`,
   )
 })

@@ -11,11 +11,7 @@
 | CI job `vps-sync-image` | Removed from `.github/workflows/ci.yml` |
 | `Dockerfile.vps-sync` | Removed (no maintained container image) |
 | `scripts/verify-vps-sync-image.*` | Removed |
-
-## What remains (reference only)
-
-- `apps/vps-sync/` — TypeScript coordinator/Postgres adapters; `pnpm -F @airing-cal/vps-sync test` still runs non-integration tests.
-- Historical design/runbook: `docs/superpowers/*vps*`, `docs/runbook/vps-data-plane.md` (banner: not operational).
+| `apps/vps-sync/` | **Removed from monorepo 2026-10-15** (git history only) |
 
 ## Active write path
 

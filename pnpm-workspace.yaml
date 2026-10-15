@@ -1,5 +1,6 @@
 packages:
-  - 'apps/*'
+  - 'apps/web-worker'
+  - 'apps/node-jobs'
   - 'packages/*'
 
 allowBuilds:

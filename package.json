@@ -6,7 +6,7 @@
   "description": "render your bangumi.tv progress on a static web page",
   "scripts": {
     "dev": "pnpm -F @airing-cal/web-worker dev",
-    "deploy": "pnpm -r --filter './apps/*' --if-present deploy",
+    "deploy": "pnpm -F @airing-cal/web-worker deploy",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test && node --test scripts/*.test.mjs",
     "build:check": "pnpm -r --if-present build:check"

@@ -6,89 +6,61 @@ import { dirname, resolve } from 'node:path'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 
-const appConfigs = [
-  ['web-worker', ['[[d1_databases]]', 'binding = "AIRING_CAL_D1"', '[[kv_namespaces]]', 'binding = "AIRING_CAL_KV"', 'binding = "AIRING_CAL_R2"', 'binding = "AIRING_CAL_DATA_R2"', 'binding = "IMAGES"']],
-  ['frontend-worker', ['[[services]]', 'READ_WORKER', 'SYNC_WORKER']],
-  ['read-worker', ['[[d1_databases]]', 'binding = "AIRING_CAL_D1"', '[[kv_namespaces]]', 'binding = "AIRING_CAL_KV"', 'binding = "AIRING_CAL_R2"', 'binding = "AIRING_CAL_DATA_R2"']],
-  ['sync-worker', ['[[d1_databases]]', 'binding = "AIRING_CAL_D1"', 'binding = "AIRING_CAL_DATA_R2"', 'binding = "AIRING_CAL_KV"', 'binding = "MEDIA_QUEUE"', '[[workflows]]', 'binding = "SYNC_WORKFLOW"', 'class_name = "SyncWorkflow"', '[triggers]', 'crons = ["0 20 * * *"]']],
-  ['media-worker', ['[[d1_databases]]', 'binding = "AIRING_CAL_D1"', '[[queues.consumers]]', '[[kv_namespaces]]', 'binding = "AIRING_CAL_R2"']],
-] as const
+const productionApps = ['web-worker', 'node-jobs'] as const
 
-test('each target worker has a checked-in Wrangler config with required bindings', () => {
-  for (const [app, expectedFragments] of appConfigs) {
-    const path = resolve(root, 'apps', app, 'wrangler.toml')
-    assert.equal(existsSync(path), true, `${app} wrangler.toml should exist`)
-    const config = readFileSync(path, 'utf8')
-    for (const fragment of expectedFragments) {
-      assert.match(config, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${app} config should include ${fragment}`)
-    }
+test('pnpm workspace lists only production apps plus shared packages', () => {
+  const workspace = readFileSync(resolve(root, 'pnpm-workspace.yaml'), 'utf8')
+  assert.match(workspace, /apps\/web-worker/)
+  assert.match(workspace, /apps\/node-jobs/)
+  assert.match(workspace, /packages\/\*/)
+  assert.doesNotMatch(workspace, /apps\/\*/)
+  for (const legacy of ['vps-sync', 'sync-worker', 'media-worker', 'read-worker', 'frontend-worker']) {
+    assert.doesNotMatch(workspace, new RegExp(legacy))
   }
 })
 
-test('Cloudflare resource names use the AiringCal prefix', () => {
-  const expected = new Map([
-    ['web-worker', ['name = "airing-cal-frontend"', 'database_name = "airing-cal-state"', 'database_id = "<AIRING_CAL_D1_DATABASE_ID>"', 'migrations_dir = "../../migrations"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-images"', 'bucket_name = "airing-cal-data"']],
-    ['frontend-worker', ['name = "airing-cal-frontend"', 'service = "airing-cal-read"']],
-    ['read-worker', ['name = "airing-cal-read"', 'database_name = "airing-cal-state"', 'database_id = "<AIRING_CAL_D1_DATABASE_ID>"', 'migrations_dir = "../../migrations"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-images"', 'bucket_name = "airing-cal-data"']],
-    ['sync-worker', ['name = "airing-cal-sync"', 'database_name = "airing-cal-state"', 'database_id = "<AIRING_CAL_D1_DATABASE_ID>"', 'migrations_dir = "../../migrations"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-data"', 'queue = "airing-cal-media"']],
-    ['media-worker', ['name = "airing-cal-media"', 'database_name = "airing-cal-state"', 'database_id = "<AIRING_CAL_D1_DATABASE_ID>"', 'migrations_dir = "../../migrations"', 'id = "<AIRING_CAL_KV_NAMESPACE_ID>"', 'bucket_name = "airing-cal-images"', 'queue = "airing-cal-media"']],
-  ])
-
-  for (const [app, expectedFragments] of expected) {
-    const config = readFileSync(resolve(root, 'apps', app, 'wrangler.toml'), 'utf8')
-    assert.doesNotMatch(config, /bangumi-tv/, `${app} config should not use old Cloudflare resource names`)
-    assert.match(config, /keep_vars = true/, `${app} config should preserve dashboard runtime vars`)
-    for (const fragment of expectedFragments) {
-      assert.match(config, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${app} config should include ${fragment}`)
-    }
+test('production web-worker has a checked-in Wrangler config with required bindings', () => {
+  const config = readFileSync(resolve(root, 'apps/web-worker/wrangler.toml'), 'utf8')
+  for (const fragment of [
+    '[[d1_databases]]',
+    'binding = "AIRING_CAL_D1"',
+    '[[kv_namespaces]]',
+    'binding = "AIRING_CAL_KV"',
+    'binding = "AIRING_CAL_R2"',
+    'binding = "AIRING_CAL_DATA_R2"',
+    'binding = "IMAGES"',
+    'name = "airing-cal-frontend"',
+  ]) {
+    assert.match(config, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
   }
+  assert.doesNotMatch(config, /bangumi-tv/)
+  assert.match(config, /keep_vars = true/)
 })
 
-test('internal Worker runtime envs expose shadow bindings and read handlers consume them with legacy fallback', () => {
-  const readSource = readFileSync(resolve(root, 'apps/read-worker/src/index.ts'), 'utf8')
-  const mediaSource = readFileSync(resolve(root, 'apps/media-worker/src/index.ts'), 'utf8')
-  const syncSource = readFileSync(resolve(root, 'apps/sync-worker/src/index.ts'), 'utf8')
-  const r2SnapshotSource = readFileSync(resolve(root, 'apps/read-worker/src/r2-snapshot.ts'), 'utf8')
-  const readEnv = readSource.match(/interface ReadEnv \{[\s\S]*?\n\}/)?.[0] ?? ''
+test('public web-worker read path keeps R2 snapshot bindings and legacy fallback', () => {
+  const readApi = readFileSync(resolve(root, 'apps/web-worker/src/read-api.ts'), 'utf8')
+  const r2Snapshot = readFileSync(resolve(root, 'apps/web-worker/src/r2-snapshot.ts'), 'utf8')
+  const readEnv = readApi.match(/interface ReadEnv \{[\s\S]*?\n\}/)?.[0] ?? ''
 
   assert.match(readEnv, /AIRING_CAL_D1:/)
   assert.match(readEnv, /AIRING_CAL_DATA_R2:/)
-  assert.match(mediaSource.match(/export interface MediaEnv \{[\s\S]*?\n\}/)?.[0] ?? '', /AIRING_CAL_D1:/)
-  assert.match(syncSource.match(/interface SyncEnv \{[\s\S]*?\n\}/)?.[0] ?? '', /AIRING_CAL_D1:[\s\S]*AIRING_CAL_DATA_R2:/)
-  assert.match(readSource, /readSnapshotSource/)
-  assert.match(readSource, /buildMigrationHealth/)
-  assert.match(readSource, /snapshotActiveKey\(\)/)
-  assert.match(r2SnapshotSource, /mode: 'legacy'/, 'the R2 read path keeps a legacy KV fallback')
-})
-
-test('media queue consumer uses Free Plan concurrency limits', () => {
-  const config = readFileSync(resolve(root, 'apps/media-worker/wrangler.toml'), 'utf8')
-  assert.match(config, /^max_batch_size = 1$/m)
-  assert.match(config, /^max_batch_timeout = 5$/m)
-  assert.match(config, /^max_concurrency = 4$/m)
-  assert.match(config, /^max_retries = 3$/m)
+  assert.match(readApi, /readSnapshotSource/)
+  assert.match(readApi, /buildMigrationHealth/)
+  assert.match(r2Snapshot, /mode: 'legacy'/, 'the R2 read path keeps a legacy KV fallback')
 })
 
 test('public web-worker does not register Worker cron triggers', () => {
   const config = readFileSync(resolve(root, 'apps/web-worker/wrangler.toml'), 'utf8')
-  assert.doesNotMatch(config, /^\[triggers\]$/m, 'web-worker deploy should not consume account cron quota')
+  assert.doesNotMatch(config, /^\[triggers\]$/m)
   assert.doesNotMatch(config, /^crons =/m)
 })
 
-test('Free Plan Cron only triggers the Workflow without a legacy Queue consumer', () => {
-  const config = readFileSync(resolve(root, 'apps/sync-worker/wrangler.toml'), 'utf8')
-  assert.match(config, /^main = "src\/production\.ts"$/m)
-  assert.match(config, /^name = "airing-cal-sync"$/m)
-  assert.match(config, /^binding = "SYNC_WORKFLOW"$/m)
-  assert.match(config, /^class_name = "SyncWorkflow"$/m)
-  assert.match(config, /^\[triggers\]$/m)
-  assert.match(config, /^crons = \["0 20 \* \* \*"\]$/m)
-  assert.doesNotMatch(config, /0 \*\/4 \* \* \*/)
-  assert.doesNotMatch(config, /^schedules =/m)
-  assert.doesNotMatch(config, /^\[\[queues\.consumers\]\]$/m)
-  assert.doesNotMatch(config, /airing-cal-sync-trigger/)
+test('legacy Cloudflare write Workers are removed from the repo', () => {
+  for (const app of ['vps-sync', 'frontend-worker', 'read-worker', 'sync-worker', 'media-worker']) {
+    assert.equal(existsSync(resolve(root, 'apps', app)), false, `${app} should be removed; use git history`)
+  }
+  assert.equal(existsSync(resolve(root, '.github/workflows/sync-workflow.yml')), false)
   assert.equal(existsSync(resolve(root, 'scripts/push-sync-trigger.mjs')), false)
-  assert.equal(existsSync(resolve(root, 'scripts/push-sync-trigger.test.mjs')), false)
 })
 
 test('deploy workflow resolves existing resources without waiting for business sync', () => {
@@ -172,6 +144,8 @@ test('deploy workflow resolves existing resources without waiting for business s
     'refresh_cache_after_internal_deploy:',
     'node scripts/push-sync-trigger.mjs',
     'sync:meta.synced_at',
+    'sync-workflow.yml',
+    'airing-cal-sync',
   ]
   for (const fragment of forbidden) {
     assert.doesNotMatch(workflow, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `workflow should not contain ${fragment}`)
@@ -208,21 +182,6 @@ test('CI validates pull requests and dev pushes without retaining stale runs', (
   assert.ok(resolveIndex < reportIndex, 'bootstrap should report only resolver-confirmed outputs')
 })
 
-test('manual Workflow trigger uses GitHub secrets without exposing a public sync endpoint', () => {
-  const workflow = readFileSync(resolve(root, '.github/workflows/sync-workflow.yml'), 'utf8')
-  assert.match(workflow, /^name: Manual Sync Workflow$/m)
-  assert.match(workflow, /workflow_dispatch:/)
-  assert.match(workflow, /- trigger[\s\S]*?- describe[\s\S]*?- restart[\s\S]*?- terminate[\s\S]*?- cleanup-legacy-consumer/)
-  assert.match(workflow, /type: choice[\s\S]*?options:[\s\S]*?- shadow[\s\S]*?- live/)
-  assert.match(workflow, /CLOUDFLARE_API_TOKEN:\s*\$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/)
-  assert.match(workflow, /wrangler workflows trigger airing-cal-sync/)
-  assert.match(workflow, /wrangler workflows instances describe airing-cal-sync/)
-  assert.match(workflow, /wrangler workflows instances restart airing-cal-sync/)
-  assert.match(workflow, /wrangler workflows instances terminate airing-cal-sync/)
-  assert.match(workflow, /wrangler queues consumer remove airing-cal-sync-trigger airing-cal-sync/)
-  assert.doesNotMatch(workflow, /schedule:/)
-})
-
 test('README is the Phase 0 entry and points to canonical docs', () => {
   const readme = readFileSync(resolve(root, 'README.md'), 'utf8')
   for (const fragment of [
@@ -240,4 +199,12 @@ test('README is the Phase 0 entry and points to canonical docs', () => {
   for (const fragment of ['frontend-worker', 'sync-worker', 'media-worker', '0 */4 * * *', 'airing-cal-sync-trigger']) {
     assert.doesNotMatch(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should not present legacy production path: ${fragment}`)
   }
+})
+
+test('node-jobs remains the QingLong write bundle entry', () => {
+  for (const app of productionApps) {
+    assert.equal(existsSync(resolve(root, 'apps', app, 'package.json')), true, `${app} should remain`)
+  }
+  const nodeJobs = readFileSync(resolve(root, 'apps/node-jobs/package.json'), 'utf8')
+  assert.match(nodeJobs, /"build"/)
 })

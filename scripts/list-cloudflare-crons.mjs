@@ -147,11 +147,15 @@ async function main() {
   console.log(`Total cron triggers: ${rows.length}`)
 
   const quota = cronQuotaStatus(rows)
-  if (!quota.canDeployTargetCron) {
+  if (deployPlans.length > 0) {
+    if (quota.count > quota.limit) {
+      console.error(`Projected cron triggers (${quota.count}) would exceed the plan limit (${quota.limit}).`)
+      process.exit(2)
+    }
+  } else if (!quota.canDeployTargetCron) {
     console.error(`Cloudflare account cron trigger quota is full for the current plan, and ${quota.targetWorker} does not already have a reusable cron trigger.`)
     process.exit(2)
-  }
-  if (quota.count >= quota.limit) {
+  } else if (quota.count >= quota.limit) {
     console.log(`Cron trigger quota is full, but ${quota.targetWorker} already owns a trigger, so this deploy can update the existing schedule.`)
   }
 }

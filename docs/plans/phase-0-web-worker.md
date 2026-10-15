@@ -23,7 +23,7 @@ Bindings (checked-in): `AIRING_CAL_D1`, `AIRING_CAL_KV`, `AIRING_CAL_R2`, `AIRIN
 - Public routes: `/`, `/src/*`, `/api/*`, `/image/*`.
 - **`GET /api/version`** — deploy verification JSON (`package.version`, git SHA, optional `build.built_at`). Spec: [docs/reference/web-worker-public-api.md](../reference/web-worker-public-api.md).
 - Removed from product surface: `/api/sync/*`, `/api/check/*` → **410** JSON `DEPRECATED`; widget sync tab removed.
-- Not deployed: `sync-worker`, `media-worker`, legacy `frontend-worker` / `read-worker` (see each `ARCHIVED.md`).
+- Legacy multi-Worker apps were **removed from the monorepo** (2026-10-15); only `apps/web-worker` remains under `apps/`.
 
 ## Verification
 

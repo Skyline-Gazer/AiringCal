@@ -7,8 +7,7 @@
 | Component | State |
 | --- | --- |
 | `apps/web-worker` | Read-only APIs; legacy write routes **410** |
-| `apps/sync-worker`, `apps/media-worker` | Archived; not deployed |
-| `apps/vps-sync` | Abandoned |
+| Legacy Workers + `vps-sync` | **Removed from repo** (2026-10-15); not deployed |
 | Workers Cron / Workflow | **Not configured** for AiringCal write in production |
 | `airing-cal-frontend` Cron | **None** — thumb via `POST /api/thumb-gen` only |
 
