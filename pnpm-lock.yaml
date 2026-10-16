@@ -33,6 +33,9 @@ importers:
       '@airing-cal/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@airing-cal/v3-core':
+        specifier: workspace:*
+        version: link:../../packages/v3-core
       '@aws-sdk/client-s3':
         specifier: 3.1124.0
         version: 3.1124.0
@@ -94,6 +97,15 @@ importers:
 
   packages/v3-builder:
     dependencies:
+      '@airing-cal/bgm-api':
+        specifier: workspace:*
+        version: link:../bgm-api
+      '@airing-cal/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@airing-cal/storage':
+        specifier: workspace:*
+        version: link:../storage
       '@airing-cal/v3-core':
         specifier: workspace:*
         version: link:../v3-core
@@ -104,6 +116,9 @@ importers:
 
   packages/v3-core:
     dependencies:
+      '@airing-cal/bgm-api':
+        specifier: workspace:*
+        version: link:../bgm-api
       '@airing-cal/domain':
         specifier: workspace:*
         version: link:../domain

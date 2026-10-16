@@ -12,6 +12,9 @@
     "test": "tsx --test"
   },
   "dependencies": {
+    "@airing-cal/bgm-api": "workspace:*",
+    "@airing-cal/domain": "workspace:*",
+    "@airing-cal/storage": "workspace:*",
     "@airing-cal/v3-core": "workspace:*"
   },
   "devDependencies": {
