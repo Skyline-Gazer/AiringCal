@@ -1,0 +1,46 @@
+name: Alibaba OpenCodeReview (advisory)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [dev]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: ocr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Never pass secrets to a fork PR. Run only after credentials are configured.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check OCR configuration
+        id: config
+        env:
+          OCR_URL: ${{ secrets.OCR_LLM_URL }}
+          OCR_TOKEN: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+          OCR_MODEL: ${{ vars.OCR_LLM_MODEL }}
+        shell: bash
+        run: |
+          if [[ -z "$OCR_URL" || -z "$OCR_TOKEN" || -z "$OCR_MODEL" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Alibaba OCR advisory skipped: configure OCR_LLM_URL, OCR_LLM_AUTH_TOKEN and OCR_LLM_MODEL."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Review pull request (advisory)
+        if: steps.config.outputs.ready == 'true'
+        uses: alibaba/open-code-review@a758d9cbfb689937c7857ad64b2dd66adb58c0c2
+        with:
+          ocr_version: '1.12.11'
+          llm_url: ${{ secrets.OCR_LLM_URL }}
+          llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+          llm_model: ${{ vars.OCR_LLM_MODEL }}
+          llm_protocol: openai
+          llm_use_anthropic: 'false'
