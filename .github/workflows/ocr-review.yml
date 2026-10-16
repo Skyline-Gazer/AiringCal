@@ -36,9 +36,11 @@ jobs:
           fi
       - name: Review pull request (advisory)
         if: steps.config.outputs.ready == 'true'
-        uses: alibaba/open-code-review@a758d9cbfb689937c7857ad64b2dd66adb58c0c2
+        uses: alibaba/open-code-review@1672852136fc87748249d22bce0819f33419ea79
         with:
-          ocr_version: '1.12.11'
+          ocr_version: '1.13.0'
+          incremental: 'true'
+          sticky_summary: 'true'
           llm_url: ${{ secrets.OCR_LLM_URL }}
           llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
           llm_model: ${{ vars.OCR_LLM_MODEL }}
