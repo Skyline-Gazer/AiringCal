@@ -9,12 +9,11 @@ You are taking over the `Skyline-Gazer/AiringCal` v3 engineering work from ChatG
 ## Remote state at handoff
 
 - Repository: https://github.com/Skyline-Gazer/AiringCal
-- Integration branch: `dev` = `a4b3b082d15943e11a2d5443077f9ab5f3c175dc`.
-- `main` aligned to identical commit (historical main saved in `archive/main-before-v3-alignment-20261016`).
-- Working bootstrap branch: `feat/v3.0.0` = `1e2a119a5212e73eb4848c75081e17af7dffa66a` at handoff.
-- Version on bootstrap branch: `3.0.0-alpha.0` in root package.json.
-- Draft PR: https://github.com/Skyline-Gazer/AiringCal/pull/68, `feat/v3.0.0 -> dev`. **Do not merge without evidence and review.**
-- Project of record: https://github.com/orgs/Skyline-Gazer/projects/7. Historical #5/#6 designated for closure, but **not confirmed closed**; Project #7 membership/status not confirmed due to previous connector constraints.
+- Integration branch: `dev` (refresh with `git fetch`; post-convergence HEAD was `b24b22d6` — bootstrap #68 + P0/P1 #75 merged).
+- Root `package.json` version: `3.0.0-alpha.0` on `dev`.
+- Closed/superseded: PR #76 (duplicate of #75); merged PRs #68, #75.
+- Project of record: https://github.com/orgs/Skyline-Gazer/projects/7 — issues #67–#74 on board; verify Status column live before claiming updates.
+- Historical Projects #5/#6: designated for closure; **not confirmed closed**.
 - Parent Issue: https://github.com/Skyline-Gazer/AiringCal/issues/67
 - Issue #69 P0 audit / CF–EdgeOne matrix; #70 P1 Builder/SQLite; #71 P2 Release/images/frontend; #72 P3 CF/EdgeOne; #73 P4 migration/rollback/cutover; #74 Alibaba OCR governance.
 - CI latest observed at handoff: https://github.com/Skyline-Gazer/AiringCal/actions/runs/38870336521 success; OCR https://github.com/Skyline-Gazer/AiringCal/actions/runs/38870336485 **in progress**, previous OCR run cancelled due to newer push. Check jobs/steps/results, not merely workflow success.
@@ -42,7 +41,7 @@ You are taking over the `Skyline-Gazer/AiringCal` v3 engineering work from ChatG
 
 ## OCR configuration (owner says already set)
 
-- Alibaba OpenCodeReview CLI **`1.12.11`**, Action pinned to `a758d9cbfb689937c7857ad64b2dd66adb58c0c2` (see `.github/workflows/ocr-review.yml` on bootstrap branch).
+- Alibaba OpenCodeReview CLI **`1.12.11`**, Action pinned to `a758d9cbfb689937c7857ad64b2dd66adb58c0c2` (see `.github/workflows/ocr-review.yml` on `dev`).
 - LLM endpoint: Organization Secret `OCR_LLM_URL` preferred, Variable fallback; Secret `OCR_LLM_AUTH_TOKEN`; Variable `OCR_LLM_MODEL`. OCR skips fork PRs and **draft** PRs until marked ready.
 - OpenAI-compatible, incremental/sticky, advisory, same-repo PR only, no credentials on forks; do not expose token or log its contents.
 - **Verify** a real OCR review step ran. A green run with review skipped does not count. Do not silently switch models. Treat API failure/timeouts as failure, not clean review.

@@ -81,11 +81,11 @@ jobs:
           llm_reasoning_effort: low
           ocr_version: '1.12.11'
           language: Chinese
-          effort: medium
+          effort: low
           review_concurrency: '2'
           review_task_timeout: '15'
           llm_timeout: '300'
-          max_tokens_budget: '80000'
+          # Omit max_tokens_budget (unlimited). A cap caused failed(budget) on large PRs before any file review (#75 run 38924288057).
           stream_progress: 'true'
           upload_artifacts: 'true'
           sticky_summary: 'true'

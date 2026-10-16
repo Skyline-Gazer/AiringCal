@@ -51,6 +51,11 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Builder sync job checkpoint | `packages/v3-builder/src/sync-job.ts`, `sync-job.test.ts` |
 | Checkpoint → PublicStore publish (CAS fail-closed) | `packages/v3-builder/src/publish-checkpoint.ts`, `publish-checkpoint.test.ts` |
 
+## Next engineering slice (#70)
+
+- `runBuilderOnce` orchestrates sync then optional publish (`packages/v3-builder/src/run-once.ts`); covered by `run-once.test.ts`.
+- **Not yet wired:** `apps/node-jobs` still uses legacy D1 pipeline only; portable builder entry behind explicit adapter flag is a follow-up PR.
+
 ## Gaps (explicit unknowns for #72 / staging)
 
 - No committed fixture of **compressed snapshot byte size** from production R2/D1 export.
