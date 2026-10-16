@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { CompleteFullFetch } from '@airing-cal/bgm-api'
 import { imageRef, type SubjectImageMap } from '@airing-cal/domain'
+import type { SubjectMediaPublishHint } from '@airing-cal/v3-core'
 import type { CloudflareD1Client } from '../adapters/cloudflare-d1.ts'
 import type { R2Store } from '../adapters/r2-store.ts'
 import type { RunContext } from '../adapters/run-context.ts'
@@ -219,11 +220,7 @@ function mediaWorkPriority(
   return 3
 }
 
-export interface SubjectMediaPublishHint {
-  errorCode: string | null
-  hasSourceCommon: boolean
-  hasSourceLarge: boolean
-}
+export type { SubjectMediaPublishHint }
 
 export async function loadSubjectMediaPublishHints(db: CloudflareD1Client): Promise<Map<number, SubjectMediaPublishHint>> {
   await ensureSubjectMedia(db)

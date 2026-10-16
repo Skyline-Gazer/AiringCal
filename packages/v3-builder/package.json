@@ -1,0 +1,23 @@
+{
+  "name": "@airing-cal/v3-builder",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test"
+  },
+  "dependencies": {
+    "@airing-cal/bgm-api": "workspace:*",
+    "@airing-cal/domain": "workspace:*",
+    "@airing-cal/storage": "workspace:*",
+    "@airing-cal/v3-core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.0"
+  }
+}
