@@ -42,9 +42,8 @@ You are taking over the `Skyline-Gazer/AiringCal` v3 engineering work from ChatG
 
 ## OCR configuration (owner says already set)
 
-- Alibaba OpenCodeReview `1.13.0`, official Action pinned to commit `1672852136fc87748249d22bce0819f33419ea79`.
-- Current source: `.github/workflows/ocr-review.yml` on bootstrap branch.
-- Organization Variable `OCR_LLM_URL`, Organization Secret `OCR_LLM_AUTH_TOKEN`, Variable `OCR_LLM_MODEL` (owner configured). Workflow must read `vars.OCR_LLM_URL` and `secrets.OCR_LLM_AUTH_TOKEN`, `vars.OCR_LLM_MODEL`.
+- Alibaba OpenCodeReview CLI **`1.12.11`**, Action pinned to `a758d9cbfb689937c7857ad64b2dd66adb58c0c2` (see `.github/workflows/ocr-review.yml` on bootstrap branch).
+- LLM endpoint: Organization Secret `OCR_LLM_URL` preferred, Variable fallback; Secret `OCR_LLM_AUTH_TOKEN`; Variable `OCR_LLM_MODEL`. OCR skips fork PRs and **draft** PRs until marked ready.
 - OpenAI-compatible, incremental/sticky, advisory, same-repo PR only, no credentials on forks; do not expose token or log its contents.
 - **Verify** a real OCR review step ran. A green run with review skipped does not count. Do not silently switch models. Treat API failure/timeouts as failure, not clean review.
 

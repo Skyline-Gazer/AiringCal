@@ -2,6 +2,8 @@
 
 Source baseline: `dev@a4b3b082d15943e11a2d5443077f9ab5f3c175dc` (2026-10-16). Owner tracking: #67 / #69 / Project #7.
 
+Code-backed frontend/route/cache evidence: [`p0-contract-evidence.md`](./p0-contract-evidence.md).
+
 ## Verified code boundaries
 
 | Concern | Current source | v3 treatment |

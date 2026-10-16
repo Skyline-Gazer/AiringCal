@@ -27,7 +27,6 @@ jobs:
         env:
           OCR_URL_SECRET: ${{ secrets.OCR_LLM_URL }}
           OCR_URL_VAR: ${{ vars.OCR_LLM_URL }}
-          OCR_TOKEN: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
           OCR_MODEL: ${{ vars.OCR_LLM_MODEL }}
         shell: bash
         run: |
@@ -35,15 +34,28 @@ jobs:
           if [[ -z "$OCR_URL" ]]; then
             OCR_URL="$OCR_URL_VAR"
           fi
-          if [[ -z "$OCR_URL" || -z "$OCR_TOKEN" || -z "$OCR_MODEL" ]]; then
+          if [[ -z "$OCR_URL" || -z "$OCR_MODEL" ]]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Alibaba OCR advisory skipped: configure OCR_LLM_URL (secret preferred, variable fallback), OCR_LLM_AUTH_TOKEN and OCR_LLM_MODEL."
+            echo "::notice::Alibaba OCR advisory skipped: configure OCR_LLM_URL (secret preferred, variable fallback) and OCR_LLM_MODEL."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check OCR auth token configured
+        id: auth
+        if: steps.config.outputs.ready == 'true'
+        env:
+          OCR_LLM_AUTH_TOKEN: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+        shell: bash
+        run: |
+          if [[ -z "$OCR_LLM_AUTH_TOKEN" ]]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Alibaba OCR advisory skipped: configure OCR_LLM_AUTH_TOKEN."
           else
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
       - name: Resolve LLM endpoint
         id: llm
-        if: steps.config.outputs.ready == 'true'
+        if: steps.config.outputs.ready == 'true' && steps.auth.outputs.ready == 'true'
         env:
           OCR_URL_SECRET: ${{ secrets.OCR_LLM_URL }}
           OCR_URL_VAR: ${{ vars.OCR_LLM_URL }}
@@ -55,7 +67,7 @@ jobs:
           fi
           echo "url=$OCR_URL" >> "$GITHUB_OUTPUT"
       - name: Review pull request (advisory)
-        if: steps.config.outputs.ready == 'true'
+        if: steps.config.outputs.ready == 'true' && steps.auth.outputs.ready == 'true'
         uses: alibaba/open-code-review@a758d9cbfb689937c7857ad64b2dd66adb58c0c2
         env:
           OCR_NO_UPDATE: '1'
