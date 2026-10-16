@@ -23,7 +23,7 @@ jobs:
       - name: Check OCR configuration
         id: config
         env:
-          OCR_URL: ${{ secrets.OCR_LLM_URL }}
+          OCR_URL: ${{ vars.OCR_LLM_URL }}
           OCR_TOKEN: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
           OCR_MODEL: ${{ vars.OCR_LLM_MODEL }}
         shell: bash
@@ -41,7 +41,7 @@ jobs:
           ocr_version: '1.13.0'
           incremental: 'true'
           sticky_summary: 'true'
-          llm_url: ${{ secrets.OCR_LLM_URL }}
+          llm_url: ${{ vars.OCR_LLM_URL }}
           llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
           llm_model: ${{ vars.OCR_LLM_MODEL }}
           llm_protocol: openai
