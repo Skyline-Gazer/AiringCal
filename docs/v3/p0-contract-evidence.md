@@ -48,7 +48,8 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Schema v1 + idempotent migration | `packages/v3-builder/src/schema.ts`, `migrate.ts` |
 | Lease + KV state store | `packages/v3-builder/src/sqlite-state.ts`, `migrate.test.ts` |
 | Portable public snapshot projection (from node-jobs) | `packages/v3-core/src/project-public-snapshot.ts` |
-| Builder sync job checkpoint (no publish yet) | `packages/v3-builder/src/sync-job.ts`, `sync-job.test.ts` |
+| Builder sync job checkpoint | `packages/v3-builder/src/sync-job.ts`, `sync-job.test.ts` |
+| Checkpoint → PublicStore publish (CAS fail-closed) | `packages/v3-builder/src/publish-checkpoint.ts`, `publish-checkpoint.test.ts` |
 
 ## Gaps (explicit unknowns for #72 / staging)
 

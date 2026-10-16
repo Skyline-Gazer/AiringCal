@@ -10,3 +10,10 @@ export {
   type BuilderSyncJobResult,
   type BuilderSyncJobStatus,
 } from './sync-job.ts'
+export {
+  publishBuilderCheckpoint,
+  type PublishCheckpointDeps,
+  type PublishCheckpointResult,
+  type PublishCheckpointStatus,
+} from './publish-checkpoint.ts'
+export { runBuilderOnce, type BuilderRunOnceDeps, type BuilderRunOnceResult } from './run-once.ts'
