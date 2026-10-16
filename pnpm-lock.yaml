@@ -52,6 +52,9 @@ importers:
       '@airing-cal/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@airing-cal/v3-core':
+        specifier: workspace:*
+        version: link:../../packages/v3-core
       '@airing-cal/widget':
         specifier: workspace:*
         version: link:../../packages/widget
@@ -84,6 +87,29 @@ importers:
         version: 26.4.0
 
   packages/storage:
+    devDependencies:
+      '@types/node':
+        specifier: ^26.4.0
+        version: 26.4.0
+
+  packages/v3-builder:
+    dependencies:
+      '@airing-cal/v3-core':
+        specifier: workspace:*
+        version: link:../v3-core
+    devDependencies:
+      '@types/node':
+        specifier: ^26.4.0
+        version: 26.4.0
+
+  packages/v3-core:
+    dependencies:
+      '@airing-cal/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@airing-cal/storage':
+        specifier: workspace:*
+        version: link:../storage
     devDependencies:
       '@types/node':
         specifier: ^26.4.0
