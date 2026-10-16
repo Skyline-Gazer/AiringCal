@@ -89,6 +89,12 @@ importers:
         specifier: ^26.4.0
         version: 26.4.0
 
+  packages/v3-core:
+    devDependencies:
+      '@types/node':
+        specifier: ^26.4.0
+        version: 26.4.0
+
   packages/widget:
     devDependencies:
       '@types/node':
