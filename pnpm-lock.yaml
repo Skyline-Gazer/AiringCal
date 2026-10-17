@@ -136,6 +136,28 @@ importers:
         specifier: ^26.4.0
         version: 26.4.0
 
+  packages/v3-read:
+    dependencies:
+      '@airing-cal/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@airing-cal/storage':
+        specifier: workspace:*
+        version: link:../storage
+      '@airing-cal/v3-core':
+        specifier: workspace:*
+        version: link:../v3-core
+    devDependencies:
+      '@airing-cal/bgm-api':
+        specifier: workspace:*
+        version: link:../bgm-api
+      '@airing-cal/v3-builder':
+        specifier: workspace:*
+        version: link:../v3-builder
+      '@types/node':
+        specifier: ^26.4.0
+        version: 26.4.0
+
   packages/widget:
     devDependencies:
       '@types/node':
