@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { PLATFORM_SECRET_ENV_KEYS, runAiringcalSetup } from './airingcal-setup.ts'
+import { PLATFORM_SECRET_ENV_KEYS, runAiringcalSetup, runInteractiveSecretsSetup } from './airingcal-setup.ts'
 
 function docsPath(file: string): string {
   const repoRoot = join(fileURLToPath(new URL('.', import.meta.url)), '../../../..')
@@ -61,4 +61,45 @@ test('setup fails closed for the EdgeOne stub and malformed YAML', () => {
 
   const wrongSchema = tempConfig('airingcal.yaml', 'schema_version: 2\nplatform: portable\n')
   assert.throws(() => runAiringcalSetup(wrongSchema), /schema_version/)
+})
+
+test('interactive secrets setup stores only entered values with 0600 permissions', async () => {
+  const secretsPath = join(mkdtempSync(join(tmpdir(), 'airingcal-secrets-')), 'secrets.env')
+  const answers: Record<string, string | null> = {
+    BGM_TOKEN: 'token-value',
+    AIRINGCAL_USERS_JSON: '   ',
+    AIRINGCAL_PRIMARY_USER_ID: null,
+  }
+  const result = await runInteractiveSecretsSetup(
+    ['BGM_TOKEN', 'AIRINGCAL_USERS_JSON', 'AIRINGCAL_PRIMARY_USER_ID'],
+    secretsPath,
+    {
+      prompt: async (key) => answers[key] ?? null,
+      writeFile: (path, content, mode) => writeFileSync(path, content, { mode }),
+    },
+  )
+
+  assert.deepEqual(result.written, ['BGM_TOKEN'])
+  assert.deepEqual(result.skipped, ['AIRINGCAL_USERS_JSON', 'AIRINGCAL_PRIMARY_USER_ID'])
+  assert.equal(result.secretsPath, secretsPath)
+  assert.equal(readFileSync(secretsPath, 'utf8'), 'BGM_TOKEN=token-value\n')
+  assert.equal(statSync(secretsPath).mode & 0o777, 0o600, 'secrets file must not be world-readable')
+})
+
+test('interactive secrets setup skips everything without writing and needs a destination', async () => {
+  const allSkipped = await runInteractiveSecretsSetup(['BGM_TOKEN'], undefined, {
+    prompt: async () => '',
+    writeFile: () => {
+      throw new Error('must not write when nothing was entered')
+    },
+  })
+  assert.deepEqual(allSkipped, { written: [], skipped: ['BGM_TOKEN'], secretsPath: null })
+
+  await assert.rejects(
+    () => runInteractiveSecretsSetup(['BGM_TOKEN'], undefined, {
+      prompt: async () => 'value',
+      writeFile: () => {},
+    }),
+    /--secrets-out/,
+  )
 })

@@ -99,6 +99,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | EdgeOne `PublicStore` over Makers Blob (read + read-back immutability; CAS unsupported) | `packages/v3-adapters/src/edgeone-public-store.ts`, `edgeone-public-store.test.ts` |
 | EdgeOne storage choice + semantics (KV unusable for path keys) | [`docs/v3/edgeone-store.md`](./edgeone-store.md) |
 | Platform-aware non-interactive setup (portable env / Cloudflare bindings / EdgeOne fail-closed) | `apps/node-jobs/src/cli/airingcal-setup.ts` |
+| Interactive secrets entry (`--interactive --secrets-out`, 0600 file, EOF-safe prompts) | `apps/node-jobs/src/cli/airingcal-setup.ts`, `airingcal-setup.test.ts` |
 | `airingcal` config v1 JSON (portable env mapping) | `docs/v3/airingcal-config.example.json`, `packages/v3-adapters/src/airingcal-config.ts` |
 | Config → env emit CLI (#72 setup) | `apps/node-jobs/src/cli/airingcal-config-emit.ts` |
 | Config validate + snapshot compare (#73 prep) | `airingcal-config-validate.ts`, `portable-snapshot-compare.ts` |

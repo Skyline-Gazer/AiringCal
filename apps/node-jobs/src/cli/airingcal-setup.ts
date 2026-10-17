@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { createInterface, type Interface } from 'node:readline/promises'
 import {
   formatPortableEnvLines,
   loadAiringcalConfigFromFile,
@@ -63,23 +64,105 @@ export function runAiringcalSetup(
 }
 
 if (process.argv[1]?.endsWith('airingcal-setup.ts')) {
-  const configPath = process.argv[2]
-  const emitEnv = process.argv.includes('--emit-env')
-  try {
-    if (!configPath) throw new Error('Usage: airingcal-setup.ts <airingcal.yaml|.json> [--emit-env]')
-    const result = runAiringcalSetup(configPath)
-    if (emitEnv) process.stdout.write(result.env_lines)
-    console.log(JSON.stringify({
-      status: 'ok',
-      stage: 'airingcal_setup',
-      platform: result.platform,
-      secrets_required: result.secrets_required,
-      bindings_required: result.bindings_required,
-      emitted_env: emitEnv,
-    }))
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'setup_failed'
-    console.error(JSON.stringify({ status: 'failed', stage: 'airingcal_setup', message }))
-    process.exit(1)
+  const argv = process.argv.slice(2)
+  const valueOf = (flag: string): string | undefined => {
+    const index = argv.indexOf(flag)
+    return index === -1 ? undefined : argv[index + 1]
   }
+  const configPath = argv.find((arg, index) => !arg.startsWith('--') && !argv[index - 1]?.startsWith('--'))
+  const emitEnv = argv.includes('--emit-env')
+  const interactive = argv.includes('--interactive')
+  const secretsOut = valueOf('--secrets-out')
+  void (async () => {
+    try {
+      if (!configPath) {
+        throw new Error('Usage: airingcal-setup.ts <airingcal.yaml|.json> [--emit-env] [--interactive --secrets-out <path>]')
+      }
+      const result = runAiringcalSetup(configPath)
+      if (emitEnv) process.stdout.write(result.env_lines)
+
+      let secrets: InteractiveSecretsResult | null = null
+      if (interactive) {
+        const reader = createInterface({ input: process.stdin, output: process.stderr })
+        try {
+          secrets = await runInteractiveSecretsSetup(result.secrets_required, secretsOut, {
+            prompt: (key) => askOrSkipOnClose(reader, key),
+            writeFile: (path, content, mode) => writeFileSync(path, content, { mode }),
+          })
+        } finally {
+          reader.close()
+        }
+      }
+
+      console.log(JSON.stringify({
+        status: 'ok',
+        stage: 'airingcal_setup',
+        platform: result.platform,
+        secrets_required: result.secrets_required,
+        bindings_required: result.bindings_required,
+        emitted_env: emitEnv,
+        interactive,
+        secrets: secrets === null ? null : { written: secrets.written, skipped: secrets.skipped, path: secrets.secretsPath },
+      }))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'setup_failed'
+      console.error(JSON.stringify({ status: 'failed', stage: 'airingcal_setup', message }))
+      process.exit(1)
+    }
+  })()
+}
+
+export interface InteractiveSecretsDeps {
+  /** Returns the entered value, or null at EOF/skip. */
+  prompt: (key: string) => Promise<string | null>
+  writeFile: (path: string, content: string, mode: number) => void
+}
+
+/**
+ * `readline.question` never settles once stdin reaches EOF with piped input,
+ * which would leave setup hanging or crashing; normalising both to "skip this
+ * secret" keeps interactive and piped runs behaving the same.
+ */
+async function askOrSkipOnClose(reader: Interface, key: string): Promise<string | null> {
+  const closed = Promise.withResolvers<null>()
+  reader.once('close', () => closed.resolve(null))
+  const question = reader.question(`Enter ${key} (blank to skip): `).catch(() => null)
+  const answer = await Promise.race([question, closed.promise])
+  return answer ?? null
+}
+
+export interface InteractiveSecretsResult {
+  written: string[]
+  skipped: string[]
+  secretsPath: string | null
+}
+
+/**
+ * Interactive secret entry: prompts for each required key and writes the
+ * non-empty answers to `secretsPath` with `0600` permissions. Values are never
+ * printed and never touch the emitted (non-secret) env lines.
+ */
+export async function runInteractiveSecretsSetup(
+  secretsRequired: readonly string[],
+  secretsPath: string | undefined,
+  deps: InteractiveSecretsDeps,
+): Promise<InteractiveSecretsResult> {
+  const written: string[] = []
+  const entries: string[] = []
+  const skipped: string[] = []
+  for (const key of secretsRequired) {
+    const value = (await deps.prompt(key))?.trim() ?? ''
+    if (value.length === 0) {
+      skipped.push(key)
+      continue
+    }
+    written.push(key)
+    entries.push(`${key}=${value}`)
+  }
+  if (entries.length === 0) return { written, skipped, secretsPath: null }
+  if (!secretsPath) {
+    throw new Error('--secrets-out <path> is required to store interactively entered secrets')
+  }
+  deps.writeFile(secretsPath, `${entries.join('\n')}\n`, 0o600)
+  return { written, skipped, secretsPath }
 }
