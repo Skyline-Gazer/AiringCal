@@ -37,7 +37,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Live web-worker Cache-Control headers | `apps/web-worker/src/read-api-cache-contract.test.ts` |
 | v2 route + Cache-Control literals | `packages/v3-core/src/read-contract.ts`, `read-contract.test.ts` |
 | 48-item snapshot gzip sizing (#69 split-json input) | `packages/v3-core/src/snapshot-payload-metrics.test.ts` |
-| **Snapshot sizing CLI** (compact/gzip bytes + section breakdown + single-JSON viability against the 500 KiB guard) | `apps/node-jobs/src/cli/portable-snapshot-sizing.ts` — run on any anonymized production export to confirm/revisit the ADR 0001 split decision |
+| **Production anonymized sizing** (live v2 pointer → R2 snapshot; **byte counts only**, no payload stored) | `.github/workflows/sizing-probe.yml`, `scripts/prod-snapshot-sizing-probe.mjs` — run `39052596856` (2026-10-17): generation **15**, compact **552 990** B, gzip **110 769** B, `single_json_viable: true`, collections **85.5%** of JSON |
 | Portable port interfaces + in-memory doubles | `packages/v3-core/src/ports.ts`, `ports.test.ts` |
 | Existing R2 payload shape contract | `apps/web-worker/src/r2-mode-contract.test.ts` |
 | Collections / calendar / health (legacy harness) | `collections.test.ts`, `read-worker.test.ts`, `health.test.ts` |
@@ -113,10 +113,9 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 
 ## Gaps (explicit unknowns for #72 / staging)
 
-- No committed fixture of **compressed snapshot byte size** from production R2/D1 export.
+- ~~No committed fixture of **compressed snapshot byte size** from production R2/D1 export.~~ **Resolved** (2026-10-17): manual probe run `39052596856` — gzip **110 769** B on live release generation **15** (counts only; see table above).
 - Cloudflare read worker exists on `dev` and is smoke-tested against the local R2 emulation; **real-bucket** precondition (immutable put / pointer CAS) and authenticated staging checks are still unverified — the emulation accepts violating `If-Match`/`If-None-Match`. See [`cloudflare-read-worker.md`](./cloudflare-read-worker.md).
 - EdgeOne Pages / edge functions limits not exercised in CI; matrix rows in audit remain **candidate** until staging runs.
-- Sync tab UX vs 410 backend: v3 should remove tab or repoint to operator docs.
 
 Cloudflare / EdgeOne capability matrix rows in `p0-contract-audit.md` remain **verification backlog** until #72 staging tests land.
 
