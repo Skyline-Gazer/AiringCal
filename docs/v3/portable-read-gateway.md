@@ -40,3 +40,5 @@ Platform gateways import node-free subpaths instead of the package roots (which 
 `/health` cron is injected through `PortableReadEnv.cronStatus`: Compose web passes the SQLite-backed reader from `serve-node.ts`, gateways without local SQLite omit it and report `scheduler: 'external'`.
 
 R2 `head()` returns `etag` unquoted and `httpEtag` quoted; conditional writes must send the quoted form (`If-Match`), verified against the wrangler local R2 emulation.
+
+Read parity across stores is guarded by `packages/v3-read/src/read-gateway-parity.test.ts`: the same published release is served by the filesystem store (portable gateway) and the R2 store (Workers gateway), and `/api/collections`, `/api/calendar`, `/api/cache`, `/api/config`, `/api/health`, `/image/:hash` and `/image/:hash/thumb` must be byte-identical (status, `Cache-Control`, `Content-Type`, body) with matching release pointers and `public/manifest.json`; `/api/version` differs only by platform identity.
