@@ -86,6 +86,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | `airingcal` config v1 JSON (portable env mapping) | `docs/v3/airingcal-config.example.json`, `packages/v3-adapters/src/airingcal-config.ts` |
 | Config → env emit CLI (#72 setup) | `apps/node-jobs/src/cli/airingcal-config-emit.ts` |
 | Config validate + snapshot compare (#73 prep) | `airingcal-config-validate.ts`, `portable-snapshot-compare.ts` |
+| `airingcal setup` portable stub | `apps/node-jobs/src/cli/airingcal-setup.ts` |
 
 ## Gaps (explicit unknowns for #72 / staging)
 

@@ -20,6 +20,8 @@
   "gc": {
     "min_generations": 5,
     "min_age_days": 30,
-    "log_after_publish": true
-  }
+    "log_after_publish": true,
+    "pinned_images": []
+  },
+  "secrets_from_env": ["BGM_TOKEN", "AIRINGCAL_USERS_JSON", "AIRINGCAL_PRIMARY_USER_ID"]
 }
