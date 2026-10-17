@@ -1,3 +1,4 @@
+import { parse as parseYaml } from 'yaml'
 import { parseDailyAtUtc } from '@airing-cal/v3-builder'
 
 export type AiringcalPlatform = 'portable' | 'cloudflare' | 'edgeone'
@@ -98,8 +99,22 @@ export function formatPortableEnvLines(env: Record<string, string>): string {
   return `${Object.keys(env).sort().map((key) => `${key}=${env[key]}`).join('\n')}\n`
 }
 
+/**
+ * Parses an operator config file: `airingcal.yaml`/`.yml` (the documented format)
+ * or the equivalent JSON. Both go through the same schema validation.
+ */
 export function loadAiringcalConfigFromFile(path: string, readText: (p: string) => string): AiringcalConfigV1 {
-  return parseAiringcalConfig(JSON.parse(readText(path)))
+  const text = readText(path)
+  if (/\.ya?ml$/i.test(path)) {
+    let parsed: unknown
+    try {
+      parsed = parseYaml(text) as unknown
+    } catch (error) {
+      throw new Error(`airingcal config YAML is invalid: ${error instanceof Error ? error.message : 'parse error'}`)
+    }
+    return parseAiringcalConfig(parsed)
+  }
+  return parseAiringcalConfig(JSON.parse(text))
 }
 
 /** Maps portable v1 config fields to existing AIRINGCAL_* env keys (partial; secrets still from env). */

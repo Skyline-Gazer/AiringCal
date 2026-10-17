@@ -15,9 +15,10 @@
     "test": "tsx --test"
   },
   "dependencies": {
+    "@airing-cal/storage": "workspace:*",
     "@airing-cal/v3-builder": "workspace:*",
     "@airing-cal/v3-core": "workspace:*",
-    "@airing-cal/storage": "workspace:*"
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "@types/node": "^26.4.0"

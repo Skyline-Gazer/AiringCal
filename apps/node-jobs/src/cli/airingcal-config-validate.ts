@@ -9,7 +9,7 @@ export function validateAiringcalConfigFile(configPath: string): { platform: str
 if (process.argv[1]?.endsWith('airingcal-config-validate.ts')) {
   const configPath = process.argv[2]
   try {
-    if (!configPath) throw new Error('Usage: airingcal-config-validate.ts <airingcal.config.json>')
+    if (!configPath) throw new Error('Usage: airingcal-config-validate.ts <airingcal.yaml|.json>')
     const result = validateAiringcalConfigFile(configPath)
     console.log(JSON.stringify({ status: 'ok', stage: 'airingcal_config_validate', ...result }))
   } catch (error) {
