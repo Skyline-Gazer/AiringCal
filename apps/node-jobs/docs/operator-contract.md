@@ -78,7 +78,7 @@ When `AIRINGCAL_BUILDER_PUBLISH=true` and `AIRINGCAL_BUILDER_PUBLIC_DIR` is unse
 | `AIRINGCAL_BUILDER_MEDIA_REFRESH` | no | `skip` (default): no download; URL-only `image_status`. `refresh`: download covers to filesystem via builder SQLite `subject_media` (requires `PUBLIC_DIR` or `IMAGE_DIR`). |
 | `AIRINGCAL_BUILDER_IMAGE_DIR` | when refresh without `PUBLIC_DIR` | Root for immutable `images/{hash}/original` blobs (same key layout as R2). |
 
-Portable sync **does not** read Cloudflare R2/D1/KV, **does not** call `AIRINGCAL_THUMB_GEN_*` / Worker thumb-gen, and **does not** download cover bytes today.
+Portable sync **does not** read Cloudflare R2/D1/KV or call Worker `AIRINGCAL_THUMB_GEN_*`. With `MEDIA_REFRESH=refresh`, cover bytes and optional offline `thumb.v2.webp` (320×427 WebP q78) land on the filesystem store.
 
 Cloudflare variables are **not** read on the portable path.
 
