@@ -86,5 +86,7 @@ so they are listed as commands above rather than claimed as executed.
 ## Open gaps before a production cutover
 
 - Real v2 KV read against the production namespace by the owner (`portable-legacy-export`).
-- D1/R2 read-only export adapters (KV metadata is the only exported legacy source today).
+- D1/R2 export adapters are intentionally out of scope for the portable pipeline
+  (R2 images stay in place; the subject set comes from the verified snapshot) —
+  rationale in [`legacy-state-import.md`](./legacy-state-import.md#why-there-is-no-d1r2-export-adapter-decision-2026-10-17).
 - Authenticated staging run of the Workers read gateway on a real bucket.
