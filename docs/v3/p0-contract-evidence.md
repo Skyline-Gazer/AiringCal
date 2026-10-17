@@ -82,7 +82,8 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Reference-aware image GC dry-run (log) | `packages/v3-core/src/public-image-gc.ts`, `logPublicImageGcDryRun` |
 | Image GC apply (`--apply-images`) | `apps/node-jobs/src/cli/portable-public-gc.ts` |
 | Read path manifest ↔ pointer verification | `packages/v3-read/src/load-public-snapshot.ts`, `load-public-snapshot.test.ts` |
-| Runtime adapter stubs (portable / CF / EdgeOne) | `packages/v3-adapters/src/` |
+| Runtime adapters (portable / CF / EdgeOne) | `packages/v3-adapters/src/` |
+| Cloudflare R2 `PublicStore` (etag CAS pointer) | `packages/v3-adapters/src/cloudflare-r2-public-store.ts` |
 | `airingcal` config v1 JSON (portable env mapping) | `docs/v3/airingcal-config.example.json`, `packages/v3-adapters/src/airingcal-config.ts` |
 | Config → env emit CLI (#72 setup) | `apps/node-jobs/src/cli/airingcal-config-emit.ts` |
 | Config validate + snapshot compare (#73 prep) | `airingcal-config-validate.ts`, `portable-snapshot-compare.ts` |

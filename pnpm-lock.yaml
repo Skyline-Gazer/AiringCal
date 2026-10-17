@@ -106,6 +106,9 @@ importers:
 
   packages/v3-adapters:
     dependencies:
+      '@airing-cal/storage':
+        specifier: workspace:*
+        version: link:../storage
       '@airing-cal/v3-builder':
         specifier: workspace:*
         version: link:../v3-builder

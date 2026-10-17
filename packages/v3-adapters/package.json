@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@airing-cal/v3-builder": "workspace:*",
-    "@airing-cal/v3-core": "workspace:*"
+    "@airing-cal/v3-core": "workspace:*",
+    "@airing-cal/storage": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.4.0"
