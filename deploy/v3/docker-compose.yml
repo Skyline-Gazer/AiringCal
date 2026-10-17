@@ -95,5 +95,25 @@ services:
     volumes:
       - airingcal-data:/data
 
+  gc:
+    profiles: ["gc"]
+    build:
+      context: ../..
+      dockerfile: deploy/v3/Dockerfile
+    command:
+      - pnpm
+      - exec
+      - tsx
+      - apps/node-jobs/src/cli/portable-public-gc.ts
+    environment:
+      AIRINGCAL_PLATFORM: portable
+      AIRINGCAL_BUILDER_PUBLIC_DIR: /data/public
+      AIRINGCAL_GC_MIN_GENERATIONS: ${AIRINGCAL_GC_MIN_GENERATIONS:-5}
+      AIRINGCAL_GC_MIN_AGE_DAYS: ${AIRINGCAL_GC_MIN_AGE_DAYS:-30}
+      AIRINGCAL_GC_PINNED: ${AIRINGCAL_GC_PINNED:-}
+      AIRINGCAL_GC_PINNED_IMAGES: ${AIRINGCAL_GC_PINNED_IMAGES:-}
+    volumes:
+      - airingcal-data:/data
+
 volumes:
   airingcal-data:
