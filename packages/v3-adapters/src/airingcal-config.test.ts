@@ -14,6 +14,8 @@ test('parseAiringcalConfig accepts docs example', () => {
   assert.equal(env.AIRINGCAL_BUILDER_SQLITE_PATH, '/data/builder.sqlite')
   assert.equal(env.AIRINGCAL_SCHEDULER_DAILY_AT, '03:00')
   assert.equal(env.AIRINGCAL_BUILDER_BACKUP_KEEP, '10')
+  assert.equal(env.AIRINGCAL_GC_MIN_GENERATIONS, '5')
+  assert.equal(env.AIRINGCAL_GC_LOG_AFTER_PUBLISH, 'true')
 })
 
 test('parseAiringcalConfig rejects unknown schema', () => {
