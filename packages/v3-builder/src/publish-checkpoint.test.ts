@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { assembleFullFetch } from '@airing-cal/bgm-api'
+import { parsePublicSnapshotManifestV1 } from '@airing-cal/domain'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -84,6 +85,10 @@ test('publishBuilderCheckpoint persists release to filesystem PublicStore', asyn
   const pointerRaw = readFileSync(join(root, FILESYSTEM_PUBLIC_POINTER_KEY), 'utf8')
   assert.match(pointerRaw, /content_hash/)
   assert.ok(await publicStore.getSnapshotBytes(result.pointer!.artifact_ref))
+  const manifestRaw = readFileSync(join(root, 'public/manifest.json'), 'utf8')
+  const manifest = parsePublicSnapshotManifestV1(JSON.parse(manifestRaw))
+  assert.equal(manifest.snapshot_key, result.pointer!.artifact_ref)
+  assert.equal(manifest.generation, result.pointer!.generation)
 })
 
 test('publishBuilderCheckpoint fails closed when CAS is unsupported', async () => {
