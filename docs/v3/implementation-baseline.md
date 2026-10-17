@@ -45,10 +45,20 @@ Do not mark a gate complete without evidence in Issue/PR and checked CI. No prod
 ## Advisory reviewer status (2026-10-17)
 
 The Alibaba OpenCodeReview workflow (`.github/workflows/ocr-review.yml`) is
-**disabled** (`disabled_manually`). It failed on every code PR for several hours
-with its own error (`OCR_EXIT_CODE: 1`, no comments posted, ~10–18 s) while
-skipping docs/test-only PRs ("no items were selected"), so it could not satisfy
-the "PR review documented and linked" DoD item. Re-enable with
-`gh workflow enable 386430913` after the OCR secrets/endpoint are fixed and one
-run succeeds on a real code PR; until then, PR review is owner/manual and each PR
-records its own verification evidence.
+**disabled** (`disabled_manually`).
+
+- **Root cause** (read from the uploaded run artifact `ocr-result.json` /
+  `ocr-stderr.log`): the grouping LLM call failed with **HTTP 402 Payment
+  Required** — the OpenRouter account behind `OCR_LLM_AUTH_TOKEN` has exhausted
+  its credit balance ("you can only afford 14970 of 16384 tokens"). This is a
+  billing/credential problem, not a code or config bug. The `OCR_EXIT_CODE: 1`
+  seen on every failing run is just the Action exiting non-zero after that API
+  error; docs/test-only PRs were merely skipped ("no items selected").
+- **To re-enable**: add credit to the OpenRouter account backing
+  `OCR_LLM_AUTH_TOKEN`, then `gh workflow enable 386430913`, then
+  `gh workflow run ocr-review.yml` on a real (code) PR and confirm the job posts
+  comments instead of failing. The workflow is now non-blocking
+  (`continue-on-error: true`), so a reviewer outage will never turn an
+  otherwise-fine PR red.
+- Until then, PR review is owner/manual and each PR records its own verification
+  evidence.

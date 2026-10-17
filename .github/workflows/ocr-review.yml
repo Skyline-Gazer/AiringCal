@@ -21,6 +21,12 @@ jobs:
       && !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Advisory by design: this must never block a PR. The reviewer is currently
+    # disabled at the workflow level (OpenRouter 402 "Payment Required" — the
+    # OCR_LLM_AUTH_TOKEN balance is exhausted; see
+    # docs/v3/implementation-baseline.md). When re-enabled, keep failures
+    # non-blocking so reviewer outages never turn an otherwise-fine PR red.
+    continue-on-error: true
     steps:
       - name: Check OCR configuration
         id: config
