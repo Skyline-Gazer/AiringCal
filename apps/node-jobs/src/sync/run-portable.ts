@@ -20,6 +20,11 @@ import { mediaSubjectsFromFetch } from './media-refresh.ts'
 import { createEnrichMediaSubjectsFromFetch } from './media-subject-resolve.ts'
 import { runPortableMediaRefresh } from './portable-media.ts'
 import { materializePortableThumbs } from './portable-thumb.ts'
+import { logPublicSnapshotGcDryRun } from '../cli/portable-public-gc.ts'
+
+function shouldLogGcDryRunAfterPublish(env: Record<string, string | undefined>): boolean {
+  return ['1', 'true', 'yes'].includes((env.AIRINGCAL_GC_LOG_AFTER_PUBLISH ?? '').trim().toLowerCase())
+}
 
 function createPortablePublicStore(env: Record<string, string | undefined>): PublicStore {
   const publicDir = env.AIRINGCAL_BUILDER_PUBLIC_DIR?.trim()
@@ -223,6 +228,20 @@ export async function runPortableBuilderSync(
       && result.publish.status !== 'already_current'
     const failed = sync === 'failed' || publishFailed
     const skipped = sync === 'skipped'
+    if (
+      !failed
+      && !skipped
+      && builderConfig.publishAfterSync
+      && env.AIRINGCAL_BUILDER_PUBLIC_DIR?.trim()
+      && shouldLogGcDryRunAfterPublish(env)
+    ) {
+      try {
+        await logPublicSnapshotGcDryRun(env)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'gc_dry_run_failed'
+        console.log(JSON.stringify({ status: 'info', stage: 'public_snapshot_gc_dry_run', error: message }))
+      }
+    }
     const mediaPart = mediaMode === 'skip' ? 'media=skip' : mediaSummary
     return {
       job: 'airingcal-sync',
