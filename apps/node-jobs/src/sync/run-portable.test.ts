@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FILESYSTEM_PUBLIC_POINTER_KEY } from '@airing-cal/v3-core'
+import { PUBLIC_RELEASE_POINTER_KEY } from '@airing-cal/v3-core'
 import test from 'node:test'
 import { assembleFullFetch, type BgmCollection } from '@airing-cal/bgm-api'
 import sharp from 'sharp'
@@ -127,7 +127,7 @@ test('runPortableBuilderSync publishes durable release when PUBLIC_DIR set', asy
   )
   assert.equal(summary.status, 'success')
   assert.match(summary.message, /publish=published|publish=already_current/)
-  readFileSync(join(publicDir, FILESYSTEM_PUBLIC_POINTER_KEY), 'utf8')
+  readFileSync(join(publicDir, PUBLIC_RELEASE_POINTER_KEY), 'utf8')
 })
 
 test('legacy cloudflare path remains default when AIRINGCAL_BUILDER unset', async () => {

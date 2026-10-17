@@ -13,6 +13,7 @@ import {
 } from '@airing-cal/v3-builder'
 import { FilesystemPublicStore, V2_CACHE_CONTROL } from '@airing-cal/v3-core'
 import { handlePortableReadRequest } from './portable-read-handler.ts'
+import { readPortableCronStatus } from './portable-builder-cron.ts'
 
 function emptyFetch() {
   return assembleFullFetch(
@@ -92,13 +93,18 @@ test('handlePortableReadRequest /health reports compose-scheduler cron from SQLi
 
   const response = await handlePortableReadRequest(new Request('https://local/api/health'), {
     publicStore,
-    processEnv: {
+    cronStatus: () => readPortableCronStatus({
       AIRINGCAL_BUILDER_SQLITE_PATH: sqlitePath,
       AIRINGCAL_SCHEDULER_DAILY_AT: '03:00',
-    },
+    }),
   })
   assert.equal(response.status, 200)
   const body = await response.json() as { data: { cron: { scheduler: string; last: { status: string } | null } } }
   assert.equal(body.data.cron.scheduler, 'compose-scheduler')
   assert.equal(body.data.cron.last?.status, 'succeeded')
+
+  const gatewayLike = await handlePortableReadRequest(new Request('https://local/api/health'), { publicStore })
+  const gatewayLikeBody = await gatewayLike.json() as { data: { cron: { scheduler: string; next_at: string | null } } }
+  assert.equal(gatewayLikeBody.data.cron.scheduler, 'external')
+  assert.equal(gatewayLikeBody.data.cron.next_at, null)
 })

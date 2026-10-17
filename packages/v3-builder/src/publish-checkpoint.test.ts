@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
-  FILESYSTEM_PUBLIC_POINTER_KEY,
+  PUBLIC_RELEASE_POINTER_KEY,
   FilesystemPublicStore,
   MemoryPublicStore,
 } from '@airing-cal/v3-core'
@@ -82,7 +82,7 @@ test('publishBuilderCheckpoint persists release to filesystem PublicStore', asyn
     },
   })
   assert.equal(result.status, 'published')
-  const pointerRaw = readFileSync(join(root, FILESYSTEM_PUBLIC_POINTER_KEY), 'utf8')
+  const pointerRaw = readFileSync(join(root, PUBLIC_RELEASE_POINTER_KEY), 'utf8')
   assert.match(pointerRaw, /content_hash/)
   assert.ok(await publicStore.getSnapshotBytes(result.pointer!.artifact_ref))
   const manifestRaw = readFileSync(join(root, 'public/manifest.json'), 'utf8')

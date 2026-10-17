@@ -8,16 +8,31 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
 const ciPath = resolve(root, '.github/workflows/ci.yml')
 
 const productionApps = ['web-worker', 'node-jobs'] as const
+/** v3 staging apps (#72): present in the workspace for typecheck/test, never deployed by CI. */
+const stagingApps = ['v3-read-worker'] as const
 
-test('pnpm workspace lists only production apps plus shared packages', () => {
+test('pnpm workspace lists production apps, staging v3 apps, and shared packages', () => {
   const workspace = readFileSync(resolve(root, 'pnpm-workspace.yaml'), 'utf8')
   assert.match(workspace, /apps\/web-worker/)
   assert.match(workspace, /apps\/node-jobs/)
   assert.match(workspace, /packages\/\*/)
   assert.doesNotMatch(workspace, /apps\/\*/)
-  for (const legacy of ['vps-sync', 'sync-worker', 'media-worker', 'read-worker', 'frontend-worker']) {
+  for (const app of stagingApps) {
+    assert.match(workspace, new RegExp(`apps/${app}`), `${app} should stay in the workspace for CI checks`)
+  }
+  for (const legacy of ['vps-sync', 'sync-worker', 'media-worker', 'frontend-worker']) {
     assert.doesNotMatch(workspace, new RegExp(legacy))
   }
+  assert.doesNotMatch(workspace, /apps\/read-worker/, 'legacy read-worker stays removed; the v3 gateway is apps/v3-read-worker')
+})
+
+test('staging v3 read worker is never deployed by CI', () => {
+  for (const app of stagingApps) {
+    assert.equal(existsSync(resolve(root, 'apps', app, 'wrangler.toml')), true, `${app} should keep a checked-in Wrangler config`)
+  }
+  const workflow = readFileSync(ciPath, 'utf8')
+  assert.match(workflow, /apps\/v3-read-worker\/scripts\/staging-smoke\.ts/, 'CI should smoke the v3 read worker against the local R2 emulation')
+  assert.doesNotMatch(workflow, /v3-read-worker\/wrangler\.toml/, 'CI must not upload the staging v3 read worker')
 })
 
 test('production web-worker has a checked-in Wrangler config with required bindings', () => {

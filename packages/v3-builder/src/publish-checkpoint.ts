@@ -5,7 +5,8 @@ import {
   snapshotObjectKey,
 } from '@airing-cal/domain'
 import { canonicalJson } from '@airing-cal/storage'
-import type { PublicReleasePointer, PublicStore } from '@airing-cal/v3-core'
+import type { PublicReleasePointer, PublicStore } from '@airing-cal/v3-core/ports'
+import { bytesEqual } from '@airing-cal/v3-core/public-pointer'
 import { BUILDER_SNAPSHOT_CHECKPOINT_KEY } from './sync-job.ts'
 import type { SqliteBuilderStateStore } from './sqlite-state.ts'
 
@@ -27,10 +28,6 @@ export interface PublishCheckpointDeps {
   publicStore: PublicStore
   schemaVersion?: number
   manifestMetadata?: { source_observed_at: string; git_sha: string }
-}
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  return a.byteLength === b.byteLength && a.every((byte, index) => byte === b[index])
 }
 
 async function loadCheckpointSnapshot(state: SqliteBuilderStateStore) {

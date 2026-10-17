@@ -1,6 +1,7 @@
 packages:
   - 'apps/web-worker'
   - 'apps/node-jobs'
+  - 'apps/v3-read-worker'
   - 'packages/*'
 
 allowBuilds:

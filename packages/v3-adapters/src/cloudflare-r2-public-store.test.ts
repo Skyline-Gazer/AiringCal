@@ -1,59 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { PublicReleasePointer } from '@airing-cal/v3-core'
-import {
-  CloudflareR2PublicStore,
-  type CloudflareR2BucketBinding,
-  type CloudflareR2HeadResult,
-  type CloudflareR2ObjectBody,
-  type CloudflareR2PutOptions,
-} from './cloudflare-r2-public-store.ts'
-
-class MemoryR2Object implements CloudflareR2ObjectBody {
-  constructor(readonly bytes: Uint8Array) {}
-
-  async arrayBuffer(): Promise<ArrayBuffer> {
-    return this.bytes.buffer.slice(this.bytes.byteOffset, this.bytes.byteOffset + this.bytes.byteLength)
-  }
-}
-
-class MemoryR2Bucket implements CloudflareR2BucketBinding {
-  objects = new Map<string, { bytes: Uint8Array; etag: string; contentType?: string }>()
-  private etagCounter = 0
-
-  async get(key: string): Promise<CloudflareR2ObjectBody | null> {
-    const entry = this.objects.get(key)
-    return entry ? new MemoryR2Object(entry.bytes) : null
-  }
-
-  async head(key: string): Promise<CloudflareR2HeadResult | null> {
-    const entry = this.objects.get(key)
-    return entry ? { etag: entry.etag } : null
-  }
-
-  async put(key: string, value: ArrayBuffer | Uint8Array | string, options?: CloudflareR2PutOptions): Promise<void> {
-    const onlyIf = options?.onlyIf
-    const existing = this.objects.get(key)
-    if (onlyIf?.get('If-None-Match') === '*' && existing) {
-      throw new Error('PreconditionFailed')
-    }
-    const ifMatch = onlyIf?.get('If-Match')
-    if (ifMatch && (!existing || existing.etag !== ifMatch)) {
-      throw new Error('PreconditionFailed')
-    }
-    const bytes = typeof value === 'string'
-      ? new TextEncoder().encode(value)
-      : value instanceof Uint8Array
-        ? value
-        : new Uint8Array(value)
-    this.etagCounter += 1
-    this.objects.set(key, {
-      bytes: new Uint8Array(bytes),
-      etag: `etag-${this.etagCounter}`,
-      contentType: options?.httpMetadata?.contentType,
-    })
-  }
-}
+import type { PublicReleasePointer } from '@airing-cal/v3-core/ports'
+import { PUBLIC_RELEASE_POINTER_KEY } from '@airing-cal/v3-core/public-pointer'
+import { CloudflareR2PublicStore } from './cloudflare-r2-public-store.ts'
+import { MemoryR2Bucket } from './memory-r2-binding.ts'
 
 function samplePointer(generation: number): PublicReleasePointer {
   return {
@@ -83,4 +33,21 @@ test('CloudflareR2PublicStore enforces immutable objects and pointer CAS', async
   const second = samplePointer(2)
   assert.equal(await store.commitRelease(first, second), 'committed')
   assert.deepEqual(await store.getCurrentRelease(), second)
+})
+
+test('commitRelease refuses a head() result without a usable quoted httpEtag', async () => {
+  const bucket = new MemoryR2Bucket()
+  await bucket.put(PUBLIC_RELEASE_POINTER_KEY, `${JSON.stringify(samplePointer(1))}\n`)
+  const store = new CloudflareR2PublicStore({
+    get: (key) => bucket.get(key),
+    head: async (key) => {
+      const result = await bucket.head(key)
+      return result ? { ...result, httpEtag: '' } : null
+    },
+    put: (key, value, options) => bucket.put(key, value, options),
+  })
+  await assert.rejects(
+    () => store.commitRelease(samplePointer(1), samplePointer(2)),
+    /httpEtag/,
+  )
 })

@@ -1,0 +1,10 @@
+# v3 read gateway (#72) — Cloudflare Workers.
+# Staging/local only: CI does not deploy this Worker. No production cutover
+# until #73 DoD; reconcile `bucket_name` with the operator `airingcal` config.
+name = "airing-cal-v3-read"
+main = "src/index.ts"
+compatibility_date = "2026-06-17"
+
+[[r2_buckets]]
+binding = "AIRINGCAL_PUBLIC_R2"
+bucket_name = "airing-cal-public"
