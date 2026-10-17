@@ -97,7 +97,7 @@ See [`deploy/v3/env.example`](../../../deploy/v3/env.example) and [`deploy/v3/RE
 
 Long-running scheduler: `tsx apps/node-jobs/src/cli/portable-scheduler.ts`. One-shot checkpoint backup: `tsx apps/node-jobs/src/cli/portable-checkpoint-backup.ts`. Restore: `tsx apps/node-jobs/src/cli/portable-checkpoint-restore.ts <backup.sqlite>` (add `--force` to overwrite an existing file).
 
-Portable non-secret env from v1 JSON config (secrets such as `BGM_TOKEN` stay in `.env`): `tsx apps/node-jobs/src/cli/airingcal-config-emit.ts docs/v3/airingcal-config.example.json`. Validate: `tsx apps/node-jobs/src/cli/airingcal-config-validate.ts <path>`. See [`docs/v3/airingcal-config.example.json`](../../../docs/v3/airingcal-config.example.json).
+Portable non-secret env from v1 JSON config (secrets such as `BGM_TOKEN` stay in `.env`): `tsx apps/node-jobs/src/cli/airingcal-config-emit.ts docs/v3/airingcal-config.example.json`. Validate: `tsx apps/node-jobs/src/cli/airingcal-config-validate.ts <path>`. Portable setup stub: `tsx apps/node-jobs/src/cli/airingcal-setup.ts <path> [--emit-env]`. See [`docs/v3/airingcal-config.example.json`](../../../docs/v3/airingcal-config.example.json).
 
 Read-only snapshot equivalence (migration smoke, #73 prep): `tsx apps/node-jobs/src/cli/portable-snapshot-compare.ts <left.json> <right.json>` (exit 2 on diff).
 

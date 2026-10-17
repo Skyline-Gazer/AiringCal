@@ -25,7 +25,9 @@ export interface AiringcalConfigV1 {
     min_generations?: number
     min_age_days?: number
     log_after_publish?: boolean
+    pinned_images?: string[]
   }
+  secrets_from_env?: string[]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -131,6 +133,9 @@ export function portableEnvFromAiringcalConfig(config: AiringcalConfigV1): Recor
   if (g?.min_age_days !== undefined) env.AIRINGCAL_GC_MIN_AGE_DAYS = String(g.min_age_days)
   if (g?.log_after_publish !== undefined) {
     env.AIRINGCAL_GC_LOG_AFTER_PUBLISH = g.log_after_publish ? 'true' : 'false'
+  }
+  if (g?.pinned_images?.length) {
+    env.AIRINGCAL_GC_PINNED_IMAGES = g.pinned_images.join(',')
   }
   return env
 }

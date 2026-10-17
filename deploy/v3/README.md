@@ -4,7 +4,8 @@ Single-user stack: **web** (read + widget), optional **scheduler** (daily increm
 
 ```bash
 cp deploy/v3/env.example deploy/v3/.env
-# edit .env — BGM_TOKEN and user ids required for sync/scheduler
+# optional: pnpm exec tsx apps/node-jobs/src/cli/airingcal-setup.ts docs/v3/airingcal-config.example.json --emit-env >> deploy/v3/.env
+# edit .env — add BGM_TOKEN and user ids (secrets) for sync/scheduler
 
 docker compose -f deploy/v3/docker-compose.yml up -d web
 docker compose -f deploy/v3/docker-compose.yml --profile scheduler up -d scheduler
