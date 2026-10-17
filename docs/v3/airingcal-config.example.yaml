@@ -1,0 +1,32 @@
+# AiringCal operator config v1 (#72) — YAML form of airingcal-config.example.json.
+# Schema is identical; validation: `airingcal-config-validate.ts <path>`.
+# Secrets are never stored here: they come from the environment (secrets_from_env).
+schema_version: 1
+platform: portable
+
+builder:
+  sqlite_path: /data/builder.sqlite
+  public_dir: /data/public
+  media_refresh: refresh
+  publish: true
+
+read:
+  public_dir: /data/public
+  nsfw_show: false
+
+scheduler:
+  daily_at_utc: '03:00'
+  full_every_days: 7
+  backup_before_sync: true
+  backup_keep: 10
+
+gc:
+  min_generations: 5
+  min_age_days: 30
+  log_after_publish: true
+  pinned_images: []
+
+secrets_from_env:
+  - BGM_TOKEN
+  - AIRINGCAL_USERS_JSON
+  - AIRINGCAL_PRIMARY_USER_ID

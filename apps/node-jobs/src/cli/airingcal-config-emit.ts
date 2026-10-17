@@ -14,7 +14,7 @@ export function emitPortableEnvFromConfigPath(configPath: string): string {
 if (process.argv[1]?.endsWith('airingcal-config-emit.ts')) {
   const configPath = process.argv[2]
   try {
-    if (!configPath) throw new Error('Usage: airingcal-config-emit.ts <airingcal.config.json>')
+    if (!configPath) throw new Error('Usage: airingcal-config-emit.ts <airingcal.yaml|.json>')
     process.stdout.write(emitPortableEnvFromConfigPath(configPath))
   } catch (error) {
     const message = error instanceof Error ? error.message : 'config_emit_failed'
