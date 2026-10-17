@@ -1,4 +1,4 @@
-import { parsePublicSnapshotV1 } from '@airing-cal/domain'
+import { parsePublicSnapshotManifestV1, parsePublicSnapshotV1 } from '@airing-cal/domain'
 import type { PublicSnapshotV1 } from '@airing-cal/storage'
 import type { PublicStore } from '@airing-cal/v3-core'
 
@@ -15,6 +15,22 @@ export async function loadVerifiedPublicSnapshot(publicStore: PublicStore): Prom
   const snapshot = await parsePublicSnapshotV1(JSON.parse(new TextDecoder().decode(bytes)))
   if (snapshot.generation !== pointer.generation || snapshot.content_hash !== pointer.content_hash) {
     return null
+  }
+  const manifestBytes = await publicStore.getSnapshotBytes('public/manifest.json')
+  if (manifestBytes) {
+    try {
+      const manifest = parsePublicSnapshotManifestV1(JSON.parse(new TextDecoder().decode(manifestBytes)))
+      if (
+        manifest.generation !== pointer.generation
+        || manifest.content_sha256 !== pointer.content_hash
+        || manifest.snapshot_key !== pointer.artifact_ref
+        || manifest.content_sha256 !== snapshot.content_hash
+      ) {
+        return null
+      }
+    } catch {
+      return null
+    }
   }
   return {
     snapshot,

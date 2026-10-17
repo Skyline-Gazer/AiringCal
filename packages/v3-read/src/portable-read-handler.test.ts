@@ -53,3 +53,39 @@ test('handlePortableReadRequest serves collections with v2 cache headers', async
   const body = await response.json() as { data: unknown[]; limit: number }
   assert.equal(body.limit, 24)
 })
+
+test('handlePortableReadRequest /health reports compose-scheduler cron from SQLite', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'airingcal-read-health-'))
+  const sqlitePath = join(root, 'builder.sqlite')
+  const publicStore = new FilesystemPublicStore(root)
+  const db = openBuilderDatabase(sqlitePath)
+  const state = new SqliteBuilderStateStore(db)
+  const runs = new SyncRunStore(db)
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-health',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => emptyFetch(),
+    now: () => 1_700_000_000_000,
+  })
+  await publishBuilderCheckpoint({
+    state,
+    publicStore,
+    manifestMetadata: { source_observed_at: '2026-01-01T00:00:00.000Z', git_sha: 'c'.repeat(40) },
+  })
+  db.close()
+
+  const response = await handlePortableReadRequest(new Request('https://local/api/health'), {
+    publicStore,
+    processEnv: {
+      AIRINGCAL_BUILDER_SQLITE_PATH: sqlitePath,
+      AIRINGCAL_SCHEDULER_DAILY_AT: '03:00',
+    },
+  })
+  assert.equal(response.status, 200)
+  const body = await response.json() as { data: { cron: { scheduler: string; last: { status: string } | null } } }
+  assert.equal(body.data.cron.scheduler, 'compose-scheduler')
+  assert.equal(body.data.cron.last?.status, 'succeeded')
+})
