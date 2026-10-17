@@ -5,3 +5,4 @@ export {
   type PortableReadEnv,
 } from './portable-read-handler.ts'
 export { startPortableReadServer } from './serve-node.ts'
+export { handlePortableStaticRequest, type PortableStaticEnv } from './portable-static-handler.ts'

@@ -1,6 +1,7 @@
 import { createServer } from 'node:http'
 import { FilesystemPublicStore } from '@airing-cal/v3-core'
 import { handlePortableReadRequest } from './portable-read-handler.ts'
+import { handlePortableStaticRequest } from './portable-static-handler.ts'
 
 async function writeNodeResponse(res: import('node:http').ServerResponse, response: Response): Promise<void> {
   const headers: Record<string, string> = {}
@@ -29,6 +30,7 @@ export function startPortableReadServer(options: {
   port?: number
   nsfwShow?: boolean
   packageVersion?: string
+  gitSha?: string
 } = {}) {
   const publicDir = options.publicDir ?? readPublicDir()
   const port = options.port ?? Number(process.env.PORT ?? 8787)
@@ -37,7 +39,12 @@ export function startPortableReadServer(options: {
     try {
       const host = req.headers.host ?? '127.0.0.1'
       const url = new URL(req.url ?? '/', `http://${host}`)
-      const response = await handlePortableReadRequest(new Request(url.toString(), { method: req.method ?? 'GET' }), {
+      const request = new Request(url.toString(), { method: req.method ?? 'GET' })
+      const buildSha = options.gitSha ?? process.env.BANGUMI_GIT_COMMIT_SHA?.trim()
+      const staticResponse = handlePortableStaticRequest(request, {
+        build: buildSha ? { commitSha: buildSha } : undefined,
+      })
+      const response = staticResponse ?? await handlePortableReadRequest(request, {
         publicStore,
         nsfwShow: options.nsfwShow ?? process.env.NSFW_SHOW !== 'false',
         packageVersion: options.packageVersion ?? process.env.npm_package_version,

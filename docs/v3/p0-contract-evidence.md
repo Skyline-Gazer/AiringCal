@@ -70,6 +70,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Portable media refresh (SQLite `subject_media` + filesystem blobs) | `apps/node-jobs/src/sync/portable-media.ts`, `packages/v3-builder/src/schema.ts`, `sqlite-d1-client.ts` |
 | Offline thumb v2 (portable builder, sharp) | `apps/node-jobs/src/sync/portable-thumb.ts` |
 | Portable read gateway (filesystem public store) | `packages/v3-read/src/portable-read-handler.ts`, `serve-node.ts` |
+| Portable static widget (`/`, `/src/*`) | `packages/v3-read/src/portable-static-handler.ts` |
 
 ## Gaps (explicit unknowns for #72 / staging)
 

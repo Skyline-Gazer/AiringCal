@@ -17,8 +17,10 @@ Same paths as `apps/web-worker` public reads: `/api/collections`, `/api/calendar
 
 Cache-Control literals match `packages/v3-core/src/read-contract.ts`.
 
-## Limits (initial slice)
+## Static frontend (v2 widget)
 
-- No static HTML/widget bundle serving (use existing CDN or separate static host).
+Same process also serves `/`, `/src/bangumi.js`, `/src/bangumi.css`, `/src/cache.js` from `@airing-cal/widget`. Deprecated sync routes return **410** like the web-worker.
+
+## Limits (initial slice)
 - `/api/cache` returns aggregate counts from snapshot `image_status` only (no KV-style item list).
 - No D1/KV hydration; snapshot JSON is authoritative.
