@@ -7,7 +7,10 @@ export interface PublicSnapshotGcOptions {
   pinnedArtifactRefs?: ReadonlySet<string>
   /** Minimum distinct snapshot generations to retain (includes current). */
   minGenerations?: number
+  /** Also retain snapshots newer than this many UTC days (when published_at is known). */
+  minAgeDays?: number
   nowUnix?: number
+  publishedAtUnixByKey?: ReadonlyMap<string, number>
 }
 
 export interface PublicSnapshotGcPlan {
@@ -26,6 +29,10 @@ function parseGenerationFromSnapshotKey(key: string): number | null {
 
 export function planPublicSnapshotGc(options: PublicSnapshotGcOptions): PublicSnapshotGcPlan {
   const minGenerations = options.minGenerations ?? 5
+  const minAgeDays = options.minAgeDays ?? 30
+  const nowUnix = options.nowUnix ?? Math.floor(Date.now() / 1000)
+  const minAgeSeconds = minAgeDays * 86_400
+  const publishedAt = options.publishedAtUnixByKey ?? new Map<string, number>()
   const pinned = options.pinnedArtifactRefs ?? new Set<string>()
   const candidates = options.snapshotKeys.filter((key) => parseGenerationFromSnapshotKey(key) !== null)
   const byGeneration = new Map<number, string>()
@@ -41,6 +48,12 @@ export function planPublicSnapshotGc(options: PublicSnapshotGcOptions): PublicSn
   for (const generation of keepGenerations) {
     const key = byGeneration.get(generation)
     if (key) keep.add(key)
+  }
+  for (const key of candidates) {
+    const published = publishedAt.get(key)
+    if (published !== undefined && nowUnix - published < minAgeSeconds) {
+      keep.add(key)
+    }
   }
   const deleteKeys = candidates.filter((key) => !keep.has(key)).sort()
   return { keep: [...keep].sort(), delete: deleteKeys }

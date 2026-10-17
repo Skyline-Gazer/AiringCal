@@ -13,3 +13,13 @@ export function resolveRuntimeAdapter(platformId: string) {
   if (id === 'edgeone' || id === 'tencent-edgeone') return new EdgeOneRuntimeAdapter()
   throw new Error(`Unknown platform_id: ${platformId}`)
 }
+
+export function resolveRuntimeAdapterFromEnv(env: Record<string, string | undefined> = process.env) {
+  const explicit = env.AIRINGCAL_PLATFORM?.trim() || env.AIRINGCAL_RUNTIME?.trim()
+  const inferred = (env.AIRINGCAL_BUILDER?.trim().toLowerCase() ?? '') === 'portable' ? 'portable' : ''
+  const platformId = explicit || inferred
+  if (!platformId) {
+    throw new Error('AIRINGCAL_PLATFORM, AIRINGCAL_RUNTIME, or AIRINGCAL_BUILDER=portable is required')
+  }
+  return resolveRuntimeAdapter(platformId)
+}

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { CloudflareRuntimeAdapter, EdgeOneRuntimeAdapter, PortableRuntimeAdapter, resolveRuntimeAdapter } from './index.ts'
+import {
+  CloudflareRuntimeAdapter,
+  EdgeOneRuntimeAdapter,
+  PortableRuntimeAdapter,
+  resolveRuntimeAdapter,
+  resolveRuntimeAdapterFromEnv,
+} from './index.ts'
 
 test('resolveRuntimeAdapter maps portable and cloud ids', () => {
   assert.equal(resolveRuntimeAdapter('portable').platform_id, 'portable')
@@ -20,4 +26,10 @@ test('cloudflare adapter marks CAS unproven until staging (#72)', () => {
 
 test('edgeone adapter marks CAS unproven until staging (#72)', () => {
   assert.equal(new EdgeOneRuntimeAdapter().capabilities().compare_and_swap_pointer, false)
+})
+
+test('resolveRuntimeAdapterFromEnv prefers explicit platform and portable builder fallback', () => {
+  assert.equal(resolveRuntimeAdapterFromEnv({ AIRINGCAL_PLATFORM: 'cf' }).platform_id, 'cloudflare')
+  assert.equal(resolveRuntimeAdapterFromEnv({ AIRINGCAL_BUILDER: 'portable' }).platform_id, 'portable')
+  assert.throws(() => resolveRuntimeAdapterFromEnv({}), /AIRINGCAL_PLATFORM/)
 })
