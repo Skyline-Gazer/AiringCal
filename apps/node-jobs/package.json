@@ -13,6 +13,7 @@
     "@airing-cal/bgm-api": "workspace:*",
     "@airing-cal/domain": "workspace:*",
     "@airing-cal/storage": "workspace:*",
+    "@airing-cal/v3-adapters": "workspace:*",
     "@airing-cal/v3-builder": "workspace:*",
     "@airing-cal/v3-core": "workspace:*",
     "@aws-sdk/client-s3": "3.1124.0",

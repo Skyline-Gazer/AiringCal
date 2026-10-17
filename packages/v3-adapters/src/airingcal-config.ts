@@ -1,3 +1,5 @@
+import { parseDailyAtUtc } from '@airing-cal/v3-builder'
+
 export type AiringcalPlatform = 'portable' | 'cloudflare' | 'edgeone'
 
 export interface AiringcalConfigV1 {
@@ -30,6 +32,21 @@ function parsePlatform(value: unknown): AiringcalPlatform {
   throw new Error('airingcal config platform must be portable, cloudflare, or edgeone')
 }
 
+function assertPortableScheduler(scheduler: AiringcalConfigV1['scheduler']): void {
+  if (!scheduler) return
+  if (scheduler.daily_at_utc) parseDailyAtUtc(scheduler.daily_at_utc)
+  if (scheduler.full_every_days !== undefined) {
+    if (!Number.isInteger(scheduler.full_every_days) || scheduler.full_every_days < 1) {
+      throw new Error('scheduler.full_every_days must be a positive integer')
+    }
+  }
+  if (scheduler.backup_keep !== undefined) {
+    if (!Number.isInteger(scheduler.backup_keep) || scheduler.backup_keep < 1) {
+      throw new Error('scheduler.backup_keep must be a positive integer')
+    }
+  }
+}
+
 export function parseAiringcalConfig(value: unknown): AiringcalConfigV1 {
   if (!isRecord(value) || value.schema_version !== 1) {
     throw new Error('airingcal config schema_version must be 1')
@@ -41,13 +58,23 @@ export function parseAiringcalConfig(value: unknown): AiringcalConfigV1 {
   if (builder !== undefined && !isRecord(builder)) throw new Error('builder must be an object')
   if (read !== undefined && !isRecord(read)) throw new Error('read must be an object')
   if (scheduler !== undefined && !isRecord(scheduler)) throw new Error('scheduler must be an object')
-  return {
+  const config: AiringcalConfigV1 = {
     schema_version: 1,
     platform,
     builder: builder as AiringcalConfigV1['builder'],
     read: read as AiringcalConfigV1['read'],
     scheduler: scheduler as AiringcalConfigV1['scheduler'],
   }
+  if (platform === 'portable') assertPortableScheduler(config.scheduler)
+  return config
+}
+
+export function formatPortableEnvLines(env: Record<string, string>): string {
+  return `${Object.keys(env).sort().map((key) => `${key}=${env[key]}`).join('\n')}\n`
+}
+
+export function loadAiringcalConfigFromFile(path: string, readText: (p: string) => string): AiringcalConfigV1 {
+  return parseAiringcalConfig(JSON.parse(readText(path)))
 }
 
 /** Maps portable v1 config fields to existing AIRINGCAL_* env keys (partial; secrets still from env). */

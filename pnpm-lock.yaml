@@ -33,6 +33,9 @@ importers:
       '@airing-cal/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@airing-cal/v3-adapters':
+        specifier: workspace:*
+        version: link:../../packages/v3-adapters
       '@airing-cal/v3-builder':
         specifier: workspace:*
         version: link:../../packages/v3-builder
@@ -103,6 +106,9 @@ importers:
 
   packages/v3-adapters:
     dependencies:
+      '@airing-cal/v3-builder':
+        specifier: workspace:*
+        version: link:../v3-builder
       '@airing-cal/v3-core':
         specifier: workspace:*
         version: link:../v3-core

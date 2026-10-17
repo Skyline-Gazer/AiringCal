@@ -19,3 +19,14 @@ test('parseAiringcalConfig accepts docs example', () => {
 test('parseAiringcalConfig rejects unknown schema', () => {
   assert.throws(() => parseAiringcalConfig({ schema_version: 2 }), /schema_version/)
 })
+
+test('parseAiringcalConfig validates portable scheduler daily_at_utc', () => {
+  assert.throws(
+    () => parseAiringcalConfig({
+      schema_version: 1,
+      platform: 'portable',
+      scheduler: { daily_at_utc: '25:00' },
+    }),
+    /HH:MM/,
+  )
+})

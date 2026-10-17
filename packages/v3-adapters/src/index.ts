@@ -15,6 +15,8 @@ export function resolveRuntimeAdapter(platformId: string) {
 }
 
 export {
+  formatPortableEnvLines,
+  loadAiringcalConfigFromFile,
   parseAiringcalConfig,
   portableEnvFromAiringcalConfig,
   type AiringcalConfigV1,
