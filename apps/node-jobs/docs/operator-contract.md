@@ -127,6 +127,16 @@ See [`../env.example`](../env.example). Summary:
 | `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `BANGUMI_GIT_COMMIT_SHA` | yes |
 | `BGM_TOKEN` | optional |
 
+### Media retry policy (bounded)
+
+A subject whose image download fails is retried with exponential backoff —
+`6h → 12h → 24h → 48h → 96h` (`mediaRetryDelaySeconds`, capped at 7 days). After
+`MEDIA_RETRY_LIMIT` (5) consecutive failures the row is marked
+`MEDIA_IMAGE_FAILED_EXHAUSTED` and parked for 30 days, so a permanently broken
+source cannot re-run on every sync. A later success resets `retry_count` and the
+normal 6-day refresh cadence. Log lines: `media_failed` (retrying) and
+`media_failed_exhausted` (parked), both with `retry_count`/`next_refresh_at`.
+
 ### Cover thumb pipeline (AC-2, optional)
 
 After sync media refresh persists large covers to R2, node-jobs may **fire-and-forget** batch `POST` to web-worker `/api/thumb-gen`. Failures are logged only; sync does **not** fail on 5xx.

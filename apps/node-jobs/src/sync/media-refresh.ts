@@ -25,6 +25,21 @@ const PROGRESS_EVERY = 5
 const PROGRESS_MIN_MS = 2_000
 const KEY_PATTERN = /^images\/([0-9a-f]{64})\/original$/
 
+/** Bounded media retry: at most this many consecutive failures, then a long cooldown. */
+export const MEDIA_RETRY_LIMIT = 5
+const MEDIA_RETRY_BASE_SECONDS = 6 * 3_600
+const MEDIA_RETRY_MAX_SECONDS = 7 * DAY_SECONDS
+/** After the limit is reached the subject is retried on the normal 30-day cadence, not every run. */
+export const MEDIA_RETRY_EXHAUSTED_SECONDS = 30 * DAY_SECONDS
+export const MEDIA_IMAGE_FAILED = 'MEDIA_IMAGE_FAILED'
+export const MEDIA_IMAGE_FAILED_EXHAUSTED = 'MEDIA_IMAGE_FAILED_EXHAUSTED'
+
+/** Exponential backoff (6h, 12h, 24h, 48h, …) capped at seven days. */
+export function mediaRetryDelaySeconds(retryCount: number): number {
+  const exponent = Math.max(0, retryCount - 1)
+  return Math.min(MEDIA_RETRY_BASE_SECONDS * 2 ** exponent, MEDIA_RETRY_MAX_SECONDS)
+}
+
 function emitMediaProgress(done: number, total: number, succeeded: number, failed: number): void {
   emitProgress('media', 'media_progress', done, total, { succeeded, failed })
 }
@@ -421,8 +436,9 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
 
         const mediaHash = sha256(JSON.stringify({ common: keys.common, large: keys.large }))
         const retryCount = failed ? (current?.retryCount ?? 0) + 1 : 0
+        const exhausted = failed && retryCount >= MEDIA_RETRY_LIMIT
         const nextRefreshAt = failed
-          ? nowSec
+          ? nowSec + (exhausted ? MEDIA_RETRY_EXHAUSTED_SECONDS : mediaRetryDelaySeconds(retryCount))
           : nowSec + 6 * DAY_SECONDS + (subject.subjectId * 997 % SUCCESS_SPREAD_SECONDS)
         await deps.db.query(SUBJECT_MEDIA_COALESCE_UPSERT, [
           subject.subjectId,
@@ -438,7 +454,7 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
           nextRefreshAt,
           retryCount,
           failed ? nextRefreshAt : null,
-          failed ? 'MEDIA_IMAGE_FAILED' : null,
+          failed ? (exhausted ? MEDIA_IMAGE_FAILED_EXHAUSTED : MEDIA_IMAGE_FAILED) : null,
         ])
         if (!failed && keys.large && !failedSizes.includes('large')) {
           const match = KEY_PATTERN.exec(keys.large)
@@ -448,17 +464,19 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
           summary.failed += 1
           const failure: MediaRefreshFailure = {
             subject_id: subject.subjectId,
-            error_code: 'MEDIA_IMAGE_FAILED',
+            error_code: exhausted ? MEDIA_IMAGE_FAILED_EXHAUSTED : MEDIA_IMAGE_FAILED,
             sizes: failedSizes.length > 0 ? failedSizes : (['common', 'large'] as const).filter((size) => Boolean(sources[size])),
           }
           summary.failures.push(failure)
           console.log(JSON.stringify({
             status: 'info',
-            stage: 'media_failed',
+            stage: exhausted ? 'media_failed_exhausted' : 'media_failed',
             subject_id: failure.subject_id,
             error_code: failure.error_code,
             sizes: failure.sizes,
             retry_count: retryCount,
+            retry_limit: MEDIA_RETRY_LIMIT,
+            next_refresh_at: nextRefreshAt,
           }))
         } else summary.succeeded += 1
         processed += 1
