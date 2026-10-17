@@ -1,0 +1,24 @@
+{
+  "name": "@airing-cal/v3-read-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "build:check": "wrangler deploy --dry-run --outdir dist --config wrangler.toml",
+    "dev": "wrangler dev -l --config wrangler.toml",
+    "smoke": "tsx scripts/staging-smoke.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test"
+  },
+  "dependencies": {
+    "@airing-cal/v3-read": "workspace:*"
+  },
+  "devDependencies": {
+    "@airing-cal/bgm-api": "workspace:*",
+    "@airing-cal/v3-adapters": "workspace:*",
+    "@airing-cal/v3-builder": "workspace:*",
+    "@airing-cal/v3-core": "workspace:*",
+    "@types/node": "^26.4.0"
+  }
+}

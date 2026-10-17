@@ -84,6 +84,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Read path manifest ↔ pointer verification | `packages/v3-read/src/load-public-snapshot.ts`, `load-public-snapshot.test.ts` |
 | Runtime adapters (portable / CF / EdgeOne) | `packages/v3-adapters/src/` |
 | Cloudflare R2 `PublicStore` (etag CAS pointer) | `packages/v3-adapters/src/cloudflare-r2-public-store.ts` |
+| Cloudflare R2 ETag CAS (`head.etag` unquoted vs `httpEtag` quoted; pointer CAS sends `httpEtag`) | `packages/v3-adapters/src/cloudflare-r2-public-store.ts`, `memory-r2-binding.ts` |
 | Cloudflare Workers read gateway (R2 PublicStore) | `packages/v3-read/src/cloudflare-read-handler.ts` |
 | v2 public export normalize (migration compare) | `apps/node-jobs/src/cli/portable-v2-public-normalize.ts` |
 | `airingcal` config v1 JSON (portable env mapping) | `docs/v3/airingcal-config.example.json`, `packages/v3-adapters/src/airingcal-config.ts` |
@@ -91,10 +92,14 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Config validate + snapshot compare (#73 prep) | `airingcal-config-validate.ts`, `portable-snapshot-compare.ts` |
 | `airingcal setup` portable stub | `apps/node-jobs/src/cli/airingcal-setup.ts` |
 | CI v3 operator smoke (config + compose) | `.github/workflows/ci.yml` job `v3_operator_smoke` |
+| Cloudflare Workers read worker (R2 binding; static + 410 + `/api/*`) | `apps/v3-read-worker/src/index.ts`, `index.test.ts` |
+| Non-prod R2 staging smoke (publish → seed `--local` → HTTP assertions) | `apps/v3-read-worker/scripts/staging-smoke.ts`; CI job `v3_operator_smoke` |
+| R2 binding contract + emulation caveats (#72) | [`docs/v3/cloudflare-read-worker.md`](./cloudflare-read-worker.md) |
 
 ## Gaps (explicit unknowns for #72 / staging)
 
 - No committed fixture of **compressed snapshot byte size** from production R2/D1 export.
+- Cloudflare read worker exists on `dev` and is smoke-tested against the local R2 emulation; **real-bucket** precondition (immutable put / pointer CAS) and authenticated staging checks are still unverified — the emulation accepts violating `If-Match`/`If-None-Match`. See [`cloudflare-read-worker.md`](./cloudflare-read-worker.md).
 - EdgeOne Pages / edge functions limits not exercised in CI; matrix rows in audit remain **candidate** until staging runs.
 - Sync tab UX vs 410 backend: v3 should remove tab or repoint to operator docs.
 

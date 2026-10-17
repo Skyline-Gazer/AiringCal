@@ -91,6 +91,8 @@ jobs:
       - run: pnpm exec tsx apps/node-jobs/src/cli/airingcal-setup.ts docs/v3/airingcal-config.example.json
       - run: pnpm exec tsx apps/node-jobs/src/cli/airingcal-config-emit.ts docs/v3/airingcal-config.example.json >/dev/null
       - run: docker compose -f deploy/v3/docker-compose.yml config
+      - name: Cloudflare read gateway smoke (local R2 emulation)
+        run: pnpm exec tsx apps/v3-read-worker/scripts/staging-smoke.ts
 
   node-jobs-bundle:
     needs: [validate]

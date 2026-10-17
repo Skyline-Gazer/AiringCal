@@ -56,6 +56,28 @@ importers:
         specifier: 0.28.2
         version: 0.28.2
 
+  apps/v3-read-worker:
+    dependencies:
+      '@airing-cal/v3-read':
+        specifier: workspace:*
+        version: link:../../packages/v3-read
+    devDependencies:
+      '@airing-cal/bgm-api':
+        specifier: workspace:*
+        version: link:../../packages/bgm-api
+      '@airing-cal/v3-adapters':
+        specifier: workspace:*
+        version: link:../../packages/v3-adapters
+      '@airing-cal/v3-builder':
+        specifier: workspace:*
+        version: link:../../packages/v3-builder
+      '@airing-cal/v3-core':
+        specifier: workspace:*
+        version: link:../../packages/v3-core
+      '@types/node':
+        specifier: ^26.4.0
+        version: 26.4.0
+
   apps/web-worker:
     dependencies:
       '@airing-cal/domain':
