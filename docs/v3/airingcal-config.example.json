@@ -16,5 +16,10 @@
     "full_every_days": 7,
     "backup_before_sync": true,
     "backup_keep": 10
+  },
+  "gc": {
+    "min_generations": 5,
+    "min_age_days": 30,
+    "log_after_publish": true
   }
 }
