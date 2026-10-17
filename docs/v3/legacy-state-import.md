@@ -63,5 +63,5 @@ no release pointer changes and v2 reads keep serving the current snapshot.
 
 - The export side (real v2 KV/D1/R2 read-only client) is not in the repo; the
   JSON export is produced by the operator today.
-- Shadow-equivalence streak persistence and the seven-day gate.
+- Shadow-equivalence streak persistence + the seven-day gate: [`shadow-gate.md`](./shadow-gate.md).
 - Cutover / rollback runbook execution (owner-approved, #73 DoD).
