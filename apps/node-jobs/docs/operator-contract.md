@@ -93,7 +93,7 @@ See [`deploy/v3/env.example`](../../../deploy/v3/env.example) and [`deploy/v3/RE
 | `AIRINGCAL_SCHEDULER_RUN_ON_START` | no | `true` runs one sync immediately on container start |
 | `AIRINGCAL_BUILDER_BACKUP_DIR` | no | Checkpoint backup destination (default `<sqlite-dir>/backups`) |
 
-Long-running scheduler: `tsx apps/node-jobs/src/cli/portable-scheduler.ts`. One-shot checkpoint backup: `tsx apps/node-jobs/src/cli/portable-checkpoint-backup.ts`.
+Long-running scheduler: `tsx apps/node-jobs/src/cli/portable-scheduler.ts`. One-shot checkpoint backup: `tsx apps/node-jobs/src/cli/portable-checkpoint-backup.ts`. Restore: `tsx apps/node-jobs/src/cli/portable-checkpoint-restore.ts <backup.sqlite>` (add `--force` to overwrite an existing file).
 
 Public snapshot GC (snapshot JSON only, not images): `tsx apps/node-jobs/src/cli/portable-public-gc.ts` (default dry-run; pass `--apply` to delete). Optional `AIRINGCAL_GC_MIN_GENERATIONS` (default `5`), `AIRINGCAL_GC_PINNED` (comma-separated artifact refs).
 
