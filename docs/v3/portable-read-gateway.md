@@ -42,3 +42,29 @@ Platform gateways import node-free subpaths instead of the package roots (which 
 R2 `head()` returns `etag` unquoted and `httpEtag` quoted; conditional writes must send the quoted form (`If-Match`), verified against the wrangler local R2 emulation.
 
 Read parity across stores is guarded by `packages/v3-read/src/read-gateway-parity.test.ts`: the same published release is served by the filesystem store (portable gateway) and the R2 store (Workers gateway), and `/api/collections`, `/api/calendar`, `/api/cache`, `/api/config`, `/api/health`, `/image/:hash` and `/image/:hash/thumb` must be byte-identical (status, `Cache-Control`, `Content-Type`, body) with matching release pointers and `public/manifest.json`; `/api/version` differs only by platform identity.
+
+## End-to-end smoke (`scripts/v3-portable-e2e.mjs`)
+
+Seeds a synthetic release into a temp public store
+(`scripts/seed-portable-fixture.ts`), boots `serve-node.ts` on a temp port, and
+asserts the read surface over real HTTP — the same server the Compose `web`
+service runs. CI runs it in the `v3_operator_smoke` job.
+
+```bash
+node scripts/v3-portable-e2e.mjs     # expected final line: {"status":"ok","stage":"v3_portable_e2e","checks":9}
+```
+
+Covered: `/api/health` (generation, `total_subjects`, `cron.scheduler`),
+`/api/collections` for two types with the exact `Cache-Control` literal,
+`/api/calendar`, `/api/config`, `/api/version`, `/api/sync/apply` → **410**,
+`/image/:hash` → 404 for an unknown hash, and `/` loading the widget script.
+
+### Real-browser check (executed 2026-10-17, not in CI)
+
+A headless browser against this gateway rendered the widget end to end: the
+index page loaded `AiringCal`, the frontend fetched `/api/config`, `/api/health`
+and `/api/collections` (observed network sequence) and rendered
+`已连接 | 条目 3`, the collection list (`中文11`, `2/12`, `SUBJECTS 3`), and —
+after clicking `放送日历` — the calendar view (`六 SAT`, `中文11`, `12 话`) from
+`/api/calendar`. Re-run manually with
+`AIRINGCAL_PUBLIC_READ_DIR=<dir> PORT=8788 pnpm exec tsx packages/v3-read/src/serve-node.ts`.

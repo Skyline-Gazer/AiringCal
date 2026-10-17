@@ -99,6 +99,8 @@ jobs:
       - run: docker compose -f deploy/v3/docker-compose.yml config
       - name: Cloudflare read gateway smoke (local R2 emulation)
         run: pnpm exec tsx apps/v3-read-worker/scripts/staging-smoke.ts
+      - name: Portable read gateway E2E (serve-node + published fixture)
+        run: node scripts/v3-portable-e2e.mjs
 
   node-jobs-bundle:
     needs: [validate]
