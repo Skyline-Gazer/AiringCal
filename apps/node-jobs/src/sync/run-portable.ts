@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { CompleteFullFetch } from '@airing-cal/bgm-api'
-import { MemoryPublicStore } from '@airing-cal/v3-core'
+import { FilesystemPublicStore, MemoryPublicStore, type PublicStore } from '@airing-cal/v3-core'
 import {
   openBuilderDatabase,
   runBuilderOnce,
@@ -13,6 +13,15 @@ import {
 import type { JobSummary } from '../contracts.ts'
 import { createUpstreamBgmClient, fetchCompleteInput } from '../upstream/fetch.ts'
 import { readSyncUserConfig } from './config.ts'
+
+function createPortablePublicStore(env: Record<string, string | undefined>): PublicStore {
+  const publicDir = env.AIRINGCAL_BUILDER_PUBLIC_DIR?.trim()
+  if (publicDir) {
+    mkdirSync(publicDir, { recursive: true })
+    return new FilesystemPublicStore(publicDir)
+  }
+  return new MemoryPublicStore()
+}
 
 function readPortableBuilderConfig(env: Record<string, string | undefined>): {
   sqlitePath: string
@@ -62,7 +71,7 @@ export async function runPortableBuilderSync(
   const db = openBuilderDatabase(builderConfig.sqlitePath)
   const state = new SqliteBuilderStateStore(db)
   const runs = new SyncRunStore(db)
-  const publicStore = new MemoryPublicStore()
+  const publicStore = createPortablePublicStore(env)
   const runId = randomUUID()
   const ownerToken = env.AIRINGCAL_BUILDER_OWNER?.trim() || `node-jobs-${runId.slice(0, 8)}`
 

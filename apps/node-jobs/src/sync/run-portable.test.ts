@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { FILESYSTEM_PUBLIC_POINTER_KEY } from '@airing-cal/v3-core'
 import test from 'node:test'
 import { assembleFullFetch } from '@airing-cal/bgm-api'
 import { runPortableBuilderSync } from './run-portable.ts'
@@ -39,6 +40,23 @@ test('runPortableBuilderSync checkpoints snapshot in SQLite', async () => {
   })
   assert.equal(summary.status, 'success')
   assert.match(summary.message, /sync=ok/)
+})
+
+test('runPortableBuilderSync publishes durable release when PUBLIC_DIR set', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-builder-pub-'))
+  const sqlitePath = join(dir, 'builder.sqlite')
+  const publicDir = join(dir, 'public-store')
+  const summary = await runPortableBuilderSync(
+    {
+      ...baseEnv(sqlitePath),
+      AIRINGCAL_BUILDER_PUBLISH: 'true',
+      AIRINGCAL_BUILDER_PUBLIC_DIR: publicDir,
+    },
+    { fetchInput: async () => emptyFetch() },
+  )
+  assert.equal(summary.status, 'success')
+  assert.match(summary.message, /publish=published|publish=already_current/)
+  readFileSync(join(publicDir, FILESYSTEM_PUBLIC_POINTER_KEY), 'utf8')
 })
 
 test('legacy cloudflare path remains default when AIRINGCAL_BUILDER unset', async () => {

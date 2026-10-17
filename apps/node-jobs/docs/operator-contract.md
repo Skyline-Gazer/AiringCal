@@ -69,8 +69,11 @@ When `AIRINGCAL_BUILDER=portable`, `runSync()` uses `@airing-cal/v3-builder` (SQ
 | `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `BANGUMI_GIT_COMMIT_SHA` | yes | Same as cloud sync |
 | `BGM_TOKEN` | yes | Bangumi fetch |
 | `AIRINGCAL_BUILDER_MODE` | no | `incremental` (default) or `full` |
-| `AIRINGCAL_BUILDER_PUBLISH` | no | `true` publishes to in-process `MemoryPublicStore` (dev/dry-run; not durable) |
+| `AIRINGCAL_BUILDER_PUBLISH` | no | `true` runs checkpoint publish after sync |
+| `AIRINGCAL_BUILDER_PUBLIC_DIR` | when publishing | Root for immutable snapshot objects + `public/current-release.json` pointer (filesystem `PublicStore`) |
 | `AIRINGCAL_BUILDER_OWNER` | no | Lease owner token; defaults per run |
+
+When `AIRINGCAL_BUILDER_PUBLISH=true` and `AIRINGCAL_BUILDER_PUBLIC_DIR` is unset, publish uses in-process memory only (dev smoke; not durable).
 
 Cloudflare variables are **not** read on the portable path.
 
