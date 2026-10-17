@@ -62,6 +62,12 @@ needs `projectId` + API token — that is what a staging/verification run would 
 
 - Staging run on an approved EdgeOne account (bind a Blob namespace, publish a
   fixture, serve reads) → then promote the #69 matrix rows.
+- **Deployment template** (not staging-verified): `apps/edgeone-read-worker/`
+  provides a Pages Functions catch-all (`functions/[[path]].js`) + README that
+  bind the Blob namespace and delegate to `handleEdgeOneReadRequest`. This is
+  template-only — no EdgeOne account, no paid resource, and its `[[path]].js`
+  is **not** bundled or typechecked by this repo (`.js`, external
+  `@edgeone/pages-blob`).
 - Read gateway wiring for EdgeOne Edge Functions (Request/Response portability
   limits) — the CF worker entry is not reusable as-is.
 - Image variants/CDN cache behavior on EdgeOne.
