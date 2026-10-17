@@ -11,6 +11,7 @@ import {
   SyncRunStore,
   type SyncRunMode,
 } from '@airing-cal/v3-builder'
+import { createFilesystemBlobStore } from '../adapters/filesystem-blob-store.ts'
 import { createRunContext } from '../adapters/run-context.ts'
 import type { JobSummary } from '../contracts.ts'
 import { createUpstreamBgmClient, fetchCompleteInput } from '../upstream/fetch.ts'
@@ -18,6 +19,7 @@ import { readSyncUserConfig } from './config.ts'
 import { mediaSubjectsFromFetch } from './media-refresh.ts'
 import { createEnrichMediaSubjectsFromFetch } from './media-subject-resolve.ts'
 import { runPortableMediaRefresh } from './portable-media.ts'
+import { materializePortableThumbs } from './portable-thumb.ts'
 
 function createPortablePublicStore(env: Record<string, string | undefined>): PublicStore {
   const publicDir = env.AIRINGCAL_BUILDER_PUBLIC_DIR?.trim()
@@ -35,6 +37,12 @@ export function readPortableMediaRefresh(env: Record<string, string | undefined>
   if (raw === 'refresh') return 'refresh'
   if (raw === 'skip') return 'skip'
   throw new Error('AIRINGCAL_BUILDER_MEDIA_REFRESH must be skip or refresh')
+}
+
+export function readPortableThumbsEnabled(env: Record<string, string | undefined>, mediaMode: PortableMediaRefreshMode): boolean {
+  if (mediaMode !== 'refresh') return false
+  const raw = env.AIRINGCAL_BUILDER_THUMBS?.trim().toLowerCase() ?? 'true'
+  return !['0', 'false', 'no'].includes(raw)
 }
 
 export function readPortableImageRoot(env: Record<string, string | undefined>, mediaMode: PortableMediaRefreshMode): string {
@@ -174,6 +182,19 @@ export async function runPortableBuilderSync(
       const failIds = mediaResult.summary.failures.map((entry) => entry.subject_id).join(',')
       mediaSummary = `media=refresh selected=${mediaResult.summary.selected} succeeded=${mediaResult.summary.succeeded} failed=${mediaResult.summary.failed}${failIds ? ` failed_subject_ids=${failIds}` : ''}`
       console.log(mediaSummary)
+      if (readPortableThumbsEnabled(env, mediaMode) && mediaResult.summary.large_hashes_persisted.length > 0) {
+        const thumbStore = createFilesystemBlobStore(imageRoot)
+        try {
+          const thumbSummary = await materializePortableThumbs(
+            mediaResult.summary.large_hashes_persisted,
+            thumbStore,
+          )
+          console.log(JSON.stringify({ status: 'info', stage: 'thumb', ...thumbSummary }))
+          mediaSummary += ` thumbs_generated=${thumbSummary.generated}`
+        } finally {
+          thumbStore.close()
+        }
+      }
     }
 
     const result = await runBuilderOnce({

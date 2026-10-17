@@ -5,11 +5,11 @@ import { join } from 'node:path'
 import { FILESYSTEM_PUBLIC_POINTER_KEY } from '@airing-cal/v3-core'
 import test from 'node:test'
 import { assembleFullFetch, type BgmCollection } from '@airing-cal/bgm-api'
+import sharp from 'sharp'
 import { runPortableBuilderSync } from './run-portable.ts'
 
 const COMMON_URL = 'https://lain.bgm.tv/pic/cover/c/common.jpg'
 const LARGE_URL = 'https://lain.bgm.tv/pic/cover/l/large.jpg'
-const JPEG = Uint8Array.from([0xff, 0xd8, 0xff, 0x00, 0xff, 0xd9])
 
 const gitSha = 'c'.repeat(40)
 
@@ -101,7 +101,12 @@ test('runPortableBuilderSync downloads media to filesystem when MEDIA_REFRESH=re
     },
     {
       fetchInput: async () => collectionFetch(42),
-      fetchImage: async () => new Response(JPEG, { status: 200, headers: { 'Content-Type': 'image/jpeg' } }),
+      fetchImage: async () => {
+        const body = await sharp({
+          create: { width: 64, height: 64, channels: 3, background: { r: 1, g: 2, b: 3 } },
+        }).jpeg().toBuffer()
+        return new Response(body, { status: 200, headers: { 'Content-Type': 'image/jpeg' } })
+      },
     },
   )
   assert.equal(summary.status, 'success')
