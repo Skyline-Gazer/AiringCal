@@ -99,7 +99,7 @@ Long-running scheduler: `tsx apps/node-jobs/src/cli/portable-scheduler.ts`. One-
 
 Portable non-secret env from v1 JSON config (secrets such as `BGM_TOKEN` stay in `.env`): `tsx apps/node-jobs/src/cli/airingcal-config-emit.ts docs/v3/airingcal-config.example.json`. See [`docs/v3/airingcal-config.example.json`](../../../docs/v3/airingcal-config.example.json).
 
-Public snapshot GC (snapshot JSON only, not images): `tsx apps/node-jobs/src/cli/portable-public-gc.ts` (default dry-run; pass `--apply` to delete). Optional `AIRINGCAL_GC_MIN_GENERATIONS` (default `5`), `AIRINGCAL_GC_MIN_AGE_DAYS` (default `30`, uses snapshot `published_at`), `AIRINGCAL_GC_PINNED` (comma-separated artifact refs). Image dry-run (log only, no `--apply` yet): uses current snapshot refs; optional `AIRINGCAL_GC_PINNED_IMAGES` (comma-separated content hashes). `AIRINGCAL_GC_LOG_AFTER_PUBLISH=true` logs a dry-run plan after successful portable publish (Compose default on scheduler/sync).
+Public snapshot GC (snapshot JSON only, not images): `tsx apps/node-jobs/src/cli/portable-public-gc.ts` (default dry-run; pass `--apply` to delete). Optional `AIRINGCAL_GC_MIN_GENERATIONS` (default `5`), `AIRINGCAL_GC_MIN_AGE_DAYS` (default `30`, uses snapshot `published_at`), `AIRINGCAL_GC_PINNED` (comma-separated artifact refs). Image GC uses current snapshot refs; optional `AIRINGCAL_GC_PINNED_IMAGES` (comma-separated content hashes). CLI: default dry-run for snapshots and images; `--apply` deletes snapshot JSON only; `--apply-images` deletes unreferenced `images/{hash}/` trees (can combine with `--apply`). `AIRINGCAL_GC_LOG_AFTER_PUBLISH=true` logs a dry-run plan after successful portable publish (Compose default on scheduler/sync).
 
 ## Required env (sync)
 

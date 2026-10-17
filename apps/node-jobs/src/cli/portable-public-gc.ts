@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, unlinkSync } from 'node:fs'
+import { readFileSync, readdirSync, rmSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { parsePublicSnapshotV1 } from '@airing-cal/domain'
 import {
@@ -74,7 +74,7 @@ function listImageHashDirs(publicRoot: string): string[] {
   }
 }
 
-export async function logPublicImageGcDryRun(
+export async function planPortablePublicImageGc(
   env: Record<string, string | undefined> = process.env,
 ): Promise<ReturnType<typeof planPublicImageGc> | null> {
   const publicRoot = readPublicRoot(env)
@@ -84,11 +84,43 @@ export async function logPublicImageGcDryRun(
   const bytes = await store.getSnapshotBytes(pointer.artifact_ref)
   if (!bytes) return null
   const snapshot = await parsePublicSnapshotV1(JSON.parse(new TextDecoder().decode(bytes)))
-  const plan = planPublicImageGc({
+  return planPublicImageGc({
     onDiskHashes: listImageHashDirs(publicRoot),
     referencedHashes: collectReferencedImageHashes(snapshot),
     pinnedHashes: readPinnedImageHashes(env),
   })
+}
+
+export async function runPortablePublicImageGc(
+  env: Record<string, string | undefined> = process.env,
+  apply = false,
+): Promise<{ plan: ReturnType<typeof planPublicImageGc> | null; applied: number }> {
+  const plan = await planPortablePublicImageGc(env)
+  if (!plan) return { plan: null, applied: 0 }
+  let applied = 0
+  if (apply) {
+    applied = applyPublicImageGcPlan(readPublicRoot(env), plan)
+  }
+  return { plan, applied }
+}
+
+export function applyPublicImageGcPlan(
+  publicRoot: string,
+  plan: ReturnType<typeof planPublicImageGc>,
+): number {
+  let applied = 0
+  for (const hash of plan.delete) {
+    rmSync(join(publicRoot, 'images', hash), { recursive: true, force: true })
+    applied += 1
+  }
+  return applied
+}
+
+export async function logPublicImageGcDryRun(
+  env: Record<string, string | undefined> = process.env,
+): Promise<ReturnType<typeof planPublicImageGc> | null> {
+  const plan = await planPortablePublicImageGc(env)
+  if (!plan) return null
   console.log(JSON.stringify({
     status: 'info',
     stage: 'public_image_gc_dry_run',
@@ -147,21 +179,53 @@ export async function runPortablePublicGc(
   return { plan, applied }
 }
 
+async function main(): Promise<void> {
+  const applySnapshots = process.argv.includes('--apply')
+  const applyImages = process.argv.includes('--apply-images')
+  if (applySnapshots) {
+    const { plan, applied } = await runPortablePublicGc(process.env, true)
+    console.log(JSON.stringify({
+      status: 'applied',
+      stage: 'public_snapshot_gc',
+      keep: plan.keep,
+      delete: plan.delete,
+      applied,
+    }))
+  } else if (!applyImages) {
+    const { plan } = await runPortablePublicGc(process.env, false)
+    console.log(JSON.stringify({
+      status: 'dry_run',
+      stage: 'public_snapshot_gc',
+      keep: plan.keep,
+      delete: plan.delete,
+      applied: 0,
+    }))
+  }
+  if (applyImages) {
+    const { plan, applied } = await runPortablePublicImageGc(process.env, true)
+    console.log(JSON.stringify({
+      status: 'applied',
+      stage: 'public_image_gc',
+      keep: plan?.keep ?? [],
+      delete: plan?.delete ?? [],
+      applied,
+    }))
+  } else if (!applySnapshots) {
+    const plan = await planPortablePublicImageGc(process.env)
+    console.log(JSON.stringify({
+      status: 'dry_run',
+      stage: 'public_image_gc',
+      keep: plan?.keep ?? [],
+      delete: plan?.delete ?? [],
+      applied: 0,
+    }))
+  }
+}
+
 if (process.argv[1]?.endsWith('portable-public-gc.ts')) {
-  const apply = process.argv.includes('--apply')
-  runPortablePublicGc(process.env, apply)
-    .then(({ plan, applied }) => {
-      console.log(JSON.stringify({
-        status: apply ? 'applied' : 'dry_run',
-        stage: 'public_snapshot_gc',
-        keep: plan.keep,
-        delete: plan.delete,
-        applied,
-      }))
-    })
-    .catch((error) => {
-      const message = error instanceof Error ? error.message : 'gc_failed'
-      console.error(JSON.stringify({ status: 'failed', stage: 'public_snapshot_gc', message }))
-      process.exit(1)
-    })
+  main().catch((error) => {
+    const message = error instanceof Error ? error.message : 'gc_failed'
+    console.error(JSON.stringify({ status: 'failed', stage: 'public_gc', message }))
+    process.exit(1)
+  })
 }
