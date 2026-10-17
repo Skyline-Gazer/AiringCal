@@ -10,6 +10,12 @@ export {
   CloudflareR2PublicStore,
   type CloudflareR2BucketBinding,
 } from './cloudflare-r2-public-store.ts'
+export {
+  EdgeOnePublicStore,
+  type EdgeOneBlobBinding,
+  type EdgeOneBlobGetOptions,
+  type EdgeOneBlobListResult,
+} from './edgeone-public-store.ts'
 export { EdgeOneRuntimeAdapter } from './edgeone.ts'
 export {
   normalizeRuntimePlatformId,

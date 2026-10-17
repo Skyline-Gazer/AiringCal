@@ -40,8 +40,8 @@ Code-backed frontend/route/cache evidence: [`p0-contract-evidence.md`](./p0-cont
 |---|---|---|---|
 | Serve static frontend | candidate | candidate | paths, SPA fallback, headers |
 | Thin read gateway | Workers candidate | Edge Functions candidate | Request/Response portability, size/time limits |
-| Public object assets | R2 candidate | platform/object-store adapter candidate | GET, cache keys, CORS, content types |
-| Safe mutable current pointer | unspecified per adapter | unspecified per adapter | CAS or externally serialized single-publisher commit; fail closed without proof |
+| Public object assets | R2 candidate (`CloudflareR2PublicStore` implemented) | Blob candidate (`EdgeOnePublicStore` implemented over Makers Blob; KV is unusable — key charset excludes `/`) | GET, cache keys, CORS, content types |
+| Safe mutable current pointer | R2 etag CAS implemented | `commitRelease` returns `unsupported` (Blob has no conditional write); single-publisher or R2-owned pointer only | CAS or externally serialized single-publisher commit; fail closed without proof |
 | Scheduled Builder | external GitHub Actions | external GitHub Actions | artifact and checkpoint restore, lock safety |
 | Image variants | generated offline | generated offline | hash, sizes, format, unchanged original |
 | CDN cache | candidate | candidate | short mutable pointer, long immutable Release; rollback and propagation |

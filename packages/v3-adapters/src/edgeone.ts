@@ -1,6 +1,6 @@
 import type { PublisherCapabilities, RuntimeAdapter } from '@airing-cal/v3-core'
 
-/** Placeholder (#72): EdgeOne Pages / object storage; verification backlog in #69. */
+/** EdgeOne Makers Blob read store (#72): {@link EdgeOnePublicStore}; real staging still a #69 backlog item. */
 export class EdgeOneRuntimeAdapter implements RuntimeAdapter {
   readonly platform_id = 'edgeone'
 
