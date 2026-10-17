@@ -4,6 +4,13 @@ export { createBuilderSqliteD1Client, type BuilderSqliteD1Client } from './sqlit
 export { SqliteBuilderStateStore } from './sqlite-state.ts'
 export { SyncRunStore, type SyncRunMode, type SyncRunRecord, type SyncRunStatus } from './sync-runs.ts'
 export {
+  msUntilNextDailyAt,
+  nextDailyRunUnix,
+  parseDailyAtUtc,
+  resolveScheduledSyncMode,
+  type DailyAtUtc,
+} from './sync-schedule.ts'
+export {
   BUILDER_SNAPSHOT_CHECKPOINT_KEY,
   BUILDER_SYNC_LEASE_JOB_ID,
   runBuilderSyncJob,

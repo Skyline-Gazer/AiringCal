@@ -7,6 +7,7 @@ import {
 import { V2_CACHE_CONTROL } from '@airing-cal/v3-core/read-contract'
 import type { PublicStore } from '@airing-cal/v3-core'
 import { loadVerifiedPublicSnapshot } from './load-public-snapshot.ts'
+import { readPortableCronStatus } from './portable-builder-cron.ts'
 
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
 
@@ -14,6 +15,8 @@ export interface PortableReadEnv {
   publicStore: PublicStore
   nsfwShow?: boolean
   packageVersion?: string
+  /** When set (e.g. Compose web + shared volume), `/health` reports scheduler cron from SQLite. */
+  processEnv?: Record<string, string | undefined>
 }
 
 class InvalidQueryError extends Error {}
@@ -75,8 +78,16 @@ async function handleCalendar(snapshot: PublicSnapshotV1): Promise<Response> {
   return json(snapshot.calendar, { headers: { 'Cache-Control': V2_CACHE_CONTROL.calendar } })
 }
 
-async function handleHealth(loaded: NonNullable<Awaited<ReturnType<typeof loadVerifiedPublicSnapshot>>>): Promise<Response> {
+async function handleHealth(
+  loaded: NonNullable<Awaited<ReturnType<typeof loadVerifiedPublicSnapshot>>>,
+  processEnv?: Record<string, string | undefined>,
+): Promise<Response> {
   const publishedAt = loaded.snapshot.published_at
+  const cron = processEnv ? readPortableCronStatus(processEnv) : {
+    scheduler: 'external' as const,
+    next_at: null,
+    last: null,
+  }
   return json({
     ok: true,
     worker: 'portable-read',
@@ -90,7 +101,7 @@ async function handleHealth(loaded: NonNullable<Awaited<ReturnType<typeof loadVe
         total_subjects: loaded.snapshot.summary._total ?? 0,
         source: 'public_store',
       },
-      cron: { scheduler: 'external', next_at: null, last: null },
+      cron,
       workflow: null,
       publish: {
         generation: loaded.generation,
@@ -193,7 +204,7 @@ export async function handlePortableReadRequest(
           headers: { 'Cache-Control': V2_CACHE_CONTROL.error },
         })
       }
-      return handleHealth(loaded)
+      return handleHealth(loaded, env.processEnv)
     }
     const snapshot = loaded!.snapshot
     if (path === '/collections') return handleCollections(url, snapshot)

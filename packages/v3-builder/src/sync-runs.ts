@@ -43,4 +43,23 @@ export class SyncRunStore {
     ).get() as SyncRunRecord | undefined
     return row ?? null
   }
+
+  latestSucceededRun(mode?: SyncRunMode): SyncRunRecord | null {
+    if (mode) {
+      const row = this.db.prepare(
+        `SELECT run_id, mode, status, started_at_unix, finished_at_unix, detail_json
+         FROM sync_runs
+         WHERE status = 'succeeded' AND mode = ?
+         ORDER BY finished_at_unix DESC LIMIT 1`,
+      ).get(mode) as SyncRunRecord | undefined
+      return row ?? null
+    }
+    const row = this.db.prepare(
+      `SELECT run_id, mode, status, started_at_unix, finished_at_unix, detail_json
+       FROM sync_runs
+       WHERE status = 'succeeded'
+       ORDER BY finished_at_unix DESC LIMIT 1`,
+    ).get() as SyncRunRecord | undefined
+    return row ?? null
+  }
 }

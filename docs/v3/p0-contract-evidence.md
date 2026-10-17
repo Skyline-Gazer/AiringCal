@@ -72,6 +72,9 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Portable read gateway (filesystem public store) | `packages/v3-read/src/portable-read-handler.ts`, `serve-node.ts` |
 | Portable static widget (`/`, `/src/*`) | `packages/v3-read/src/portable-static-handler.ts` |
 | Docker Compose portable stack | `deploy/v3/docker-compose.yml`, `deploy/v3/Dockerfile` |
+| Compose scheduler (daily incremental + N-day full) | `apps/node-jobs/src/cli/portable-scheduler.ts`, `packages/v3-builder/src/sync-schedule.ts` |
+| Checkpoint backup CLI | `apps/node-jobs/src/cli/portable-checkpoint-backup.ts` |
+| `/health` cron from builder SQLite (Compose web) | `packages/v3-read/src/portable-builder-cron.ts` |
 | Runtime adapter stubs (portable / CF / EdgeOne) | `packages/v3-adapters/src/` |
 
 ## Gaps (explicit unknowns for #72 / staging)

@@ -86,6 +86,15 @@ Cloudflare variables are **not** read on the portable path.
 
 See [`deploy/v3/env.example`](../../../deploy/v3/env.example) and [`deploy/v3/README.md`](../../../deploy/v3/README.md). Minimum: `AIRINGCAL_BUILDER=portable`, `AIRINGCAL_BUILDER_SQLITE_PATH`, `AIRINGCAL_BUILDER_PUBLIC_DIR`, `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `BGM_TOKEN`, `BANGUMI_GIT_COMMIT_SHA`.
 
+| Variable | Required (scheduler) | Notes |
+| --- | --- | --- |
+| `AIRINGCAL_SCHEDULER_DAILY_AT` | no | UTC `HH:MM` (default `03:00`) |
+| `AIRINGCAL_SCHEDULER_FULL_EVERY_DAYS` | no | Full reconcile interval (default `7`) |
+| `AIRINGCAL_SCHEDULER_RUN_ON_START` | no | `true` runs one sync immediately on container start |
+| `AIRINGCAL_BUILDER_BACKUP_DIR` | no | Checkpoint backup destination (default `<sqlite-dir>/backups`) |
+
+Long-running scheduler: `tsx apps/node-jobs/src/cli/portable-scheduler.ts`. One-shot checkpoint backup: `tsx apps/node-jobs/src/cli/portable-checkpoint-backup.ts`.
+
 ## Required env (sync)
 
 See [`../env.example`](../env.example). Summary:
