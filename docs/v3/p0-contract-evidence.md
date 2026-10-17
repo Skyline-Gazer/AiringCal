@@ -37,6 +37,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Live web-worker Cache-Control headers | `apps/web-worker/src/read-api-cache-contract.test.ts` |
 | v2 route + Cache-Control literals | `packages/v3-core/src/read-contract.ts`, `read-contract.test.ts` |
 | 48-item snapshot gzip sizing (#69 split-json input) | `packages/v3-core/src/snapshot-payload-metrics.test.ts` |
+| **Snapshot sizing CLI** (compact/gzip bytes + section breakdown + single-JSON viability against the 500 KiB guard) | `apps/node-jobs/src/cli/portable-snapshot-sizing.ts` — run on any anonymized production export to confirm/revisit the ADR 0001 split decision |
 | Portable port interfaces + in-memory doubles | `packages/v3-core/src/ports.ts`, `ports.test.ts` |
 | Existing R2 payload shape contract | `apps/web-worker/src/r2-mode-contract.test.ts` |
 | Collections / calendar / health (legacy harness) | `collections.test.ts`, `read-worker.test.ts`, `health.test.ts` |

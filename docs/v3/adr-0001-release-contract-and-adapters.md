@@ -86,8 +86,11 @@ synthetic fixture (`docs/v3/fixtures/public-snapshot-48-synthetic.json`), assert
 it is non-trivial (>10 KB) and that **gzip stays under 500 KiB**, and verifies the
 on-disk bytes round-trip with the declared hash/generation. A production-sized
 sample is still missing (#69 gap), so the decision is: **single JSON now**, revisit
-splitting only if a real anonymized export exceeds the gzip guard. Readers pin a
-generation, so a future split can be introduced versioned without breaking parity.
+splitting only if a real anonymized export exceeds the gzip guard. Operators can
+measure any snapshot with `apps/node-jobs/src/cli/portable-snapshot-sizing.ts`
+(compact/gzip bytes + section breakdown + `single_json_viable`); a structural
+guard enforces the same bound in CI. Readers pin a generation, so a future split
+can be introduced versioned without breaking parity.
 
 ## Threat model (public/private boundary)
 
