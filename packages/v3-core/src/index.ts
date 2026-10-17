@@ -15,3 +15,8 @@ export {
   type PublicSnapshotGcOptions,
   type PublicSnapshotGcPlan,
 } from './public-snapshot-gc.ts'
+export {
+  collectReferencedImageHashes,
+  planPublicImageGc,
+  type PublicImageGcPlan,
+} from './public-image-gc.ts'
