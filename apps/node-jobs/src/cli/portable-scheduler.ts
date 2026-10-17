@@ -7,6 +7,7 @@ import {
   SyncRunStore,
 } from '@airing-cal/v3-builder'
 import { exitCode } from '../contracts.ts'
+import { backupBuilderCheckpoint } from './portable-checkpoint-backup.ts'
 import { runSync } from '../sync/run.ts'
 
 function readSchedulerConfig(env: Record<string, string | undefined>) {
@@ -40,6 +41,10 @@ async function runScheduledSync(env: Record<string, string | undefined>): Promis
     mode,
     last_full_finished_at: lastFull?.finished_at_unix ?? null,
   }))
+  if (['1', 'true', 'yes'].includes((env.AIRINGCAL_SCHEDULER_BACKUP_BEFORE_SYNC ?? '').trim().toLowerCase())) {
+    const backup = backupBuilderCheckpoint(env)
+    console.log(JSON.stringify({ status: 'info', stage: 'checkpoint_backup', ...backup }))
+  }
   const summary = await runSync(syncEnv)
   console.log(JSON.stringify(summary))
   if (summary.status === 'failed') {
