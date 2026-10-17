@@ -24,4 +24,20 @@ export const MIGRATION_STATEMENTS: readonly string[] = [
     finished_at_unix INTEGER,
     detail_json TEXT
   )`,
+  `CREATE TABLE IF NOT EXISTS subject_media (
+    subject_id INTEGER PRIMARY KEY,
+    detail_json TEXT,
+    detail_hash TEXT,
+    media_hash TEXT,
+    nsfw INTEGER NOT NULL DEFAULT 0 CHECK (nsfw IN (0, 1)),
+    source_image_common_url TEXT,
+    source_image_large_url TEXT,
+    r2_image_common_key TEXT,
+    r2_image_large_key TEXT,
+    checked_at INTEGER,
+    next_refresh_at INTEGER,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    retry_after INTEGER,
+    error_code TEXT
+  )`,
 ]

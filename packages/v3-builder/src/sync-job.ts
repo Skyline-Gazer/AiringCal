@@ -1,8 +1,13 @@
 import type { CompleteFullFetch } from '@airing-cal/bgm-api'
-import { buildPublicSnapshot, parsePublicSnapshotV1 } from '@airing-cal/domain'
+import { buildPublicSnapshot, parsePublicSnapshotV1, type SubjectImageMap } from '@airing-cal/domain'
 import { canonicalJson } from '@airing-cal/storage'
 import type { PublicSnapshotV1 } from '@airing-cal/storage'
-import { mediaPublishHintsFromFetch, nextSnapshotGeneration, projectPublicSnapshotInput } from '@airing-cal/v3-core'
+import {
+  mediaPublishHintsFromFetch,
+  nextSnapshotGeneration,
+  projectPublicSnapshotInput,
+  type SubjectMediaPublishHint,
+} from '@airing-cal/v3-core'
 import type { SqliteBuilderStateStore } from './sqlite-state.ts'
 import type { SyncRunMode } from './sync-runs.ts'
 import { SyncRunStore } from './sync-runs.ts'
@@ -29,6 +34,11 @@ export interface BuilderSyncJobDeps {
   now(): number
   /** When true, derive `image_status` from Bangumi URLs without a cached image map (portable builder). */
   projectFetchMediaHints?: boolean
+  /** When set (portable media refresh), use persisted image map and D1-equivalent hints. */
+  snapshotProjection?: {
+    imageMap: SubjectImageMap
+    mediaHints: Map<number, SubjectMediaPublishHint>
+  }
 }
 
 async function loadCheckpointSnapshot(state: SqliteBuilderStateStore): Promise<PublicSnapshotV1 | null> {
@@ -49,8 +59,15 @@ export async function runBuilderSyncJob(deps: BuilderSyncJobDeps): Promise<Build
   try {
     const input = await deps.fetchInput()
     const previous = await loadCheckpointSnapshot(deps.state)
-    const mediaHints = deps.projectFetchMediaHints ? mediaPublishHintsFromFetch(input) : new Map()
-    const candidateInput = projectPublicSnapshotInput(input, new Map(), new Map(), new Map(), mediaHints)
+    let imageMap: SubjectImageMap = new Map()
+    let mediaHints = new Map<number, SubjectMediaPublishHint>()
+    if (deps.snapshotProjection) {
+      imageMap = deps.snapshotProjection.imageMap
+      mediaHints = deps.snapshotProjection.mediaHints
+    } else if (deps.projectFetchMediaHints) {
+      mediaHints = mediaPublishHintsFromFetch(input)
+    }
+    const candidateInput = projectPublicSnapshotInput(input, imageMap, new Map(), new Map(), mediaHints)
     const probe = await buildPublicSnapshot(candidateInput, 0)
     const generation = nextSnapshotGeneration(previous, probe.content_hash)
     if (generation === null) {
