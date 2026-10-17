@@ -112,3 +112,13 @@ test('worker fails closed when the pointer cannot be verified', async () => {
   const health = await handleReadWorkerRequest(new Request('https://worker.example/api/health'), env)
   assert.equal(health.status, 503)
 })
+
+test('worker reports a missing R2 binding instead of throwing', async () => {
+  const response = await handleReadWorkerRequest(
+    new Request('https://worker.example/api/health'),
+    { AIRINGCAL_PUBLIC_R2: undefined as unknown as MemoryR2Bucket },
+  )
+  assert.equal(response.status, 503)
+  const body = await response.json() as { error: { code: string } }
+  assert.equal(body.error.code, 'NO_PUBLIC_STORE_BINDING')
+})

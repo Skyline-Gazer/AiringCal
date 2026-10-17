@@ -8,10 +8,10 @@
  *
  * Usage: pnpm exec tsx apps/v3-read-worker/scripts/staging-smoke.ts
  */
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, relative } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import { assembleFullFetch } from '@airing-cal/bgm-api'
 import {
   openBuilderDatabase,
@@ -89,11 +89,19 @@ function listFiles(root: string): string[] {
   })
 }
 
+async function stopWorker(child: ChildProcess): Promise<void> {
+  const exited = Promise.withResolvers<void>()
+  child.once('exit', () => exited.resolve())
+  child.kill('SIGTERM')
+  await Promise.race([exited.promise, delay(5_000)])
+  if (child.exitCode === null) child.kill('SIGKILL')
+}
+
 function seedBucket(): void {
   const seedFile = join(workDir, 'seed-image.bin')
   writeFileSync(seedFile, 'smoke-image-bytes')
   const objects = [
-    ...listFiles(publicDir).map((path) => ({ key: relative(publicDir, path), path })),
+    ...listFiles(publicDir).map((path) => ({ key: relative(publicDir, path).split(sep).join('/'), path })),
     { key: `images/${IMAGE_HASH}/original`, path: seedFile },
   ]
   for (const object of objects) {
@@ -110,7 +118,7 @@ function seedBucket(): void {
   log('bucket_seeded', { objects: objects.length })
 }
 
-async function waitForWorker(child: ReturnType<typeof spawn>): Promise<void> {
+async function waitForWorker(child: ChildProcess): Promise<void> {
   const deadline = Date.now() + 60_000
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`wrangler dev exited early with ${child.exitCode}`)
@@ -204,8 +212,7 @@ async function run(): Promise<void> {
     }))
     process.exitCode = 1
   } finally {
-    child.kill('SIGTERM')
-    await delay(200)
+    await stopWorker(child)
     if (statSync(workDir, { throwIfNoEntry: false })) rmSync(workDir, { recursive: true, force: true })
   }
 }

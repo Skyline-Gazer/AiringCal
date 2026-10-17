@@ -18,6 +18,10 @@ does not deploy it, and no production cutover happens before #73 DoD.
 SQLite, so the Compose scheduler status is not available (contrast the Compose
 web service, which injects a SQLite-backed provider).
 
+Fail-closed behaviour: a missing/misnamed `AIRINGCAL_PUBLIC_R2` binding returns
+**503** `NO_PUBLIC_STORE_BINDING` (not a 500 stack), and a `head()` result
+without a usable quoted `httpEtag` throws instead of sending `If-Match: undefined`.
+
 ## R2 binding contract
 
 ```toml

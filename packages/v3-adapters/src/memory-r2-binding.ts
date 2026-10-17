@@ -61,11 +61,14 @@ export class MemoryR2Bucket implements CloudflareR2BucketBinding {
       if (!existing || `"${existing.etag}"` !== ifMatch) throw new Error('PreconditionFailed')
     }
 
-    const bytes = typeof value === 'string'
-      ? new TextEncoder().encode(value)
-      : value instanceof Uint8Array
-        ? value
-        : new Uint8Array(value)
+    let bytes: Uint8Array
+    if (typeof value === 'string') {
+      bytes = new TextEncoder().encode(value)
+    } else if (value instanceof Uint8Array) {
+      bytes = value
+    } else {
+      bytes = new Uint8Array(value)
+    }
     this.etagCounter += 1
     this.objects.set(key, { bytes: new Uint8Array(bytes), etag: `etag-${this.etagCounter}` })
   }

@@ -114,7 +114,13 @@ export class CloudflareR2PublicStore implements PublicStore {
       httpMetadata: { contentType: 'application/json' },
     }
     if (head) {
-      putOptions.onlyIf = new Headers({ 'If-Match': head.httpEtag })
+      const httpEtag = head.httpEtag
+      if (typeof httpEtag !== 'string' || httpEtag.length === 0) {
+        throw new Error(
+          `R2 head() for ${this.pointerKey} exposed no quoted httpEtag; refusing an unverifiable pointer commit`,
+        )
+      }
+      putOptions.onlyIf = new Headers({ 'If-Match': httpEtag })
     } else {
       putOptions.onlyIf = new Headers({ 'If-None-Match': '*' })
     }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { PublicReleasePointer } from '@airing-cal/v3-core/ports'
+import { PUBLIC_RELEASE_POINTER_KEY } from '@airing-cal/v3-core/public-pointer'
 import { CloudflareR2PublicStore } from './cloudflare-r2-public-store.ts'
 import { MemoryR2Bucket } from './memory-r2-binding.ts'
 
@@ -32,4 +33,21 @@ test('CloudflareR2PublicStore enforces immutable objects and pointer CAS', async
   const second = samplePointer(2)
   assert.equal(await store.commitRelease(first, second), 'committed')
   assert.deepEqual(await store.getCurrentRelease(), second)
+})
+
+test('commitRelease refuses a head() result without a usable quoted httpEtag', async () => {
+  const bucket = new MemoryR2Bucket()
+  await bucket.put(PUBLIC_RELEASE_POINTER_KEY, `${JSON.stringify(samplePointer(1))}\n`)
+  const store = new CloudflareR2PublicStore({
+    get: (key) => bucket.get(key),
+    head: async (key) => {
+      const result = await bucket.head(key)
+      return result ? { ...result, httpEtag: '' } : null
+    },
+    put: (key, value, options) => bucket.put(key, value, options),
+  })
+  await assert.rejects(
+    () => store.commitRelease(samplePointer(1), samplePointer(2)),
+    /httpEtag/,
+  )
 })

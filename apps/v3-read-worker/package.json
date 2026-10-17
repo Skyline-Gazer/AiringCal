@@ -12,13 +12,13 @@
     "test": "tsx --test"
   },
   "dependencies": {
+    "@airing-cal/v3-core": "workspace:*",
     "@airing-cal/v3-read": "workspace:*"
   },
   "devDependencies": {
     "@airing-cal/bgm-api": "workspace:*",
     "@airing-cal/v3-adapters": "workspace:*",
     "@airing-cal/v3-builder": "workspace:*",
-    "@airing-cal/v3-core": "workspace:*",
     "@types/node": "^26.4.0"
   }
 }
