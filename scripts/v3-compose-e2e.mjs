@@ -60,6 +60,16 @@ async function waitForHealthy() {
   throw new Error(`compose web service did not become healthy within 180s (last: ${lastError})`)
 }
 
+async function check(path, expected) {
+  const res = await fetch(`${BASE}${path}`)
+  const body = await res.text()
+  if (res.status !== expected.status) throw new Error(`${path}: expected ${expected.status}, got ${res.status}`)
+  for (const fragment of expected.includes ?? []) {
+    if (!body.includes(fragment)) throw new Error(`${path}: body missing ${fragment}`)
+  }
+  log('checked', { path, status: res.status })
+}
+
 async function runE2E() {
   log('build_start')
   run(['build', 'web'])
