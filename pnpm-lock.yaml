@@ -147,6 +147,9 @@ importers:
       '@airing-cal/v3-core':
         specifier: workspace:*
         version: link:../v3-core
+      '@airing-cal/widget':
+        specifier: workspace:*
+        version: link:../widget
     devDependencies:
       '@airing-cal/bgm-api':
         specifier: workspace:*

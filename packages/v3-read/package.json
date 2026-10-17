@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@airing-cal/domain": "workspace:*",
+    "@airing-cal/widget": "workspace:*",
     "@airing-cal/v3-core": "workspace:*",
     "@airing-cal/storage": "workspace:*"
   },
