@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { assembleFullFetch } from '@airing-cal/bgm-api'
-import { MemoryPublicStore } from '@airing-cal/v3-core'
+import { mkdtempSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  FILESYSTEM_PUBLIC_POINTER_KEY,
+  FilesystemPublicStore,
+  MemoryPublicStore,
+} from '@airing-cal/v3-core'
 import { openBuilderDatabase } from './migrate.ts'
 import { publishBuilderCheckpoint } from './publish-checkpoint.ts'
 import { runBuilderSyncJob } from './sync-job.ts'
@@ -46,6 +53,37 @@ test('publishBuilderCheckpoint verifies readback and commits release pointer', a
 
   const second = await publishBuilderCheckpoint({ state, publicStore })
   assert.equal(second.status, 'already_current')
+})
+
+test('publishBuilderCheckpoint persists release to filesystem PublicStore', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'airingcal-public-'))
+  const publicStore = new FilesystemPublicStore(root)
+  const db = openBuilderDatabase(':memory:')
+  const state = new SqliteBuilderStateStore(db)
+  const runs = new SyncRunStore(db)
+
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-fs',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => emptyFetch(),
+    now: () => 1_700_000_000_000,
+  })
+
+  const result = await publishBuilderCheckpoint({
+    state,
+    publicStore,
+    manifestMetadata: {
+      source_observed_at: '2026-01-01T00:00:00.000Z',
+      git_sha: 'b'.repeat(40),
+    },
+  })
+  assert.equal(result.status, 'published')
+  const pointerRaw = readFileSync(join(root, FILESYSTEM_PUBLIC_POINTER_KEY), 'utf8')
+  assert.match(pointerRaw, /content_hash/)
+  assert.ok(await publicStore.getSnapshotBytes(result.pointer!.artifact_ref))
 })
 
 test('publishBuilderCheckpoint fails closed when CAS is unsupported', async () => {

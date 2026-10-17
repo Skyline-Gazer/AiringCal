@@ -50,6 +50,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Portable public snapshot projection (from node-jobs) | `packages/v3-core/src/project-public-snapshot.ts` |
 | Builder sync job checkpoint | `packages/v3-builder/src/sync-job.ts`, `sync-job.test.ts` |
 | Checkpoint → PublicStore publish (CAS fail-closed) | `packages/v3-builder/src/publish-checkpoint.ts`, `publish-checkpoint.test.ts` |
+| Filesystem durable PublicStore (portable publish) | `packages/v3-core/src/filesystem-public-store.ts`, `filesystem-public-store.test.ts` |
 
 ## Snapshot size fixture (#69)
 
@@ -64,6 +65,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | --- | --- |
 | `AIRINGCAL_BUILDER=portable` sync path | `apps/node-jobs/src/sync/run-portable.ts`, `run-portable.test.ts` |
 | Operator env contract | `apps/node-jobs/docs/operator-contract.md` |
+| Durable publish dir (`AIRINGCAL_BUILDER_PUBLIC_DIR`) | `apps/node-jobs/src/sync/run-portable.ts`, `run-portable.test.ts` |
 
 ## Gaps (explicit unknowns for #72 / staging)
 
