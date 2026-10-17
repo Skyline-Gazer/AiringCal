@@ -32,6 +32,11 @@ Both a snapshot and explicit ids are optional only if the other is given.
   the existing detail (`COALESCE`, same as the v2 media writer).
 - Counted but untouched: subjects without any KV record (`missing_keys`) and
   malformed records (`errored`) — a malformed record never stalls the batch.
+- Resume: a `--resume` run continues the persisted summary counters and processes
+  only subjects above `last_subject_id`. `errored` subjects are **not** retried by
+  `--resume` (the cursor moved past them) — re-run without `--resume` to retry;
+  already-imported rows are then counted as `skipped_existing`. A corrupt or
+  hand-edited cursor/summary is ignored, and the run restarts the walk.
 - Only SQLite is written: no D1, R2, KV, or public-store access.
 
 `summary.updated_at` is milliseconds (the batch timestamp from

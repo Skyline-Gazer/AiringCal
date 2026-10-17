@@ -65,7 +65,7 @@ export class SqliteSubjectMediaStore implements LegacyMigrationD1 {
   }
 
   async putSubjectMediaRow(row: SubjectMediaRow): Promise<{ rowsWritten: number }> {
-    this.db.prepare(UPSERT_SUBJECT_MEDIA_ROW).run(
+    const result = this.db.prepare(UPSERT_SUBJECT_MEDIA_ROW).run(
       row.subject_id,
       row.detail_json,
       row.detail_hash,
@@ -81,6 +81,6 @@ export class SqliteSubjectMediaStore implements LegacyMigrationD1 {
       row.retry_after,
       row.error_code,
     )
-    return { rowsWritten: 1 }
+    return { rowsWritten: Number(result.changes) }
   }
 }

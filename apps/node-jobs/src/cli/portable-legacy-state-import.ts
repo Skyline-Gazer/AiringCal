@@ -57,6 +57,47 @@ export interface LegacyStateImportResult {
   cursor: MigrationCursorV1 | null
 }
 
+/** Batch size shared by the CLI flags and the programmatic entry point. */
+export function validateBatchSize(value: number): number {
+  if (!Number.isInteger(value) || value < 1 || value > MAX_LEGACY_IMPORT_BATCH) {
+    throw new Error(`batch size must be an integer between 1 and ${MAX_LEGACY_IMPORT_BATCH}`)
+  }
+  return value
+}
+
+/** Returns null for a corrupt cursor so the import restarts instead of skipping subjects. */
+function parseMigrationCursor(raw: string): MigrationCursorV1 | null {
+  try {
+    const value = JSON.parse(raw) as Partial<MigrationCursorV1>
+    if (
+      !Number.isSafeInteger(value.last_subject_id)
+      || (value.last_subject_id ?? -1) < 0
+      || !Number.isSafeInteger(value.batch_index)
+      || (value.batch_index ?? -1) < 0
+      || !Number.isSafeInteger(value.updated_at)
+    ) {
+      return null
+    }
+    return value as MigrationCursorV1
+  } catch {
+    return null
+  }
+}
+
+/** Returns null for a corrupt summary; resumed runs then restart their counters. */
+function parseMigrationSummary(raw: string): MigrationSummaryV1 | null {
+  try {
+    const value = JSON.parse(raw) as Partial<MigrationSummaryV1>
+    for (const count of [value.imported, value.skipped_existing, value.missing_keys, value.errored]) {
+      if (!Number.isSafeInteger(count) || (count ?? -1) < 0) return null
+    }
+    if (!Number.isSafeInteger(value.updated_at)) return null
+    return value as MigrationSummaryV1
+  } catch {
+    return null
+  }
+}
+
 /**
  * Read-only v2 legacy state import into the builder SQLite checkpoint (#73).
  * Writes `subject_media` rows plus the migration cursor/summary in `builder_kv`;
@@ -65,14 +106,17 @@ export interface LegacyStateImportResult {
  *
  * `summary.updated_at` is the batch timestamp (milliseconds, as produced by
  * `importLegacySubjectBatch`); `cursor.updated_at` is unix seconds.
+ *
+ * Resume semantics: a resumed run continues the persisted summary counters and
+ * re-processes only subjects above the persisted cursor. `errored` subjects are
+ * **not** retried by `--resume` (the cursor has moved past them); re-run without
+ * `--resume` to retry them — already-imported rows are counted as
+ * `skipped_existing` and left untouched.
  */
 export async function runLegacyStateImport(
   options: LegacyStateImportOptions,
 ): Promise<LegacyStateImportResult> {
-  const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE
-  if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > MAX_LEGACY_IMPORT_BATCH) {
-    throw new Error(`batch size must be an integer between 1 and ${MAX_LEGACY_IMPORT_BATCH}`)
-  }
+  const batchSize = validateBatchSize(options.batchSize ?? DEFAULT_BATCH_SIZE)
   const now = options.now ?? Date.now
   const db = openBuilderDatabase(options.sqlitePath)
   try {
@@ -81,16 +125,6 @@ export async function runLegacyStateImport(
     const reader = new JsonKvReader(options.kvExport)
 
     let cursor: MigrationCursorV1 | null = null
-    if (options.resume) {
-      const raw = await state.getKv(migrateLegacyCursorKey())
-      if (raw) cursor = JSON.parse(raw) as MigrationCursorV1
-    }
-    const after = cursor?.last_subject_id ?? 0
-    const pending = [...new Set(options.subjectIds)]
-      .filter((id) => Number.isSafeInteger(id) && id > 0 && (!options.resume || id > after))
-      .sort((a, b) => a - b)
-
-    const batches: MigrationSummaryV1[] = []
     let summary: MigrationSummaryV1 = {
       imported: 0,
       skipped_existing: 0,
@@ -98,6 +132,22 @@ export async function runLegacyStateImport(
       errored: 0,
       updated_at: now(),
     }
+    if (options.resume) {
+      // A corrupt/hand-edited cursor or summary is ignored rather than trusted:
+      // the import re-walks the full set (idempotent, `skipped_existing` protects
+      // existing rows) instead of silently skipping subjects.
+      const rawCursor = await state.getKv(migrateLegacyCursorKey())
+      cursor = rawCursor ? parseMigrationCursor(rawCursor) : null
+      const rawSummary = await state.getKv(migrateLegacySummaryKey())
+      const persisted = rawSummary ? parseMigrationSummary(rawSummary) : null
+      if (persisted) summary = persisted
+    }
+
+    const after = cursor?.last_subject_id ?? 0
+    const pending = [...new Set(options.subjectIds)]
+      .filter((id) => Number.isSafeInteger(id) && id > 0 && (!options.resume || id > after))
+      .sort((a, b) => a - b)
+    const batches: MigrationSummaryV1[] = []
     let batchIndex = cursor?.batch_index ?? 0
     for (let offset = 0; offset < pending.length; offset += batchSize) {
       const chunk = pending.slice(offset, offset + batchSize)
@@ -159,13 +209,7 @@ export function parseLegacyStateImportArgs(argv: string[]): LegacyStateImportCli
       if (arg === '--sqlite') args.sqlitePath = value
       if (arg === '--snapshot') args.snapshotPath = value
       if (arg === '--subject-ids') args.subjectIds = parseSubjectIds(value)
-      if (arg === '--batch-size') {
-        const size = Number(value)
-        if (!Number.isInteger(size) || size < 1 || size > MAX_LEGACY_IMPORT_BATCH) {
-          throw new Error(`--batch-size must be an integer between 1 and ${MAX_LEGACY_IMPORT_BATCH}`)
-        }
-        args.batchSize = size
-      }
+      if (arg === '--batch-size') args.batchSize = validateBatchSize(Number(value))
       continue
     }
     if (arg.startsWith('--')) throw new Error(`Unknown option: ${arg}`)
@@ -214,7 +258,8 @@ if (process.argv[1]?.endsWith('portable-legacy-state-import.ts')) {
         status: 'ok',
         stage: 'legacy_state_import',
         sqlite: args.sqlitePath,
-        subjects: result.batches.reduce((total, batch) => total + batch.imported + batch.skipped_existing + batch.missing_keys + batch.errored, 0),
+        subjects: result.summary.imported + result.summary.skipped_existing
+          + result.summary.missing_keys + result.summary.errored,
         batches: result.batches.length,
         summary: result.summary,
         cursor: result.cursor,

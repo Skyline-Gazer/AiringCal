@@ -223,6 +223,51 @@ test('runLegacyStateImport resumes after an interrupted batch', async () => {
   }], 'resume continues after the persisted cursor (subject 40 only)')
   assert.equal(resumed.cursor?.last_subject_id, 40)
   assert.equal(resumed.cursor?.batch_index, 2, 'resume keeps counting batches from the stored cursor')
+
+  assert.deepEqual(
+    {
+      imported: resumed.summary.imported,
+      skipped_existing: resumed.summary.skipped_existing,
+      missing_keys: resumed.summary.missing_keys,
+      errored: resumed.summary.errored,
+    },
+    { imported: 2, skipped_existing: 0, missing_keys: 1, errored: 1 },
+    'a resumed run continues the persisted counters',
+  )
+})
+
+test('runLegacyStateImport ignores a corrupt cursor or summary on resume', async () => {
+  const sqlitePath = join(tempDir(), 'builder.sqlite')
+  const first = await runLegacyStateImport({
+    sqlitePath,
+    kvExport: kvExportFixture(),
+    subjectIds: [10, 20],
+  })
+  assert.equal(first.summary.imported, 2)
+
+  const db = openBuilderDatabase(sqlitePath)
+  try {
+    const state = new SqliteBuilderStateStore(db)
+    await state.setKv(migrateLegacyCursorKey(), '{"last_subject_id":-5,"batch_index":"x"}')
+    await state.setKv(migrateLegacySummaryKey(), 'not json')
+  } finally {
+    db.close()
+  }
+
+  const resumed = await runLegacyStateImport({
+    sqlitePath,
+    kvExport: kvExportFixture(),
+    subjectIds: [10, 20],
+    resume: true,
+  })
+  assert.equal(resumed.batches.length, 1, 'a corrupt cursor restarts the walk instead of skipping subjects')
+  assert.equal(resumed.summary.imported, 0)
+  assert.equal(resumed.summary.skipped_existing, 2, 'existing rows are protected by skipped_existing')
+  assert.deepEqual(resumed.cursor, {
+    last_subject_id: 20,
+    batch_index: 1,
+    updated_at: resumed.cursor?.updated_at,
+  })
 })
 
 test('runLegacyStateImport rejects invalid batch sizes', async () => {
@@ -247,7 +292,7 @@ test('parseLegacyStateImportArgs reads the documented flags', () => {
   })
   assert.throws(() => parseLegacyStateImportArgs(['export.json', '--nope']), /Unknown option/)
   assert.throws(() => parseLegacyStateImportArgs(['export.json', '--subject-ids', 'abc']), /Invalid subject id/)
-  assert.throws(() => parseLegacyStateImportArgs(['export.json', '--batch-size', '51']), /--batch-size/)
+  assert.throws(() => parseLegacyStateImportArgs(['export.json', '--batch-size', '51']), /batch size/)
   assert.throws(() => parseLegacyStateImportArgs(['export.json', '--sqlite']), /requires a value/)
 })
 
