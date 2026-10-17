@@ -76,6 +76,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Checkpoint backup CLI | `apps/node-jobs/src/cli/portable-checkpoint-backup.ts` |
 | `/health` cron from builder SQLite (Compose web) | `packages/v3-read/src/portable-builder-cron.ts` |
 | Public snapshot GC dry-run (generation + pins) | `packages/v3-core/src/public-snapshot-gc.ts`, `apps/node-jobs/src/cli/portable-public-gc.ts` |
+| Read path manifest ↔ pointer verification | `packages/v3-read/src/load-public-snapshot.ts`, `load-public-snapshot.test.ts` |
 | Runtime adapter stubs (portable / CF / EdgeOne) | `packages/v3-adapters/src/` |
 
 ## Gaps (explicit unknowns for #72 / staging)
