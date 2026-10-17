@@ -8,52 +8,10 @@ import {
   SqliteBuilderStateStore,
   SyncRunStore,
 } from '@airing-cal/v3-builder'
-import type {
-  CloudflareR2BucketBinding,
-  CloudflareR2ObjectBody,
-  CloudflareR2PutOptions,
-} from '@airing-cal/v3-adapters'
+import { MemoryR2Bucket } from '@airing-cal/v3-adapters/memory-r2-binding'
 import { CloudflareR2PublicStore } from '@airing-cal/v3-adapters'
-import { V2_CACHE_CONTROL } from '@airing-cal/v3-core'
+import { V2_CACHE_CONTROL } from '@airing-cal/v3-core/read-contract'
 import { handleCloudflareReadRequest } from './cloudflare-read-handler.ts'
-
-class MemoryR2Object implements CloudflareR2ObjectBody {
-  constructor(readonly bytes: Uint8Array) {}
-
-  async arrayBuffer(): Promise<ArrayBuffer> {
-    return this.bytes.buffer.slice(this.bytes.byteOffset, this.bytes.byteOffset + this.bytes.byteLength)
-  }
-}
-
-class MemoryR2Bucket implements CloudflareR2BucketBinding {
-  objects = new Map<string, { bytes: Uint8Array; etag: string }>()
-  private etagCounter = 0
-
-  async get(key: string): Promise<CloudflareR2ObjectBody | null> {
-    const entry = this.objects.get(key)
-    return entry ? new MemoryR2Object(entry.bytes) : null
-  }
-
-  async head(key: string) {
-    const entry = this.objects.get(key)
-    return entry ? { etag: entry.etag } : null
-  }
-
-  async put(key: string, value: ArrayBuffer | Uint8Array | string, options?: CloudflareR2PutOptions): Promise<void> {
-    const onlyIf = options?.onlyIf
-    const existing = this.objects.get(key)
-    if (onlyIf?.get('If-None-Match') === '*' && existing) throw new Error('PreconditionFailed')
-    const ifMatch = onlyIf?.get('If-Match')
-    if (ifMatch && (!existing || existing.etag !== ifMatch)) throw new Error('PreconditionFailed')
-    const bytes = typeof value === 'string'
-      ? new TextEncoder().encode(value)
-      : value instanceof Uint8Array
-        ? value
-        : new Uint8Array(value)
-    this.etagCounter += 1
-    this.objects.set(key, { bytes: new Uint8Array(bytes), etag: `etag-${this.etagCounter}` })
-  }
-}
 
 function emptyFetch() {
   return assembleFullFetch(

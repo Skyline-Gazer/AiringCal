@@ -1,16 +1,20 @@
 import { canonicalJson } from '@airing-cal/storage'
-import {
-  FILESYSTEM_PUBLIC_POINTER_KEY,
-  type PublicReleasePointer,
-  type PublicStore,
-} from '@airing-cal/v3-core'
+import { PUBLIC_RELEASE_POINTER_KEY } from '@airing-cal/v3-core/public-pointer'
+import type { PublicReleasePointer, PublicStore } from '@airing-cal/v3-core/ports'
 
 export interface CloudflareR2ObjectBody {
   arrayBuffer(): Promise<ArrayBuffer>
 }
 
+/**
+ * Shape of the Workers R2 `head()` result we depend on. Real bindings return
+ * `etag` unquoted and `httpEtag` quoted; conditional request headers
+ * (`If-Match`) only accept the quoted form — verified against the local R2
+ * emulation in `apps/v3-read-worker` smoke.
+ */
 export interface CloudflareR2HeadResult {
   etag: string
+  httpEtag: string
 }
 
 export interface CloudflareR2PutOptions {
@@ -62,7 +66,7 @@ function pointerMatches(a: PublicReleasePointer | null, b: PublicReleasePointer 
 export class CloudflareR2PublicStore implements PublicStore {
   constructor(
     readonly bucket: CloudflareR2BucketBinding,
-    readonly pointerKey: string = FILESYSTEM_PUBLIC_POINTER_KEY,
+    readonly pointerKey: string = PUBLIC_RELEASE_POINTER_KEY,
   ) {}
 
   async getCurrentRelease(): Promise<PublicReleasePointer | null> {
@@ -110,7 +114,7 @@ export class CloudflareR2PublicStore implements PublicStore {
       httpMetadata: { contentType: 'application/json' },
     }
     if (head) {
-      putOptions.onlyIf = new Headers({ 'If-Match': head.etag })
+      putOptions.onlyIf = new Headers({ 'If-Match': head.httpEtag })
     } else {
       putOptions.onlyIf = new Headers({ 'If-None-Match': '*' })
     }

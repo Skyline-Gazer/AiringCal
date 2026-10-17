@@ -5,10 +5,8 @@ export { mediaPublishHintsFromFetch } from './media-hints-from-fetch.ts'
 export * from './project-public-snapshot.ts'
 export * from './publish-generation.ts'
 export { MemoryPublicStore } from './memory-public-store.ts'
-export {
-  FILESYSTEM_PUBLIC_POINTER_KEY,
-  FilesystemPublicStore,
-} from './filesystem-public-store.ts'
+export { PUBLIC_RELEASE_POINTER_KEY } from './public-pointer.ts'
+export { FilesystemPublicStore } from './filesystem-public-store.ts'
 export {
   listSnapshotObjectKeys,
   planPublicSnapshotGc,

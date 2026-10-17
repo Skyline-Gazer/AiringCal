@@ -1,13 +1,17 @@
 import { parsePublicSnapshotManifestV1, parsePublicSnapshotV1 } from '@airing-cal/domain'
 import type { PublicSnapshotV1 } from '@airing-cal/storage'
-import type { PublicStore } from '@airing-cal/v3-core'
+import type { PublicStore } from '@airing-cal/v3-core/ports'
 
-export async function loadVerifiedPublicSnapshot(publicStore: PublicStore): Promise<{
+export interface VerifiedPublicSnapshot {
   snapshot: PublicSnapshotV1
   generation: number
   content_hash: string
   artifact_ref: string
-} | null> {
+}
+
+export async function loadVerifiedPublicSnapshot(
+  publicStore: PublicStore,
+): Promise<VerifiedPublicSnapshot | null> {
   const pointer = await publicStore.getCurrentRelease()
   if (!pointer) return null
   const bytes = await publicStore.getSnapshotBytes(pointer.artifact_ref)

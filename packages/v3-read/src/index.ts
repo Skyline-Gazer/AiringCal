@@ -1,4 +1,4 @@
-export { loadVerifiedPublicSnapshot } from './load-public-snapshot.ts'
+export { loadVerifiedPublicSnapshot, type VerifiedPublicSnapshot } from './load-public-snapshot.ts'
 export {
   handlePortableReadRequest,
   normalizePortableReadPath,

@@ -5,10 +5,10 @@ import {
   type PublicSnapshotV1,
 } from '@airing-cal/storage'
 import { V2_CACHE_CONTROL } from '@airing-cal/v3-core/read-contract'
-import type { PublicStore } from '@airing-cal/v3-core'
-import { loadVerifiedPublicSnapshot } from './load-public-snapshot.ts'
-import { resolveRuntimeAdapterFromEnv } from '@airing-cal/v3-adapters'
-import { readPortableCronStatus } from './portable-builder-cron.ts'
+import type { PublicStore } from '@airing-cal/v3-core/ports'
+import { loadVerifiedPublicSnapshot, type VerifiedPublicSnapshot } from './load-public-snapshot.ts'
+import { resolveRuntimePlatformIdFromEnv } from '@airing-cal/v3-adapters/platform-id'
+import type { PortableCronStatus } from './portable-builder-cron.ts'
 
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
 
@@ -16,8 +16,13 @@ export interface PortableReadEnv {
   publicStore: PublicStore
   nsfwShow?: boolean
   packageVersion?: string
-  /** When set (e.g. Compose web + shared volume), `/health` reports scheduler cron from SQLite. */
+  /** Platform label for `/version`; e.g. `{ AIRINGCAL_PLATFORM: 'cloudflare' }` in the Workers gateway. */
   processEnv?: Record<string, string | undefined>
+  /**
+   * Optional `/health` cron source. Compose web passes the SQLite-backed reader; platform
+   * gateways without local SQLite omit it. Injected (not imported) so Workers bundles stay free of `node:sqlite`.
+   */
+  cronStatus?: () => PortableCronStatus
 }
 
 class InvalidQueryError extends Error {}
@@ -25,7 +30,7 @@ class InvalidQueryError extends Error {}
 function readPlatformId(processEnv?: Record<string, string | undefined>): string | undefined {
   if (!processEnv) return undefined
   try {
-    return resolveRuntimeAdapterFromEnv(processEnv).platform_id
+    return resolveRuntimePlatformIdFromEnv(processEnv)
   } catch {
     return processEnv.AIRINGCAL_PLATFORM?.trim() || undefined
   }
@@ -89,11 +94,11 @@ async function handleCalendar(snapshot: PublicSnapshotV1): Promise<Response> {
 }
 
 async function handleHealth(
-  loaded: NonNullable<Awaited<ReturnType<typeof loadVerifiedPublicSnapshot>>>,
-  processEnv?: Record<string, string | undefined>,
+  loaded: VerifiedPublicSnapshot,
+  env: PortableReadEnv,
 ): Promise<Response> {
   const publishedAt = loaded.snapshot.published_at
-  const cron = processEnv ? readPortableCronStatus(processEnv) : {
+  const cron = env.cronStatus?.() ?? {
     scheduler: 'external' as const,
     next_at: null,
     last: null,
@@ -216,7 +221,7 @@ export async function handlePortableReadRequest(
           headers: { 'Cache-Control': V2_CACHE_CONTROL.error },
         })
       }
-      return handleHealth(loaded, env.processEnv)
+      return handleHealth(loaded, env)
     }
     const snapshot = loaded!.snapshot
     if (path === '/collections') return handleCollections(url, snapshot)

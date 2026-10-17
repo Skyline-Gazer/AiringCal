@@ -2,8 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { canonicalJson } from '@airing-cal/storage'
 import type { PublicReleasePointer, PublicStore } from './ports.ts'
-
-export const FILESYSTEM_PUBLIC_POINTER_KEY = 'public/current-release.json'
+import { PUBLIC_RELEASE_POINTER_KEY } from './public-pointer.ts'
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   return a.byteLength === b.byteLength && a.every((byte, index) => byte === b[index])
@@ -45,7 +44,7 @@ export class FilesystemPublicStore implements PublicStore {
   }
 
   async getCurrentRelease(): Promise<PublicReleasePointer | null> {
-    const path = this.resolveObjectPath(FILESYSTEM_PUBLIC_POINTER_KEY)
+    const path = this.resolveObjectPath(PUBLIC_RELEASE_POINTER_KEY)
     try {
       const raw = await readFile(path, 'utf8')
       return parsePointer(raw)
@@ -93,7 +92,7 @@ export class FilesystemPublicStore implements PublicStore {
     const current = await this.getCurrentRelease()
     if (!pointerMatches(expected, current)) return 'conflict'
 
-    const path = this.resolveObjectPath(FILESYSTEM_PUBLIC_POINTER_KEY)
+    const path = this.resolveObjectPath(PUBLIC_RELEASE_POINTER_KEY)
     await mkdir(dirname(path), { recursive: true })
     const tempPath = `${path}.tmp-${process.pid}-${Date.now()}`
     await writeFile(tempPath, `${canonicalJson(next)}\n`, 'utf8')

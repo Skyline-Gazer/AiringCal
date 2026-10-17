@@ -26,3 +26,17 @@ Same process also serves `/`, `/src/bangumi.js`, `/src/bangumi.css`, `/src/cache
 ## Limits (initial slice)
 - `/api/cache` returns aggregate counts from snapshot `image_status` only (no KV-style item list).
 - No D1/KV hydration; snapshot JSON is authoritative.
+
+## Worker-safe entry points (#72)
+
+Platform gateways import node-free subpaths instead of the package roots (which pull `node:http`, `node:fs`, `node:sqlite`):
+
+| Package | Subpath | Contents |
+|---|---|---|
+| `@airing-cal/v3-core` | `read-contract`, `ports`, `public-pointer` | cache literals, `PublicStore` port, mutable release pointer key |
+| `@airing-cal/v3-adapters` | `platform-id`, `cloudflare-r2-public-store`, `memory-r2-binding` | platform id mapping, R2 `PublicStore`, test double |
+| `@airing-cal/v3-read` | `cloudflare-read-handler`, `portable-read-handler`, `portable-static-handler` | Workers gateway entry, v2 `/api/*` routes, widget + 410 sync routes |
+
+`/health` cron is injected through `PortableReadEnv.cronStatus`: Compose web passes the SQLite-backed reader from `serve-node.ts`, gateways without local SQLite omit it and report `scheduler: 'external'`.
+
+R2 `head()` returns `etag` unquoted and `httpEtag` quoted; conditional writes must send the quoted form (`If-Match`), verified against the wrangler local R2 emulation.

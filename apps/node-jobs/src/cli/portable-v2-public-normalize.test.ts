@@ -51,7 +51,7 @@ test('normalizeV2PublicExport accepts legacy public result with hydration sideca
   }
   const hydrated = {
     1: {
-      images: { common: { hash: 'abc', ext: 'jpg' }, large: null },
+      images: { common: { hash: 'abc', uri: '/image/abc', r2_key: 'images/abc/original' }, large: null },
       image_status: { common: 'cached', large: 'pending_next_cron' },
     },
   }

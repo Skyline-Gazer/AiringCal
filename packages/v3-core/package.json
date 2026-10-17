@@ -6,7 +6,9 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./read-contract": "./src/read-contract.ts"
+    "./read-contract": "./src/read-contract.ts",
+    "./public-pointer": "./src/public-pointer.ts",
+    "./ports": "./src/ports.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

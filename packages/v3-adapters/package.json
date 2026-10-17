@@ -5,7 +5,10 @@
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./platform-id": "./src/platform-id.ts",
+    "./cloudflare-r2-public-store": "./src/cloudflare-r2-public-store.ts",
+    "./memory-r2-binding": "./src/memory-r2-binding.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

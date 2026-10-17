@@ -3,10 +3,8 @@ import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import {
-  FILESYSTEM_PUBLIC_POINTER_KEY,
-  FilesystemPublicStore,
-} from './filesystem-public-store.ts'
+import { FilesystemPublicStore } from './filesystem-public-store.ts'
+import { PUBLIC_RELEASE_POINTER_KEY } from './public-pointer.ts'
 import type { PublicReleasePointer } from './ports.ts'
 
 function samplePointer(generation: number): PublicReleasePointer {
@@ -40,7 +38,7 @@ test('FilesystemPublicStore enforces immutable objects and pointer CAS', async (
   )
 
   assert.equal(await store.commitRelease(null, pointer), 'committed')
-  const pointerPath = join(root, FILESYSTEM_PUBLIC_POINTER_KEY)
+  const pointerPath = join(root, PUBLIC_RELEASE_POINTER_KEY)
   assert.ok(readFileSync(pointerPath, 'utf8').includes(pointer.content_hash))
 
   assert.equal(await store.commitRelease(null, samplePointer(2)), 'conflict')
