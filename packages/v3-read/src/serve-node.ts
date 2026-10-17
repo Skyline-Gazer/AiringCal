@@ -1,4 +1,5 @@
 import { createServer } from 'node:http'
+import { resolveRuntimeAdapterFromEnv } from '@airing-cal/v3-adapters'
 import { FilesystemPublicStore } from '@airing-cal/v3-core'
 import { handlePortableReadRequest } from './portable-read-handler.ts'
 import { handlePortableStaticRequest } from './portable-static-handler.ts'
@@ -63,5 +64,16 @@ export function startPortableReadServer(options: {
 
 if (process.argv[1]?.endsWith('serve-node.ts')) {
   const { port, publicDir } = startPortableReadServer()
+  try {
+    const adapter = resolveRuntimeAdapterFromEnv(process.env)
+    console.log(JSON.stringify({
+      status: 'info',
+      stage: 'runtime_adapter',
+      platform_id: adapter.platform_id,
+      capabilities: adapter.capabilities(),
+    }))
+  } catch {
+    // platform env optional for read-only smoke without full operator config
+  }
   console.log(JSON.stringify({ status: 'info', stage: 'portable_read_listen', port, publicDir }))
 }

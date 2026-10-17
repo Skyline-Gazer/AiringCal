@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { openBuilderDatabase, SyncRunStore } from '@airing-cal/v3-builder'
-import { backupBuilderCheckpoint } from './portable-checkpoint-backup.ts'
+import { backupBuilderCheckpoint, planCheckpointBackupRetention } from './portable-checkpoint-backup.ts'
 
 test('backupBuilderCheckpoint writes a readable sqlite file', () => {
   const dir = mkdtempSync(join(tmpdir(), 'airingcal-backup-'))
@@ -24,4 +24,19 @@ test('backupBuilderCheckpoint writes a readable sqlite file', () => {
   const row = restored.prepare('SELECT run_id FROM sync_runs WHERE run_id = ?').get('run-a') as { run_id: string }
   assert.equal(row.run_id, 'run-a')
   restored.close()
+})
+
+test('planCheckpointBackupRetention keeps newest checkpoint files', () => {
+  const names = [
+    'builder-checkpoint-2026-01-01T00-00-00.000Z.sqlite',
+    'builder-checkpoint-2026-01-02T00-00-00.000Z.sqlite',
+    'builder-checkpoint-2026-01-03T00-00-00.000Z.sqlite',
+    'ignore-me.txt',
+  ]
+  const plan = planCheckpointBackupRetention(names, 2)
+  assert.deepEqual(plan.keep, [
+    'builder-checkpoint-2026-01-02T00-00-00.000Z.sqlite',
+    'builder-checkpoint-2026-01-03T00-00-00.000Z.sqlite',
+  ])
+  assert.deepEqual(plan.delete, ['builder-checkpoint-2026-01-01T00-00-00.000Z.sqlite'])
 })
