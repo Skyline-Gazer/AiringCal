@@ -4,6 +4,10 @@ import { PortableRuntimeAdapter } from './portable.ts'
 
 export { PortableRuntimeAdapter } from './portable.ts'
 export { CloudflareRuntimeAdapter } from './cloudflare.ts'
+export {
+  CloudflareR2PublicStore,
+  type CloudflareR2BucketBinding,
+} from './cloudflare-r2-public-store.ts'
 export { EdgeOneRuntimeAdapter } from './edgeone.ts'
 
 export function resolveRuntimeAdapter(platformId: string) {

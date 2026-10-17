@@ -1,0 +1,130 @@
+import { canonicalJson } from '@airing-cal/storage'
+import {
+  FILESYSTEM_PUBLIC_POINTER_KEY,
+  type PublicReleasePointer,
+  type PublicStore,
+} from '@airing-cal/v3-core'
+
+export interface CloudflareR2ObjectBody {
+  arrayBuffer(): Promise<ArrayBuffer>
+}
+
+export interface CloudflareR2HeadResult {
+  etag: string
+}
+
+export interface CloudflareR2PutOptions {
+  onlyIf?: Headers
+  httpMetadata?: { contentType?: string }
+}
+
+/** Minimal Workers R2 binding surface for v3 PublicStore (#72). */
+export interface CloudflareR2BucketBinding {
+  get(key: string): Promise<CloudflareR2ObjectBody | null>
+  head(key: string): Promise<CloudflareR2HeadResult | null>
+  put(
+    key: string,
+    value: ArrayBuffer | Uint8Array | string,
+    options?: CloudflareR2PutOptions,
+  ): Promise<unknown>
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  return a.byteLength === b.byteLength && a.every((byte, index) => byte === b[index])
+}
+
+function assertSafeObjectKey(key: string): void {
+  if (key.includes('\0') || key.startsWith('/') || key.includes('\\') || key.split('/').includes('..')) {
+    throw new Error(`Unsafe public store object key: ${key}`)
+  }
+}
+
+function parsePointer(raw: string): PublicReleasePointer {
+  const value = JSON.parse(raw) as PublicReleasePointer
+  if (
+    value.schema_version !== 1
+    || !Number.isSafeInteger(value.generation)
+    || typeof value.content_hash !== 'string'
+    || typeof value.artifact_ref !== 'string'
+    || !Number.isSafeInteger(value.published_at_unix)
+  ) {
+    throw new Error('Invalid public release pointer object')
+  }
+  return value
+}
+
+function pointerMatches(a: PublicReleasePointer | null, b: PublicReleasePointer | null): boolean {
+  if (a === null && b === null) return true
+  if (a === null || b === null) return false
+  return a.content_hash === b.content_hash && a.generation === b.generation
+}
+
+export class CloudflareR2PublicStore implements PublicStore {
+  constructor(
+    readonly bucket: CloudflareR2BucketBinding,
+    readonly pointerKey: string = FILESYSTEM_PUBLIC_POINTER_KEY,
+  ) {}
+
+  async getCurrentRelease(): Promise<PublicReleasePointer | null> {
+    assertSafeObjectKey(this.pointerKey)
+    const object = await this.bucket.get(this.pointerKey)
+    if (!object) return null
+    const raw = new TextDecoder().decode(new Uint8Array(await object.arrayBuffer()))
+    return parsePointer(raw)
+  }
+
+  async getSnapshotBytes(artifactRef: string): Promise<Uint8Array | null> {
+    assertSafeObjectKey(artifactRef)
+    const object = await this.bucket.get(artifactRef)
+    if (!object) return null
+    return new Uint8Array(await object.arrayBuffer())
+  }
+
+  async putImmutableObject(key: string, body: Uint8Array, contentType: string): Promise<void> {
+    assertSafeObjectKey(key)
+    const head = await this.bucket.head(key)
+    if (head) {
+      const existing = await this.getSnapshotBytes(key)
+      if (!existing || !bytesEqual(existing, body)) {
+        throw new Error(`Immutable object already exists with different bytes: ${key}`)
+      }
+      return
+    }
+    await this.bucket.put(key, body, {
+      onlyIf: new Headers({ 'If-None-Match': '*' }),
+      httpMetadata: { contentType },
+    })
+  }
+
+  async commitRelease(
+    expected: PublicReleasePointer | null,
+    next: PublicReleasePointer,
+  ): Promise<'committed' | 'conflict' | 'unsupported'> {
+    assertSafeObjectKey(this.pointerKey)
+    const current = await this.getCurrentRelease()
+    if (!pointerMatches(expected, current)) return 'conflict'
+
+    const head = await this.bucket.head(this.pointerKey)
+    const body = `${canonicalJson(next)}\n`
+    const putOptions: CloudflareR2PutOptions = {
+      httpMetadata: { contentType: 'application/json' },
+    }
+    if (head) {
+      putOptions.onlyIf = new Headers({ 'If-Match': head.etag })
+    } else {
+      putOptions.onlyIf = new Headers({ 'If-None-Match': '*' })
+    }
+
+    try {
+      await this.bucket.put(this.pointerKey, body, putOptions)
+    } catch {
+      const after = await this.getCurrentRelease()
+      if (pointerMatches(next, after)) return 'committed'
+      return 'conflict'
+    }
+
+    const after = await this.getCurrentRelease()
+    if (!pointerMatches(next, after)) return 'conflict'
+    return 'committed'
+  }
+}

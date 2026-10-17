@@ -20,8 +20,8 @@ test('portable adapter advertises CAS + read gateway', () => {
   assert.equal(caps.serve_read_gateway, true)
 })
 
-test('cloudflare adapter marks CAS unproven until staging (#72)', () => {
-  assert.equal(new CloudflareRuntimeAdapter().capabilities().compare_and_swap_pointer, false)
+test('cloudflare adapter advertises R2 pointer CAS (staging smoke still #72)', () => {
+  assert.equal(new CloudflareRuntimeAdapter().capabilities().compare_and_swap_pointer, true)
 })
 
 test('edgeone adapter marks CAS unproven until staging (#72)', () => {
