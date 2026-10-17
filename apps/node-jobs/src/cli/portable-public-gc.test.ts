@@ -4,7 +4,13 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { logPublicSnapshotGcDryRun, runPortablePublicGc } from './portable-public-gc.ts'
+import { existsSync } from 'node:fs'
+import { planPublicImageGc } from '@airing-cal/v3-core'
+import {
+  applyPublicImageGcPlan,
+  logPublicSnapshotGcDryRun,
+  runPortablePublicGc,
+} from './portable-public-gc.ts'
 
 test('runPortablePublicGc dry-run never deletes files', async () => {
   const root = mkdtempSync(join(tmpdir(), 'airingcal-gc-'))
@@ -55,4 +61,19 @@ test('logPublicSnapshotGcDryRun returns plan without deleting', async () => {
     AIRINGCAL_GC_MIN_GENERATIONS: '1',
   })
   assert.deepEqual(plan.delete, [`snapshots/v1/1-${hash}.json`])
+})
+
+test('applyPublicImageGcPlan removes only planned orphan hash directories', () => {
+  const root = mkdtempSync(join(tmpdir(), 'airingcal-img-gc-'))
+  const ref = 'a'.repeat(64)
+  const orphan = 'b'.repeat(64)
+  mkdirSync(join(root, 'images', ref), { recursive: true })
+  mkdirSync(join(root, 'images', orphan), { recursive: true })
+  const plan = planPublicImageGc({
+    onDiskHashes: [ref, orphan],
+    referencedHashes: new Set([ref]),
+  })
+  assert.equal(applyPublicImageGcPlan(root, plan), 1)
+  assert.ok(existsSync(join(root, 'images', ref)))
+  assert.ok(!existsSync(join(root, 'images', orphan)))
 })
