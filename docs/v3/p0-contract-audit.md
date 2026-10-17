@@ -39,7 +39,7 @@ Code-backed frontend/route/cache evidence: [`p0-contract-evidence.md`](./p0-cont
 | Capability | Cloudflare | EdgeOne | Required test |
 |---|---|---|---|
 | Serve static frontend | candidate | candidate | paths, SPA fallback, headers |
-| Thin read gateway | Workers candidate | Edge Functions candidate | Request/Response portability, size/time limits |
+| Thin read gateway | Workers candidate (`handleCloudflareReadRequest` + worker entry) | Edge Functions candidate (`handleEdgeOneReadRequest`; runtime wiring/staging pending) | Request/Response portability, size/time limits |
 | Public object assets | R2 candidate (`CloudflareR2PublicStore` implemented) | Blob candidate (`EdgeOnePublicStore` implemented over Makers Blob; KV is unusable — key charset excludes `/`) | GET, cache keys, CORS, content types |
 | Safe mutable current pointer | R2 etag CAS implemented | `commitRelease` returns `unsupported` (Blob has no conditional write); single-publisher or R2-owned pointer only | CAS or externally serialized single-publisher commit; fail closed without proof |
 | Scheduled Builder | external GitHub Actions | external GitHub Actions | artifact and checkpoint restore, lock safety |

@@ -98,6 +98,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | `airingcal` config v1 YAML form (`airingcal.yaml` + JSON twin, same validation) | `docs/v3/airingcal-config.example.yaml`, `packages/v3-adapters/src/airingcal-config.ts` |
 | EdgeOne `PublicStore` over Makers Blob (read + read-back immutability; CAS unsupported) | `packages/v3-adapters/src/edgeone-public-store.ts`, `edgeone-public-store.test.ts` |
 | EdgeOne storage choice + semantics (KV unusable for path keys) | [`docs/v3/edgeone-store.md`](./edgeone-store.md) |
+| EdgeOne read gateway (Blob-backed `PublicStore`, `platform: edgeone`) | `packages/v3-read/src/edgeone-read-handler.ts`, `edgeone-read-handler.test.ts` |
 | Platform-aware non-interactive setup (portable env / Cloudflare bindings / EdgeOne fail-closed) | `apps/node-jobs/src/cli/airingcal-setup.ts` |
 | Interactive secrets entry (`--interactive --secrets-out`, 0600 file, EOF-safe prompts) | `apps/node-jobs/src/cli/airingcal-setup.ts`, `airingcal-setup.test.ts` |
 | `airingcal` config v1 JSON (portable env mapping) | `docs/v3/airingcal-config.example.json`, `packages/v3-adapters/src/airingcal-config.ts` |

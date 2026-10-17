@@ -5,6 +5,12 @@ the v3 `PublicStore` port over **EdgeOne Makers Blob**, so an EdgeOne Pages/Edge
 Functions deployment can serve the same immutable release the Cloudflare and
 Compose readers serve.
 
+The read side is wired: `handleEdgeOneReadRequest`
+(`packages/v3-read/src/edgeone-read-handler.ts`) builds the store from the bound
+Blob namespace and serves the same v2 `/api/*` surface via
+`handlePortableReadRequest`, labelled `platform: 'edgeone'`. Edge Functions call
+it as `onRequest({ request, env })` with `env.<namespace variable name>`.
+
 Status: adapter implemented and unit-tested against a Blob double; **no staging
 run yet** (the EdgeOne Blob account is an operator/approval action), so #69's
 capability rows stay candidate.
