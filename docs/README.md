@@ -23,6 +23,29 @@ Bangumi → node-jobs (bundle) ← QingLong
 5. [`apps/node-jobs/docs/operator-contract.md`](../apps/node-jobs/docs/operator-contract.md) — env, timeouts, exit codes
 6. QingLong panel: [QINGLONG airingcal-operator-checklist](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/usage/airingcal-operator-checklist.md)
 
+## v3 (in progress — parallel to v2 production)
+
+v3 is being built on `dev` **without changing v2 production behaviour** until an
+explicit owner-approved cutover. Tracking: [Issue #67](https://github.com/Skyline-Gazer/AiringCal/issues/67)
+and [Project #7](https://github.com/orgs/Skyline-Gazer/projects/7) (authoritative board).
+
+| Doc | Purpose |
+| --- | --- |
+| [`v3/implementation-baseline.md`](v3/implementation-baseline.md) | Confirmed architecture, phases, delivery gates |
+| [`v3/p0-contract-audit.md`](v3/p0-contract-audit.md) | v2 contract audit + CF/EdgeOne capability matrix (rows stay *candidate* until staging) |
+| [`v3/p0-contract-evidence.md`](v3/p0-contract-evidence.md) | Evidence table: every implemented path with its test/CI guard |
+| [`v3/portable-read-gateway.md`](v3/portable-read-gateway.md) | Filesystem read gateway + worker-safe subpaths |
+| [`v3/cloudflare-read-worker.md`](v3/cloudflare-read-worker.md) | CF Workers entry, R2 binding/ETag contract, staging checklist |
+| [`v3/edgeone-store.md`](v3/edgeone-store.md) | EdgeOne Blob store + read gateway, why not KV |
+| [`v3/legacy-state-import.md`](v3/legacy-state-import.md) | #73 export → import pipeline (KV), D1/R2 scope decision |
+| [`v3/shadow-gate.md`](v3/shadow-gate.md) | Seven-match shadow-equivalence gate |
+| [`v3/cutover-rollback.md`](v3/cutover-rollback.md) | Owner-approved cutover/rollback runbook + executed drill |
+| [`v3/airingcal-config.example.yaml`](v3/airingcal-config.example.yaml) | `airingcal.yaml` operator config (JSON twin alongside) |
+| [`v3/CURSOR_HANDOFF.md`](v3/CURSOR_HANDOFF.md) | Historical handoff snapshot (2026-10-16) — verify live refs before relying on it |
+
+Code entry points: `apps/v3-read-worker` (CF), `packages/v3-{core,builder,read,adapters}`,
+`apps/node-jobs/src/cli/portable-*` (builder/scheduler/backup/gc/migration CLIs).
+
 ## Plans (`docs/plans/`)
 
 | File | Purpose |

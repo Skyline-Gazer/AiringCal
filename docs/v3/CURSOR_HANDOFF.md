@@ -1,5 +1,15 @@
 # AiringCal v3 — Cursor Agent Handoff
 
+> **HISTORICAL (2026-10-16).** This is a point-in-time snapshot, not current
+> state. Since then: `dev` advanced through #108–#119 (worker-safe read entry
+> points + R2 ETag fix, CF read worker + staging smoke, legacy KV export/import,
+> shadow gate, cutover/rollback runbook, cross-store parity guard,
+> `airingcal.yaml` + interactive setup, EdgeOne Blob store + read gateway), and
+> the advisory OCR workflow is currently disabled. Current truth:
+> [Issue #67](https://github.com/Skyline-Gazer/AiringCal/issues/67),
+> [Project #7](https://github.com/orgs/Skyline-Gazer/projects/7),
+> [`docs/v3/p0-contract-evidence.md`](./p0-contract-evidence.md), and live git refs.
+
 Date: 2026-10-16. Source of truth: GitHub (refresh live refs/CI before acting).
 
 ## Immediate instruction
