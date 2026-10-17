@@ -9,3 +9,9 @@ export {
   FILESYSTEM_PUBLIC_POINTER_KEY,
   FilesystemPublicStore,
 } from './filesystem-public-store.ts'
+export {
+  listSnapshotObjectKeys,
+  planPublicSnapshotGc,
+  type PublicSnapshotGcOptions,
+  type PublicSnapshotGcPlan,
+} from './public-snapshot-gc.ts'
