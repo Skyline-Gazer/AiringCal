@@ -88,6 +88,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Cloudflare Workers read gateway (R2 PublicStore) | `packages/v3-read/src/cloudflare-read-handler.ts` |
 | v2 public export normalize (migration compare) | `apps/node-jobs/src/cli/portable-v2-public-normalize.ts` |
 | Read-only v2 legacy state import (KV export → SQLite, batch ≤50, cursor/resumable) | `apps/node-jobs/src/cli/portable-legacy-state-import.ts`, `packages/v3-builder/src/sqlite-subject-media.ts` |
+| Read-only legacy KV export (Cloudflare KV list + bulk get → JSON) | `apps/node-jobs/src/adapters/cloudflare-kv-export.ts`, `apps/node-jobs/src/cli/portable-legacy-export.ts` |
 | Legacy import + rollback runbook (#73) | [`docs/v3/legacy-state-import.md`](./legacy-state-import.md) |
 | Shadow equivalence gate (streak + 7-match cutover gate, exit 0/2) | `apps/node-jobs/src/cli/portable-shadow-gate.ts`, `portable-shadow-gate.test.ts` |
 | Shadow gate runbook (#73) | [`docs/v3/shadow-gate.md`](./shadow-gate.md) |
