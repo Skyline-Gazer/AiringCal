@@ -25,6 +25,8 @@ import { V2_CACHE_CONTROL } from '@airing-cal/v3-core/read-contract'
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..')
 const CONFIG = 'apps/v3-read-worker/wrangler.toml'
+// Must match wrangler.toml [[r2_buckets]] and `ReadWorkerEnv.AIRINGCAL_PUBLIC_R2`.
+const PUBLIC_R2_BINDING = 'AIRINGCAL_PUBLIC_R2'
 const BUCKET = 'airing-cal-public'
 const IMAGE_HASH = 'a'.repeat(64)
 const BUILD_SHA = 'f'.repeat(40)
@@ -94,16 +96,19 @@ async function stopWorker(child: ChildProcess): Promise<void> {
   child.once('exit', () => exited.resolve())
   child.kill('SIGTERM')
   const stopped = await Promise.race([exited.promise.then(() => true), delay(5_000).then(() => false)])
-  if (!stopped) {
-    child.kill('SIGKILL')
-    await exited.promise
-  }
+  if (stopped) return
+  child.kill('SIGKILL')
+  // Bounded second wait: an exited promise that never settles must not hang CI.
+  const killed = await Promise.race([exited.promise.then(() => true), delay(5_000).then(() => false)])
+  if (!killed) log('worker_shutdown_timeout', { pid: child.pid })
 }
 
 function seedBucket(): void {
   const configToml = readFileSync(join(REPO_ROOT, CONFIG), 'utf8')
-  if (!configToml.includes(`bucket_name = "${BUCKET}"`)) {
-    throw new Error(`${CONFIG} does not declare bucket_name = "${BUCKET}"; keep the smoke seed target in sync`)
+  if (!configToml.includes(`bucket_name = "${BUCKET}"`) || !configToml.includes(`binding = "${PUBLIC_R2_BINDING}"`)) {
+    throw new Error(
+      `${CONFIG} must declare binding = "${PUBLIC_R2_BINDING}" and bucket_name = "${BUCKET}" to match the Worker env`,
+    )
   }
   const seedFile = join(workDir, 'seed-image.bin')
   writeFileSync(seedFile, 'smoke-image-bytes')
@@ -133,7 +138,7 @@ async function waitForWorker(child: ChildProcess): Promise<void> {
       const response = await fetch(`${BASE_URL}/api/version`)
       if (response.ok) return
     } catch {
-      // not listening yet
+      // Connection refused while the dev server boots; the 60s deadline above is the real guard.
     }
     await delay(500)
   }
