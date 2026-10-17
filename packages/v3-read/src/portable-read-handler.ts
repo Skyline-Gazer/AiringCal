@@ -197,7 +197,7 @@ export async function handlePortableReadRequest(
       const platform = readPlatformId(env.processEnv)
       return json({
         app: 'airingcal',
-        read: 'portable',
+        read: platform ?? 'portable',
         package: env.packageVersion ?? '0.0.0',
         ...(platform ? { platform } : {}),
       }, { headers: { 'Cache-Control': V2_CACHE_CONTROL.version } })
