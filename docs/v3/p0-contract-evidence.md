@@ -66,6 +66,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | `AIRINGCAL_BUILDER=portable` sync path | `apps/node-jobs/src/sync/run-portable.ts`, `run-portable.test.ts` |
 | Operator env contract | `apps/node-jobs/docs/operator-contract.md` |
 | Durable publish dir (`AIRINGCAL_BUILDER_PUBLIC_DIR`) | `apps/node-jobs/src/sync/run-portable.ts`, `run-portable.test.ts` |
+| Portable media contract (`AIRINGCAL_BUILDER_MEDIA_REFRESH=skip`) + fetch URL hints | `run-portable.ts`, `packages/v3-core/src/media-hints-from-fetch.ts` |
 
 ## Gaps (explicit unknowns for #72 / staging)
 

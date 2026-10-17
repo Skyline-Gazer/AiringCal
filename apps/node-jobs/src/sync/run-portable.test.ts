@@ -40,6 +40,17 @@ test('runPortableBuilderSync checkpoints snapshot in SQLite', async () => {
   })
   assert.equal(summary.status, 'success')
   assert.match(summary.message, /sync=ok/)
+  assert.match(summary.message, /media=skip/)
+})
+
+test('runPortableBuilderSync fails closed when MEDIA_REFRESH=refresh', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-builder-media-'))
+  const summary = await runPortableBuilderSync(
+    { ...baseEnv(join(dir, 'builder.sqlite')), AIRINGCAL_BUILDER_MEDIA_REFRESH: 'refresh' },
+    { fetchInput: async () => emptyFetch() },
+  )
+  assert.equal(summary.status, 'failed')
+  assert.match(summary.message, /not implemented/)
 })
 
 test('runPortableBuilderSync publishes durable release when PUBLIC_DIR set', async () => {
