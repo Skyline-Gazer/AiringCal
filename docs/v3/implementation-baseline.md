@@ -41,3 +41,14 @@ Status: Working implementation baseline; governed by [Issue #67](https://github.
 6. [#74](https://github.com/Skyline-Gazer/AiringCal/issues/74) Advisory OpenCodeReview.
 
 Do not mark a gate complete without evidence in Issue/PR and checked CI. No production cutover via merge side effects.
+
+## Advisory reviewer status (2026-10-17)
+
+The Alibaba OpenCodeReview workflow (`.github/workflows/ocr-review.yml`) is
+**disabled** (`disabled_manually`). It failed on every code PR for several hours
+with its own error (`OCR_EXIT_CODE: 1`, no comments posted, ~10–18 s) while
+skipping docs/test-only PRs ("no items were selected"), so it could not satisfy
+the "PR review documented and linked" DoD item. Re-enable with
+`gh workflow enable 386430913` after the OCR secrets/endpoint are fixed and one
+run succeeds on a real code PR; until then, PR review is owner/manual and each PR
+records its own verification evidence.
