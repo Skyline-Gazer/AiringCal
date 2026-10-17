@@ -84,6 +84,8 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Read path manifest ↔ pointer verification | `packages/v3-read/src/load-public-snapshot.ts`, `load-public-snapshot.test.ts` |
 | Runtime adapters (portable / CF / EdgeOne) | `packages/v3-adapters/src/` |
 | Cloudflare R2 `PublicStore` (etag CAS pointer) | `packages/v3-adapters/src/cloudflare-r2-public-store.ts` |
+| Cloudflare Workers read gateway (R2 PublicStore) | `packages/v3-read/src/cloudflare-read-handler.ts` |
+| v2 public export normalize (migration compare) | `apps/node-jobs/src/cli/portable-v2-public-normalize.ts` |
 | `airingcal` config v1 JSON (portable env mapping) | `docs/v3/airingcal-config.example.json`, `packages/v3-adapters/src/airingcal-config.ts` |
 | Config → env emit CLI (#72 setup) | `apps/node-jobs/src/cli/airingcal-config-emit.ts` |
 | Config validate + snapshot compare (#73 prep) | `airingcal-config-validate.ts`, `portable-snapshot-compare.ts` |

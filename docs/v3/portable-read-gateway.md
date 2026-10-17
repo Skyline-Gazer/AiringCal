@@ -11,6 +11,8 @@ pnpm exec tsx packages/v3-read/src/serve-node.ts
 
 Optional: `PORT` (default `8787`), `NSFW_SHOW=true|false`. When `public/manifest.json` exists, load verifies it matches the release pointer before serving. For Compose, set `AIRINGCAL_BUILDER_SQLITE_PATH` on the web service so `/api/health` reports scheduler cron from `sync_runs`.
 
+Cloudflare Workers (#72, not wired in repo deploy yet): use `handleCloudflareReadRequest` from `@airing-cal/v3-read` with an R2 binding implementing `CloudflareR2BucketBinding` (same v2 `/api/*` paths as portable).
+
 ## Routes
 
 Same paths as `apps/web-worker` public reads: `/api/collections`, `/api/calendar`, `/api/config`, `/api/health`, `/api/version`, `/api/cache`, `/image/:hash`, `/image/:hash/thumb`.
