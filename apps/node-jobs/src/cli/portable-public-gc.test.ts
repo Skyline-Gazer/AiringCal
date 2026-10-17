@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { runPortablePublicGc } from './portable-public-gc.ts'
+import { logPublicSnapshotGcDryRun, runPortablePublicGc } from './portable-public-gc.ts'
 
 test('runPortablePublicGc dry-run never deletes files', async () => {
   const root = mkdtempSync(join(tmpdir(), 'airingcal-gc-'))
@@ -30,4 +30,29 @@ test('runPortablePublicGc dry-run never deletes files', async () => {
   }, false)
   assert.equal(applied, 0)
   assert.ok(plan.delete.includes(`snapshots/v1/3-${'a'.repeat(64)}.json`))
+})
+
+test('logPublicSnapshotGcDryRun returns plan without deleting', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'airingcal-gc-log-'))
+  const snapDir = join(root, 'snapshots/v1')
+  mkdirSync(snapDir, { recursive: true })
+  mkdirSync(join(root, 'public'), { recursive: true })
+  const hash = 'a'.repeat(64)
+  writeFileSync(join(snapDir, `1-${hash}.json`), '{"published_at":1}')
+  writeFileSync(join(snapDir, `2-${hash}.json`), '{"published_at":2}')
+  writeFileSync(
+    join(root, 'public/current-release.json'),
+    `${JSON.stringify({
+      schema_version: 1,
+      generation: 2,
+      content_hash: hash,
+      artifact_ref: `snapshots/v1/2-${hash}.json`,
+      published_at_unix: 2,
+    })}\n`,
+  )
+  const plan = await logPublicSnapshotGcDryRun({
+    AIRINGCAL_BUILDER_PUBLIC_DIR: root,
+    AIRINGCAL_GC_MIN_GENERATIONS: '1',
+  })
+  assert.deepEqual(plan.delete, [`snapshots/v1/1-${hash}.json`])
 })

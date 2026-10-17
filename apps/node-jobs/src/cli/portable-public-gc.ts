@@ -48,6 +48,20 @@ function readPinnedRefs(env: Record<string, string | undefined>): Set<string> {
   return new Set(raw.split(',').map((part) => part.trim()).filter(Boolean))
 }
 
+export async function logPublicSnapshotGcDryRun(
+  env: Record<string, string | undefined> = process.env,
+): Promise<ReturnType<typeof planPublicSnapshotGc>> {
+  const { plan } = await runPortablePublicGc(env, false)
+  console.log(JSON.stringify({
+    status: 'info',
+    stage: 'public_snapshot_gc_dry_run',
+    keep_count: plan.keep.length,
+    delete_count: plan.delete.length,
+    delete: plan.delete,
+  }))
+  return plan
+}
+
 export async function runPortablePublicGc(
   env: Record<string, string | undefined> = process.env,
   apply = false,
