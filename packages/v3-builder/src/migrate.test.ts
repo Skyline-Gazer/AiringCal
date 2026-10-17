@@ -10,6 +10,7 @@ test('builder schema migration is idempotent and records version', () => {
   assert.deepEqual(listUserTables(db), [
     'builder_job_leases',
     'builder_kv',
+    'subject_media',
     'sync_runs',
     'v3_schema_migrations',
   ])

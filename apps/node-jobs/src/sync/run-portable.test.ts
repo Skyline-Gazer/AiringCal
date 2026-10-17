@@ -4,8 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FILESYSTEM_PUBLIC_POINTER_KEY } from '@airing-cal/v3-core'
 import test from 'node:test'
-import { assembleFullFetch } from '@airing-cal/bgm-api'
+import { assembleFullFetch, type BgmCollection } from '@airing-cal/bgm-api'
 import { runPortableBuilderSync } from './run-portable.ts'
+
+const COMMON_URL = 'https://lain.bgm.tv/pic/cover/c/common.jpg'
+const LARGE_URL = 'https://lain.bgm.tv/pic/cover/l/large.jpg'
+const JPEG = Uint8Array.from([0xff, 0xd8, 0xff, 0x00, 0xff, 0xd9])
 
 const gitSha = 'c'.repeat(40)
 
@@ -43,14 +47,65 @@ test('runPortableBuilderSync checkpoints snapshot in SQLite', async () => {
   assert.match(summary.message, /media=skip/)
 })
 
-test('runPortableBuilderSync fails closed when MEDIA_REFRESH=refresh', async () => {
+function collectionFetch(subjectId: number): ReturnType<typeof assembleFullFetch> {
+  const entry: BgmCollection = {
+    subject_id: subjectId,
+    subject_type: 2,
+    rate: 0,
+    type: 3,
+    comment: '',
+    tags: [],
+    ep_status: 1,
+    vol_status: 0,
+    updated_at: '2026-01-01T00:00:00.000Z',
+    private: false,
+    subject: {
+      id: subjectId,
+      type: 2,
+      name: 'Name',
+      name_cn: '中文',
+      summary: 'summary',
+      nsfw: false,
+      date: '2026-01-01',
+      eps: 12,
+      total_episodes: 12,
+      images: { large: LARGE_URL, common: COMMON_URL, medium: COMMON_URL, small: COMMON_URL, grid: COMMON_URL },
+      rating: { score: 7, rank: 100, total: 10 },
+    },
+  }
+  return assembleFullFetch(
+    [{ user_id: '1', pageLimit: 50, pages: [{ offset: 0, total: 1, data: [entry] }] }],
+    [{ weekday: { en: 'Mon', cn: '一', ja: '月', id: 1 }, items: [] }],
+    1_700_000_000,
+  )
+}
+
+test('runPortableBuilderSync fails when MEDIA_REFRESH=refresh without image root', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'airingcal-builder-media-'))
   const summary = await runPortableBuilderSync(
     { ...baseEnv(join(dir, 'builder.sqlite')), AIRINGCAL_BUILDER_MEDIA_REFRESH: 'refresh' },
     { fetchInput: async () => emptyFetch() },
   )
   assert.equal(summary.status, 'failed')
-  assert.match(summary.message, /not implemented/)
+  assert.match(summary.message, /AIRINGCAL_BUILDER_PUBLIC_DIR|AIRINGCAL_BUILDER_IMAGE_DIR/)
+})
+
+test('runPortableBuilderSync downloads media to filesystem when MEDIA_REFRESH=refresh', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-builder-media-'))
+  const imageRoot = join(dir, 'public-store')
+  const summary = await runPortableBuilderSync(
+    {
+      ...baseEnv(join(dir, 'builder.sqlite')),
+      AIRINGCAL_BUILDER_MEDIA_REFRESH: 'refresh',
+      AIRINGCAL_BUILDER_PUBLIC_DIR: imageRoot,
+    },
+    {
+      fetchInput: async () => collectionFetch(42),
+      fetchImage: async () => new Response(JPEG, { status: 200, headers: { 'Content-Type': 'image/jpeg' } }),
+    },
+  )
+  assert.equal(summary.status, 'success')
+  assert.match(summary.message, /media=refresh selected=1 succeeded=1/)
 })
 
 test('runPortableBuilderSync publishes durable release when PUBLIC_DIR set', async () => {

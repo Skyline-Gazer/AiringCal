@@ -67,6 +67,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Operator env contract | `apps/node-jobs/docs/operator-contract.md` |
 | Durable publish dir (`AIRINGCAL_BUILDER_PUBLIC_DIR`) | `apps/node-jobs/src/sync/run-portable.ts`, `run-portable.test.ts` |
 | Portable media contract (`AIRINGCAL_BUILDER_MEDIA_REFRESH=skip`) + fetch URL hints | `run-portable.ts`, `packages/v3-core/src/media-hints-from-fetch.ts` |
+| Portable media refresh (SQLite `subject_media` + filesystem blobs) | `apps/node-jobs/src/sync/portable-media.ts`, `packages/v3-builder/src/schema.ts`, `sqlite-d1-client.ts` |
 
 ## Gaps (explicit unknowns for #72 / staging)
 

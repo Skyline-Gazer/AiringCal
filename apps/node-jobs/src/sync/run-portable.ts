@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { CompleteFullFetch } from '@airing-cal/bgm-api'
+import { subjectDetailImages } from '@airing-cal/domain'
 import { FilesystemPublicStore, MemoryPublicStore, type PublicStore } from '@airing-cal/v3-core'
 import {
   openBuilderDatabase,
@@ -10,9 +11,13 @@ import {
   SyncRunStore,
   type SyncRunMode,
 } from '@airing-cal/v3-builder'
+import { createRunContext } from '../adapters/run-context.ts'
 import type { JobSummary } from '../contracts.ts'
 import { createUpstreamBgmClient, fetchCompleteInput } from '../upstream/fetch.ts'
 import { readSyncUserConfig } from './config.ts'
+import { mediaSubjectsFromFetch } from './media-refresh.ts'
+import { createEnrichMediaSubjectsFromFetch } from './media-subject-resolve.ts'
+import { runPortableMediaRefresh } from './portable-media.ts'
 
 function createPortablePublicStore(env: Record<string, string | undefined>): PublicStore {
   const publicDir = env.AIRINGCAL_BUILDER_PUBLIC_DIR?.trim()
@@ -30,6 +35,16 @@ export function readPortableMediaRefresh(env: Record<string, string | undefined>
   if (raw === 'refresh') return 'refresh'
   if (raw === 'skip') return 'skip'
   throw new Error('AIRINGCAL_BUILDER_MEDIA_REFRESH must be skip or refresh')
+}
+
+export function readPortableImageRoot(env: Record<string, string | undefined>, mediaMode: PortableMediaRefreshMode): string {
+  const publicDir = env.AIRINGCAL_BUILDER_PUBLIC_DIR?.trim()
+  const imageDir = env.AIRINGCAL_BUILDER_IMAGE_DIR?.trim()
+  const root = publicDir || imageDir
+  if (mediaMode === 'refresh' && !root) {
+    throw new Error('AIRINGCAL_BUILDER_PUBLIC_DIR or AIRINGCAL_BUILDER_IMAGE_DIR is required when AIRINGCAL_BUILDER_MEDIA_REFRESH=refresh')
+  }
+  return root!
 }
 
 function readPortableBuilderConfig(env: Record<string, string | undefined>): {
@@ -51,6 +66,7 @@ function readPortableBuilderConfig(env: Record<string, string | undefined>): {
 
 export interface PortableBuilderSyncOverrides {
   fetchInput?: () => Promise<CompleteFullFetch>
+  fetchImage?: (url: string, signal: AbortSignal) => Promise<Response>
 }
 
 /** Portable v3 builder path: SQLite checkpoint via @airing-cal/v3-builder (no Cloudflare D1/R2). */
@@ -73,25 +89,22 @@ export async function runPortableBuilderSync(
     syncConfig = readSyncUserConfig(env)
     builderConfig = readPortableBuilderConfig(env)
     mediaMode = readPortableMediaRefresh(env)
+    if (mediaMode === 'refresh') {
+      readPortableImageRoot(env, mediaMode)
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'CONFIG_INVALID'
     return { job: 'airingcal-sync', status: 'failed', message }
   }
 
-  if (mediaMode === 'refresh') {
-    return {
-      job: 'airingcal-sync',
-      status: 'failed',
-      message: 'AIRINGCAL_BUILDER_MEDIA_REFRESH=refresh is not implemented (filesystem media download pending)',
-    }
+  if (mediaMode === 'skip') {
+    console.log(JSON.stringify({
+      status: 'info',
+      stage: 'media',
+      mode: 'skip',
+      reason: 'portable_builder_no_download',
+    }))
   }
-
-  console.log(JSON.stringify({
-    status: 'info',
-    stage: 'media',
-    mode: 'skip',
-    reason: 'portable_builder_no_download',
-  }))
 
   mkdirSync(dirname(builderConfig.sqlitePath), { recursive: true })
   const db = openBuilderDatabase(builderConfig.sqlitePath)
@@ -113,6 +126,7 @@ export async function runPortableBuilderSync(
       : undefined)
 
   if (!fetchInput) {
+    db.close()
     return {
       job: 'airingcal-sync',
       status: 'failed',
@@ -120,7 +134,48 @@ export async function runPortableBuilderSync(
     }
   }
 
+  let cachedInput: CompleteFullFetch | null = null
+  const loadInput = async () => {
+    if (!cachedInput) cachedInput = await fetchInput()
+    return cachedInput
+  }
+
+  let mediaSummary = ''
+  let snapshotProjection: Parameters<typeof runBuilderOnce>[0]['snapshotProjection']
+
   try {
+    if (mediaMode === 'refresh') {
+      const imageRoot = readPortableImageRoot(env, mediaMode)
+      mkdirSync(imageRoot, { recursive: true })
+      const input = await loadInput()
+      const run = createRunContext({
+        runId,
+        deadlineAt: Date.now() + 1_500_000,
+      })
+      const resolveMediaSubjects = client
+        ? createEnrichMediaSubjectsFromFetch(async (subjectId) => {
+          const subject = await client.getSubject(subjectId)
+          return subject ? subjectDetailImages(subject) : null
+        })
+        : async (fetch: CompleteFullFetch) => mediaSubjectsFromFetch(fetch)
+      const subjects = await resolveMediaSubjects(input, run)
+      const mediaResult = await runPortableMediaRefresh({
+        db,
+        imageRoot,
+        run,
+        input,
+        subjects,
+        fetchImage: overrides.fetchImage,
+      })
+      snapshotProjection = {
+        imageMap: mediaResult.imageMap,
+        mediaHints: mediaResult.mediaHints,
+      }
+      const failIds = mediaResult.summary.failures.map((entry) => entry.subject_id).join(',')
+      mediaSummary = `media=refresh selected=${mediaResult.summary.selected} succeeded=${mediaResult.summary.succeeded} failed=${mediaResult.summary.failed}${failIds ? ` failed_subject_ids=${failIds}` : ''}`
+      console.log(mediaSummary)
+    }
+
     const result = await runBuilderOnce({
       state,
       runs,
@@ -128,14 +183,15 @@ export async function runPortableBuilderSync(
       runId,
       mode: builderConfig.mode,
       ownerToken,
-      fetchInput,
+      fetchInput: loadInput,
       now: () => Date.now(),
       publishAfterSync: builderConfig.publishAfterSync,
       manifestMetadata: {
         source_observed_at: new Date().toISOString(),
         git_sha: syncConfig.gitSha,
       },
-      projectFetchMediaHints: true,
+      projectFetchMediaHints: mediaMode === 'skip',
+      snapshotProjection,
     })
 
     const sync = result.sync.status
@@ -146,10 +202,11 @@ export async function runPortableBuilderSync(
       && result.publish.status !== 'already_current'
     const failed = sync === 'failed' || publishFailed
     const skipped = sync === 'skipped'
+    const mediaPart = mediaMode === 'skip' ? 'media=skip' : mediaSummary
     return {
       job: 'airingcal-sync',
       status: failed ? 'failed' : skipped ? 'skipped' : 'success',
-      message: `portable builder sync=${sync} media=skip publish=${publishStatus} generation=${result.sync.generation ?? 'null'}`,
+      message: `portable builder sync=${sync} ${mediaPart} publish=${publishStatus} generation=${result.sync.generation ?? 'null'}`,
     }
   } finally {
     db.close()

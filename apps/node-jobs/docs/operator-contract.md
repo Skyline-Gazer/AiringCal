@@ -75,7 +75,8 @@ When `AIRINGCAL_BUILDER=portable`, `runSync()` uses `@airing-cal/v3-builder` (SQ
 
 When `AIRINGCAL_BUILDER_PUBLISH=true` and `AIRINGCAL_BUILDER_PUBLIC_DIR` is unset, publish uses in-process memory only (dev smoke; not durable).
 
-| `AIRINGCAL_BUILDER_MEDIA_REFRESH` | no | `skip` (default): no Bangumi image download; snapshot `image_status` reflects source URLs only. `refresh`: **not implemented** — fails closed until filesystem media store lands. |
+| `AIRINGCAL_BUILDER_MEDIA_REFRESH` | no | `skip` (default): no download; URL-only `image_status`. `refresh`: download covers to filesystem via builder SQLite `subject_media` (requires `PUBLIC_DIR` or `IMAGE_DIR`). |
+| `AIRINGCAL_BUILDER_IMAGE_DIR` | when refresh without `PUBLIC_DIR` | Root for immutable `images/{hash}/original` blobs (same key layout as R2). |
 
 Portable sync **does not** read Cloudflare R2/D1/KV, **does not** call `AIRINGCAL_THUMB_GEN_*` / Worker thumb-gen, and **does not** download cover bytes today.
 
