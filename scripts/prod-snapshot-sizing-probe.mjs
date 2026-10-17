@@ -18,7 +18,7 @@ const TOKEN = process.env.CLOUDFLARE_API_TOKEN
 const ACCOUNT = process.env.CLOUDFLARE_ACCOUNT_ID
 const DATA_BUCKET = process.env.AIRING_CAL_DATA_BUCKET || 'airing-cal-data'
 const KV_NAMESPACE = process.env.AIRING_CAL_KV_NAMESPACE_ID
-const BASE = 'https://api.cloudflare.com/client/v4'
+const BASE = process.env.CF_API_BASE || 'https://api.cloudflare.com/client/v4'
 const LIMIT_BYTES = 500 * 1024
 
 function log(stage, extra = {}) {
