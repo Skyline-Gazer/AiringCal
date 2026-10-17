@@ -89,5 +89,27 @@ no release pointer changes and v2 reads keep serving the current snapshot.
 2. **Import** (KV export → builder SQLite `subject_media`): `portable-legacy-state-import.ts`, this document.
 3. **Shadow gate** (normalized legacy vs published snapshot, seven-match cutover gate): [`shadow-gate.md`](./shadow-gate.md).
 
-Still open: D1/R2 read-only export adapters (KV metadata is the only exported
-source today), and the owner-approved cutover / rollback runbook execution.
+Still open: the owner-approved cutover / rollback runbook execution.
+
+### Why there is no D1/R2 export adapter (decision, 2026-10-17)
+
+The #73 design text mentions "v2 D1/R2/KV read-only export". For this pipeline the
+D1 and R2 halves are deliberately not implemented, and that is not a gap in the
+migration path:
+
+- **R2** holds only image binaries, and the design keeps them in place ("keep
+  existing image R2 keys, do not copy binaries"). The portable builder reuses the
+  same `images/<hash>/…` keys, so no R2 read/export step is needed — the
+  Cloudflare worker and the portable gateway both serve the existing objects.
+- **D1** is the v2 authoritative collection state, but the *subject set* the
+  import needs is already derived from the published `PublicSnapshotV1`
+  (`--snapshot`), which the shadow gate proves equivalent to the legacy export
+  before any cutover. Reading D1 would additionally require inventing an
+  "active rows" semantic (`deleted_at IS NULL`) that the repository does not use
+  anywhere, and its value would be re-checked by the same shadow gate.
+- The **KV** export is the only part carrying data the portable store cannot
+  derive (detail/meta/image-status metadata), which is why
+  `portable-legacy-export` exists.
+
+Revisit only if a cutover needs subject ids before a verified snapshot exists
+(e.g. bootstrapping an empty instance from v2 D1 alone).
