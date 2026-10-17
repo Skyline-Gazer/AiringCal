@@ -1,0 +1,2162 @@
+{
+  "schema_version": 1,
+  "generation": 1,
+  "content_hash": "87cedd1e2f29f756184b4d84e5b9a322a661796eb8c0201a92f70fda2f9f5818",
+  "published_at": 1722000000,
+  "collections": {
+    "want": [
+      {
+        "subject_id": 20000,
+        "name": "Subject 20000",
+        "name_cn": "条目 20000",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 1,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20005,
+        "name": "Subject 20005",
+        "name_cn": "条目 20005",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 1,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20010,
+        "name": "Subject 20010",
+        "name_cn": "条目 20010",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 1,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20015,
+        "name": "Subject 20015",
+        "name_cn": "条目 20015",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 1,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20020,
+        "name": "Subject 20020",
+        "name_cn": "条目 20020",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 1,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20025,
+        "name": "Subject 20025",
+        "name_cn": "条目 20025",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 1,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20030,
+        "name": "Subject 20030",
+        "name_cn": "条目 20030",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 1,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20035,
+        "name": "Subject 20035",
+        "name_cn": "条目 20035",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 1,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20040,
+        "name": "Subject 20040",
+        "name_cn": "条目 20040",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 1,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20045,
+        "name": "Subject 20045",
+        "name_cn": "条目 20045",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 1,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      }
+    ],
+    "watched": [
+      {
+        "subject_id": 20001,
+        "name": "Subject 20001",
+        "name_cn": "条目 20001",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 2,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20006,
+        "name": "Subject 20006",
+        "name_cn": "条目 20006",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 2,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20011,
+        "name": "Subject 20011",
+        "name_cn": "条目 20011",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 2,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20016,
+        "name": "Subject 20016",
+        "name_cn": "条目 20016",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 2,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20021,
+        "name": "Subject 20021",
+        "name_cn": "条目 20021",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 2,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20026,
+        "name": "Subject 20026",
+        "name_cn": "条目 20026",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 2,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20031,
+        "name": "Subject 20031",
+        "name_cn": "条目 20031",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 2,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20036,
+        "name": "Subject 20036",
+        "name_cn": "条目 20036",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 2,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20041,
+        "name": "Subject 20041",
+        "name_cn": "条目 20041",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 2,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20046,
+        "name": "Subject 20046",
+        "name_cn": "条目 20046",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 2,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      }
+    ],
+    "watching": [
+      {
+        "subject_id": 20002,
+        "name": "Subject 20002",
+        "name_cn": "条目 20002",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 3,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20007,
+        "name": "Subject 20007",
+        "name_cn": "条目 20007",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 3,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20012,
+        "name": "Subject 20012",
+        "name_cn": "条目 20012",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 3,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20017,
+        "name": "Subject 20017",
+        "name_cn": "条目 20017",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 3,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20022,
+        "name": "Subject 20022",
+        "name_cn": "条目 20022",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 3,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20027,
+        "name": "Subject 20027",
+        "name_cn": "条目 20027",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 3,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20032,
+        "name": "Subject 20032",
+        "name_cn": "条目 20032",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 3,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20037,
+        "name": "Subject 20037",
+        "name_cn": "条目 20037",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 3,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20042,
+        "name": "Subject 20042",
+        "name_cn": "条目 20042",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 3,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20047,
+        "name": "Subject 20047",
+        "name_cn": "条目 20047",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 3,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      }
+    ],
+    "on_hold": [
+      {
+        "subject_id": 20003,
+        "name": "Subject 20003",
+        "name_cn": "条目 20003",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 4,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20008,
+        "name": "Subject 20008",
+        "name_cn": "条目 20008",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 4,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20013,
+        "name": "Subject 20013",
+        "name_cn": "条目 20013",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 4,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20018,
+        "name": "Subject 20018",
+        "name_cn": "条目 20018",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 4,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20023,
+        "name": "Subject 20023",
+        "name_cn": "条目 20023",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 4,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20028,
+        "name": "Subject 20028",
+        "name_cn": "条目 20028",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 4,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20033,
+        "name": "Subject 20033",
+        "name_cn": "条目 20033",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 4,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20038,
+        "name": "Subject 20038",
+        "name_cn": "条目 20038",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 4,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20043,
+        "name": "Subject 20043",
+        "name_cn": "条目 20043",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 4,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      }
+    ],
+    "dropped": [
+      {
+        "subject_id": 20004,
+        "name": "Subject 20004",
+        "name_cn": "条目 20004",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 5,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20009,
+        "name": "Subject 20009",
+        "name_cn": "条目 20009",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 5,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20014,
+        "name": "Subject 20014",
+        "name_cn": "条目 20014",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 5,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20019,
+        "name": "Subject 20019",
+        "name_cn": "条目 20019",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 5,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20024,
+        "name": "Subject 20024",
+        "name_cn": "条目 20024",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 5,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20029,
+        "name": "Subject 20029",
+        "name_cn": "条目 20029",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 5,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20034,
+        "name": "Subject 20034",
+        "name_cn": "条目 20034",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 5,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20039,
+        "name": "Subject 20039",
+        "name_cn": "条目 20039",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 5,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      },
+      {
+        "subject_id": 20044,
+        "name": "Subject 20044",
+        "name_cn": "条目 20044",
+        "summary": "summary text for payload sizing",
+        "images": {
+          "common": {
+            "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+          },
+          "large": null
+        },
+        "image_status": {
+          "common": "cached",
+          "large": "pending_next_cron"
+        },
+        "eps": 12,
+        "total_episodes": 12,
+        "ep_status": 2,
+        "vol_status": 0,
+        "type": 2,
+        "collection_type": 5,
+        "rate": 8,
+        "nsfw": false,
+        "date": "2026-07-27",
+        "tags": [
+          "daily",
+          "fixture"
+        ],
+        "updated_at": "2026-07-27T00:00:00Z",
+        "rating": {
+          "score": 8.1,
+          "rank": 12,
+          "total": 340
+        }
+      }
+    ]
+  },
+  "calendar": [
+    {
+      "weekday": {
+        "en": "Mon",
+        "cn": "星期一",
+        "ja": "月",
+        "id": 1
+      },
+      "items": [
+        {
+          "subject_id": 20000,
+          "id": 20000,
+          "type": 2,
+          "name": "Subject 20000",
+          "name_cn": "条目 20000",
+          "summary": "summary text for payload sizing",
+          "images": {
+            "common": {
+              "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+            },
+            "large": null
+          },
+          "image_status": {
+            "common": "cached",
+            "large": "pending_next_cron"
+          },
+          "nsfw": false,
+          "date": "2026-07-27",
+          "eps": 12,
+          "total_episodes": 12,
+          "rating": {
+            "score": 8.1,
+            "rank": 12,
+            "total": 340
+          }
+        },
+        {
+          "subject_id": 20001,
+          "id": 20001,
+          "type": 2,
+          "name": "Subject 20001",
+          "name_cn": "条目 20001",
+          "summary": "summary text for payload sizing",
+          "images": {
+            "common": {
+              "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+            },
+            "large": null
+          },
+          "image_status": {
+            "common": "cached",
+            "large": "pending_next_cron"
+          },
+          "nsfw": false,
+          "date": "2026-07-27",
+          "eps": 12,
+          "total_episodes": 12,
+          "rating": {
+            "score": 8.1,
+            "rank": 12,
+            "total": 340
+          }
+        },
+        {
+          "subject_id": 20002,
+          "id": 20002,
+          "type": 2,
+          "name": "Subject 20002",
+          "name_cn": "条目 20002",
+          "summary": "summary text for payload sizing",
+          "images": {
+            "common": {
+              "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+            },
+            "large": null
+          },
+          "image_status": {
+            "common": "cached",
+            "large": "pending_next_cron"
+          },
+          "nsfw": false,
+          "date": "2026-07-27",
+          "eps": 12,
+          "total_episodes": 12,
+          "rating": {
+            "score": 8.1,
+            "rank": 12,
+            "total": 340
+          }
+        },
+        {
+          "subject_id": 20003,
+          "id": 20003,
+          "type": 2,
+          "name": "Subject 20003",
+          "name_cn": "条目 20003",
+          "summary": "summary text for payload sizing",
+          "images": {
+            "common": {
+              "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+            },
+            "large": null
+          },
+          "image_status": {
+            "common": "cached",
+            "large": "pending_next_cron"
+          },
+          "nsfw": false,
+          "date": "2026-07-27",
+          "eps": 12,
+          "total_episodes": 12,
+          "rating": {
+            "score": 8.1,
+            "rank": 12,
+            "total": 340
+          }
+        },
+        {
+          "subject_id": 20004,
+          "id": 20004,
+          "type": 2,
+          "name": "Subject 20004",
+          "name_cn": "条目 20004",
+          "summary": "summary text for payload sizing",
+          "images": {
+            "common": {
+              "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+            },
+            "large": null
+          },
+          "image_status": {
+            "common": "cached",
+            "large": "pending_next_cron"
+          },
+          "nsfw": false,
+          "date": "2026-07-27",
+          "eps": 12,
+          "total_episodes": 12,
+          "rating": {
+            "score": 8.1,
+            "rank": 12,
+            "total": 340
+          }
+        },
+        {
+          "subject_id": 20005,
+          "id": 20005,
+          "type": 2,
+          "name": "Subject 20005",
+          "name_cn": "条目 20005",
+          "summary": "summary text for payload sizing",
+          "images": {
+            "common": {
+              "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+            },
+            "large": null
+          },
+          "image_status": {
+            "common": "cached",
+            "large": "pending_next_cron"
+          },
+          "nsfw": false,
+          "date": "2026-07-27",
+          "eps": 12,
+          "total_episodes": 12,
+          "rating": {
+            "score": 8.1,
+            "rank": 12,
+            "total": 340
+          }
+        },
+        {
+          "subject_id": 20006,
+          "id": 20006,
+          "type": 2,
+          "name": "Subject 20006",
+          "name_cn": "条目 20006",
+          "summary": "summary text for payload sizing",
+          "images": {
+            "common": {
+              "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+            },
+            "large": null
+          },
+          "image_status": {
+            "common": "cached",
+            "large": "pending_next_cron"
+          },
+          "nsfw": false,
+          "date": "2026-07-27",
+          "eps": 12,
+          "total_episodes": 12,
+          "rating": {
+            "score": 8.1,
+            "rank": 12,
+            "total": 340
+          }
+        },
+        {
+          "subject_id": 20007,
+          "id": 20007,
+          "type": 2,
+          "name": "Subject 20007",
+          "name_cn": "条目 20007",
+          "summary": "summary text for payload sizing",
+          "images": {
+            "common": {
+              "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+            },
+            "large": null
+          },
+          "image_status": {
+            "common": "cached",
+            "large": "pending_next_cron"
+          },
+          "nsfw": false,
+          "date": "2026-07-27",
+          "eps": 12,
+          "total_episodes": 12,
+          "rating": {
+            "score": 8.1,
+            "rank": 12,
+            "total": 340
+          }
+        },
+        {
+          "subject_id": 20008,
+          "id": 20008,
+          "type": 2,
+          "name": "Subject 20008",
+          "name_cn": "条目 20008",
+          "summary": "summary text for payload sizing",
+          "images": {
+            "common": {
+              "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+            },
+            "large": null
+          },
+          "image_status": {
+            "common": "cached",
+            "large": "pending_next_cron"
+          },
+          "nsfw": false,
+          "date": "2026-07-27",
+          "eps": 12,
+          "total_episodes": 12,
+          "rating": {
+            "score": 8.1,
+            "rank": 12,
+            "total": 340
+          }
+        },
+        {
+          "subject_id": 20009,
+          "id": 20009,
+          "type": 2,
+          "name": "Subject 20009",
+          "name_cn": "条目 20009",
+          "summary": "summary text for payload sizing",
+          "images": {
+            "common": {
+              "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+            },
+            "large": null
+          },
+          "image_status": {
+            "common": "cached",
+            "large": "pending_next_cron"
+          },
+          "nsfw": false,
+          "date": "2026-07-27",
+          "eps": 12,
+          "total_episodes": 12,
+          "rating": {
+            "score": 8.1,
+            "rank": 12,
+            "total": 340
+          }
+        },
+        {
+          "subject_id": 20010,
+          "id": 20010,
+          "type": 2,
+          "name": "Subject 20010",
+          "name_cn": "条目 20010",
+          "summary": "summary text for payload sizing",
+          "images": {
+            "common": {
+              "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+            },
+            "large": null
+          },
+          "image_status": {
+            "common": "cached",
+            "large": "pending_next_cron"
+          },
+          "nsfw": false,
+          "date": "2026-07-27",
+          "eps": 12,
+          "total_episodes": 12,
+          "rating": {
+            "score": 8.1,
+            "rank": 12,
+            "total": 340
+          }
+        },
+        {
+          "subject_id": 20011,
+          "id": 20011,
+          "type": 2,
+          "name": "Subject 20011",
+          "name_cn": "条目 20011",
+          "summary": "summary text for payload sizing",
+          "images": {
+            "common": {
+              "hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "uri": "/image/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "r2_key": "images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original"
+            },
+            "large": null
+          },
+          "image_status": {
+            "common": "cached",
+            "large": "pending_next_cron"
+          },
+          "nsfw": false,
+          "date": "2026-07-27",
+          "eps": 12,
+          "total_episodes": 12,
+          "rating": {
+            "score": 8.1,
+            "rank": 12,
+            "total": 340
+          }
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "want": 10,
+    "watched": 10,
+    "watching": 10,
+    "on_hold": 9,
+    "dropped": 9,
+    "_total": 48
+  }
+}

@@ -58,6 +58,22 @@ Lease default: **`airingcal-data-plane`**, **900s** (sync and backup).
 
 Full enum: `src/adapters/errors.ts`.
 
+## Portable builder sync (v3, optional)
+
+When `AIRINGCAL_BUILDER=portable`, `runSync()` uses `@airing-cal/v3-builder` (SQLite checkpoint) instead of the Cloudflare D1/R2/KV pipeline. Default remains the legacy data-plane path.
+
+| Variable | Required (portable) | Notes |
+| --- | --- | --- |
+| `AIRINGCAL_BUILDER` | yes | Must be `portable` |
+| `AIRINGCAL_BUILDER_SQLITE_PATH` | yes | Local filesystem path; parent dirs created |
+| `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `BANGUMI_GIT_COMMIT_SHA` | yes | Same as cloud sync |
+| `BGM_TOKEN` | yes | Bangumi fetch |
+| `AIRINGCAL_BUILDER_MODE` | no | `incremental` (default) or `full` |
+| `AIRINGCAL_BUILDER_PUBLISH` | no | `true` publishes to in-process `MemoryPublicStore` (dev/dry-run; not durable) |
+| `AIRINGCAL_BUILDER_OWNER` | no | Lease owner token; defaults per run |
+
+Cloudflare variables are **not** read on the portable path.
+
 ## Required env (sync)
 
 See [`../env.example`](../env.example). Summary:

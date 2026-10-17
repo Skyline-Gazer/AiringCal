@@ -13,10 +13,18 @@ import { readSyncUserConfig } from './config.ts'
 import { countAccountLargeImages, createSubjectMediaRefresh } from './media-refresh.ts'
 import { createEnrichMediaSubjectsFromFetch } from './media-subject-resolve.ts'
 import { defaultLeaseName, defaultLeaseSeconds, runSyncPipeline } from './pipeline.ts'
+import { runPortableBuilderSync } from './run-portable.ts'
 import { fireAndForgetThumbGen, logThumbGenSyncTail } from './thumb-gen-client.ts'
+
+function isPortableBuilder(env: Record<string, string | undefined>): boolean {
+  return (env.AIRINGCAL_BUILDER?.trim().toLowerCase() ?? '') === 'portable'
+}
 
 /** Full pipeline: lease → fetch → media → publish (AC-1-03). */
 export async function runSync(env: Record<string, string | undefined> = process.env): Promise<JobSummary> {
+  if (isPortableBuilder(env)) {
+    return runPortableBuilderSync(env)
+  }
   if (!env.AIRINGCAL_USERS_JSON?.trim()) {
     return {
       job: 'airingcal-sync',

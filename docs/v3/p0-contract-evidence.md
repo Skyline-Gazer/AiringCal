@@ -51,10 +51,19 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Builder sync job checkpoint | `packages/v3-builder/src/sync-job.ts`, `sync-job.test.ts` |
 | Checkpoint → PublicStore publish (CAS fail-closed) | `packages/v3-builder/src/publish-checkpoint.ts`, `publish-checkpoint.test.ts` |
 
-## Next engineering slice (#70)
+## Snapshot size fixture (#69)
 
-- `runBuilderOnce` orchestrates sync then optional publish (`packages/v3-builder/src/run-once.ts`); covered by `run-once.test.ts`.
-- **Not yet wired:** `apps/node-jobs` still uses legacy D1 pipeline only; portable builder entry behind explicit adapter flag is a follow-up PR.
+| Artifact | Location |
+| --- | --- |
+| 48-item synthetic public snapshot JSON | [`fixtures/public-snapshot-48-synthetic.json`](./fixtures/public-snapshot-48-synthetic.json) |
+| Generator + CI guard | `packages/v3-core/src/snapshot-fixture-48.ts`, `snapshot-payload-metrics.test.ts` |
+
+## Portable builder entry (#70)
+
+| Evidence | Location |
+| --- | --- |
+| `AIRINGCAL_BUILDER=portable` sync path | `apps/node-jobs/src/sync/run-portable.ts`, `run-portable.test.ts` |
+| Operator env contract | `apps/node-jobs/docs/operator-contract.md` |
 
 ## Gaps (explicit unknowns for #72 / staging)
 
