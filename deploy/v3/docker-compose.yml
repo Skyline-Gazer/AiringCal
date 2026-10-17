@@ -16,8 +16,37 @@ services:
     environment:
       PORT: "8787"
       AIRINGCAL_PUBLIC_READ_DIR: /data/public
+      AIRINGCAL_BUILDER_SQLITE_PATH: /data/builder.sqlite
+      AIRINGCAL_SCHEDULER_DAILY_AT: ${AIRINGCAL_SCHEDULER_DAILY_AT:-03:00}
       NSFW_SHOW: ${NSFW_SHOW:-false}
       BANGUMI_GIT_COMMIT_SHA: ${BANGUMI_GIT_COMMIT_SHA:-dev}
+    volumes:
+      - airingcal-data:/data
+    restart: unless-stopped
+
+  scheduler:
+    profiles: ["scheduler"]
+    build:
+      context: ../..
+      dockerfile: deploy/v3/Dockerfile
+    command:
+      - pnpm
+      - exec
+      - tsx
+      - apps/node-jobs/src/cli/portable-scheduler.ts
+    environment:
+      AIRINGCAL_BUILDER: portable
+      AIRINGCAL_BUILDER_SQLITE_PATH: /data/builder.sqlite
+      AIRINGCAL_BUILDER_PUBLIC_DIR: /data/public
+      AIRINGCAL_BUILDER_MEDIA_REFRESH: ${AIRINGCAL_BUILDER_MEDIA_REFRESH:-refresh}
+      AIRINGCAL_BUILDER_PUBLISH: ${AIRINGCAL_BUILDER_PUBLISH:-true}
+      AIRINGCAL_SCHEDULER_DAILY_AT: ${AIRINGCAL_SCHEDULER_DAILY_AT:-03:00}
+      AIRINGCAL_SCHEDULER_FULL_EVERY_DAYS: ${AIRINGCAL_SCHEDULER_FULL_EVERY_DAYS:-7}
+      AIRINGCAL_SCHEDULER_RUN_ON_START: ${AIRINGCAL_SCHEDULER_RUN_ON_START:-false}
+      AIRINGCAL_USERS_JSON: ${AIRINGCAL_USERS_JSON}
+      AIRINGCAL_PRIMARY_USER_ID: ${AIRINGCAL_PRIMARY_USER_ID}
+      BANGUMI_GIT_COMMIT_SHA: ${BANGUMI_GIT_COMMIT_SHA:-dev}
+      BGM_TOKEN: ${BGM_TOKEN}
     volumes:
       - airingcal-data:/data
     restart: unless-stopped

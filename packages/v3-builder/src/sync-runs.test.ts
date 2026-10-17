@@ -14,6 +14,19 @@ test('sync run store records incremental lifecycle', () => {
   assert.equal(latest?.finished_at_unix, 200)
 })
 
+test('latestSucceededRun filters by mode', () => {
+  const db = openBuilderDatabase(':memory:')
+  const runs = new SyncRunStore(db)
+  runs.startRun('inc-1', 'incremental', 10)
+  runs.finishRun('inc-1', 'succeeded', null, 20)
+  runs.startRun('full-1', 'full', 30)
+  runs.finishRun('full-1', 'succeeded', null, 40)
+  runs.startRun('inc-2', 'incremental', 50)
+  runs.finishRun('inc-2', 'failed', null, 60)
+  assert.equal(runs.latestSucceededRun('full')?.run_id, 'full-1')
+  assert.equal(runs.latestSucceededRun()?.run_id, 'full-1')
+})
+
 test('finishRun rejects unknown or already finished runs', () => {
   const db = openBuilderDatabase(':memory:')
   const runs = new SyncRunStore(db)

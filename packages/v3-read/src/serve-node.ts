@@ -48,6 +48,7 @@ export function startPortableReadServer(options: {
         publicStore,
         nsfwShow: options.nsfwShow ?? process.env.NSFW_SHOW !== 'false',
         packageVersion: options.packageVersion ?? process.env.npm_package_version,
+        processEnv: process.env,
       })
       await writeNodeResponse(res, response)
     } catch (error) {
