@@ -85,7 +85,13 @@ export function backupBuilderCheckpoint(
 if (process.argv[1]?.endsWith('portable-checkpoint-backup.ts')) {
   try {
     const result = backupBuilderCheckpoint()
-    console.log(JSON.stringify({ status: 'succeeded', stage: 'checkpoint_backup', ...result }))
+    const pruned = pruneCheckpointBackups(process.env, true)
+    console.log(JSON.stringify({
+      status: 'succeeded',
+      stage: 'checkpoint_backup',
+      ...result,
+      pruned_delete_count: pruned.delete.length,
+    }))
   } catch (error) {
     const message = error instanceof Error ? error.message : 'backup_failed'
     console.error(JSON.stringify({ status: 'failed', stage: 'checkpoint_backup', message }))
