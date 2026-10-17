@@ -94,6 +94,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Shadow gate runbook (#73) | [`docs/v3/shadow-gate.md`](./shadow-gate.md) |
 | Cutover + rollback runbook (#73) | [`docs/v3/cutover-rollback.md`](./cutover-rollback.md) |
 | Checkpoint rollback drill (backup → diverge → restore, state verified) | [`docs/v3/cutover-rollback.md`](./cutover-rollback.md) "Local drill" |
+| Cross-store read parity (filesystem vs R2 gateways byte-identical) | `packages/v3-read/src/read-gateway-parity.test.ts` |
 | `airingcal` config v1 JSON (portable env mapping) | `docs/v3/airingcal-config.example.json`, `packages/v3-adapters/src/airingcal-config.ts` |
 | Config → env emit CLI (#72 setup) | `apps/node-jobs/src/cli/airingcal-config-emit.ts` |
 | Config validate + snapshot compare (#73 prep) | `airingcal-config-validate.ts`, `portable-snapshot-compare.ts` |
