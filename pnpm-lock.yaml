@@ -96,6 +96,15 @@ importers:
         specifier: workspace:*
         version: link:../../packages/worker-common
     devDependencies:
+      '@airing-cal/bgm-api':
+        specifier: workspace:*
+        version: link:../../packages/bgm-api
+      '@airing-cal/v3-builder':
+        specifier: workspace:*
+        version: link:../../packages/v3-builder
+      '@airing-cal/v3-read':
+        specifier: workspace:*
+        version: link:../../packages/v3-read
       '@types/node':
         specifier: ^26.0.0
         version: 26.4.0
