@@ -84,13 +84,16 @@ within a minute at the edge.
 `packages/v3-core/src/snapshot-payload-metrics.test.ts` builds the 48-item
 synthetic fixture (`docs/v3/fixtures/public-snapshot-48-synthetic.json`), asserts
 it is non-trivial (>10 KB) and that **gzip stays under 500 KiB**, and verifies the
-on-disk bytes round-trip with the declared hash/generation. A production-sized
-sample is still missing (#69 gap), so the decision is: **single JSON now**, revisit
-splitting only if a real anonymized export exceeds the gzip guard. Operators can
-measure any snapshot with `apps/node-jobs/src/cli/portable-snapshot-sizing.ts`
-(compact/gzip bytes + section breakdown + `single_json_viable`); a structural
-guard enforces the same bound in CI. Readers pin a generation, so a future split
-can be introduced versioned without breaking parity.
+on-disk bytes round-trip with the declared hash/generation. **Production anonymized sizing**
+(manual workflow `sizing-probe.yml`, run `39052596856`, 2026-10-17): live v2 release
+generation **15** — compact **552 990** bytes, gzip **110 769** bytes (< 500 KiB guard),
+**565** collection rows + **107** calendar rows; `collections` section **85.5%** of compact
+JSON. **Decision confirmed: single JSON**; no split needed at current scale. Operators can
+re-run the probe (byte counts only; no payload stored) or measure any export with
+`apps/node-jobs/src/cli/portable-snapshot-sizing.ts` (compact/gzip bytes + section
+breakdown + `single_json_viable`); a structural guard enforces the same bound in CI.
+Readers pin a generation, so a future split can be introduced versioned without breaking
+parity.
 
 ## Threat model (public/private boundary)
 

@@ -88,7 +88,7 @@ CI runs this in the `v3_operator_smoke` job.
 
 ## Still open
 
-- Real-bucket precondition verification (above) and #69 anonymized production sizing.
+- Real-bucket precondition verification (above). **Production anonymized sizing:** done via manual workflow `sizing-probe.yml` (run `39052596856`, 2026-10-17) — gzip **110 769** B, generation **15**, `single_json_viable: true` (counts only; see `p0-contract-evidence.md`).
 - EdgeOne adapter/store (no `EdgeOne*PublicStore` yet).
 - Operator `airingcal.yaml` setup wiring for bucket names and deploy targets (#72).
 - Frontend parity E2E and the legacy sync tab (returns 410 since v2).
