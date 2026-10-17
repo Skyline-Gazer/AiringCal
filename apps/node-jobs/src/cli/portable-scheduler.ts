@@ -7,7 +7,7 @@ import {
   SyncRunStore,
 } from '@airing-cal/v3-builder'
 import { exitCode } from '../contracts.ts'
-import { backupBuilderCheckpoint } from './portable-checkpoint-backup.ts'
+import { backupBuilderCheckpoint, pruneCheckpointBackups } from './portable-checkpoint-backup.ts'
 import { runSync } from '../sync/run.ts'
 
 function readSchedulerConfig(env: Record<string, string | undefined>) {
@@ -44,6 +44,10 @@ async function runScheduledSync(env: Record<string, string | undefined>): Promis
   if (['1', 'true', 'yes'].includes((env.AIRINGCAL_SCHEDULER_BACKUP_BEFORE_SYNC ?? '').trim().toLowerCase())) {
     const backup = backupBuilderCheckpoint(env)
     console.log(JSON.stringify({ status: 'info', stage: 'checkpoint_backup', ...backup }))
+    const pruned = pruneCheckpointBackups(env, true)
+    if (pruned.delete.length > 0 || pruned.keep.length > 0) {
+      console.log(JSON.stringify({ status: 'info', stage: 'checkpoint_backup_prune', ...pruned }))
+    }
   }
   const summary = await runSync(syncEnv)
   console.log(JSON.stringify(summary))

@@ -1,4 +1,4 @@
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readdirSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { openBuilderDatabase } from '@airing-cal/v3-builder'
 
@@ -17,6 +17,51 @@ export function readCheckpointBackupConfig(env: Record<string, string | undefine
 export function checkpointBackupFilename(now = new Date()): string {
   const stamp = now.toISOString().replaceAll(':', '-')
   return `builder-checkpoint-${stamp}.sqlite`
+}
+
+const CHECKPOINT_BACKUP_NAME = /^builder-checkpoint-.+\.sqlite$/
+
+export function planCheckpointBackupRetention(
+  backupFilenames: readonly string[],
+  keepCount: number,
+): { keep: string[]; delete: string[] } {
+  if (!Number.isFinite(keepCount) || keepCount < 1) {
+    throw new Error('keepCount must be a positive integer')
+  }
+  const candidates = backupFilenames
+    .filter((name) => CHECKPOINT_BACKUP_NAME.test(name))
+    .sort()
+  const keep = candidates.slice(-keepCount)
+  const keepSet = new Set(keep)
+  const del = candidates.filter((name) => !keepSet.has(name))
+  return { keep, delete: del }
+}
+
+export function pruneCheckpointBackups(
+  env: Record<string, string | undefined> = process.env,
+  apply = false,
+): { keep: string[]; delete: string[]; deleted: number } {
+  const keepCount = Number(env.AIRINGCAL_BUILDER_BACKUP_KEEP?.trim() || '0')
+  if (!Number.isFinite(keepCount) || keepCount < 1) {
+    return { keep: [], delete: [], deleted: 0 }
+  }
+  const { backupDir } = readCheckpointBackupConfig(env)
+  mkdirSync(backupDir, { recursive: true })
+  let names: string[]
+  try {
+    names = readdirSync(backupDir)
+  } catch {
+    names = []
+  }
+  const plan = planCheckpointBackupRetention(names, keepCount)
+  let deleted = 0
+  if (apply) {
+    for (const name of plan.delete) {
+      unlinkSync(join(backupDir, name))
+      deleted += 1
+    }
+  }
+  return { ...plan, deleted }
 }
 
 /** Hot backup of builder SQLite using the engine backup API (WAL-safe read). */

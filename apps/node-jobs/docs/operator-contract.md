@@ -93,6 +93,7 @@ See [`deploy/v3/env.example`](../../../deploy/v3/env.example) and [`deploy/v3/RE
 | `AIRINGCAL_SCHEDULER_RUN_ON_START` | no | `true` runs one sync immediately on container start |
 | `AIRINGCAL_SCHEDULER_BACKUP_BEFORE_SYNC` | no | `true` (Compose default) runs checkpoint backup before each scheduled sync |
 | `AIRINGCAL_BUILDER_BACKUP_DIR` | no | Checkpoint backup destination (default `<sqlite-dir>/backups`) |
+| `AIRINGCAL_BUILDER_BACKUP_KEEP` | no | When set ≥1, scheduler prunes older `builder-checkpoint-*.sqlite` files after backup (Compose default `10`) |
 
 Long-running scheduler: `tsx apps/node-jobs/src/cli/portable-scheduler.ts`. One-shot checkpoint backup: `tsx apps/node-jobs/src/cli/portable-checkpoint-backup.ts`. Restore: `tsx apps/node-jobs/src/cli/portable-checkpoint-restore.ts <backup.sqlite>` (add `--force` to overwrite an existing file).
 
