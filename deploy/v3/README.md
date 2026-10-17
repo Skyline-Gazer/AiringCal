@@ -31,3 +31,15 @@ docker compose -f deploy/v3/docker-compose.yml --profile sync run --rm \
 Data volume `airingcal-data` holds `/data/public` (immutable release + images), `/data/builder.sqlite`, and optional `/data/backups`.
 
 See also [`docs/v3/portable-read-gateway.md`](../../docs/v3/portable-read-gateway.md), [`docs/v3/airingcal-config.example.yaml`](../../docs/v3/airingcal-config.example.yaml) (v1 config, YAML form; JSON twin `airingcal-config.example.json`), and [`apps/node-jobs/docs/operator-contract.md`](../../apps/node-jobs/docs/operator-contract.md).
+
+## End-to-end check (`scripts/v3-compose-e2e.mjs`)
+
+Builds the image, seeds a synthetic release into the `airingcal-data` volume,
+runs `compose up -d web`, asserts the read surface over the published port, and
+always tears down with `compose down -v`. CI runs it as the `v3_compose_e2e`
+job; locally it needs a working Docker daemon:
+
+```bash
+node scripts/v3-compose-e2e.mjs
+V3_COMPOSE_E2E_PORT=8790 node scripts/v3-compose-e2e.mjs   # override port
+```
