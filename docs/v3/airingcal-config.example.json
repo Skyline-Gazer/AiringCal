@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "platform": "portable",
+  "builder": {
+    "sqlite_path": "/data/builder.sqlite",
+    "public_dir": "/data/public",
+    "media_refresh": "refresh",
+    "publish": true
+  },
+  "read": {
+    "public_dir": "/data/public",
+    "nsfw_show": false
+  },
+  "scheduler": {
+    "daily_at_utc": "03:00",
+    "full_every_days": 7,
+    "backup_before_sync": true,
+    "backup_keep": 10
+  }
+}

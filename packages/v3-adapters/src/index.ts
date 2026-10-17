@@ -14,6 +14,13 @@ export function resolveRuntimeAdapter(platformId: string) {
   throw new Error(`Unknown platform_id: ${platformId}`)
 }
 
+export {
+  parseAiringcalConfig,
+  portableEnvFromAiringcalConfig,
+  type AiringcalConfigV1,
+  type AiringcalPlatform,
+} from './airingcal-config.ts'
+
 export function resolveRuntimeAdapterFromEnv(env: Record<string, string | undefined> = process.env) {
   const explicit = env.AIRINGCAL_PLATFORM?.trim() || env.AIRINGCAL_RUNTIME?.trim()
   const inferred = (env.AIRINGCAL_BUILDER?.trim().toLowerCase() ?? '') === 'portable' ? 'portable' : ''
