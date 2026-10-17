@@ -1,6 +1,12 @@
 import { readFileSync, readdirSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
-import { FilesystemPublicStore, planPublicSnapshotGc } from '@airing-cal/v3-core'
+import { parsePublicSnapshotV1 } from '@airing-cal/domain'
+import {
+  collectReferencedImageHashes,
+  FilesystemPublicStore,
+  planPublicImageGc,
+  planPublicSnapshotGc,
+} from '@airing-cal/v3-core'
 
 function readPublicRoot(env: Record<string, string | undefined>): string {
   const root = env.AIRINGCAL_BUILDER_PUBLIC_DIR?.trim() || env.AIRINGCAL_PUBLIC_READ_DIR?.trim()
@@ -48,6 +54,51 @@ function readPinnedRefs(env: Record<string, string | undefined>): Set<string> {
   return new Set(raw.split(',').map((part) => part.trim()).filter(Boolean))
 }
 
+function readPinnedImageHashes(env: Record<string, string | undefined>): Set<string> {
+  const raw = env.AIRINGCAL_GC_PINNED_IMAGES?.trim()
+  if (!raw) return new Set()
+  return new Set(raw.split(',').map((part) => part.trim().toLowerCase()).filter(Boolean))
+}
+
+function listImageHashDirs(publicRoot: string): string[] {
+  const dir = join(publicRoot, 'images')
+  try {
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+      return []
+    }
+    throw error
+  }
+}
+
+export async function logPublicImageGcDryRun(
+  env: Record<string, string | undefined> = process.env,
+): Promise<ReturnType<typeof planPublicImageGc> | null> {
+  const publicRoot = readPublicRoot(env)
+  const store = new FilesystemPublicStore(publicRoot)
+  const pointer = await store.getCurrentRelease()
+  if (!pointer) return null
+  const bytes = await store.getSnapshotBytes(pointer.artifact_ref)
+  if (!bytes) return null
+  const snapshot = await parsePublicSnapshotV1(JSON.parse(new TextDecoder().decode(bytes)))
+  const plan = planPublicImageGc({
+    onDiskHashes: listImageHashDirs(publicRoot),
+    referencedHashes: collectReferencedImageHashes(snapshot),
+    pinnedHashes: readPinnedImageHashes(env),
+  })
+  console.log(JSON.stringify({
+    status: 'info',
+    stage: 'public_image_gc_dry_run',
+    keep_count: plan.keep.length,
+    delete_count: plan.delete.length,
+    delete: plan.delete,
+  }))
+  return plan
+}
+
 export async function logPublicSnapshotGcDryRun(
   env: Record<string, string | undefined> = process.env,
 ): Promise<ReturnType<typeof planPublicSnapshotGc>> {
@@ -59,6 +110,12 @@ export async function logPublicSnapshotGcDryRun(
     delete_count: plan.delete.length,
     delete: plan.delete,
   }))
+  try {
+    await logPublicImageGcDryRun(env)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'image_gc_dry_run_failed'
+    console.log(JSON.stringify({ status: 'info', stage: 'public_image_gc_dry_run', error: message }))
+  }
   return plan
 }
 
