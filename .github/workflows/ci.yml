@@ -102,6 +102,18 @@ jobs:
       - name: Portable read gateway E2E (serve-node + published fixture)
         run: node scripts/v3-portable-e2e.mjs
 
+  v3_compose_e2e:
+    name: v3 compose stack E2E
+    needs: [validate]
+    timeout-minutes: 25
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
+      - name: Compose stack E2E (build image, seed, up web, assert reads)
+        run: node scripts/v3-compose-e2e.mjs
+
   node-jobs-bundle:
     needs: [validate]
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'

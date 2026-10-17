@@ -16,6 +16,7 @@ COPY tsconfig.base.json ./
 RUN pnpm install --frozen-lockfile
 
 COPY apps/node-jobs apps/node-jobs
+COPY scripts scripts
 COPY deploy deploy
 COPY docs docs
 
