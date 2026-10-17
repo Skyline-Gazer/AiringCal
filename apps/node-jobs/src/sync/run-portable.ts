@@ -23,6 +23,15 @@ function createPortablePublicStore(env: Record<string, string | undefined>): Pub
   return new MemoryPublicStore()
 }
 
+export type PortableMediaRefreshMode = 'skip' | 'refresh'
+
+export function readPortableMediaRefresh(env: Record<string, string | undefined>): PortableMediaRefreshMode {
+  const raw = env.AIRINGCAL_BUILDER_MEDIA_REFRESH?.trim().toLowerCase() ?? 'skip'
+  if (raw === 'refresh') return 'refresh'
+  if (raw === 'skip') return 'skip'
+  throw new Error('AIRINGCAL_BUILDER_MEDIA_REFRESH must be skip or refresh')
+}
+
 function readPortableBuilderConfig(env: Record<string, string | undefined>): {
   sqlitePath: string
   mode: SyncRunMode
@@ -59,13 +68,30 @@ export async function runPortableBuilderSync(
 
   let syncConfig
   let builderConfig
+  let mediaMode: PortableMediaRefreshMode
   try {
     syncConfig = readSyncUserConfig(env)
     builderConfig = readPortableBuilderConfig(env)
+    mediaMode = readPortableMediaRefresh(env)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'CONFIG_INVALID'
     return { job: 'airingcal-sync', status: 'failed', message }
   }
+
+  if (mediaMode === 'refresh') {
+    return {
+      job: 'airingcal-sync',
+      status: 'failed',
+      message: 'AIRINGCAL_BUILDER_MEDIA_REFRESH=refresh is not implemented (filesystem media download pending)',
+    }
+  }
+
+  console.log(JSON.stringify({
+    status: 'info',
+    stage: 'media',
+    mode: 'skip',
+    reason: 'portable_builder_no_download',
+  }))
 
   mkdirSync(dirname(builderConfig.sqlitePath), { recursive: true })
   const db = openBuilderDatabase(builderConfig.sqlitePath)
@@ -109,6 +135,7 @@ export async function runPortableBuilderSync(
         source_observed_at: new Date().toISOString(),
         git_sha: syncConfig.gitSha,
       },
+      projectFetchMediaHints: true,
     })
 
     const sync = result.sync.status
@@ -122,7 +149,7 @@ export async function runPortableBuilderSync(
     return {
       job: 'airingcal-sync',
       status: failed ? 'failed' : skipped ? 'skipped' : 'success',
-      message: `portable builder sync=${sync} publish=${publishStatus} generation=${result.sync.generation ?? 'null'}`,
+      message: `portable builder sync=${sync} media=skip publish=${publishStatus} generation=${result.sync.generation ?? 'null'}`,
     }
   } finally {
     db.close()

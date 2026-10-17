@@ -75,6 +75,10 @@ When `AIRINGCAL_BUILDER=portable`, `runSync()` uses `@airing-cal/v3-builder` (SQ
 
 When `AIRINGCAL_BUILDER_PUBLISH=true` and `AIRINGCAL_BUILDER_PUBLIC_DIR` is unset, publish uses in-process memory only (dev smoke; not durable).
 
+| `AIRINGCAL_BUILDER_MEDIA_REFRESH` | no | `skip` (default): no Bangumi image download; snapshot `image_status` reflects source URLs only. `refresh`: **not implemented** — fails closed until filesystem media store lands. |
+
+Portable sync **does not** read Cloudflare R2/D1/KV, **does not** call `AIRINGCAL_THUMB_GEN_*` / Worker thumb-gen, and **does not** download cover bytes today.
+
 Cloudflare variables are **not** read on the portable path.
 
 ## Required env (sync)

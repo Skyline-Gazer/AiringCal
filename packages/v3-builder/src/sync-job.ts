@@ -2,7 +2,7 @@ import type { CompleteFullFetch } from '@airing-cal/bgm-api'
 import { buildPublicSnapshot, parsePublicSnapshotV1 } from '@airing-cal/domain'
 import { canonicalJson } from '@airing-cal/storage'
 import type { PublicSnapshotV1 } from '@airing-cal/storage'
-import { nextSnapshotGeneration, projectPublicSnapshotInput } from '@airing-cal/v3-core'
+import { mediaPublishHintsFromFetch, nextSnapshotGeneration, projectPublicSnapshotInput } from '@airing-cal/v3-core'
 import type { SqliteBuilderStateStore } from './sqlite-state.ts'
 import type { SyncRunMode } from './sync-runs.ts'
 import { SyncRunStore } from './sync-runs.ts'
@@ -27,6 +27,8 @@ export interface BuilderSyncJobDeps {
   leaseSeconds?: number
   fetchInput(): Promise<CompleteFullFetch>
   now(): number
+  /** When true, derive `image_status` from Bangumi URLs without a cached image map (portable builder). */
+  projectFetchMediaHints?: boolean
 }
 
 async function loadCheckpointSnapshot(state: SqliteBuilderStateStore): Promise<PublicSnapshotV1 | null> {
@@ -47,7 +49,8 @@ export async function runBuilderSyncJob(deps: BuilderSyncJobDeps): Promise<Build
   try {
     const input = await deps.fetchInput()
     const previous = await loadCheckpointSnapshot(deps.state)
-    const candidateInput = projectPublicSnapshotInput(input)
+    const mediaHints = deps.projectFetchMediaHints ? mediaPublishHintsFromFetch(input) : new Map()
+    const candidateInput = projectPublicSnapshotInput(input, new Map(), new Map(), new Map(), mediaHints)
     const probe = await buildPublicSnapshot(candidateInput, 0)
     const generation = nextSnapshotGeneration(previous, probe.content_hash)
     if (generation === null) {
