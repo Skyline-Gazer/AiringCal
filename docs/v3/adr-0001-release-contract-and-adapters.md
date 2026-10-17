@@ -119,3 +119,22 @@ can be introduced versioned without breaking parity.
 - Capability-matrix rows stay **candidate** until an authenticated staging run
   (`docs/v3/p0-contract-audit.md`); this ADR records what is code-verified vs
   doc-verified vs unverified.
+
+## Comparison — Xget thin-adapter pattern (reference, 2026-10-17)
+
+Xget (`xixu-me/Xget`, `src/app/handle-request.js`, `adapters/`,
+`src/upstream/cache-policy.js`) is the reference for **thin platform adapters**.
+What we adopt and what we deliberately do not:
+
+| Aspect | Xget | AiringCal v3 | Decision |
+||---|---|---|---|
+| Runtime role | request proxy in front of an upstream | offline builder + static reader | **Adopt the adapter shape, not the role** — no upstream fetch on the read path |
+| Platform adaptation | thin `adapters/` layer, one contract per platform | `PublicStore`/`RuntimeAdapter` ports with `unsupported` CAS as a first-class outcome | **Adopt** — same shape, stricter failure semantics |
+| Cache policy | `cache-policy.js` at the edge | long-lived immutable release + short-lived pointer; rules fixed in `read-contract.ts` | **Adopt** — immutable-first caching is what makes CDN + R2/Blob safe here |
+| Distribution | generated release branches | builder publishes one immutable snapshot + pointer | **Do not adopt** — we have a single-writer builder, not per-edge deployments |
+| Locking | universal lock services | job lease + fencing in the builder SQLite | **Do not adopt** — single-user, single-builder; a lock service would be needless infra |
+
+Deliberately out of scope (also recorded in `implementation-baseline.md`): oversized
+generic middleware, multiple frontend rewrites, generated distribution branches,
+universal lock services, and any cloud-pricing/deployment wizard in the first
+milestone.
