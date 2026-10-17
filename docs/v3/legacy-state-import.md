@@ -4,6 +4,30 @@ Read-only import of v2 legacy KV metadata into the portable builder SQLite
 checkpoint. Part of the #73 migration pipeline; **no cutover and no production
 write** — the published public store is never touched.
 
+## Export side
+
+The `kv-export.json` input is produced by the read-only Cloudflare export CLI
+(#73); it lists the legacy KV keys and reads their values through the Cloudflare
+API, writing only the local file:
+
+```bash
+pnpm exec tsx apps/node-jobs/src/cli/portable-legacy-export.ts \
+  --out kv-export.json [--account-id <id>] [--namespace-id <id>] [--prefix <p>] [--page-limit N] [--allow-empty]
+```
+
+- Credentials come from the documented operator env (`CLOUDFLARE_ACCOUNT_ID`,
+  `AIRING_CAL_KV_NAMESPACE_ID`, `CLOUDFLARE_API_TOKEN`) or the flags.
+- Endpoints (verified against the Cloudflare API reference 2026-10-17): key
+  listing `GET /accounts/{account_id}/storage/kv/namespaces/{namespace_id}/keys`
+  (paginated with `cursor`, `limit` 10..1000) and value reads
+  `POST .../namespaces/{namespace_id}/bulk/get` with `{keys, type: 'json'}`
+  (≤100 keys per request).
+- Defaults to the four migration prefixes (`subject:detail:`, `subject:meta:`,
+  `image:status:`, `subject:refresh:`); `--prefix` narrows the export.
+- An empty result fails the run unless `--allow-empty` is passed, so a wrong
+  namespace id cannot silently produce an empty migration input.
+- No Cloudflare write, no `public/` store access, exit `1` on usage/API errors.
+
 ```bash
 pnpm exec tsx apps/node-jobs/src/cli/portable-legacy-state-import.ts <kv-export.json> \
   --sqlite /data/builder.sqlite \
@@ -59,9 +83,11 @@ Restore a pre-import checkpoint backup
 or re-run against a fresh SQLite file. Because the public store is never written,
 no release pointer changes and v2 reads keep serving the current snapshot.
 
-## Still open (#73)
+## Pipeline status (#73)
 
-- The export side (real v2 KV/D1/R2 read-only client) is not in the repo; the
-  JSON export is produced by the operator today.
-- Shadow-equivalence streak persistence + the seven-day gate: [`shadow-gate.md`](./shadow-gate.md).
-- Cutover / rollback runbook execution (owner-approved, #73 DoD).
+1. **Export** (read-only Cloudflare KV → `kv-export.json`): `portable-legacy-export.ts`, see above.
+2. **Import** (KV export → builder SQLite `subject_media`): `portable-legacy-state-import.ts`, this document.
+3. **Shadow gate** (normalized legacy vs published snapshot, seven-match cutover gate): [`shadow-gate.md`](./shadow-gate.md).
+
+Still open: D1/R2 read-only export adapters (KV metadata is the only exported
+source today), and the owner-approved cutover / rollback runbook execution.
