@@ -12,6 +12,14 @@ docker compose -f deploy/v3/docker-compose.yml --profile scheduler up -d schedul
 docker compose -f deploy/v3/docker-compose.yml --profile sync run --rm sync
 ```
 
+Public store GC dry-run (snapshots + images plan):
+
+```bash
+docker compose -f deploy/v3/docker-compose.yml --profile gc run --rm gc
+```
+
+Destructive apply (operator-only): append `--apply` and/or `--apply-images` to the `tsx` command via `docker compose run --rm gc pnpm exec tsx apps/node-jobs/src/cli/portable-public-gc.ts --apply`.
+
 Checkpoint backup (manual, WAL-safe):
 
 ```bash
