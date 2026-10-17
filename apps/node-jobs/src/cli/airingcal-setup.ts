@@ -12,11 +12,14 @@ export const PORTABLE_SECRET_ENV_KEYS = [
   'AIRINGCAL_PRIMARY_USER_ID',
 ] as const
 
-/** Secrets/env an operator must supply per platform; the config file itself holds none of them. */
-export const PLATFORM_SECRET_ENV_KEYS: Record<AiringcalPlatform, readonly string[]> = {
+/**
+ * Secrets/env an operator must supply per supported platform; the config file
+ * itself holds none of them. `edgeone` is absent because setup fails closed
+ * there while the adapter is a stub.
+ */
+export const PLATFORM_SECRET_ENV_KEYS: Record<Exclude<AiringcalPlatform, 'edgeone'>, readonly string[]> = {
   portable: PORTABLE_SECRET_ENV_KEYS,
   cloudflare: [...PORTABLE_SECRET_ENV_KEYS, 'CLOUDFLARE_API_TOKEN'],
-  edgeone: PORTABLE_SECRET_ENV_KEYS,
 }
 
 export interface AiringcalSetupResult {
