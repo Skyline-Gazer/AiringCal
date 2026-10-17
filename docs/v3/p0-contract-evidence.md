@@ -96,6 +96,8 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Checkpoint rollback drill (backup → diverge → restore, state verified) | [`docs/v3/cutover-rollback.md`](./cutover-rollback.md) "Local drill" |
 | Cross-store read parity (filesystem vs R2 gateways byte-identical) | `packages/v3-read/src/read-gateway-parity.test.ts` |
 | `airingcal` config v1 YAML form (`airingcal.yaml` + JSON twin, same validation) | `docs/v3/airingcal-config.example.yaml`, `packages/v3-adapters/src/airingcal-config.ts` |
+| EdgeOne `PublicStore` over Makers Blob (read + read-back immutability; CAS unsupported) | `packages/v3-adapters/src/edgeone-public-store.ts`, `edgeone-public-store.test.ts` |
+| EdgeOne storage choice + semantics (KV unusable for path keys) | [`docs/v3/edgeone-store.md`](./edgeone-store.md) |
 | Platform-aware non-interactive setup (portable env / Cloudflare bindings / EdgeOne fail-closed) | `apps/node-jobs/src/cli/airingcal-setup.ts` |
 | `airingcal` config v1 JSON (portable env mapping) | `docs/v3/airingcal-config.example.json`, `packages/v3-adapters/src/airingcal-config.ts` |
 | Config → env emit CLI (#72 setup) | `apps/node-jobs/src/cli/airingcal-config-emit.ts` |

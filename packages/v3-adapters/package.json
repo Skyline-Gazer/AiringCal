@@ -8,6 +8,7 @@
     ".": "./src/index.ts",
     "./platform-id": "./src/platform-id.ts",
     "./cloudflare-r2-public-store": "./src/cloudflare-r2-public-store.ts",
+    "./edgeone-public-store": "./src/edgeone-public-store.ts",
     "./memory-r2-binding": "./src/memory-r2-binding.ts"
   },
   "scripts": {
