@@ -9,8 +9,11 @@ export {
 } from './canonical-json.ts'
 export {
   D1StateStore,
+  SUBJECT_MEDIA_COLUMNS,
   StaleCollectionDiffError,
   SyncRunCheckpointConflictError,
+  decodeSubjectMediaRow,
+  subjectMediaValues,
 } from './d1-state-store.ts'
 export {
   claimDailyBudgetReservation,

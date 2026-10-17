@@ -185,12 +185,17 @@ export interface LegacyStateImportCliArgs {
   resume: boolean
 }
 
+/** Strict positive decimal integer, so `0x10`/`1e2` style input is rejected instead of coerced. */
+function parsePositiveDecimal(value: string, label: string): number {
+  const trimmed = value.trim()
+  if (!/^\d+$/.test(trimmed)) throw new Error(`Invalid ${label}: ${value}`)
+  const parsed = Number(trimmed)
+  if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error(`Invalid ${label}: ${value}`)
+  return parsed
+}
+
 function parseSubjectIds(value: string): number[] {
-  const ids = value.split(',').map((part) => Number(part.trim()))
-  for (const id of ids) {
-    if (!Number.isSafeInteger(id) || id < 1) throw new Error(`Invalid subject id: ${value}`)
-  }
-  return ids
+  return value.split(',').map((part) => parsePositiveDecimal(part, 'subject id'))
 }
 
 export function parseLegacyStateImportArgs(argv: string[]): LegacyStateImportCliArgs {
@@ -209,7 +214,7 @@ export function parseLegacyStateImportArgs(argv: string[]): LegacyStateImportCli
       if (arg === '--sqlite') args.sqlitePath = value
       if (arg === '--snapshot') args.snapshotPath = value
       if (arg === '--subject-ids') args.subjectIds = parseSubjectIds(value)
-      if (arg === '--batch-size') args.batchSize = validateBatchSize(Number(value))
+      if (arg === '--batch-size') args.batchSize = validateBatchSize(parsePositiveDecimal(value, 'batch size'))
       continue
     }
     if (arg.startsWith('--')) throw new Error(`Unknown option: ${arg}`)
@@ -262,6 +267,9 @@ if (process.argv[1]?.endsWith('portable-legacy-state-import.ts')) {
           + result.summary.missing_keys + result.summary.errored,
         batches: result.batches.length,
         summary: result.summary,
+        ...(result.summary.errored > 0
+          ? { hint: 'errored subjects are not retried by --resume; re-run without --resume to retry them' }
+          : {}),
         cursor: result.cursor,
       }))
     } catch (error) {
