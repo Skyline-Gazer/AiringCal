@@ -80,6 +80,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Public snapshot GC dry-run (generation + pins) | `packages/v3-core/src/public-snapshot-gc.ts`, `apps/node-jobs/src/cli/portable-public-gc.ts` |
 | Read path manifest ↔ pointer verification | `packages/v3-read/src/load-public-snapshot.ts`, `load-public-snapshot.test.ts` |
 | Runtime adapter stubs (portable / CF / EdgeOne) | `packages/v3-adapters/src/` |
+| `airingcal` config v1 JSON (portable env mapping) | `docs/v3/airingcal-config.example.json`, `packages/v3-adapters/src/airingcal-config.ts` |
 
 ## Gaps (explicit unknowns for #72 / staging)
 

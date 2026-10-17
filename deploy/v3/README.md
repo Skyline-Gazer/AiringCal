@@ -21,4 +21,4 @@ docker compose -f deploy/v3/docker-compose.yml --profile sync run --rm \
 
 Data volume `airingcal-data` holds `/data/public` (immutable release + images), `/data/builder.sqlite`, and optional `/data/backups`.
 
-See also [`docs/v3/portable-read-gateway.md`](../../docs/v3/portable-read-gateway.md) and [`apps/node-jobs/docs/operator-contract.md`](../../apps/node-jobs/docs/operator-contract.md).
+See also [`docs/v3/portable-read-gateway.md`](../../docs/v3/portable-read-gateway.md), [`docs/v3/airingcal-config.example.json`](../../docs/v3/airingcal-config.example.json) (v1 portable config stub for #72 setup), and [`apps/node-jobs/docs/operator-contract.md`](../../apps/node-jobs/docs/operator-contract.md).
