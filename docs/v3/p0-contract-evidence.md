@@ -87,6 +87,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Config → env emit CLI (#72 setup) | `apps/node-jobs/src/cli/airingcal-config-emit.ts` |
 | Config validate + snapshot compare (#73 prep) | `airingcal-config-validate.ts`, `portable-snapshot-compare.ts` |
 | `airingcal setup` portable stub | `apps/node-jobs/src/cli/airingcal-setup.ts` |
+| CI v3 operator smoke (config + compose) | `.github/workflows/ci.yml` job `v3_operator_smoke` |
 
 ## Gaps (explicit unknowns for #72 / staging)
 

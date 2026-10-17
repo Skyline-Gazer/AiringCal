@@ -70,6 +70,28 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm ${{ matrix.task }}
 
+  v3_operator_smoke:
+    name: v3 operator smoke
+    needs: [validate]
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsx apps/node-jobs/src/cli/airingcal-config-validate.ts docs/v3/airingcal-config.example.json
+      - run: pnpm exec tsx apps/node-jobs/src/cli/airingcal-setup.ts docs/v3/airingcal-config.example.json
+      - run: pnpm exec tsx apps/node-jobs/src/cli/airingcal-config-emit.ts docs/v3/airingcal-config.example.json >/dev/null
+      - run: docker compose -f deploy/v3/docker-compose.yml config
+
   node-jobs-bundle:
     needs: [validate]
     if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
