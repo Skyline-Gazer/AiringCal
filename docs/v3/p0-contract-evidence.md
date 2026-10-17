@@ -71,6 +71,8 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Offline thumb v2 (portable builder, sharp) | `apps/node-jobs/src/sync/portable-thumb.ts` |
 | Portable read gateway (filesystem public store) | `packages/v3-read/src/portable-read-handler.ts`, `serve-node.ts` |
 | Portable static widget (`/`, `/src/*`) | `packages/v3-read/src/portable-static-handler.ts` |
+| Docker Compose portable stack | `deploy/v3/docker-compose.yml`, `deploy/v3/Dockerfile` |
+| Runtime adapter stubs (portable / CF / EdgeOne) | `packages/v3-adapters/src/` |
 
 ## Gaps (explicit unknowns for #72 / staging)
 

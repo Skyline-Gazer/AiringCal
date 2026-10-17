@@ -101,6 +101,16 @@ importers:
         specifier: ^26.4.0
         version: 26.4.0
 
+  packages/v3-adapters:
+    dependencies:
+      '@airing-cal/v3-core':
+        specifier: workspace:*
+        version: link:../v3-core
+    devDependencies:
+      '@types/node':
+        specifier: ^26.4.0
+        version: 26.4.0
+
   packages/v3-builder:
     dependencies:
       '@airing-cal/bgm-api':
