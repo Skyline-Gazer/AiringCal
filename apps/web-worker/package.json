@@ -13,12 +13,15 @@
   },
   "dependencies": {
     "@airing-cal/domain": "workspace:*",
-    "@airing-cal/v3-core": "workspace:*",
     "@airing-cal/storage": "workspace:*",
+    "@airing-cal/v3-core": "workspace:*",
     "@airing-cal/widget": "workspace:*",
     "@airing-cal/worker-common": "workspace:*"
   },
   "devDependencies": {
+    "@airing-cal/bgm-api": "workspace:*",
+    "@airing-cal/v3-builder": "workspace:*",
+    "@airing-cal/v3-read": "workspace:*",
     "@types/node": "^26.0.0"
   }
 }
