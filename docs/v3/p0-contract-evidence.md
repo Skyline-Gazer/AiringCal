@@ -87,6 +87,8 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Cloudflare R2 ETag CAS (`head.etag` unquoted vs `httpEtag` quoted; pointer CAS sends `httpEtag`) | `packages/v3-adapters/src/cloudflare-r2-public-store.ts`, `memory-r2-binding.ts` |
 | Cloudflare Workers read gateway (R2 PublicStore) | `packages/v3-read/src/cloudflare-read-handler.ts` |
 | v2 public export normalize (migration compare) | `apps/node-jobs/src/cli/portable-v2-public-normalize.ts` |
+| Read-only v2 legacy state import (KV export → SQLite, batch ≤50, cursor/resumable) | `apps/node-jobs/src/cli/portable-legacy-state-import.ts`, `packages/v3-builder/src/sqlite-subject-media.ts` |
+| Legacy import + rollback runbook (#73) | [`docs/v3/legacy-state-import.md`](./legacy-state-import.md) |
 | `airingcal` config v1 JSON (portable env mapping) | `docs/v3/airingcal-config.example.json`, `packages/v3-adapters/src/airingcal-config.ts` |
 | Config → env emit CLI (#72 setup) | `apps/node-jobs/src/cli/airingcal-config-emit.ts` |
 | Config validate + snapshot compare (#73 prep) | `airingcal-config-validate.ts`, `portable-snapshot-compare.ts` |
