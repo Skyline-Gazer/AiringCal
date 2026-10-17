@@ -1,4 +1,4 @@
-import { readdirSync, unlinkSync } from 'node:fs'
+import { readFileSync, readdirSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { FilesystemPublicStore, planPublicSnapshotGc } from '@airing-cal/v3-core'
 
@@ -26,6 +26,22 @@ function listSnapshotKeys(publicRoot: string): string[] {
     .map((name) => `snapshots/v1/${name}`)
 }
 
+function readPublishedAtUnixByKey(publicRoot: string, snapshotKeys: string[]): Map<string, number> {
+  const map = new Map<string, number>()
+  for (const key of snapshotKeys) {
+    try {
+      const raw = readFileSync(join(publicRoot, key), 'utf8')
+      const parsed = JSON.parse(raw) as { published_at?: unknown }
+      if (typeof parsed.published_at === 'number' && Number.isSafeInteger(parsed.published_at)) {
+        map.set(key, parsed.published_at)
+      }
+    } catch {
+      // ignore unreadable snapshots during planning
+    }
+  }
+  return map
+}
+
 function readPinnedRefs(env: Record<string, string | undefined>): Set<string> {
   const raw = env.AIRINGCAL_GC_PINNED?.trim()
   if (!raw) return new Set()
@@ -39,6 +55,7 @@ export async function runPortablePublicGc(
   const publicRoot = readPublicRoot(env)
   const store = new FilesystemPublicStore(publicRoot)
   const minGenerations = Number(env.AIRINGCAL_GC_MIN_GENERATIONS?.trim() || '5')
+  const minAgeDays = Number(env.AIRINGCAL_GC_MIN_AGE_DAYS?.trim() || '30')
   const snapshotKeys = listSnapshotKeys(publicRoot)
   const current = await store.getCurrentRelease()
   const plan = planPublicSnapshotGc({
@@ -46,6 +63,8 @@ export async function runPortablePublicGc(
     currentArtifactRef: current?.artifact_ref ?? null,
     pinnedArtifactRefs: readPinnedRefs(env),
     minGenerations,
+    minAgeDays,
+    publishedAtUnixByKey: readPublishedAtUnixByKey(publicRoot, snapshotKeys),
   })
   let applied = 0
   if (apply) {

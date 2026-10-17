@@ -28,3 +28,20 @@ test('planPublicSnapshotGc keeps current, pins, and newest N generations', () =>
   ])
   assert.deepEqual(plan.delete, ['snapshots/v1/3-ccc.json'])
 })
+
+test('planPublicSnapshotGc retains snapshots within minAgeDays', () => {
+  const now = 1_000_000
+  const plan = planPublicSnapshotGc({
+    snapshotKeys: keys,
+    currentArtifactRef: 'snapshots/v1/6-fff.json',
+    minGenerations: 1,
+    minAgeDays: 30,
+    nowUnix: now,
+    publishedAtUnixByKey: new Map([
+      ['snapshots/v1/1-aaa.json', now - 10 * 86_400],
+      ['snapshots/v1/2-bbb.json', now - 40 * 86_400],
+    ]),
+  })
+  assert.ok(plan.keep.includes('snapshots/v1/1-aaa.json'))
+  assert.ok(!plan.keep.includes('snapshots/v1/2-bbb.json'))
+})
