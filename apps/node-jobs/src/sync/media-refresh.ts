@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type { CompleteFullFetch } from '@airing-cal/bgm-api'
 import { imageRef, type SubjectImageMap } from '@airing-cal/domain'
 import type { SubjectMediaPublishHint } from '@airing-cal/v3-core'
+import { SUBJECT_MEDIA_COALESCE_UPSERT } from '@airing-cal/v3-builder'
 import type { CloudflareD1Client } from '../adapters/cloudflare-d1.ts'
 import type { R2Store } from '../adapters/r2-store.ts'
 import type { RunContext } from '../adapters/run-context.ts'
@@ -54,26 +55,6 @@ const SELECT_IMAGE_KEYS = 'SELECT subject_id, r2_image_common_key, r2_image_larg
 const COUNT_ACCOUNT_LARGES = `SELECT COUNT(*) AS cnt FROM subject_media
   WHERE r2_image_large_key IS NOT NULL AND trim(r2_image_large_key) != ''`
 
-const UPSERT_SUBJECT_MEDIA = `INSERT INTO subject_media (
-  subject_id, detail_json, detail_hash, media_hash, nsfw,
-  source_image_common_url, source_image_large_url,
-  r2_image_common_key, r2_image_large_key,
-  checked_at, next_refresh_at, retry_count, retry_after, error_code
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(subject_id) DO UPDATE SET
-  detail_json = COALESCE(excluded.detail_json, subject_media.detail_json),
-  detail_hash = COALESCE(excluded.detail_hash, subject_media.detail_hash),
-  media_hash = excluded.media_hash,
-  nsfw = excluded.nsfw,
-  source_image_common_url = excluded.source_image_common_url,
-  source_image_large_url = excluded.source_image_large_url,
-  r2_image_common_key = excluded.r2_image_common_key,
-  r2_image_large_key = excluded.r2_image_large_key,
-  checked_at = excluded.checked_at,
-  next_refresh_at = excluded.next_refresh_at,
-  retry_count = excluded.retry_count,
-  retry_after = excluded.retry_after,
-  error_code = excluded.error_code`
 
 type ImageSize = 'common' | 'large'
 
@@ -443,7 +424,7 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
         const nextRefreshAt = failed
           ? nowSec
           : nowSec + 6 * DAY_SECONDS + (subject.subjectId * 997 % SUCCESS_SPREAD_SECONDS)
-        await deps.db.query(UPSERT_SUBJECT_MEDIA, [
+        await deps.db.query(SUBJECT_MEDIA_COALESCE_UPSERT, [
           subject.subjectId,
           null,
           null,

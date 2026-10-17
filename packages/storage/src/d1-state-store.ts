@@ -46,7 +46,8 @@ const COLLECTION_COLUMNS = [
 
 const COLLECTION_SELECT = `SELECT ${COLLECTION_COLUMNS.join(', ')} FROM collection_items ORDER BY user_id, subject_id`
 const COLLECTION_SELECT_ONE = `SELECT ${COLLECTION_COLUMNS.join(', ')} FROM collection_items WHERE user_id = ? AND subject_id = ?`
-const SUBJECT_MEDIA_COLUMNS = [
+/** Column order shared by the D1 store and the builder-SQLite legacy import helper. */
+export const SUBJECT_MEDIA_COLUMNS = [
   'subject_id',
   'detail_json',
   'detail_hash',
@@ -352,7 +353,8 @@ function decodeCollectionRow(raw: Record<string, unknown>): CollectionRow {
   }
 }
 
-function decodeSubjectMediaRow(raw: Record<string, unknown>): SubjectMediaRow {
+/** Strict decoder for a `subject_media` row; shared by D1 and the builder SQLite store. */
+export function decodeSubjectMediaRow(raw: Record<string, unknown>): SubjectMediaRow {
   const nsfw = requireInteger(raw.nsfw, 'nsfw')
   if (nsfw !== 0 && nsfw !== 1) throw new Error('Invalid subject_media.nsfw')
   const detailJson = nullableString(raw.detail_json, 'detail_json')
@@ -377,7 +379,8 @@ function decodeSubjectMediaRow(raw: Record<string, unknown>): SubjectMediaRow {
   }
 }
 
-function subjectMediaValues(row: SubjectMediaRow): unknown[] {
+/** SQL parameter list for {@link SUBJECT_MEDIA_COLUMNS}, in column order. */
+export function subjectMediaValues(row: SubjectMediaRow): unknown[] {
   return SUBJECT_MEDIA_COLUMNS.map((column) => row[column])
 }
 

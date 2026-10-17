@@ -101,6 +101,8 @@ Portable non-secret env from v1 JSON config (secrets such as `BGM_TOKEN` stay in
 
 Read-only snapshot equivalence (migration smoke, #73 prep): `tsx apps/node-jobs/src/cli/portable-snapshot-compare.ts <left.json> <right.json>` (exit 2 on diff). Normalize v2 R2 snapshot or legacy KV export before compare: `tsx apps/node-jobs/src/cli/portable-v2-public-normalize.ts <public.json> [hydrated.json]`.
 
+Read-only v2 legacy state import (#73): `tsx apps/node-jobs/src/cli/portable-legacy-state-import.ts <kv-export.json> --sqlite <path> [--snapshot <PublicSnapshotV1.json>|--subject-ids <ids>] [--batch-size N] [--resume]`. Writes `subject_media` rows and the migration cursor/summary into the builder SQLite only (never the public store); ≤50 subjects per batch, idempotent, resumable via `--resume`. See [`docs/v3/legacy-state-import.md`](../../../docs/v3/legacy-state-import.md).
+
 Public snapshot GC (snapshot JSON only, not images): `tsx apps/node-jobs/src/cli/portable-public-gc.ts` (default dry-run; pass `--apply` to delete). Optional `AIRINGCAL_GC_MIN_GENERATIONS` (default `5`), `AIRINGCAL_GC_MIN_AGE_DAYS` (default `30`, uses snapshot `published_at`), `AIRINGCAL_GC_PINNED` (comma-separated artifact refs). Image GC uses current snapshot refs; optional `AIRINGCAL_GC_PINNED_IMAGES` (comma-separated content hashes). CLI: default dry-run for snapshots and images; `--apply` deletes snapshot JSON only; `--apply-images` deletes unreferenced `images/{hash}/` trees (can combine with `--apply`). `AIRINGCAL_GC_LOG_AFTER_PUBLISH=true` logs a dry-run plan after successful portable publish (Compose default on scheduler/sync).
 
 ## Required env (sync)
