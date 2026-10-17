@@ -1,5 +1,10 @@
 import { canonicalJson } from '@airing-cal/storage'
-import { PUBLIC_RELEASE_POINTER_KEY } from '@airing-cal/v3-core/public-pointer'
+import {
+  PUBLIC_RELEASE_POINTER_KEY,
+  bytesEqual,
+  parsePublicReleasePointer,
+  releasePointersMatch,
+} from '@airing-cal/v3-core/public-pointer'
 import type { PublicReleasePointer, PublicStore } from '@airing-cal/v3-core/ports'
 
 export interface CloudflareR2ObjectBody {
@@ -33,34 +38,10 @@ export interface CloudflareR2BucketBinding {
   ): Promise<unknown>
 }
 
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  return a.byteLength === b.byteLength && a.every((byte, index) => byte === b[index])
-}
-
 function assertSafeObjectKey(key: string): void {
   if (key.includes('\0') || key.startsWith('/') || key.includes('\\') || key.split('/').includes('..')) {
     throw new Error(`Unsafe public store object key: ${key}`)
   }
-}
-
-function parsePointer(raw: string): PublicReleasePointer {
-  const value = JSON.parse(raw) as PublicReleasePointer
-  if (
-    value.schema_version !== 1
-    || !Number.isSafeInteger(value.generation)
-    || typeof value.content_hash !== 'string'
-    || typeof value.artifact_ref !== 'string'
-    || !Number.isSafeInteger(value.published_at_unix)
-  ) {
-    throw new Error('Invalid public release pointer object')
-  }
-  return value
-}
-
-function pointerMatches(a: PublicReleasePointer | null, b: PublicReleasePointer | null): boolean {
-  if (a === null && b === null) return true
-  if (a === null || b === null) return false
-  return a.content_hash === b.content_hash && a.generation === b.generation
 }
 
 export class CloudflareR2PublicStore implements PublicStore {
@@ -74,7 +55,7 @@ export class CloudflareR2PublicStore implements PublicStore {
     const object = await this.bucket.get(this.pointerKey)
     if (!object) return null
     const raw = new TextDecoder().decode(new Uint8Array(await object.arrayBuffer()))
-    return parsePointer(raw)
+    return parsePublicReleasePointer(raw)
   }
 
   async getSnapshotBytes(artifactRef: string): Promise<Uint8Array | null> {
@@ -106,7 +87,7 @@ export class CloudflareR2PublicStore implements PublicStore {
   ): Promise<'committed' | 'conflict' | 'unsupported'> {
     assertSafeObjectKey(this.pointerKey)
     const current = await this.getCurrentRelease()
-    if (!pointerMatches(expected, current)) return 'conflict'
+    if (!releasePointersMatch(expected, current)) return 'conflict'
 
     const head = await this.bucket.head(this.pointerKey)
     const body = `${canonicalJson(next)}\n`
@@ -127,14 +108,21 @@ export class CloudflareR2PublicStore implements PublicStore {
 
     try {
       await this.bucket.put(this.pointerKey, body, putOptions)
-    } catch {
+    } catch (error) {
+      // The pointer read-back is the authoritative outcome, so a transient put
+      // failure lands on 'conflict' (fail closed) like a real CAS loss; log the
+      // cause so the two are still distinguishable in Worker logs.
+      console.warn(
+        `R2 pointer put failed for ${this.pointerKey}; verifying pointer state`,
+        error instanceof Error ? error.message : error,
+      )
       const after = await this.getCurrentRelease()
-      if (pointerMatches(next, after)) return 'committed'
+      if (releasePointersMatch(next, after)) return 'committed'
       return 'conflict'
     }
 
     const after = await this.getCurrentRelease()
-    if (!pointerMatches(next, after)) return 'conflict'
+    if (!releasePointersMatch(next, after)) return 'conflict'
     return 'committed'
   }
 }

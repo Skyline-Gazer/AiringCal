@@ -33,6 +33,8 @@ bucket_name = "airing-cal-public"
 `CloudflareR2BucketBinding` requires only `get`, `head`, `put`; the real
 `R2Bucket` binding satisfies it.
 
+Pointer validation and CAS identity (`parsePublicReleasePointer`, `releasePointersMatch`, `bytesEqual`) live in `@airing-cal/v3-core/public-pointer` and are shared by the filesystem and R2 stores.
+
 Measured against the wrangler local R2 emulation (workerd/miniflare, probe run
 2026-10-17):
 
@@ -68,6 +70,8 @@ assert the HTTP surface → tear down. Expected final line:
 ```
 
 CI runs this in the `v3_operator_smoke` job.
+
+`V3_READ_SMOKE_PORT` overrides the dev-server port (default `8799`); the seed step asserts `wrangler.toml` declares the bucket it writes to.
 
 ## Real-cloudflare staging checklist (owner, manual)
 

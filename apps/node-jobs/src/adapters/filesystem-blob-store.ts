@@ -1,10 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import type { R2Store } from './r2-store.ts'
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  return a.byteLength === b.byteLength && a.every((byte, index) => byte === b[index])
-}
+import { bytesEqual } from '@airing-cal/v3-core/public-pointer'
 
 function resolveObjectPath(rootDir: string, key: string): string {
   if (key.includes('\0') || key.startsWith('/') || key.includes('\\') || key.split('/').includes('..')) {

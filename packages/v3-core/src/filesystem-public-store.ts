@@ -2,31 +2,12 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { canonicalJson } from '@airing-cal/storage'
 import type { PublicReleasePointer, PublicStore } from './ports.ts'
-import { PUBLIC_RELEASE_POINTER_KEY } from './public-pointer.ts'
-
-function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
-  return a.byteLength === b.byteLength && a.every((byte, index) => byte === b[index])
-}
-
-function parsePointer(raw: string): PublicReleasePointer {
-  const value = JSON.parse(raw) as PublicReleasePointer
-  if (
-    value.schema_version !== 1
-    || !Number.isSafeInteger(value.generation)
-    || typeof value.content_hash !== 'string'
-    || typeof value.artifact_ref !== 'string'
-    || !Number.isSafeInteger(value.published_at_unix)
-  ) {
-    throw new Error('Invalid public release pointer file')
-  }
-  return value
-}
-
-function pointerMatches(a: PublicReleasePointer | null, b: PublicReleasePointer | null): boolean {
-  if (a === null && b === null) return true
-  if (a === null || b === null) return false
-  return a.content_hash === b.content_hash && a.generation === b.generation
-}
+import {
+  PUBLIC_RELEASE_POINTER_KEY,
+  bytesEqual,
+  parsePublicReleasePointer,
+  releasePointersMatch,
+} from './public-pointer.ts'
 
 export class FilesystemPublicStore implements PublicStore {
   constructor(readonly rootDir: string) {}
@@ -47,7 +28,7 @@ export class FilesystemPublicStore implements PublicStore {
     const path = this.resolveObjectPath(PUBLIC_RELEASE_POINTER_KEY)
     try {
       const raw = await readFile(path, 'utf8')
-      return parsePointer(raw)
+      return parsePublicReleasePointer(raw)
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
         return null
@@ -90,7 +71,7 @@ export class FilesystemPublicStore implements PublicStore {
     next: PublicReleasePointer,
   ): Promise<'committed' | 'conflict' | 'unsupported'> {
     const current = await this.getCurrentRelease()
-    if (!pointerMatches(expected, current)) return 'conflict'
+    if (!releasePointersMatch(expected, current)) return 'conflict'
 
     const path = this.resolveObjectPath(PUBLIC_RELEASE_POINTER_KEY)
     await mkdir(dirname(path), { recursive: true })
@@ -100,7 +81,7 @@ export class FilesystemPublicStore implements PublicStore {
       await rename(tempPath, path)
     } catch (error) {
       const after = await this.getCurrentRelease()
-      if (pointerMatches(next, after)) return 'committed'
+      if (releasePointersMatch(next, after)) return 'committed'
       return 'conflict'
     }
     return 'committed'

@@ -24,8 +24,11 @@ pnpm install
 pnpm -F @airing-cal/v3-read-worker dev          # wrangler dev -l
 pnpm -F @airing-cal/v3-read-worker test
 pnpm -F @airing-cal/v3-read-worker smoke        # publish fixture → seed local R2 → assert HTTP surface
+
 pnpm -F @airing-cal/v3-read-worker build:check  # wrangler deploy --dry-run (bundle must stay node-free)
 ```
+
+`V3_READ_SMOKE_PORT` overrides the smoke's dev-server port (default `8799`).
 
 The smoke seeds a local R2 emulation with `wrangler r2 object put --local` and
 asserts `/api/version`, `/api/health`, `/api/collections`, `/api/calendar`,

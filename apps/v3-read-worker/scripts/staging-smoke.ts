@@ -93,11 +93,18 @@ async function stopWorker(child: ChildProcess): Promise<void> {
   const exited = Promise.withResolvers<void>()
   child.once('exit', () => exited.resolve())
   child.kill('SIGTERM')
-  await Promise.race([exited.promise, delay(5_000)])
-  if (child.exitCode === null) child.kill('SIGKILL')
+  const stopped = await Promise.race([exited.promise.then(() => true), delay(5_000).then(() => false)])
+  if (!stopped) {
+    child.kill('SIGKILL')
+    await exited.promise
+  }
 }
 
 function seedBucket(): void {
+  const configToml = readFileSync(join(REPO_ROOT, CONFIG), 'utf8')
+  if (!configToml.includes(`bucket_name = "${BUCKET}"`)) {
+    throw new Error(`${CONFIG} does not declare bucket_name = "${BUCKET}"; keep the smoke seed target in sync`)
+  }
   const seedFile = join(workDir, 'seed-image.bin')
   writeFileSync(seedFile, 'smoke-image-bytes')
   const objects = [
