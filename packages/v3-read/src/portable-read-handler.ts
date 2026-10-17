@@ -7,6 +7,7 @@ import {
 import { V2_CACHE_CONTROL } from '@airing-cal/v3-core/read-contract'
 import type { PublicStore } from '@airing-cal/v3-core'
 import { loadVerifiedPublicSnapshot } from './load-public-snapshot.ts'
+import { resolveRuntimeAdapterFromEnv } from '@airing-cal/v3-adapters'
 import { readPortableCronStatus } from './portable-builder-cron.ts'
 
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
@@ -20,6 +21,15 @@ export interface PortableReadEnv {
 }
 
 class InvalidQueryError extends Error {}
+
+function readPlatformId(processEnv?: Record<string, string | undefined>): string | undefined {
+  if (!processEnv) return undefined
+  try {
+    return resolveRuntimeAdapterFromEnv(processEnv).platform_id
+  } catch {
+    return processEnv.AIRINGCAL_PLATFORM?.trim() || undefined
+  }
+}
 
 function json(data: unknown, init?: ResponseInit): Response {
   return Response.json(data, {
@@ -184,10 +194,12 @@ export async function handlePortableReadRequest(
       return json({ nsfw: env.nsfwShow !== false }, { headers: { 'Cache-Control': V2_CACHE_CONTROL.config } })
     }
     if (path === '/version') {
+      const platform = readPlatformId(env.processEnv)
       return json({
         app: 'airingcal',
         read: 'portable',
         package: env.packageVersion ?? '0.0.0',
+        ...(platform ? { platform } : {}),
       }, { headers: { 'Cache-Control': V2_CACHE_CONTROL.version } })
     }
     const loaded = await loadVerifiedPublicSnapshot(env.publicStore)

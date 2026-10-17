@@ -54,6 +54,19 @@ test('handlePortableReadRequest serves collections with v2 cache headers', async
   assert.equal(body.limit, 24)
 })
 
+test('handlePortableReadRequest /version includes platform when env set', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'airingcal-read-version-'))
+  const publicStore = new FilesystemPublicStore(root)
+  const response = await handlePortableReadRequest(new Request('https://local/api/version'), {
+    publicStore,
+    processEnv: { AIRINGCAL_PLATFORM: 'portable' },
+  })
+  assert.equal(response.status, 200)
+  const body = await response.json() as { platform?: string; read: string }
+  assert.equal(body.read, 'portable')
+  assert.equal(body.platform, 'portable')
+})
+
 test('handlePortableReadRequest /health reports compose-scheduler cron from SQLite', async () => {
   const root = mkdtempSync(join(tmpdir(), 'airingcal-read-health-'))
   const sqlitePath = join(root, 'builder.sqlite')
