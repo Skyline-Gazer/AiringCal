@@ -10,6 +10,8 @@ import { noopMediaRefresh } from './media-port.ts'
 import {
   createSubjectMediaRefresh,
   loadSubjectImageMap,
+  MEDIA_IMAGE_FAILED_EXHAUSTED,
+  mediaRetryDelaySeconds,
   mediaSubjectsFromFetch,
 } from './media-refresh.ts'
 import { runSyncPipeline } from './pipeline.ts'
@@ -332,4 +334,56 @@ test('runSyncPipeline publishes cached image refs and bumps generation', async (
   assert.equal(item?.images.common?.uri, `/image/${sha256(COMMON_BYTES)}`)
   assert.equal(item?.image_status.common, 'cached')
   assert.equal(item?.image_status.large, 'cached')
+})
+
+test('media retry is bounded: exponential backoff then a 30-day cooldown', async () => {
+  const store = new MemoryR2()
+  const db = new MemoryD1()
+  const refresh = createSubjectMediaRefresh({
+    db,
+    store,
+    fetchImage: async () => new Response('bad', { status: 500 }),
+  })
+  const subjects = mediaSubjectsFromFetch(fetchInput(collection(120224, { common: COMMON_URL, large: LARGE_URL })))
+  const logs: string[] = []
+  const originalLog = console.log
+  console.log = (...args: unknown[]) => {
+    logs.push(args.map((value) => (typeof value === 'string' ? value : JSON.stringify(value))).join(' '))
+  }
+  try {
+    // Retry delays grow 6h → 12h → 24h → 48h → 96h, so each run needs a later clock.
+    const runAt = async (iso: string) => refresh.refresh(
+      { ...createRunContext({ runId: `run-${iso}`, deadlineAt: Date.now() + 60_000 }), observedAt: iso },
+      { subjects },
+    )
+    const attempts = [
+      '2023-11-14T00:00:00.000Z',
+      '2023-11-14T06:00:01.000Z',
+      '2023-11-14T18:00:02.000Z',
+      '2023-11-15T18:00:03.000Z',
+      '2023-11-17T18:00:04.000Z',
+    ]
+    const results = []
+    for (const iso of attempts) results.push(await runAt(iso))
+
+    assert.deepEqual(results.map((result) => result.selected), [1, 1, 1, 1, 1])
+    assert.equal(results.at(-1)?.failures[0]?.error_code, MEDIA_IMAGE_FAILED_EXHAUSTED)
+    assert.ok(logs.some((line) => line.includes('"stage":"media_failed_exhausted"') && line.includes('"retry_limit":5')))
+
+    // After exhaustion the subject is parked for 30 days: an immediate re-run selects nothing.
+    const parked = await refresh.refresh(
+      { ...createRunContext({ runId: 'run-parked', deadlineAt: Date.now() + 60_000 }), observedAt: '2023-11-22T18:00:06.000Z' },
+      { subjects },
+    )
+    assert.equal(parked.selected, 0, 'exhausted retries must not run on every sync')
+  } finally {
+    console.log = originalLog
+  }
+})
+
+test('mediaRetryDelaySeconds caps at seven days', () => {
+  assert.equal(mediaRetryDelaySeconds(1), 6 * 3_600)
+  assert.equal(mediaRetryDelaySeconds(2), 12 * 3_600)
+  assert.equal(mediaRetryDelaySeconds(3), 24 * 3_600)
+  assert.equal(mediaRetryDelaySeconds(10), 7 * 86_400)
 })
