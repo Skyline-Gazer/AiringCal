@@ -97,6 +97,8 @@ See [`deploy/v3/env.example`](../../../deploy/v3/env.example) and [`deploy/v3/RE
 
 Long-running scheduler: `tsx apps/node-jobs/src/cli/portable-scheduler.ts`. One-shot checkpoint backup: `tsx apps/node-jobs/src/cli/portable-checkpoint-backup.ts`. Restore: `tsx apps/node-jobs/src/cli/portable-checkpoint-restore.ts <backup.sqlite>` (add `--force` to overwrite an existing file).
 
+Cutover + rollback runbook (#73, owner-approved, never executed by CI): [`docs/v3/cutover-rollback.md`](../../../docs/v3/cutover-rollback.md) — preconditions (shadow gate 0, import complete, fresh checkpoint backup), cutover commands, rollback via checkpoint restore + re-publish, and the executed local rollback drill.
+
 Portable non-secret env from v1 JSON config (secrets such as `BGM_TOKEN` stay in `.env`): `tsx apps/node-jobs/src/cli/airingcal-config-emit.ts docs/v3/airingcal-config.example.json`. Validate: `tsx apps/node-jobs/src/cli/airingcal-config-validate.ts <path>`. Portable setup stub: `tsx apps/node-jobs/src/cli/airingcal-setup.ts <path> [--emit-env]`. See [`docs/v3/airingcal-config.example.json`](../../../docs/v3/airingcal-config.example.json).
 
 Read-only snapshot equivalence (migration smoke, #73 prep): `tsx apps/node-jobs/src/cli/portable-snapshot-compare.ts <left.json> <right.json>` (exit 2 on diff). Normalize v2 R2 snapshot or legacy KV export before compare: `tsx apps/node-jobs/src/cli/portable-v2-public-normalize.ts <public.json> [hydrated.json]`.
