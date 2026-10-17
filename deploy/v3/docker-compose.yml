@@ -1,0 +1,50 @@
+# Portable v3 stack: filesystem public store + SQLite builder (no Cloudflare).
+# Copy deploy/v3/env.example → deploy/v3/.env and fill secrets before up.
+
+services:
+  web:
+    build:
+      context: ../..
+      dockerfile: deploy/v3/Dockerfile
+    command:
+      - pnpm
+      - exec
+      - tsx
+      - packages/v3-read/src/serve-node.ts
+    ports:
+      - "${AIRINGCAL_WEB_PORT:-8787}:8787"
+    environment:
+      PORT: "8787"
+      AIRINGCAL_PUBLIC_READ_DIR: /data/public
+      NSFW_SHOW: ${NSFW_SHOW:-false}
+      BANGUMI_GIT_COMMIT_SHA: ${BANGUMI_GIT_COMMIT_SHA:-dev}
+    volumes:
+      - airingcal-data:/data
+    restart: unless-stopped
+
+  sync:
+    profiles: ["sync"]
+    build:
+      context: ../..
+      dockerfile: deploy/v3/Dockerfile
+    command:
+      - pnpm
+      - exec
+      - tsx
+      - apps/node-jobs/src/cli/sync-main.ts
+    environment:
+      AIRINGCAL_BUILDER: portable
+      AIRINGCAL_BUILDER_SQLITE_PATH: /data/builder.sqlite
+      AIRINGCAL_BUILDER_PUBLIC_DIR: /data/public
+      AIRINGCAL_BUILDER_MEDIA_REFRESH: ${AIRINGCAL_BUILDER_MEDIA_REFRESH:-refresh}
+      AIRINGCAL_BUILDER_PUBLISH: ${AIRINGCAL_BUILDER_PUBLISH:-true}
+      AIRINGCAL_BUILDER_MODE: ${AIRINGCAL_BUILDER_MODE:-incremental}
+      AIRINGCAL_USERS_JSON: ${AIRINGCAL_USERS_JSON}
+      AIRINGCAL_PRIMARY_USER_ID: ${AIRINGCAL_PRIMARY_USER_ID}
+      BANGUMI_GIT_COMMIT_SHA: ${BANGUMI_GIT_COMMIT_SHA:-dev}
+      BGM_TOKEN: ${BGM_TOKEN}
+    volumes:
+      - airingcal-data:/data
+
+volumes:
+  airingcal-data:

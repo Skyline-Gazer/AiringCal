@@ -125,3 +125,4 @@ apps/*/wrangler.deploy.toml
 reasonix.toml
 
 packages/worker/dist-check/
+deploy/v3/.env

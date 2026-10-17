@@ -82,6 +82,10 @@ Portable sync **does not** read Cloudflare R2/D1/KV or call Worker `AIRINGCAL_TH
 
 Cloudflare variables are **not** read on the portable path.
 
+### QingLong / Docker portable template
+
+See [`deploy/v3/env.example`](../../../deploy/v3/env.example) and [`deploy/v3/README.md`](../../../deploy/v3/README.md). Minimum: `AIRINGCAL_BUILDER=portable`, `AIRINGCAL_BUILDER_SQLITE_PATH`, `AIRINGCAL_BUILDER_PUBLIC_DIR`, `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `BGM_TOKEN`, `BANGUMI_GIT_COMMIT_SHA`.
+
 ## Required env (sync)
 
 See [`../env.example`](../env.example). Summary:
