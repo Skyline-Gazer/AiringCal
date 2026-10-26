@@ -48,6 +48,11 @@ Code entry points: `apps/v3-read-worker` (CF), `packages/v3-{core,builder,read,a
 
 ## Plans (`docs/plans/`)
 
+> **Write origin: CNB** (`KoolingMachine/AiringCal`). GitHub is Issues +
+> release-only mirror. See
+> [`adr-0002-cnb-primary-migration.md`](plans/adr-0002-cnb-primary-migration.md)
+> BEFORE pushing branches or opening PRs.
+
 | File | Purpose |
 | --- | --- |
 | `phase-0-web-worker.md` | Single read Worker |

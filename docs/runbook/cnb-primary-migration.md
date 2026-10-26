@@ -46,7 +46,9 @@ cnb pulls post-pull --repo KoolingMachine/AiringCal \
 2. CNB tag `v<semver>` on the merged `main` commit (needs `repo-release:r`
    OWNER_ACTION if not yet granted).
 3. GitHub publication — executed by the OWNER (or delegated agent after
-   approval); pick one option, never both:
+   approval). **Option A is the active path** (no new permissions needed);
+   **Option B is design-only** until the owner reviews and approves the
+   dedicated release identity.
 
 ### Option A — release-candidate PR (no new permissions)
 
@@ -103,7 +105,10 @@ Nothing in migration rewrites history on either platform.
    path and needs no new permissions; Option B (exact-mirror App) remains
    design-only until owner review/approval.
 
-## M4 retirement audit (2026-10-26, pre-cutover snapshot)
+## M4 retirement audit (point-in-time snapshot 2026-10-26, pre-cutover)
+
+> Re-verify every figure below at actual M4 execution time (run counts and
+> timestamps change); this table is the audit *checklist*, not live data.
 
 | Item | State | Action at retirement |
 | --- | --- | --- |
