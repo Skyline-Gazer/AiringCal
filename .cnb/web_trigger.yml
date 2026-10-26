@@ -1,4 +1,3 @@
-
 branch:
   - reg: '^chore/cnb-sync-pilot$'
     buttons:
