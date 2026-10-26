@@ -7,11 +7,13 @@ dev:
         tags: cnb:arch:amd64
         cpus: 2
       docker:
-        image: node:24
+        image: node:24.10
       stages:
         - name: Install pnpm
           script:
-            - npm i -g pnpm@9.15.9
+            - corepack enable
+            - corepack prepare pnpm@9.15.9 --activate
+            - pnpm --version   # must print 9.15.9 (package.json packageManager)
         - name: Install dependencies
           script:
             - pnpm install --frozen-lockfile

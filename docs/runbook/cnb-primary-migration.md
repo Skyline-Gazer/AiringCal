@@ -51,8 +51,15 @@ cnb pulls post-pull --repo KoolingMachine/AiringCal \
 ### Option A — release-candidate PR (no new permissions)
 
 ```sh
-# 1. Fast-forward GitHub release-candidate to exact CNB main SHA.
+# 0. Prerequisite: cnb remote configured (see Daily development above).
+# 1. Point GitHub release-candidate at the exact CNB main SHA.
+#    release-candidate is a DISPOSABLE branch; deleting a stale one is part
+#    of the flow (a stale branch makes the re-create a non-fast-forward).
 git fetch cnb main
+OLD_RC=$(git ls-remote origin refs/heads/release-candidate | cut -f1)
+if [ -n "$OLD_RC" ]; then
+  git push origin ":refs/heads/release-candidate"   # delete stale branch
+fi
 git push origin refs/remotes/cnb/main:refs/heads/release-candidate
 # 2. Open GitHub PR release-candidate -> main; owner merges.
 # 3. MANDATORY SHA gate — read back and compare (explicit object, no drift):
@@ -92,13 +99,15 @@ Nothing in migration rewrites history on either platform.
    before M2 merge gating is enforced server-side.
 2. `repo-release:r` — CNB tag listing/creation blocked (403). Needed for
    release flow and tag parity verification.
-3. GitHub release identity (ADR Option B) — design only until owner review.
+3. GitHub release identity: Option A (release-candidate PR) is the ACTIVE
+   path and needs no new permissions; Option B (exact-mirror App) remains
+   design-only until owner review/approval.
 
 ## M4 retirement audit (2026-10-26, pre-cutover snapshot)
 
 | Item | State | Action at retirement |
 | --- | --- | --- |
-| `CNB Mirror Pilot` workflow | active on `chore/cnb-sync-pilot` only (trigger: push to that branch); last run 2026-10-26T04:34Z; 895 total runs | disable workflow after M2 acceptance + parity freeze; branch retained as evidence |
+| `CNB Mirror Pilot` workflow | active on `chore/cnb-sync-pilot` only (trigger: push to that branch); last run 2026-10-26T04:34Z; 895 total runs. Location: `.github/workflows/cnb-sync-pilot.yml` on branch `chore/cnb-sync-pilot` — NOT in the `dev` workflow tree; verify with `git show chore/cnb-sync-pilot:.github/workflows/cnb-sync-pilot.yml` | disable workflow after M2 acceptance + parity freeze; branch retained as evidence |
 | `CNB_SYNC_TOKEN` (GitHub Actions secret) | used ONLY by `cnb-sync-pilot.yml` (grep-verified across all workflows) | revoke via owner after workflow disabled; verify zero runs for 7 days before revocation |
 | `CLOUDFLARE_*` secrets | used by `ci.yml` (dev push deploy) + bootstrap/sizing | NOT touched by migration; production contract unchanged |
 | OCR advisory workflow | already `disabled_manually` | unchanged |
