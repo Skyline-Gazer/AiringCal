@@ -22,6 +22,10 @@ Operational companion to `adr-0002-cnb-primary-migration.md`.
 
 ## Daily development (CNB-native)
 
+> Until `repo-manage:rw` is granted and CNB `dev`/`main` protections are
+> configured (Known permission gaps #1), CNB `dev` has NO server-side merge
+> gate: owner review is manual only. Never enable auto-merge.
+
 Prerequisite (one-time per clone):
 
 ```sh
@@ -64,16 +68,25 @@ if [ -n "$OLD_RC" ]; then
 fi
 git push origin refs/remotes/cnb/main:refs/heads/release-candidate
 # 2. Open GitHub PR release-candidate -> main; owner merges.
+#    GitHub PR MUST be merged with **Rebase and merge** (or fast-forward).
+#    A merge commit is NOT acceptable — it guarantees SHA divergence from
+#    canonical CNB main. Note: the GitHub PR will run required checks from
+#    ci.yml (pull_request trigger under the protect-dev-main ruleset).
 # 3. MANDATORY SHA gate — read back and compare (explicit object, no drift):
 CNB_MAIN=$(git rev-parse refs/remotes/cnb/main)
 GH_MAIN=$(git ls-remote origin refs/heads/main | cut -f1)
-[ "$CNB_MAIN" = "$GH_MAIN" ] || { echo "DRIFT: $CNB_MAIN != $GH_MAIN"; exit 1; }
-# If SHAs match: create an ANNOTATED tag on that exact object (annotated
-# tags are the repo convention; use the same kind on CNB side) and push it.
-git tag -a "v<semver>" "$CNB_MAIN" -m "release v<semver> from CNB main"
-git push origin "refs/tags/v<semver>"
-# If the gate failed: record drift in this runbook, DO NOT create the tag,
-# STOP publication, reconcile per ADR drift procedure.
+SEMVER=x.y.z   # set the real version here, e.g. SEMVER=3.0.1
+if [ "$CNB_MAIN" != "$GH_MAIN" ]; then
+  echo "DRIFT: CNB main $CNB_MAIN != GitHub main $GH_MAIN"
+  echo "GitHub main now contains a merge commit or unrelated history."
+  echo "Disposition: register GitHub main as a RE-SYNCED MIRROR (ADR drift"
+  echo "procedure), reconcile ancestry proof, then STOP — do not tag."
+  exit 1
+fi
+# Gate passed: create an ANNOTATED tag on that exact object (annotated tags
+# are the repo convention; use the same kind on the CNB side), then push.
+git tag -a "v${SEMVER}" "$CNB_MAIN" -m "release v${SEMVER} from CNB main"
+git push origin "refs/tags/v${SEMVER}"
 ```
 
 ### Option B — trusted release publisher (exact mirror; needs owner setup)
