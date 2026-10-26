@@ -13,6 +13,7 @@
             - node --version
             - git rev-parse HEAD
 
+dev:
   pull_request:
     - name: AiringCal Automatic AI Review
       runner:
@@ -35,6 +36,5 @@
               Review only the changed code.
               Focus on correctness, security, concurrency,
               credential handling, and Git synchronization.
-              Verify findings against existing tests and behavior.
-              Avoid speculative claims and style-only suggestions.
-              Do not modify code or request automatic merging.
+              Verify findings against actual behavior.
+              Do not modify code or merge PRs.
