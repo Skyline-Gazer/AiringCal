@@ -54,3 +54,22 @@ Nothing in migration rewrites history on either platform.
 2. `repo-release:r` — CNB tag listing/creation blocked (403). Needed for
    release flow and tag parity verification.
 3. GitHub release identity (ADR Option B) — design only until owner review.
+
+## M4 retirement audit (2026-10-26, pre-cutover snapshot)
+
+| Item | State | Action at retirement |
+| --- | --- | --- |
+| `CNB Mirror Pilot` workflow | active on `chore/cnb-sync-pilot` only (trigger: push to that branch); last run 2026-10-26T04:34Z; 895 total runs | disable workflow after M2 acceptance + parity freeze; branch retained as evidence |
+| `CNB_SYNC_TOKEN` (GitHub Actions secret) | used ONLY by `cnb-sync-pilot.yml` (grep-verified across all workflows) | revoke via owner after workflow disabled; verify zero runs for 7 days before revocation |
+| `CLOUDFLARE_*` secrets | used by `ci.yml` (dev push deploy) + bootstrap/sizing | NOT touched by migration; production contract unchanged |
+| OCR advisory workflow | already `disabled_manually` | unchanged |
+| Old `airingcal-control` writeback prototype | local-only (`~/Desktop/Projects/airingcal-control`, 3 commits, 15/15 fixture tests), NOT deployed to CNB control repo (push rejected by its own protection rules — preserved state) | keep as historical evidence; do NOT deploy (superseded design, #134/#137 Not Planned) |
+| CNB PRs #1/#2 | open, preserved | archive evidence, never merge |
+
+## Rollback drill (reversible path)
+
+1. GitHub `dev`/`main` SHAs unchanged by migration (verified: `72ebdcf4` / `a4b3b082`).
+2. To resume GitHub-primary: push branches to `origin` as before; re-enable
+   pilot workflow if CNB mirroring still needed.
+3. No force-push or history rewrite occurred on either platform (CNB `main`
+   was an empty-repo addition, not an overwrite).
