@@ -1,0 +1,35 @@
+name: CNB Mirror Pilot
+
+on:
+  push:
+    branches:
+      - chore/cnb-sync-pilot
+    paths:
+      - .github/workflows/cnb-sync-pilot.yml
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync GitHub dev to CNB dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout GitHub dev
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Sync to CNB
+        uses: docker://tencentcom/git-sync
+        env:
+          PLUGIN_TARGET_URL: https://cnb.cool/KoolingMachine/AiringCal.git
+          PLUGIN_AUTH_TYPE: https
+          PLUGIN_USERNAME: cnb
+          PLUGIN_PASSWORD: ${{ secrets.CNB_SYNC_TOKEN }}
+          PLUGIN_BRANCH: dev
+          PLUGIN_FORCE: "false"
