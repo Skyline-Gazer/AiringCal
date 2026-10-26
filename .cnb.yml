@@ -1,0 +1,30 @@
+# CNB-native CI for AiringCal (Issue #139 M2).
+# Runs on every PR targeting dev: typecheck + tests + build:check on the
+# free tier (2 CPU / 4 GiB, event-driven — no polling).
+# The AI review pipeline stays on the pilot branch config shape
+# (dev: pull_request) and is advisory-only; no auto-merge anywhere.
+
+dev:
+  pull_request:
+    - name: PR Validate (typecheck / test / build:check)
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      docker:
+        image: node:24
+      stages:
+        - name: Install pnpm
+          script:
+            - npm i -g pnpm@9.15.9
+        - name: Install dependencies
+          script:
+            - pnpm install --frozen-lockfile
+        - name: Typecheck
+          script:
+            - pnpm typecheck
+        - name: Tests
+          script:
+            - pnpm test
+        - name: Build check
+          script:
+            - pnpm build:check
