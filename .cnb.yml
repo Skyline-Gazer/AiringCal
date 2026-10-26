@@ -42,7 +42,7 @@ dev:
             min_severity: warning
             min_confidence: high
             exclude_categories: "style,nit"
-            max_turns: 15
+            max_turns: 30
             context_window: 200k
             timeout_minutes: 10
             rules: |
