@@ -1,22 +1,32 @@
+
 name: CNB Mirror Pilot
+
+# GitHub is the source of truth.
+# This workflow only mirrors the isolated pilot branch to CNB.
 
 on:
   push:
     branches:
       - chore/cnb-sync-pilot
-    paths:
-      - .github/workflows/cnb-sync-pilot.yml
-      - .cnb.yml
-      - .cnb/web_trigger.yml
 
 permissions:
   contents: read
+
+# Serialize pushes to the same destination branch.
+# Do not interrupt a Git push already in progress.
+concurrency:
+  group: cnb-sync-pilot-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   sync:
     name: Sync GitHub pilot branch to CNB
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
+    env:
+      SYNC_BRANCH: chore/cnb-sync-pilot
+      SYNC_REPO: ${{ github.repository }}
 
     steps:
       - name: Checkout GitHub pilot branch
@@ -26,6 +36,38 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Verify branch and reject stale checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          current_branch="$(git symbolic-ref --quiet --short HEAD || true)"
+          local_sha="$(git rev-parse HEAD)"
+          local_branch_sha="$(git rev-parse --verify "refs/heads/${SYNC_BRANCH}" || true)"
+
+          if [ "$current_branch" != "$SYNC_BRANCH" ] \
+            || [ -z "$local_branch_sha" ] \
+            || [ "$local_sha" != "$local_branch_sha" ]; then
+            echo "::error::Invalid local branch or detached HEAD"
+            exit 1
+          fi
+
+          remote_sha="$(
+            git ls-remote \
+              "https://github.com/${SYNC_REPO}.git" \
+              "refs/heads/${SYNC_BRANCH}" | cut -f1
+          )"
+
+          if [ -z "$remote_sha" ] || [ "$local_sha" != "$remote_sha" ]; then
+            echo "::error::Stale or missing GitHub branch; refusing to sync"
+            echo "local=$local_sha"
+            echo "remote=$remote_sha"
+            exit 1
+          fi
+
+          echo "GitHub branch verified: $SYNC_BRANCH"
+          echo "Commit SHA: $local_sha"
+
       - name: Sync to CNB
         uses: docker://tencentcom/git-sync
         env:
@@ -34,4 +76,4 @@ jobs:
           PLUGIN_USERNAME: cnb
           PLUGIN_PASSWORD: ${{ secrets.CNB_SYNC_TOKEN }}
           PLUGIN_BRANCH: chore/cnb-sync-pilot
-          PLUGIN_FORCE: "false"
+          PLUGIN_FORCE: ""
