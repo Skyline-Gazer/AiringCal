@@ -28,3 +28,29 @@ dev:
         - name: Build check
           script:
             - pnpm build:check
+
+    # Advisory AI review (proven config from pilot, PR #1 evidence).
+    # Read-only: comment-only, no code modification, no auto-merge.
+    - name: AiringCal Automatic AI Review
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      stages:
+        - name: Code Review
+          image: cnbcool/code-review:latest
+          settings:
+            comment: true
+            review_event: comment
+            max_comments: 5
+            min_severity: warning
+            min_confidence: high
+            exclude_categories: "style,nit"
+            max_turns: 15
+            context_window: 200k
+            timeout_minutes: 10
+            rules: |
+              Review only the changed code.
+              Focus on correctness, security, concurrency,
+              credential handling, and Git synchronization.
+              Verify findings against actual behavior.
+              Do not modify code or merge PRs.
