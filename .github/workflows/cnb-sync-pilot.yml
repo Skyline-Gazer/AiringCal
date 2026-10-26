@@ -6,21 +6,23 @@ on:
       - chore/cnb-sync-pilot
     paths:
       - .github/workflows/cnb-sync-pilot.yml
+      - .cnb.yml
+      - .cnb/web_trigger.yml
 
 permissions:
   contents: read
 
 jobs:
   sync:
-    name: Sync GitHub dev to CNB dev
+    name: Sync GitHub pilot branch to CNB
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
     steps:
-      - name: Checkout GitHub dev
+      - name: Checkout GitHub pilot branch
         uses: actions/checkout@v4
         with:
-          ref: dev
+          ref: chore/cnb-sync-pilot
           fetch-depth: 0
           persist-credentials: false
 
@@ -31,5 +33,5 @@ jobs:
           PLUGIN_AUTH_TYPE: https
           PLUGIN_USERNAME: cnb
           PLUGIN_PASSWORD: ${{ secrets.CNB_SYNC_TOKEN }}
-          PLUGIN_BRANCH: dev
+          PLUGIN_BRANCH: chore/cnb-sync-pilot
           PLUGIN_FORCE: "false"
