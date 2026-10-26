@@ -22,6 +22,13 @@ Operational companion to `adr-0002-cnb-primary-migration.md`.
 
 ## Daily development (CNB-native)
 
+Prerequisite (one-time per clone):
+
+```sh
+git remote add cnb https://cnb.cool/KoolingMachine/AiringCal.git
+git remote -v   # verify: origin = GitHub (read/reference), cnb = CNB (write origin)
+```
+
 ```sh
 git fetch cnb dev && git checkout -b feat/<topic> refs/remotes/cnb/dev
 # work, commit...
@@ -48,13 +55,14 @@ cnb pulls post-pull --repo KoolingMachine/AiringCal \
 git fetch cnb main
 git push origin refs/remotes/cnb/main:refs/heads/release-candidate
 # 2. Open GitHub PR release-candidate -> main; owner merges.
-# 3. MANDATORY SHA gate — read back and compare:
-git ls-remote origin refs/heads/main        # GitHub main SHA
-git ls-remote cnb  refs/heads/main          # CNB main SHA (canonical)
-# If SHAs differ: record drift in this runbook, DO NOT create the tag,
+# 3. MANDATORY SHA gate — read back and compare (explicit object, no drift):
+CNB_MAIN=$(git rev-parse refs/remotes/cnb/main)
+GH_MAIN=$(git ls-remote origin refs/heads/main | cut -f1)
+[ "$CNB_MAIN" = "$GH_MAIN" ] || { echo "DRIFT: $CNB_MAIN != $GH_MAIN"; exit 1; }
+# If SHAs match: create the tag on that exact object and push it.
+git push origin "$CNB_MAIN:refs/tags/v<semver>"
+# If the gate failed: record drift in this runbook, DO NOT create the tag,
 # STOP publication, reconcile per ADR drift procedure.
-# If SHAs are identical: proceed to tag.
-git push origin "refs/tags/v<semver>"       # tag on the same commit
 ```
 
 ### Option B — trusted release publisher (exact mirror; needs owner setup)

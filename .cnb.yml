@@ -1,5 +1,4 @@
 # AI review is advisory-only: comment-only, never auto-merge.
-# Free tier: 2 CPU pipelines, event-driven PR triggers (no polling).
 
 dev:
   pull_request:
