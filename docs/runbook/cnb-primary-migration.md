@@ -28,17 +28,48 @@ git fetch cnb dev && git checkout -b feat/<topic> refs/remotes/cnb/dev
 git push cnb HEAD:refs/heads/feat/<topic>
 cnb pulls post-pull --repo KoolingMachine/AiringCal \
   --base dev --head feat/<topic> --title '...' --body '...'
-# AI review runs automatically on CNB PR (pilot config on dev)
+# AI review runs automatically on CNB PR (.cnb.yml on dev, advisory-only)
 # NPC fix: comment @CodeBuddy on the PR; bounded, no GitHub credentials
 # tests: CI pipeline on PR; owner reviews + merges (no auto-merge)
 ```
 
 ## Release (requires separate owner authorization)
 
-1. CNB PR `dev` → `main`; owner review + merge.
-2. CNB tag `v<semver>` on the merged `main` commit.
-3. GitHub publication per ADR §"GitHub release-only publication" — Option A
-   or B; requires its own explicit owner approval.
+1. CNB PR `dev` → `main`; owner review + merge (no auto-merge).
+2. CNB tag `v<semver>` on the merged `main` commit (needs `repo-release:r`
+   OWNER_ACTION if not yet granted).
+3. GitHub publication — executed by the OWNER (or delegated agent after
+   approval); pick one option, never both:
+
+### Option A — release-candidate PR (no new permissions)
+
+```sh
+# 1. Fast-forward GitHub release-candidate to exact CNB main SHA.
+git fetch cnb main
+git push origin refs/remotes/cnb/main:refs/heads/release-candidate
+# 2. Open GitHub PR release-candidate -> main; owner merges.
+# 3. MANDATORY SHA gate — read back and compare:
+git ls-remote origin refs/heads/main        # GitHub main SHA
+git ls-remote cnb  refs/heads/main          # CNB main SHA (canonical)
+# If SHAs differ: record drift in this runbook, DO NOT create the tag,
+# STOP publication, reconcile per ADR drift procedure.
+# If SHAs are identical: proceed to tag.
+git push origin "refs/tags/v<semver>"       # tag on the same commit
+```
+
+### Option B — trusted release publisher (exact mirror; needs owner setup)
+
+Owner installs a dedicated GitHub App (contents:write, this repo only) with
+a narrowly scoped `main` Ruleset bypass for fast-forward pushes only. The
+publisher job: verifies CNB `main` is a descendant of GitHub `main`, refuses
+non-fast-forward/unknown target history, never force-pushes, publishes tags
+only after `main` SHA parity read-back, rejects tag rewrites/deletions,
+never runs untrusted PR code, holds credentials separate from NPC/AI jobs.
+Activation is a separate owner approval after design review (ADR §release).
+
+Either option: if the SHA gate fails, stop, document drift, reconcile before
+any tag publication. GitHub `main` must never silently diverge from CNB
+`main`.
 
 ## Rollback
 

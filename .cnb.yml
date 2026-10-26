@@ -1,8 +1,5 @@
-# CNB-native CI for AiringCal (Issue #139 M2).
-# Runs on every PR targeting dev: typecheck + tests + build:check on the
-# free tier (2 CPU / 4 GiB, event-driven — no polling).
-# The AI review pipeline stays on the pilot branch config shape
-# (dev: pull_request) and is advisory-only; no auto-merge anywhere.
+# AI review is advisory-only: comment-only, never auto-merge.
+# Free tier: 2 CPU pipelines, event-driven PR triggers (no polling).
 
 dev:
   pull_request:
