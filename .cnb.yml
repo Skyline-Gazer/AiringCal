@@ -1,0 +1,14 @@
+"chore/cnb-sync-pilot":
+  web_trigger_pilot:
+    - name: AiringCal CNB Initial Smoke
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      docker:
+        image: node:24
+      stages:
+        - name: Verify Environment
+          script:
+            - echo "AiringCal CNB pilot started"
+            - node --version
+            - git rev-parse HEAD
