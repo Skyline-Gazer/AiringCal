@@ -1,0 +1,8 @@
+
+branch:
+  - reg: '^chore/cnb-sync-pilot$'
+    buttons:
+      - name: Run AiringCal CNB Smoke
+        description: Verify Node.js and Git commit SHA
+        event: web_trigger_pilot
+        isDefault: true
