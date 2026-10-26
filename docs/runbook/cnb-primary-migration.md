@@ -68,8 +68,10 @@ git push origin refs/remotes/cnb/main:refs/heads/release-candidate
 CNB_MAIN=$(git rev-parse refs/remotes/cnb/main)
 GH_MAIN=$(git ls-remote origin refs/heads/main | cut -f1)
 [ "$CNB_MAIN" = "$GH_MAIN" ] || { echo "DRIFT: $CNB_MAIN != $GH_MAIN"; exit 1; }
-# If SHAs match: create the tag on that exact object and push it.
-git push origin "$CNB_MAIN:refs/tags/v<semver>"
+# If SHAs match: create an ANNOTATED tag on that exact object (annotated
+# tags are the repo convention; use the same kind on CNB side) and push it.
+git tag -a "v<semver>" "$CNB_MAIN" -m "release v<semver> from CNB main"
+git push origin "refs/tags/v<semver>"
 # If the gate failed: record drift in this runbook, DO NOT create the tag,
 # STOP publication, reconcile per ADR drift procedure.
 ```

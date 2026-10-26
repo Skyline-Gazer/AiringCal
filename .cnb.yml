@@ -5,7 +5,7 @@ dev:
         tags: cnb:arch:amd64
         cpus: 2
       docker:
-        image: node:24.10
+        image: node:24  # single source of Node version, matches .github/workflows/ci.yml node-version
       stages:
         - name: Install pnpm
           script:
