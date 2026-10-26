@@ -72,9 +72,12 @@ git push origin refs/remotes/cnb/main:refs/heads/release-candidate
 #    A merge commit is NOT acceptable — it guarantees SHA divergence from
 #    canonical CNB main. Note: the GitHub PR will run required checks from
 #    ci.yml (pull_request trigger under the protect-dev-main ruleset).
-# 3. MANDATORY SHA gate — read back and compare (explicit object, no drift):
-CNB_MAIN=$(git rev-parse refs/remotes/cnb/main)
+# 3. MANDATORY SHA gate — BOTH sides read live from remotes (no stale
+#    local remote-tracking refs), SHAs printed as publication evidence:
+CNB_MAIN=$(git ls-remote cnb refs/heads/main | cut -f1)
 GH_MAIN=$(git ls-remote origin refs/heads/main | cut -f1)
+echo "CNB_MAIN=$CNB_MAIN"
+echo "GH_MAIN=$GH_MAIN"
 SEMVER=x.y.z   # set the real version here, e.g. SEMVER=3.0.1
 if [ "$CNB_MAIN" != "$GH_MAIN" ]; then
   echo "DRIFT: CNB main $CNB_MAIN != GitHub main $GH_MAIN"
@@ -103,11 +106,25 @@ Either option: if the SHA gate fails, stop, document drift, reconcile before
 any tag publication. GitHub `main` must never silently diverge from CNB
 `main`.
 
-## Rollback
+## Rollback (drill-ready)
 
-Restore GitHub as write origin: `git push origin <branch>` from local
-history; pilot sync workflow still on `chore/cnb-sync-pilot` until M4.
-Nothing in migration rewrites history on either platform.
+Preconditions preserved by this migration: GitHub `dev`/`main` SHAs are
+unchanged (`72ebdcf4` / `a4b3b082`); nothing on either platform was
+force-pushed or history-rewritten (CNB `main` was an empty-repo addition).
+
+If CNB becomes unusable as write origin:
+
+1. Freeze CNB writes; note the last CNB `dev` SHA (`git ls-remote cnb dev`).
+2. Re-anchor GitHub: fetch CNB objects into a local clone
+   (`git fetch cnb '+refs/heads/*:refs/cnb/*'`), then recreate GitHub
+   branches explicitly from verified CNB SHAs
+   (`git push origin refs/cnb/dev:refs/heads/dev` etc.). If the CNB `dev`
+   SHA is a strict descendant of GitHub `dev`, this is a fast-forward; if
+   not, stop and reconcile — never force-push.
+3. Pilot sync workflow (`chore/cnb-sync-pilot` branch) and `CNB_SYNC_TOKEN`
+   remain available until M4 completes; re-enable if GitHub→CNB mirroring
+   is still required during the transition.
+4. Record the rollback decision + SHAs in this runbook and issue #139.
 
 ## Known permission gaps (OWNER_ACTION, one-time)
 
@@ -133,11 +150,3 @@ Nothing in migration rewrites history on either platform.
 | OCR advisory workflow | already `disabled_manually` | unchanged |
 | Old `airingcal-control` writeback prototype | local-only (`~/Desktop/Projects/airingcal-control`, 3 commits, 15/15 fixture tests), NOT deployed to CNB control repo (push rejected by its own protection rules — preserved state) | keep as historical evidence; do NOT deploy (superseded design, #134/#137 Not Planned) |
 | CNB PRs #1/#2 | open, preserved | archive evidence, never merge |
-
-## Rollback drill (reversible path)
-
-1. GitHub `dev`/`main` SHAs unchanged by migration (verified: `72ebdcf4` / `a4b3b082`).
-2. To resume GitHub-primary: push branches to `origin` as before; re-enable
-   pilot workflow if CNB mirroring still needed.
-3. No force-push or history rewrite occurred on either platform (CNB `main`
-   was an empty-repo addition, not an overwrite).
