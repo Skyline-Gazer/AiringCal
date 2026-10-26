@@ -12,3 +12,29 @@
             - echo "AiringCal CNB pilot started"
             - node --version
             - git rev-parse HEAD
+
+  pull_request:
+    - name: AiringCal Automatic AI Review
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      stages:
+        - name: Code Review
+          image: cnbcool/code-review:latest
+          settings:
+            comment: true
+            review_event: comment
+            max_comments: 5
+            min_severity: warning
+            min_confidence: high
+            exclude_categories: "style,nit"
+            max_turns: 15
+            context_window: 200k
+            timeout_minutes: 10
+            rules: |
+              Review only the changed code.
+              Focus on correctness, security, concurrency,
+              credential handling, and Git synchronization.
+              Verify findings against existing tests and behavior.
+              Avoid speculative claims and style-only suggestions.
+              Do not modify code or request automatic merging.
