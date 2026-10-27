@@ -2,6 +2,7 @@
 change: adopt-d1-r2-incremental-sync
 design-doc: docs/superpowers/specs/2026-07-22-free-plan-d1-r2-incremental-sync-design.md
 base-ref: 913362307b04f2eec7152084344eb3a8027274ad
+archived-with: 2026-10-27-adopt-d1-r2-incremental-sync
 ---
 
 # AiringCal D1/R2 增量同步 Implementation Plan
@@ -47,6 +48,7 @@ base-ref: 913362307b04f2eec7152084344eb3a8027274ad
 - `apps/media-worker/src/d1-media-state.ts`：D1 媒体权威状态与 compare-before-write。
 - `apps/*/wrangler.toml`、`.github/workflows/deploy.yml`：bindings 与 migration-before-upload。
 
+archived-with: 2026-10-27-adopt-d1-r2-incremental-sync
 ---
 
 ### Task 1: 两阶段发布的资源 bootstrap/resolve 兼容层
@@ -194,6 +196,7 @@ git push
 
 Expected: task 1.3 is checked only after production evidence exists; Task 2 may now begin.
 
+archived-with: 2026-10-27-adopt-d1-r2-incremental-sync
 ---
 
 ### Task 2: D1 migration 与 typed state contracts
@@ -299,6 +302,7 @@ git commit -m "feat: define D1 authoritative state schema"
 git push
 ```
 
+archived-with: 2026-10-27-adopt-d1-r2-incremental-sync
 ---
 
 ### Task 3: 规范 JSON、业务 hash 与公开契约
@@ -365,6 +369,7 @@ git commit -m "feat: add canonical D1 and snapshot contracts"
 git push
 ```
 
+archived-with: 2026-10-27-adopt-d1-r2-incremental-sync
 ---
 
 ### Task 4: 收藏内存 diff 与两次缺失确认
@@ -434,6 +439,7 @@ git commit -m "feat: plan incremental collection changes"
 git push
 ```
 
+archived-with: 2026-10-27-adopt-d1-r2-incremental-sync
 ---
 
 ### Task 5: Typed D1 adapter 与零写收藏提交
@@ -487,6 +493,7 @@ git commit -m "feat: persist incremental state in D1"
 git push
 ```
 
+archived-with: 2026-10-27-adopt-d1-r2-incremental-sync
 ---
 
 ### Task 6: D1 原子 QoS reservation 与七日冷热调度
@@ -538,6 +545,7 @@ git commit -m "feat: reserve media work atomically in D1"
 git push
 ```
 
+archived-with: 2026-10-27-adopt-d1-r2-incremental-sync
 ---
 
 ### Task 7: D1 增量 Workflow orchestration
@@ -590,6 +598,7 @@ git commit -m "feat: run daily incremental D1 sync"
 git push
 ```
 
+archived-with: 2026-10-27-adopt-d1-r2-incremental-sync
 ---
 
 ### Task 8: Media Worker 的 D1 权威状态
@@ -631,6 +640,7 @@ git commit -m "feat: persist media state in D1"
 git push
 ```
 
+archived-with: 2026-10-27-adopt-d1-r2-incremental-sync
 ---
 
 ### Task 9: 不可变 R2 与 pointer-last 发布
@@ -688,6 +698,7 @@ git commit -m "feat: publish immutable R2 snapshots pointer last"
 git push
 ```
 
+archived-with: 2026-10-27-adopt-d1-r2-incremental-sync
 ---
 
 ### Task 10: Bindings、migration-before-upload 与 dry-run 门禁
@@ -791,6 +802,7 @@ git commit -m "feat: bind D1 and data R2 after migrations"
 git push
 ```
 
+archived-with: 2026-10-27-adopt-d1-r2-incremental-sync
 ---
 
 ### Task 11: 文档、回滚与全仓约束同步
@@ -836,6 +848,7 @@ git commit -m "docs: document D1 R2 shadow architecture"
 git push
 ```
 
+archived-with: 2026-10-27-adopt-d1-r2-incremental-sync
 ---
 
 ### Task 12: 完整验证、生产 migration 与 shadow release

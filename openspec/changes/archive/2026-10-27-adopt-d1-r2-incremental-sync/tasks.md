@@ -37,4 +37,4 @@ review.
 ## 6. Verification and Shadow Release
 
 - [x] 6.1 Run package and full repository gates plus Wrangler dry-runs with materialized test IDs
-- [ ] 6.2 Deploy D1/R2 core in shadow publication mode, verify resource metrics and commit/push each task atomically
+- [x] 6.2 Deploy D1/R2 core in shadow publication mode, verify resource metrics and commit/push each task atomically — 生产事实收口（2026-10-27）：R2 shadow 发布 2026-07-31 起运行（见 `docs/superpowers/reports/2026-07-22-adopt-d1-r2-incremental-sync-verify.md` 的 production metrics），连续 shadow 一致后 workflow 于 2026-10-12 自动 cutover（`read-mode=r2`，`public:current` gen 15 校验通过），shadow 阶段已被生产 cutover 取代；远程 D1/R2 资源与 bindings 经 wrangler 实测验证（D1 `airing-cal-state` 551 collection rows、data R2 pointer 可读、web-worker build:check 物化通过）
