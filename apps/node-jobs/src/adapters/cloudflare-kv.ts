@@ -5,6 +5,7 @@ import type { RunContext } from './run-context.ts'
 export interface CloudflareKvClient {
   putJson(key: string, value: unknown): Promise<void>
   getJson(key: string): Promise<unknown | null>
+  delete(key: string): Promise<void>
 }
 
 export function createCloudflareKvClient(config: NodeJobsConfig, run: RunContext, timeoutMs = 20_000): CloudflareKvClient {
@@ -15,7 +16,7 @@ export function createCloudflareKvClient(config: NodeJobsConfig, run: RunContext
     'Content-Type': 'application/json',
   }
 
-  async function call(method: 'GET' | 'PUT', key: string, body?: string): Promise<Response> {
+  async function call(method: 'GET' | 'PUT' | 'DELETE', key: string, body?: string): Promise<Response> {
     run.guard(timeoutMs + 1000)
     const encoded = encodeURIComponent(key)
     return fetch(`${base}/${encoded}`, {
@@ -27,6 +28,14 @@ export function createCloudflareKvClient(config: NodeJobsConfig, run: RunContext
   }
 
   return {
+    async delete(key) {
+      const response = await call('DELETE', key)
+      if (!response.ok && response.status !== 404) {
+        await response.body?.cancel()
+        fail('KV_REQUEST_FAILED', response.status)
+      }
+      await response.body?.cancel()
+    },
     async putJson(key, value) {
       const response = await call('PUT', key, JSON.stringify(value))
       if (!response.ok) {

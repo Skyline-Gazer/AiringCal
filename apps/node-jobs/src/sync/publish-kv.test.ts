@@ -17,6 +17,10 @@ class MemoryKv implements CloudflareKvClient {
   async getJson(key: string): Promise<unknown | null> {
     return this.store.get(key) ?? null
   }
+
+  async delete(key: string): Promise<void> {
+    this.store.delete(key)
+  }
 }
 
 test('publishPublicReadKv writes read mode and pointer', async () => {
