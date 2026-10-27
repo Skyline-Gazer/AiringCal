@@ -36,5 +36,5 @@ review.
 
 ## 6. Verification and Shadow Release
 
-- [ ] 6.1 Run package and full repository gates plus Wrangler dry-runs with materialized test IDs
+- [x] 6.1 Run package and full repository gates plus Wrangler dry-runs with materialized test IDs
 - [ ] 6.2 Deploy D1/R2 core in shadow publication mode, verify resource metrics and commit/push each task atomically
