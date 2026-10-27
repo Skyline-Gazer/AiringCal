@@ -1,6 +1,8 @@
 # ADR 0002 — CNB-Primary Migration (source of truth, CI, release mirror)
 
-- Status: Accepted (owner-approved, 2026-10-26, Issue #139)
+- Status: **Superseded in part (2026-10-27)** — CNB-primary write model was
+  never activated; see [Amendment](#amendment-2026-10-27-github-primary).
+  Accepted as written 2026-10-26 (Issue #139).
 - Supersedes: bidirectional sync designs in #134 / #137 (both closed, Not Planned)
 - Scope: AiringCal ONLY. Never generalized to ADS or other projects.
 
@@ -94,3 +96,32 @@ audit completes. No history force-push on either platform at any point.
 - GitHub release identity: not yet created (Option B pending owner review).
 - `CNB_SYNC_TOKEN` (GitHub Actions): retired at M4 after audit.
 - NPC/AI jobs: never receive GitHub write credentials of any kind.
+
+## Amendment (2026-10-27): GitHub-primary
+
+Post-acceptance review found the CNB-primary write model was never activated:
+
+| ADR expectation | Observed reality (2026-10-27) |
+| --- | --- |
+| M0: ADR + runbook merged to CNB `dev` via PR | All post-ADR work (#139 rounds, #140–#142) landed on **GitHub** `dev` via GitHub PRs; CNB `dev` still at the ADR baseline `72ebdcf4` with zero new commits |
+| CNB is write origin | GitHub `dev` is 21+ commits ahead and is the de-facto write origin; CNB never received them |
+| M2 lifecycle E2E on CNB | Never run |
+
+**Decision (owner-approved, 2026-10-27):**
+
+- **GitHub remains the sole write origin** for dev, PRs, CI and production
+  deploys. The `protect-dev-main` Ruleset (PR required, no bypass) stays.
+- CNB is demoted to **inactive mirror/standby** — no routine sync, no CI
+  responsibility. The imported CNB `dev`/`main` (`72ebdcf4` / `a4b3b082`)
+  are preserved as historical M1 evidence, not advanced.
+- M0/M2 are recorded as **not executed**; M1 remains valid as an import
+  exercise. The M3 release publication design below stays dormant until a
+  release actually needs it.
+- M4 is **activated early**: `CNB_SYNC_TOKEN` is retired from GitHub
+  Actions secrets; `chore/cnb-sync-pilot` / `cnb-autofix/review-pilot-1`
+  remain on CNB as preserved pilot evidence (no GitHub-side workflow
+  references them).
+- Consequence: ADR 0002's operational value is the **review record and the
+  M3 publication design**; the platform migration itself did not happen and
+  is not currently planned. Re-evaluate only if GitHub availability or
+  Ruleset limits become a real constraint.
