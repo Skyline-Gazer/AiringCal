@@ -17,6 +17,6 @@ verification_report: docs/superpowers/reports/2026-07-31-migrate-public-reads-fr
 branch_status: handled
 created_at: 2026-07-22
 verified_at: 2026-10-27
-archived: false
+archived: true
 handoff_context: openspec/changes/migrate-public-reads-from-kv/.comet/handoff/design-context.json
 handoff_hash: 0fd2dd5a85f7568ad6a4cf64b42b355cd0cac532edda8b210f200d17b8e6f41d
