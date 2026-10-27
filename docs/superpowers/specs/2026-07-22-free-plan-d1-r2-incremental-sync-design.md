@@ -2,6 +2,8 @@
 comet_change: adopt-d1-r2-incremental-sync
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-10-27-adopt-d1-r2-incremental-sync
+status: final
 ---
 
 # AiringCal D1/R2 增量同步技术设计
