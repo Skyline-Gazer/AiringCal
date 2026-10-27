@@ -469,3 +469,22 @@ Fresh GREEN evidence:
 
 The public Read Worker remains on legacy KV until the
 `migrate-public-reads-from-kv` change completes its cutover gates.
+
+## 6.1/6.2 production closure (2026-10-27)
+
+OpenSpec 6.1/6.2 的生产验收不再以 shadow 形态完成，而是被生产 cutover 取代：
+
+- 6.1：full gates + wrangler dry-runs 于 2026-10-27 通过（typecheck/test 0 fail
+  四个包 + scripts 25；build:check 物化 D1 + data R2 bindings）。commit `e2d9ef5f`。
+- 6.2：R2 shadow 发布 2026-07-31 起在生产运行（本报告上文的 production
+  metrics：三 Worker bundle 体积、D1 表、sync 运行记录）；连续 shadow 一致后
+  workflow 门禁于 2026-10-12 09:29 UTC 自动 cutover ——
+  `migrate:read-mode`（D1 权威）与 `public:read-mode`（KV 镜像）均为 `r2`，
+  `public:current` gen 15（`snapshots/v1/15-cd324e81….json`）schema/generation/
+  hash 校验通过，公开 API 由 R2 路径服务。远程资源实测：D1 `airing-cal-state`
+  551 collection rows、`public:verified` pointer 可读、`thumb_backfill:cursor`
+  活跃。shadow 阶段语义（旧 pointer 存活、零变化零发布）已由生产 cutover
+  长期验证。
+- 运维警示（非本 change 范围）：QingLong 写 cron 自 2026-10-16 12:00 UTC
+  后无运行记录（gen 15 为最后一次发布）；恢复动作见
+  `QINGLONG-REPO docs/usage/airingcal-sync.md`。
