@@ -142,6 +142,13 @@ If CNB becomes unusable as write origin:
 > Re-verify every figure below at actual M4 execution time (run counts and
 > timestamps change); this table is the audit *checklist*, not live data.
 
+**M4 EXECUTED 2026-10-27** (per ADR 0002 Amendment — GitHub-primary):
+`CNB_SYNC_TOKEN` deleted from GitHub Actions secrets (remaining:
+`CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` only); `CNB Mirror Pilot`
+workflow disabled via API (`state: disabled_manually`, last run
+2026-10-26T04:34Z success — zero runs since token deletion);
+`chore/cnb-sync-pilot` branch preserved on both platforms as evidence.
+
 | Item | State | Action at retirement |
 | --- | --- | --- |
 | `CNB Mirror Pilot` workflow | active on `chore/cnb-sync-pilot` only (trigger: push to that branch); last run 2026-10-26T04:34Z; 895 total runs. Location: `.github/workflows/cnb-sync-pilot.yml` on branch `chore/cnb-sync-pilot` — NOT in the `dev` workflow tree; verify with `git show chore/cnb-sync-pilot:.github/workflows/cnb-sync-pilot.yml` | disable workflow after M2 acceptance + parity freeze; branch retained as evidence |
