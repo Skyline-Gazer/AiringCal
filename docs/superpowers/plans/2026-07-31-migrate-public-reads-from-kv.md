@@ -2,6 +2,7 @@
 change: migrate-public-reads-from-kv
 design-doc: docs/superpowers/specs/2026-07-31-migrate-public-reads-from-kv-design.md
 base-ref: 003da78af1fec87726460b6bd406f0c01b0deb91
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 # migrate-public-reads-from-kv Implementation Plan
@@ -38,6 +39,7 @@ base-ref: 003da78af1fec87726460b6bd406f0c01b0deb91
 - Modify `apps/sync-worker/src/workflow-core.ts` / `apps/sync-worker/src/index.ts` — 每日 shadow 阶段接线。
 - Tests：与每个模块同目录 `*.test.ts`；全仓门禁用 `CI=true pnpm test` / `pnpm typecheck` / `pnpm build:check`。
 
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 ### Task 1: 迁移 typed state 与 key builders
@@ -92,6 +94,7 @@ test('migration app_state keys are namespaced and stable', () => {
 
 `git commit -m "feat(storage): add migration typed state and key builders"`
 
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 ### Task 2: legacy 记录读取与幂等批量导入
@@ -130,6 +133,7 @@ test('missing legacy keys are counted and do not block later subjects', async ()
 - [x] **Step 4: 转绿**：测试 PASS；补「中断重跑不重复覆盖」「legacy 无效 JSON 计入 errored」两个测试并转绿。
 - [x] **Step 5: 提交** `git commit -m "feat(storage): import legacy subject state idempotently"`
 
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 ### Task 3: sync 迁移 runner（游标 checkpoint + summary）
@@ -148,6 +152,7 @@ test('missing legacy keys are counted and do not block later subjects', async ()
 - [x] **Step 4: 转绿** + 补「空集合零批」「批次错误不阻塞后续批次」测试。
 - [x] **Step 5: 提交** `git commit -m "feat(sync): add resumable legacy migration runner"`
 
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 ### Task 4: shadow 规范化比较
@@ -167,6 +172,7 @@ test('missing legacy keys are counted and do not block later subjects', async ()
 - [x] **Step 4: 转绿** + 补「calendar weekday 差异」「summary 计数差异」测试。
 - [x] **Step 5: 提交** `git commit -m "feat(storage): normalize and compare shadow public results"`
 
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 ### Task 5: streak 持久化与切换门禁
@@ -185,6 +191,7 @@ test('missing legacy keys are counted and do not block later subjects', async ()
 - [x] **Step 4: 转绿** + 补「streak 仅时间差异不重置」测试。
 - [x] **Step 5: 提交** `git commit -m "feat(sync): persist shadow streak and gate cutover"`
 
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 ### Task 6: pointer 门控与提升
@@ -203,6 +210,7 @@ test('missing legacy keys are counted and do not block later subjects', async ()
 - [x] **Step 4: 转绿** + 补「提升幂等：重复调用不重复写 pointer」测试。
 - [x] **Step 5: 提交** `git commit -m "feat(sync): gate public pointer behind shadow gate"`
 
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 ### Task 7: read-worker R2 加载与 fallback
@@ -222,6 +230,7 @@ test('missing legacy keys are counted and do not block later subjects', async ()
 - [x] **Step 4: 转绿** + 补「图片引用与 NSFW 直接来自 snapshot」测试。
 - [x] **Step 5: 提交** `git commit -m "feat(read): load verified R2 snapshot with bounded fallback"`
 
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 ### Task 8: read-mode 接线与 health 扩展
@@ -239,6 +248,7 @@ test('missing legacy keys are counted and do not block later subjects', async ()
 - [x] **Step 4: 转绿** + 全仓 `CI=true pnpm test` 与 `pnpm typecheck` PASS。
 - [x] **Step 5: 提交** `git commit -m "feat(read): switch read source and expose migration health"`
 
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 ### Task 9: 延迟限速清理
@@ -256,6 +266,7 @@ test('missing legacy keys are counted and do not block later subjects', async ()
 - [x] **Step 4: 转绿**。
 - [x] **Step 5: 提交** `git commit -m "feat(sync): rate-limited legacy cleanup after 14 days"`
 
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 ### Task 10: 回滚操作与 runbook
@@ -272,6 +283,7 @@ test('missing legacy keys are counted and do not block later subjects', async ()
 - [x] **Step 2: 确认 FAIL** → Step 3 实现 → Step 4 转绿。
 - [x] **Step 5: 提交** `git commit -m "docs(sync): rollback read mode with preserved R2 generations"`
 
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 ### Task 11: 每日调度接线
@@ -288,6 +300,7 @@ test('missing legacy keys are counted and do not block later subjects', async ()
 - [x] **Step 2: 确认 FAIL** → Step 3 实现 → Step 4 转绿（含既有 scheduled/queue 测试全过）。
 - [x] **Step 5: 提交** `git commit -m "feat(sync): run daily shadow migration and gate in scheduled workflow"`
 
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 ### Task 12: 全仓门禁与文档同步
@@ -305,6 +318,7 @@ test('missing legacy keys are counted and do not block later subjects', async ()
 - [x] **Step 3: 审查**：按 `review_mode` 完成代码审查并修复 CRITICAL 发现。
 - [x] **Step 4: 提交** `git commit -m "docs(migrate): synchronize architecture and verification evidence"`
 
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 ### Task 13: 生产验收（时间门禁）
@@ -321,6 +335,7 @@ test('missing legacy keys are counted and do not block later subjects', async ()
 - **Step 3: 切换**后 14 天观察、启用限速清理、记录 KV 写入曲线。
 - **Step 4: 提交验收记录** `git commit -m "docs(migrate): record production acceptance"`
 
+archived-with: 2026-10-27-migrate-public-reads-from-kv
 ---
 
 ## Self-Review

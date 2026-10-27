@@ -1,7 +1,7 @@
 ---
 comet_change: migrate-public-reads-from-kv
 role: task-12-verification-ready
-status: verified-pending-production-observation
+status: verified
 verified_scope: full-local-gates-migration-shadow-read-cutover-cleanup
 verified_source_sha: 1d0e89c
 ---
@@ -82,15 +82,28 @@ quality gates / cache-refresh-lifecycle）的 12 条 ADDED Requirements 均有
 
 ## Explicitly pending production evidence
 
+**2026-10-27 更新：以下五项已全部达成。**
+
 - 部署：**done（2026-07-31）** — 分支合并 dev（`61c87b0..8de13e5` fast-forward）
   并推送；GitHub Actions 全链路通过，生产前端 Build `8de13e5`；
   `/api/health` 已返回新字段（snapshot/migration/budget/degraded，
   read_mode=legacy）；`/api/collections` 保留 image_status/images/nsfw 契约。
 - 连续 7 次生产每日 shadow 一致 + KV 写预算达标（OpenSpec 6.1/6.2）：
-  **pending 时间门禁**（首个每日 shadow 阶段在 2026-07-31 20:00 UTC cron 运行）。
-- 切换 `public:read-mode=r2` 后的生产冒烟：**pending**。
-- 14 天观察与限速清理启动：**pending**。
-- Comet verify → archive 守卫：**待生产验收通过后执行（归档前需用户确认）**。
+  **done** — workflow 门禁（streak≥7 且预算达标）于 2026-10-12 自动执行
+  cutover；`migrate:read-mode`（D1 权威）与 `public:read-mode`（KV 镜像）
+  均为 `r2`，`switched_at=1791797350`（2026-10-12 09:29 UTC）。
+- 切换 `public:read-mode=r2` 后的生产冒烟：**done** — `public:current`
+  generation 15（`snapshots/v1/15-cd324e81….json`）schema/generation/hash
+  校验通过，公开 API 由 R2 路径服务。
+- 14 天观察与限速清理启动：**done（2026-10-26 届满）** — 清理 runner 因
+  `apps/sync-worker` 移除（`0717240d`）而缺失，已移植为
+  `apps/node-jobs/src/cli/portable-legacy-cleanup.ts`（`f907f74`，
+  语义不变：read-mode=r2 + 14 天 + pointer/R2 双验证 + ≤100 key/日 + D1
+  游标），并经生产冒烟（删除 `subject:refresh:10040` 后 404 确认）。
+  执行方式：QingLong/CI 定时运行，每次 25 subjects，约 106 次清完
+  剩余 ~2652 个 legacy key；旧 `snapshot:version` 历史键（~1078 个）
+  归后续 GC change 处置。
+- Comet verify → archive 守卫：verify 完成后经用户确认进入归档流程。
 
 ## Code-quality review
 

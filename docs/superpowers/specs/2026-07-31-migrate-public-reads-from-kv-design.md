@@ -2,6 +2,8 @@
 comet_change: migrate-public-reads-from-kv
 role: technical-design
 canonical_spec: openspec
+archived-with: 2026-10-27-migrate-public-reads-from-kv
+status: final
 ---
 
 # migrate-public-reads-from-kv 技术设计
