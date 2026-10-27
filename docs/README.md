@@ -48,6 +48,11 @@ Code entry points: `apps/v3-read-worker` (CF), `packages/v3-{core,builder,read,a
 
 ## Plans (`docs/plans/`)
 
+> **Write origin: CNB** (`KoolingMachine/AiringCal`). GitHub is Issues +
+> release-only mirror. See
+> [`adr-0002-cnb-primary-migration.md`](plans/adr-0002-cnb-primary-migration.md)
+> BEFORE pushing branches or opening PRs.
+
 | File | Purpose |
 | --- | --- |
 | `phase-0-web-worker.md` | Single read Worker |
@@ -55,6 +60,7 @@ Code entry points: `apps/v3-read-worker` (CF), `packages/v3-{core,builder,read,a
 | `no-cf-write-path.md` | AC-3-01 confirmation |
 | `kv-binding-decision.md` | AC-3-03 — keep KV binding |
 | `abandoned-vps-route.md` | Do not use VPS write |
+| `adr-0002-cnb-primary-migration.md` | CNB-primary source-of-truth + release mirror design (#139) |
 
 ## Runbooks (`docs/runbook/`)
 
@@ -62,6 +68,7 @@ Code entry points: `apps/v3-read-worker` (CF), `packages/v3-{core,builder,read,a
 | --- | --- |
 | `m2-read-surface.md` | Deploy web-worker, verify APIs/covers (**homelab M2 done 2026-10-13**) |
 | `migrate-public-reads.md` | KV → R2 read-mode (optional ops) |
+| `cnb-primary-migration.md` | CNB-primary cutover state, daily flow, rollback (#139) |
 
 Homelab closure (QingLong): [QINGLONG governance](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/governance/2026-10-13-homelab-closure.md)
 

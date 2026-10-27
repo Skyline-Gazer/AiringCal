@@ -2,6 +2,9 @@
 
 > 对应 OpenSpec change：`migrate-public-reads-from-kv`。技术设计见
 > `docs/superpowers/specs/2026-07-31-migrate-public-reads-from-kv-design.md`。
+> 清理 runner（sync-worker 移除后）：`apps/node-jobs/src/cli/portable-legacy-cleanup.ts`
+> （先 `--dry-run` 确认门禁，再去掉 flag 执行；见
+> `apps/node-jobs/docs/operator-contract.md`）。
 
 ## 目标状态
 

@@ -1,0 +1,51 @@
+dev:
+  pull_request:
+    - name: PR Validate (typecheck / test / build:check)
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      docker:
+        image: node:24  # single source of Node version, matches .github/workflows/ci.yml node-version
+      stages:
+        - name: Install pnpm
+          script:
+            - corepack enable
+            - corepack prepare pnpm@9.15.9 --activate
+            - pnpm --version   # must print 9.15.9 (package.json packageManager)
+        - name: Install dependencies
+          script:
+            - pnpm install --frozen-lockfile
+        - name: Typecheck
+          script:
+            - pnpm typecheck
+        - name: Tests
+          script:
+            - pnpm test
+        - name: Build check
+          script:
+            - pnpm build:check
+
+    # AI review is advisory-only: comment-only, never auto-merge.
+    - name: AiringCal Automatic AI Review
+      runner:
+        tags: cnb:arch:amd64
+        cpus: 2
+      stages:
+        - name: Code Review
+          image: cnbcool/code-review:latest
+          settings:
+            comment: true
+            review_event: comment
+            max_comments: 5
+            min_severity: warning
+            min_confidence: high
+            exclude_categories: "style,nit"
+            max_turns: 30
+            context_window: 200k
+            timeout_minutes: 10
+            rules: |
+              Review only the changed code.
+              Focus on correctness, security, concurrency,
+              credential handling, and Git synchronization.
+              Verify findings against actual behavior.
+              Do not modify code or merge PRs.
