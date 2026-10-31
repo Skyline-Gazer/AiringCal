@@ -27,3 +27,11 @@ Commit and push after every atomic change. Docs update with code. Release requir
 **Rule:** [`.claude/rules/comet-phase-guard.md`](.claude/rules/comet-phase-guard.md)
 
 Check phase state before any operation that could violate workflow boundaries.
+
+## Cursor Cloud specific instructions
+
+CI uses Node 24 (`.github/workflows/ci.yml`) and pnpm `9.15.9` (root `packageManager`). This environment installs Node `24.22.2` into `/usr/local/bin`. Put `/usr/local/bin` first on `PATH` so that Node wins over any older `node` earlier in the default path.
+
+Checks that match the CI validate job: `pnpm typecheck`, `pnpm test`, `pnpm build:check`. QingLong bundle: `pnpm -F @airing-cal/node-jobs build`.
+
+`pnpm dev` starts `@airing-cal/web-worker` with `wrangler dev`. That process exits immediately because `apps/web-worker/src/index.ts` exports the string `appBoundary`, and local workerd only accepts a function or `ExportedHandler` for a named export. Serve the app by bundling with `wrangler deploy --dry-run`, removing the `appBoundary` name from the bundle's export list, then running `wrangler dev <bundle> --no-bundle --local --ip 0.0.0.0 --port 8787`. Set `CI=true` so Wrangler does not prompt to install Cloudflare skills. Local mode does not need Cloudflare credentials; the placeholder ids in `apps/web-worker/wrangler.toml` are local bindings. `POST /api/thumb-gen` returns 401 until `THUMB_GEN_BEARER` is set. With an empty local database, `GET /` renders the empty catalog and `GET /api/health` returns 200 with `degraded: true`.
