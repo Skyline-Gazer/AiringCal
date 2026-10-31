@@ -16,11 +16,12 @@ Status: Working implementation baseline; governed by [Issue #67](https://github.
 - Preserve current frontend appearance/features and public behavior. Refactor internals, not the product.
 - Initial platform priority: Cloudflare and Tencent EdgeOne. Later adapters ship through incremental versions after verified platform-specific support.
 - Core is portable: thin platform adapters, shared domain/Builder/Release contract, same published assets across platforms. Do not copy Xget runtime/infra blindly; Xget is a request-proxy, AiringCal is an offline builder plus static reader.
+- **Plan change (accepted 2026-10-31, not implemented):** production write scheduling moves to GitHub Actions one-shot portable→S3 (R2 day one); QingLong, D1/KV write, Docker write scheduler, and CNB write execution are retired as delivery targets; public image bytes leave the Worker proxy. See [`../plans/adr-0003-gha-portable-write.md`](../plans/adr-0003-gha-portable-write.md).
 
 ## Runtime and state
 
-- Docker/Compose: web, scheduler, builder boundaries; single SQLite durable state on local filesystem, WAL and bounded job leases/fencing; no WAL on network storage.
-- Serverless: external builder e.g. GitHub Actions and private checkpoint storage. Prevent two authoritative builders publishing one site without explicit handoff.
+- Docker/Compose: historically web, scheduler, builder boundaries with local SQLite. **ADR 0003** retires Compose/Docker as the production **write** delivery target; local smoke may remain until code removal lands.
+- Serverless / CI builder: **ADR 0003** selects GitHub Actions one-shot + private checkpoint object storage as the production writer. Prevent two authoritative builders publishing one site without explicit handoff.
 - Daily incremental sync and seven-day full reconciliation by default; manual sync supported. Failed core collections/calendar completeness halts publishing; previously verified subject details/images may be reused with explicit stale/partial status.
 - Credential-bearing private checkpoint and published public store are separate. All published content is explicitly public allowlisted data.
 

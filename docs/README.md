@@ -5,7 +5,7 @@
 | Layer | Runtime | Repo path |
 | --- | --- | --- |
 | **Read** | Cloudflare Worker `airing-cal-frontend` | `apps/web-worker` |
-| **Write** | QingLong cron → `qinglong-bundle` | `apps/node-jobs` → artifact; wrappers in **QINGLONG-REPO** |
+| **Write (still documented here)** | QingLong cron → `qinglong-bundle` | `apps/node-jobs` → artifact; wrappers in **QINGLONG-REPO** |
 | **Removed from repo** | legacy Workers, VPS Postgres | pre-2026-10-15 `apps/*` — see git history / `docs/archive/` |
 
 ```text
@@ -13,6 +13,13 @@ Bangumi → node-jobs (bundle) ← QingLong
             → D1, R2 snapshot + image bucket, KV pointers
             → web-worker read APIs + /image/:hash
 ```
+
+> **Target write/read plan (accepted, not implemented):** 
+> [`plans/adr-0003-gha-portable-write.md`](plans/adr-0003-gha-portable-write.md) —
+> GitHub Actions one-shot portable writer → private R2 checkpoint + public R2
+> Release; retire QingLong / D1·KV write / Docker write scheduler / CNB write
+> plane; public CDN/S3 image bytes; keep `GET /image/:hash` originals. Until
+> that implementation lands, the table above remains the described live layout.
 
 ## Read order for agents
 
@@ -48,10 +55,11 @@ Code entry points: `apps/v3-read-worker` (CF), `packages/v3-{core,builder,read,a
 
 ## Plans (`docs/plans/`)
 
-> **Write origin: CNB** (`KoolingMachine/AiringCal`). GitHub is Issues +
-> release-only mirror. See
-> [`adr-0002-cnb-primary-migration.md`](plans/adr-0002-cnb-primary-migration.md)
-> BEFORE pushing branches or opening PRs.
+> **Git write origin: GitHub** (`Skyline-Gazer/AiringCal`, `dev`). ADR 0002’s
+> CNB-primary model was not activated; see the
+> [2026-10-27 amendment](plans/adr-0002-cnb-primary-migration.md#amendment-2026-10-27-github-primary).
+> **Data-plane write target:** [ADR 0003](plans/adr-0003-gha-portable-write.md)
+> (GHA portable→S3; accepted, not implemented). Open PRs against `dev`.
 
 | File | Purpose |
 | --- | --- |
@@ -60,7 +68,8 @@ Code entry points: `apps/v3-read-worker` (CF), `packages/v3-{core,builder,read,a
 | `no-cf-write-path.md` | AC-3-01 confirmation |
 | `kv-binding-decision.md` | AC-3-03 — keep KV binding |
 | `abandoned-vps-route.md` | Do not use VPS write |
-| `adr-0002-cnb-primary-migration.md` | CNB-primary source-of-truth + release mirror design (#139) |
+| `adr-0002-cnb-primary-migration.md` | CNB-primary design, superseded in part by the 2026-10-27 GitHub-primary amendment (#139) |
+| `adr-0003-gha-portable-write.md` | Accepted 2026-10-31: GHA portable→S3 writer, public images, retire QingLong/D1-KV/Docker/CNB write (not implemented yet) |
 
 ## Runbooks (`docs/runbook/`)
 
@@ -68,7 +77,7 @@ Code entry points: `apps/v3-read-worker` (CF), `packages/v3-{core,builder,read,a
 | --- | --- |
 | `m2-read-surface.md` | Deploy web-worker, verify APIs/covers (**homelab M2 done 2026-10-13**) |
 | `migrate-public-reads.md` | KV → R2 read-mode (optional ops) |
-| `cnb-primary-migration.md` | CNB-primary cutover state, daily flow, rollback (#139) |
+| `cnb-primary-migration.md` | GitHub-primary / CNB historical runbook (#139) |
 
 Homelab closure (QingLong): [QINGLONG governance](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/governance/2026-10-13-homelab-closure.md)
 
