@@ -1,8 +1,10 @@
 # P0 contract evidence (#69)
 
-Measured from source on `dev` (post-#68 bootstrap). Companion to [`p0-contract-audit.md`](./p0-contract-audit.md). Status: **partial** — routes, cache literals, and automated fixtures exist; production payload samples and EdgeOne staging limits remain open.
+Measured from source on `dev` (post-#68 bootstrap). Companion to [`p0-contract-audit.md`](./p0-contract-audit.md). Status: **partial** — routes, cache literals, automated fixtures, and the anonymized production sizing run exist. Cloudflare real-bucket CAS and EdgeOne staging limits remain open.
 
-## Frontend network reads (`public/src/bangumi.js`)
+## Frontend network reads (`packages/widget/assets/theme/bangumi.js`)
+
+There is no `public/src/bangumi.js` on `dev`. The widget has two views (`番组计划`, `放送日历`). The sync tab is gone (#31, #128). Empty-state copy still says `同步可能尚未执行`; that is status text, not a sync form.
 
 | Call site | Method | Path | Purpose |
 |---|---|---|---|
@@ -10,10 +12,10 @@ Measured from source on `dev` (post-#68 bootstrap). Companion to [`p0-contract-a
 | Collection view `load()` | GET | `/api/collections?type=&page=&limit=24` | Paginated lists (`limit` fixed at 24 in UI) |
 | Collection view `activate()` | GET | `/api/health` | Connection / KV snapshot hint before first load |
 | Calendar view | GET | `/api/calendar` | Weekly schedule grid |
-| Sync view (legacy UI) | POST | `/api/sync/apply` | **Worker returns 410** (`index.ts`); UI still present |
-| Sync view (legacy UI) | GET | `/api/sync/compare` | **410**; UI still present |
 
 `API` base resolves to `window.bgmConfig.apiUrl` or `window.location.origin`. v3 must preserve these read paths and JSON shapes unless a documented compatibility break is tested.
+
+`POST /api/sync/apply` and `GET /api/sync/compare` have no widget call site. The Worker still returns **410** for those deprecated routes (`apps/web-worker/src/index.ts`).
 
 ## Worker route map (`apps/web-worker/src/index.ts`)
 
