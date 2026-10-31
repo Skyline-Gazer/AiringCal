@@ -7,7 +7,7 @@
 ## Mandatory before code changes
 
 1. Verify CLI flags, env keys, and APIs in source — do not guess (`AGENTS.md` §零).
-2. Production write path is **QingLong + node-jobs**, not Workers Cron/Workflow (`docs/plans/no-cf-write-path.md`).
+2. Production write path is **GitHub Actions + portable node-jobs → S3**, not Workers Cron/Workflow and not QingLong (`docs/plans/adr-0003-gha-portable-write.md`, `docs/plans/no-cf-write-path.md`).
 3. Commit docs with code; run `pnpm test` / relevant package tests before done.
 
 ## Quick map
