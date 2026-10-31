@@ -442,10 +442,10 @@ async function handleHealth(env: ReadEnv): Promise<Response> {
             source: 'r2_snapshot',
           },
           cron: {
-            scheduler: 'qinglong',
+            scheduler: 'gha',
             next_at: nextCronAt(),
             last: publishedAt
-              ? { status: 'published', source: 'qinglong', completed_at: publishedAt }
+              ? { status: 'published', source: 'gha', completed_at: publishedAt }
               : null,
           },
           workflow: null,

@@ -131,13 +131,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -F @airing-cal/node-jobs build
       - run: |
-          test -f apps/node-jobs/dist/qinglong-bundle/airingcal-sync.mjs
-          test -f apps/node-jobs/dist/qinglong-bundle/airingcal-backup.mjs
-          test -f apps/node-jobs/dist/qinglong-bundle/manifest.json
+          test -f apps/node-jobs/dist/portable-bundle/airingcal-sync.mjs
+          test -f apps/node-jobs/dist/portable-bundle/gha-portable-writer.mjs
+          test -f apps/node-jobs/dist/portable-bundle/manifest.json
       - uses: actions/upload-artifact@v4
         with:
-          name: qinglong-bundle
-          path: apps/node-jobs/dist/qinglong-bundle/
+          name: portable-bundle
+          path: apps/node-jobs/dist/portable-bundle/
 
   resolve_cloudflare:
     needs: resolve_ref

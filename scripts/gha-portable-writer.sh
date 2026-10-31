@@ -13,4 +13,9 @@ export AIRINGCAL_BUILDER_PUBLISH="${AIRINGCAL_BUILDER_PUBLISH:-true}"
 export AIRINGCAL_BUILDER_MEDIA_REFRESH="${AIRINGCAL_BUILDER_MEDIA_REFRESH:-refresh}"
 export AIRINGCAL_FULL_EVERY_DAYS="${AIRINGCAL_FULL_EVERY_DAYS:-7}"
 
+BUNDLE="$ROOT/apps/node-jobs/dist/portable-bundle/gha-portable-writer.mjs"
+if [[ -f "$BUNDLE" ]]; then
+  exec node "$BUNDLE"
+fi
+
 exec pnpm -F @airing-cal/node-jobs exec tsx src/cli/gha-portable-writer-main.ts

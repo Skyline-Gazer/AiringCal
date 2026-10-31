@@ -130,10 +130,13 @@ test('runPortableBuilderSync publishes durable release when PUBLIC_DIR set', asy
   readFileSync(join(publicDir, PUBLIC_RELEASE_POINTER_KEY), 'utf8')
 })
 
-test('portable builder is default when AIRINGCAL_BUILDER unset (ADR 0003)', async () => {
+test('runSync is portable-only; legacy-d1 is rejected (ADR 0003)', async () => {
   const { runSync, resolveSyncBuilderKind } = await import('./run.ts')
   assert.equal(resolveSyncBuilderKind({}), 'portable')
-  assert.equal(resolveSyncBuilderKind({ AIRINGCAL_BUILDER: 'legacy-d1' }), 'legacy-d1')
+  assert.equal(resolveSyncBuilderKind({ AIRINGCAL_BUILDER: 'legacy-d1' }), 'rejected')
+  const rejected = await runSync({ AIRINGCAL_BUILDER: 'legacy-d1' })
+  assert.equal(rejected.status, 'failed')
+  assert.match(rejected.message, /legacy-d1|retired|ADR 0003/i)
   const summary = await runSync({
     AIRINGCAL_USERS_JSON: JSON.stringify([{ userId: '1', username: 'x' }]),
     AIRINGCAL_PRIMARY_USER_ID: '1',
