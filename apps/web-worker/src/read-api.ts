@@ -1,6 +1,10 @@
 export const readApiBoundary = 'web-worker-read-api'
 
 import { D1StateStore, imageOriginalKey, imageStatusKey, imageThumbV1Key, imageThumbV2Key, KVStorage, snapshotActiveKey, snapshotCalendarKey, snapshotCollectionsKey, snapshotSummaryKey, snapshotVersionKey, subjectDetailKey, subjectMetaKey, syncCurrentKey, syncMetaKey, syncRunKey, type D1DatabaseLike, type SnapshotManifest, type SyncRun } from '@airing-cal/storage'
+import {
+  publicImageRedirectResponse,
+  resolvePublicImageRedirect,
+} from '@airing-cal/v3-core/public-image-url'
 import { isConfirmedNotFoundSubjectMeta, type SubjectMeta } from '@airing-cal/domain'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 import {
@@ -26,6 +30,8 @@ interface ReadEnv {
   }
   AIRING_CAL_R2: ImageR2Binding
   NSFW_SHOW?: 'true' | 'false'
+  /** When set, GET /image/* 302s to this public CDN/S3 base (ADR 0003). */
+  AIRINGCAL_PUBLIC_BASE_URL?: string
 }
 
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
@@ -509,6 +515,13 @@ async function handleImage(pathname: string, env: ReadEnv, request: Request): Pr
   if (!match?.[1]) return new Response('Invalid hash', { status: 400 })
   const hash = match[1].toLowerCase()
   const isThumb = match[2] === 'thumb'
+
+  const redirectTo = resolvePublicImageRedirect(
+    env.AIRINGCAL_PUBLIC_BASE_URL,
+    hash,
+    isThumb ? 'thumb' : 'original',
+  )
+  if (redirectTo) return publicImageRedirectResponse(redirectTo)
 
   const edgeCache = workerDefaultCache()
   if (edgeCache && request.method === 'GET') {

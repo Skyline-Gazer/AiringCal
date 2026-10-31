@@ -27,4 +27,9 @@ bucket_name = "airing-cal-data"
 [images]
 binding = "IMAGES"
 
-# Thumb materialization: QingLong/node-jobs POST /api/thumb-gen after sync (no Worker cron).
+# ADR 0003: set Worker var AIRINGCAL_PUBLIC_BASE_URL=https://PLACEHOLDER_PUBLIC_CDN
+# so GET /image/* 302s to the public bucket/CDN instead of proxying bytes.
+# `wrangler secret` is not required for this public URL — use `[vars]` or dashboard vars.
+
+# Thumb materialization: legacy POST /api/thumb-gen after sync (no Worker cron).
+# Portable GHA writer materializes thumbs offline into the public store.

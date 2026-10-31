@@ -77,9 +77,11 @@ export async function runPortableSchedulerLoop(
 }
 
 if (process.argv[1]?.endsWith('portable-scheduler.ts')) {
-  runPortableSchedulerLoop().catch((error) => {
-    const message = error instanceof Error ? error.message : 'scheduler_failed'
-    console.error(JSON.stringify({ status: 'failed', stage: 'portable_scheduler', message }))
-    process.exit(1)
-  })
+  // ADR 0003: production write scheduling is GitHub Actions (portable-writer.yml).
+  console.error(JSON.stringify({
+    status: 'failed',
+    stage: 'portable_scheduler',
+    message: 'Compose/long-running portable-scheduler retired (ADR 0003); use .github/workflows/portable-writer.yml or scripts/gha-portable-writer.sh',
+  }))
+  process.exit(2)
 }

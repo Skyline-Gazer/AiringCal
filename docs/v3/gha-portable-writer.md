@@ -43,7 +43,7 @@ Replace every `PLACEHOLDER_*` with real values. Create **two** R2 buckets (priva
 
 | Variable | Example / placeholder | Notes |
 | --- | --- | --- |
-| `AIRINGCAL_PUBLIC_BASE_URL` | `https://<public-r2-or-cdn-host>` | Reserved for absolute image URLs / redirects (read-path follow-up). Not required for the writer job itself today. |
+| `AIRINGCAL_PUBLIC_BASE_URL` | `https://PLACEHOLDER_PUBLIC_CDN` | Also set on the **read Worker** (`AIRINGCAL_PUBLIC_BASE_URL`) so `GET /image/*` 302s to this host. Writer job does not require it. |
 
 ### Local / non-Actions env (optional)
 
@@ -61,9 +61,9 @@ Same names as above. Also:
 2. Actions → **Portable writer (GHA)** → `workflow_dispatch` (optional `force_mode=full`).
 3. Expect job exit 0, checkpoint object `checkpoints/builder.sqlite`, public pointer `public/current-release.json`, and Bark silent on success.
 
-## Not in this slice
+## Not in this slice / remaining
 
-- Worker/CDN redirect for `/image/:hash` (public base URL wiring on read path)
 - Non-R2 S3 vendor verification
-- Deleting QingLong / Docker write / D1-KV write code (follow-up cleanup PR)
+- Hard-delete of legacy D1 write modules / `qinglong-bundle` CI artifact (default path is already portable; Compose scheduler removed)
 - Enabling the schedule before the first manual green run (owner choice)
+- Netlify / Vercel read adapters

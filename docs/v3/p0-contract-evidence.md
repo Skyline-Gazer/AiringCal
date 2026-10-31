@@ -73,7 +73,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Portable read gateway (filesystem public store) | `packages/v3-read/src/portable-read-handler.ts`, `serve-node.ts` |
 | Portable static widget (`/`, `/src/*`) | `packages/v3-read/src/portable-static-handler.ts` |
 | Docker Compose portable stack | `deploy/v3/docker-compose.yml`, `deploy/v3/Dockerfile` |
-| Compose scheduler (daily incremental + N-day full) | `apps/node-jobs/src/cli/portable-scheduler.ts`, `packages/v3-builder/src/sync-schedule.ts` |
+| Sync mode interval helper (used by GHA writer; Compose scheduler retired ADR 0003) | `packages/v3-builder/src/sync-schedule.ts`, `apps/node-jobs/src/cli/gha-portable-writer.ts` |
 | Checkpoint backup CLI | `apps/node-jobs/src/cli/portable-checkpoint-backup.ts` |
 | Checkpoint restore CLI | `apps/node-jobs/src/cli/portable-checkpoint-restore.ts` |
 | Checkpoint backup retention (scheduler prune) | `apps/node-jobs/src/cli/portable-checkpoint-backup.ts` (`planCheckpointBackupRetention`) |

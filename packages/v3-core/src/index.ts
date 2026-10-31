@@ -1,5 +1,6 @@
 export * from './ports.ts'
 export * from './read-contract.ts'
+export * from './public-image-url.ts'
 export * from './media-hints.ts'
 export { mediaPublishHintsFromFetch } from './media-hints-from-fetch.ts'
 export * from './project-public-snapshot.ts'

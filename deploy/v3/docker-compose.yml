@@ -35,37 +35,9 @@ services:
       retries: 3
       start_period: 20s
 
-  scheduler:
-    profiles: ["scheduler"]
-    build:
-      context: ../..
-      dockerfile: deploy/v3/Dockerfile
-    command:
-      - pnpm
-      - exec
-      - tsx
-      - apps/node-jobs/src/cli/portable-scheduler.ts
-    environment:
-      AIRINGCAL_PLATFORM: portable
-      AIRINGCAL_BUILDER: portable
-      AIRINGCAL_BUILDER_SQLITE_PATH: /data/builder.sqlite
-      AIRINGCAL_BUILDER_PUBLIC_DIR: /data/public
-      AIRINGCAL_BUILDER_BACKUP_DIR: /data/backups
-      AIRINGCAL_BUILDER_BACKUP_KEEP: ${AIRINGCAL_BUILDER_BACKUP_KEEP:-10}
-      AIRINGCAL_BUILDER_MEDIA_REFRESH: ${AIRINGCAL_BUILDER_MEDIA_REFRESH:-refresh}
-      AIRINGCAL_BUILDER_PUBLISH: ${AIRINGCAL_BUILDER_PUBLISH:-true}
-      AIRINGCAL_SCHEDULER_DAILY_AT: ${AIRINGCAL_SCHEDULER_DAILY_AT:-03:00}
-      AIRINGCAL_SCHEDULER_FULL_EVERY_DAYS: ${AIRINGCAL_SCHEDULER_FULL_EVERY_DAYS:-7}
-      AIRINGCAL_SCHEDULER_RUN_ON_START: ${AIRINGCAL_SCHEDULER_RUN_ON_START:-false}
-      AIRINGCAL_SCHEDULER_BACKUP_BEFORE_SYNC: ${AIRINGCAL_SCHEDULER_BACKUP_BEFORE_SYNC:-true}
-      AIRINGCAL_GC_LOG_AFTER_PUBLISH: ${AIRINGCAL_GC_LOG_AFTER_PUBLISH:-true}
-      AIRINGCAL_USERS_JSON: ${AIRINGCAL_USERS_JSON}
-      AIRINGCAL_PRIMARY_USER_ID: ${AIRINGCAL_PRIMARY_USER_ID}
-      BANGUMI_GIT_COMMIT_SHA: ${BANGUMI_GIT_COMMIT_SHA:-dev}
-      BGM_TOKEN: ${BGM_TOKEN}
-    volumes:
-      - airingcal-data:/data
-    restart: unless-stopped
+  # ADR 0003: production write scheduler is GitHub Actions (portable-writer.yml).
+  # The long-running Compose `scheduler` service was removed. Use profile `sync`
+  # for an optional local one-shot, or the GHA workflow.
 
   sync:
     profiles: ["sync"]

@@ -130,9 +130,15 @@ test('runPortableBuilderSync publishes durable release when PUBLIC_DIR set', asy
   readFileSync(join(publicDir, PUBLIC_RELEASE_POINTER_KEY), 'utf8')
 })
 
-test('legacy cloudflare path remains default when AIRINGCAL_BUILDER unset', async () => {
-  const { runSync } = await import('./run.ts')
-  const summary = await runSync({})
-  assert.equal(summary.status, 'skipped')
-  assert.match(summary.message, /AIRINGCAL_USERS_JSON/)
+test('portable builder is default when AIRINGCAL_BUILDER unset (ADR 0003)', async () => {
+  const { runSync, resolveSyncBuilderKind } = await import('./run.ts')
+  assert.equal(resolveSyncBuilderKind({}), 'portable')
+  assert.equal(resolveSyncBuilderKind({ AIRINGCAL_BUILDER: 'legacy-d1' }), 'legacy-d1')
+  const summary = await runSync({
+    AIRINGCAL_USERS_JSON: JSON.stringify([{ userId: '1', username: 'x' }]),
+    AIRINGCAL_PRIMARY_USER_ID: '1',
+    BANGUMI_GIT_COMMIT_SHA: 'a'.repeat(40),
+  })
+  assert.equal(summary.status, 'failed')
+  assert.match(summary.message, /AIRINGCAL_BUILDER_SQLITE_PATH/)
 })

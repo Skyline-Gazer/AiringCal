@@ -1,14 +1,16 @@
-# Portable v3 Docker Compose
+# Portable v3 Docker Compose (read / local smoke)
 
-Single-user stack: **web** (read + widget), optional **scheduler** (daily incremental + periodic full reconcile), and on-demand **sync** (portable builder).
+**ADR 0003:** production **write** scheduling is GitHub Actions
+(`.github/workflows/portable-writer.yml`), not Compose. The long-running
+`scheduler` service was removed. This stack remains for **local read smoke**
+and optional one-shot `sync` / `gc` profiles.
 
 ```bash
 cp deploy/v3/env.example deploy/v3/.env
-# optional: pnpm exec tsx apps/node-jobs/src/cli/airingcal-setup.ts docs/v3/airingcal-config.example.json --emit-env >> deploy/v3/.env
-# edit .env — add BGM_TOKEN and user ids (secrets) for sync/scheduler
+# edit .env — optional BGM_TOKEN for profile sync
 
 docker compose -f deploy/v3/docker-compose.yml up -d web
-docker compose -f deploy/v3/docker-compose.yml --profile scheduler up -d scheduler
+# optional local one-shot write (not production):
 docker compose -f deploy/v3/docker-compose.yml --profile sync run --rm sync
 ```
 
@@ -20,7 +22,7 @@ docker compose -f deploy/v3/docker-compose.yml --profile gc run --rm gc
 
 Destructive apply (operator-only): append `--apply` and/or `--apply-images` to the `tsx` command via `docker compose run --rm gc pnpm exec tsx apps/node-jobs/src/cli/portable-public-gc.ts --apply`.
 
-Checkpoint backup (manual, WAL-safe):
+Checkpoint backup (manual, WAL-safe) via sync profile env:
 
 ```bash
 docker compose -f deploy/v3/docker-compose.yml --profile sync run --rm \
@@ -30,7 +32,9 @@ docker compose -f deploy/v3/docker-compose.yml --profile sync run --rm \
 
 Data volume `airingcal-data` holds `/data/public` (immutable release + images), `/data/builder.sqlite`, and optional `/data/backups`.
 
-See also [`docs/v3/portable-read-gateway.md`](../../docs/v3/portable-read-gateway.md), [`docs/v3/airingcal-config.example.yaml`](../../docs/v3/airingcal-config.example.yaml) (v1 config, YAML form; JSON twin `airingcal-config.example.json`), and [`apps/node-jobs/docs/operator-contract.md`](../../apps/node-jobs/docs/operator-contract.md).
+Production writer ops: [`docs/v3/gha-portable-writer.md`](../../docs/v3/gha-portable-writer.md).
+
+See also [`docs/v3/portable-read-gateway.md`](../../docs/v3/portable-read-gateway.md), [`docs/v3/airingcal-config.example.yaml`](../../docs/v3/airingcal-config.example.yaml), and [`apps/node-jobs/docs/operator-contract.md`](../../apps/node-jobs/docs/operator-contract.md).
 
 ## End-to-end check (`scripts/v3-compose-e2e.mjs`)
 

@@ -1,25 +1,21 @@
 # Docs index (for AI & operators)
 
-## Production architecture (current)
+## Production architecture (current target — ADR 0003)
 
 | Layer | Runtime | Repo path |
 | --- | --- | --- |
-| **Read** | Cloudflare Worker `airing-cal-frontend` | `apps/web-worker` |
-| **Write (still documented here)** | QingLong cron → `qinglong-bundle` | `apps/node-jobs` → artifact; wrappers in **QINGLONG-REPO** |
-| **Removed from repo** | legacy Workers, VPS Postgres | pre-2026-10-15 `apps/*` — see git history / `docs/archive/` |
+| **Read** | Cloudflare Worker `airing-cal-frontend` (multi-platform adapters follow) | `apps/web-worker` / `packages/v3-read` |
+| **Write** | GitHub Actions one-shot portable builder → S3 (R2 day one) | `.github/workflows/portable-writer.yml`, `apps/node-jobs` |
+| **Retired** | QingLong writer, Compose write scheduler, D1/KV write as default, VPS | historical docs / git history |
 
 ```text
-Bangumi → node-jobs (bundle) ← QingLong
-            → D1, R2 snapshot + image bucket, KV pointers
-            → web-worker read APIs + /image/:hash
+Bangumi → GHA portable writer (node-jobs)
+            → private R2 checkpoint (SQLite) + public R2 Release (+ images)
+            → web-worker /api/* ; GET /image/:hash → 302 public CDN when AIRINGCAL_PUBLIC_BASE_URL set
 ```
 
-> **Target write/read plan (accepted, not implemented):** 
-> [`plans/adr-0003-gha-portable-write.md`](plans/adr-0003-gha-portable-write.md) —
-> GitHub Actions one-shot portable writer → private R2 checkpoint + public R2
-> Release; retire QingLong / D1·KV write / Docker write scheduler / CNB write
-> plane; public CDN/S3 image bytes; keep `GET /image/:hash` originals. Until
-> that implementation lands, the table above remains the described live layout.
+Decision: [`plans/adr-0003-gha-portable-write.md`](plans/adr-0003-gha-portable-write.md).
+Ops fill-in (placeholders until Secrets set): [`v3/gha-portable-writer.md`](v3/gha-portable-writer.md).
 
 ## Read order for agents
 

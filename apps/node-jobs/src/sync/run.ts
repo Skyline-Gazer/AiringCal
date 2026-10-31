@@ -16,13 +16,18 @@ import { defaultLeaseName, defaultLeaseSeconds, runSyncPipeline } from './pipeli
 import { runPortableBuilderSync } from './run-portable.ts'
 import { fireAndForgetThumbGen, logThumbGenSyncTail } from './thumb-gen-client.ts'
 
-function isPortableBuilder(env: Record<string, string | undefined>): boolean {
-  return (env.AIRINGCAL_BUILDER?.trim().toLowerCase() ?? '') === 'portable'
+/** ADR 0003: portable is default; D1/KV write only behind explicit legacy opt-in. */
+export function resolveSyncBuilderKind(
+  env: Record<string, string | undefined>,
+): 'portable' | 'legacy-d1' {
+  const raw = env.AIRINGCAL_BUILDER?.trim().toLowerCase() ?? 'portable'
+  if (raw === 'legacy' || raw === 'legacy-d1' || raw === 'cloudflare') return 'legacy-d1'
+  return 'portable'
 }
 
 /** Full pipeline: lease → fetch → media → publish (AC-1-03). */
 export async function runSync(env: Record<string, string | undefined> = process.env): Promise<JobSummary> {
-  if (isPortableBuilder(env)) {
+  if (resolveSyncBuilderKind(env) === 'portable') {
     return runPortableBuilderSync(env)
   }
   if (!env.AIRINGCAL_USERS_JSON?.trim()) {

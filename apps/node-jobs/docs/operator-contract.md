@@ -60,11 +60,11 @@ Full enum: `src/adapters/errors.ts`.
 
 ## Portable builder sync (v3, optional)
 
-When `AIRINGCAL_BUILDER=portable`, `runSync()` uses `@airing-cal/v3-builder` (SQLite checkpoint) instead of the Cloudflare D1/R2/KV pipeline. Default remains the legacy data-plane path.
+`runSync()` defaults to **portable** (`@airing-cal/v3-builder`, SQLite checkpoint) per ADR 0003. The Cloudflare D1/R2/KV write pipeline is opt-in only via `AIRINGCAL_BUILDER=legacy-d1` (or `legacy` / `cloudflare`).
 
 | Variable | Required (portable) | Notes |
 | --- | --- | --- |
-| `AIRINGCAL_BUILDER` | yes | Must be `portable` |
+| `AIRINGCAL_BUILDER` | no | Default `portable`. Use `legacy-d1` only for the retired D1 path. |
 | `AIRINGCAL_BUILDER_SQLITE_PATH` | yes | Local filesystem path; parent dirs created |
 | `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `BANGUMI_GIT_COMMIT_SHA` | yes | Same as cloud sync |
 | `BGM_TOKEN` | yes | Bangumi fetch |
@@ -87,20 +87,11 @@ Portable sync **does not** read Cloudflare R2/D1/KV or call Worker `AIRINGCAL_TH
 
 Cloudflare variables are **not** read on the portable path.
 
-### QingLong / Docker portable template
+### Historical: QingLong / Compose scheduler
 
-See [`deploy/v3/env.example`](../../../deploy/v3/env.example) and [`deploy/v3/README.md`](../../../deploy/v3/README.md). Minimum: `AIRINGCAL_BUILDER=portable`, `AIRINGCAL_BUILDER_SQLITE_PATH`, `AIRINGCAL_BUILDER_PUBLIC_DIR`, `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `BGM_TOKEN`, `BANGUMI_GIT_COMMIT_SHA`.
+QingLong + `qinglong-bundle` and the Compose long-running `portable-scheduler` are **retired** as production writers (ADR 0003). Use [GHA portable writer](../../../docs/v3/gha-portable-writer.md). Local Compose **web** / optional `sync` profile: [`deploy/v3/README.md`](../../../deploy/v3/README.md).
 
-| Variable | Required (scheduler) | Notes |
-| --- | --- | --- |
-| `AIRINGCAL_SCHEDULER_DAILY_AT` | no | UTC `HH:MM` (default `03:00`) |
-| `AIRINGCAL_SCHEDULER_FULL_EVERY_DAYS` | no | Full reconcile interval (default `7`) |
-| `AIRINGCAL_SCHEDULER_RUN_ON_START` | no | `true` runs one sync immediately on container start |
-| `AIRINGCAL_SCHEDULER_BACKUP_BEFORE_SYNC` | no | `true` (Compose default) runs checkpoint backup before each scheduled sync |
-| `AIRINGCAL_BUILDER_BACKUP_DIR` | no | Checkpoint backup destination (default `<sqlite-dir>/backups`) |
-| `AIRINGCAL_BUILDER_BACKUP_KEEP` | no | When set ≥1, scheduler prunes older `builder-checkpoint-*.sqlite` files after backup (Compose default `10`) |
-
-Long-running scheduler: `tsx apps/node-jobs/src/cli/portable-scheduler.ts`. One-shot checkpoint backup: `tsx apps/node-jobs/src/cli/portable-checkpoint-backup.ts`. Restore: `tsx apps/node-jobs/src/cli/portable-checkpoint-restore.ts <backup.sqlite>` (add `--force` to overwrite an existing file).
+One-shot checkpoint backup: `tsx apps/node-jobs/src/cli/portable-checkpoint-backup.ts`. Restore: `tsx apps/node-jobs/src/cli/portable-checkpoint-restore.ts <backup.sqlite>` (add `--force` to overwrite an existing file).
 
 Cutover + rollback runbook (#73, owner-approved, never executed by CI): [`docs/v3/cutover-rollback.md`](../../../docs/v3/cutover-rollback.md) — preconditions (shadow gate 0, import complete, fresh checkpoint backup), cutover commands, rollback via checkpoint restore + re-publish, and the executed local rollback drill.
 
