@@ -1,7 +1,8 @@
 # ADR 0003 — GitHub Actions write path, portable→S3, public image URLs
 
 - Status: **Accepted (decision 2026-10-31, Asia/Shanghai)**. Implementation
-  **started** in-repo (workflow + portable writer + S3 checkpoint/public stores);
+  **landed in-repo** (workflow + portable bundle + S3 checkpoint/public stores +
+  image CDN redirect + QingLong/Compose scheduler/`qinglong-bundle` retired);
   **not production-live** until Secrets are filled and a successful
   `workflow_dispatch` is observed. See [`../v3/gha-portable-writer.md`](../v3/gha-portable-writer.md).
 - Parent: [Issue #67](https://github.com/Skyline-Gazer/AiringCal/issues/67),

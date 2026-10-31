@@ -24,7 +24,7 @@ Ops fill-in (placeholders until Secrets set): [`v3/gha-portable-writer.md`](v3/g
 3. [`plans/phase-1-node-jobs.md`](plans/phase-1-node-jobs.md) — write bundle (**Phase 1 closed**)
 4. [`plans/no-cf-write-path.md`](plans/no-cf-write-path.md) — no CF Cron/Workflow write
 5. [`apps/node-jobs/docs/operator-contract.md`](../apps/node-jobs/docs/operator-contract.md) — env, timeouts, exit codes
-6. QingLong panel: [QINGLONG airingcal-operator-checklist](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/usage/airingcal-operator-checklist.md)
+6. GHA writer ops: [`v3/gha-portable-writer.md`](v3/gha-portable-writer.md)
 
 ## v3 (in progress — parallel to v2 production)
 
@@ -47,26 +47,27 @@ and [Project #7](https://github.com/orgs/Skyline-Gazer/projects/7) (authoritativ
 | [`v3/airingcal-config.example.yaml`](v3/airingcal-config.example.yaml) | `airingcal.yaml` operator config (JSON twin alongside) |
 | [`v3/CURSOR_HANDOFF.md`](v3/CURSOR_HANDOFF.md) | Historical handoff snapshot (2026-10-16) — verify live refs before relying on it |
 
-Code entry points: `apps/v3-read-worker` (CF), `packages/v3-{core,builder,read,adapters}`,
-`apps/node-jobs/src/cli/portable-*` (builder/scheduler/backup/gc/migration CLIs).
+Code entry points: `apps/web-worker` (CF read), `packages/v3-{core,builder,read,adapters}`,
+`apps/node-jobs/src/cli/gha-portable-writer*.ts` + `portable-*` (backup/gc/migration CLIs).
 
 ## Plans (`docs/plans/`)
 
 > **Git write origin: GitHub** (`Skyline-Gazer/AiringCal`, `dev`). ADR 0002’s
 > CNB-primary model was not activated; see the
 > [2026-10-27 amendment](plans/adr-0002-cnb-primary-migration.md#amendment-2026-10-27-github-primary).
-> **Data-plane write target:** [ADR 0003](plans/adr-0003-gha-portable-write.md)
-> (GHA portable→S3; accepted, not implemented). Open PRs against `dev`.
+> **Data-plane write:** [ADR 0003](plans/adr-0003-gha-portable-write.md)
+> (GHA portable→S3; **implemented in repo**; not production-live until Secrets +
+> successful `workflow_dispatch`). Open PRs against `dev`.
 
 | File | Purpose |
 | --- | --- |
 | `phase-0-web-worker.md` | Single read Worker |
-| `phase-1-node-jobs.md` | node-jobs + bundle |
+| `phase-1-node-jobs.md` | node-jobs + bundle (Phase 1 closed; artifact renamed to `portable-bundle`) |
 | `no-cf-write-path.md` | AC-3-01 confirmation |
 | `kv-binding-decision.md` | AC-3-03 — keep KV binding |
 | `abandoned-vps-route.md` | Do not use VPS write |
 | `adr-0002-cnb-primary-migration.md` | CNB-primary design, superseded in part by the 2026-10-27 GitHub-primary amendment (#139) |
-| `adr-0003-gha-portable-write.md` | Accepted 2026-10-31: GHA portable→S3 writer, public images, retire QingLong/D1-KV/Docker/CNB write (not implemented yet) |
+| `adr-0003-gha-portable-write.md` | Accepted 2026-10-31: GHA portable→S3 writer, public images, retire QingLong/D1-KV/Docker/CNB write (**code landed**; Secrets TBD) |
 
 ## Runbooks (`docs/runbook/`)
 

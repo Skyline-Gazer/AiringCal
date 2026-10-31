@@ -1,15 +1,18 @@
 # node-jobs operator contract (AC-1-08)
 
-Canonical env, timeouts, and exit behavior for **QingLong** and local CLI. QingLong wrapper codes: [QINGLONG errors/airingcal-sync](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/errors/airingcal-sync.md).
+Canonical env, timeouts, and exit behavior for the **GHA portable writer** and local CLI
+(ADR 0003). Ops fill-in: [`docs/v3/gha-portable-writer.md`](../../../docs/v3/gha-portable-writer.md).
+Historical QingLong wrapper codes (archive only): [QINGLONG errors/airingcal-sync](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/errors/airingcal-sync.md).
 
 ## CLI
 
 | Command | Entry |
 | --- | --- |
-| Sync | `airingcal-sync.mjs` → `runSync()` |
-| Backup | `airingcal-backup.mjs` → `runBackup()` |
+| GHA writer | `gha-portable-writer.mjs` → `runGhaPortableWriter()` |
+| Sync | `airingcal-sync.mjs` → `runSync()` (portable-only) |
+| Backup | `airingcal-backup.mjs` → `runBackup()` (legacy D1 export; migration/ops) |
 
-Build: `pnpm -F @airing-cal/node-jobs build` → `dist/qinglong-bundle/`.
+Build: `pnpm -F @airing-cal/node-jobs build` → `dist/portable-bundle/` (`airingcal-sync.mjs`, `gha-portable-writer.mjs`).
 
 ## Timeouts
 
@@ -60,11 +63,11 @@ Full enum: `src/adapters/errors.ts`.
 
 ## Portable builder sync (v3, optional)
 
-`runSync()` defaults to **portable** (`@airing-cal/v3-builder`, SQLite checkpoint) per ADR 0003. The Cloudflare D1/R2/KV write pipeline is opt-in only via `AIRINGCAL_BUILDER=legacy-d1` (or `legacy` / `cloudflare`).
+`runSync()` is **portable-only** (`@airing-cal/v3-builder`, SQLite checkpoint) per ADR 0003. `AIRINGCAL_BUILDER=legacy-d1` / `legacy` / `cloudflare` returns failed (retired).
 
 | Variable | Required (portable) | Notes |
 | --- | --- | --- |
-| `AIRINGCAL_BUILDER` | no | Default `portable`. Use `legacy-d1` only for the retired D1 path. |
+| `AIRINGCAL_BUILDER` | no | Default / only supported value: `portable` (or unset). |
 | `AIRINGCAL_BUILDER_SQLITE_PATH` | yes | Local filesystem path; parent dirs created |
 | `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `BANGUMI_GIT_COMMIT_SHA` | yes | Same as cloud sync |
 | `BGM_TOKEN` | yes | Bangumi fetch |
@@ -89,7 +92,7 @@ Cloudflare variables are **not** read on the portable path.
 
 ### Historical: QingLong / Compose scheduler
 
-QingLong + `qinglong-bundle` and the Compose long-running `portable-scheduler` are **retired** as production writers (ADR 0003). Use [GHA portable writer](../../../docs/v3/gha-portable-writer.md). Local Compose **web** / optional `sync` profile: [`deploy/v3/README.md`](../../../deploy/v3/README.md).
+QingLong + `qinglong-bundle` and Compose `portable-scheduler` are **removed** as production writers (ADR 0003). Use [GHA portable writer](../../../docs/v3/gha-portable-writer.md). Local Compose **web** / optional `sync` profile: [`deploy/v3/README.md`](../../../deploy/v3/README.md).
 
 One-shot checkpoint backup: `tsx apps/node-jobs/src/cli/portable-checkpoint-backup.ts`. Restore: `tsx apps/node-jobs/src/cli/portable-checkpoint-restore.ts <backup.sqlite>` (add `--force` to overwrite an existing file).
 

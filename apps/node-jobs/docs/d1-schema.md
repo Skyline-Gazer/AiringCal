@@ -1,6 +1,11 @@
 # D1 schema apply order (AC-1-05)
 
-Apply **once per D1 database** used by node-jobs and web-worker, **before first QingLong sync**.
+> **Legacy / migration only.** ADR 0003 production write is portable→S3 via GHA;
+> D1 is no longer the write data plane. Keep this doc for `portable-legacy-*` CLIs
+> and any remaining D1 read/migration surfaces.
+
+Apply **once per D1 database** used by migration CLIs or historical Workers, **before**
+those tools touch the database.
 
 ## Order
 

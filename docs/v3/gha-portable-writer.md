@@ -61,9 +61,9 @@ Same names as above. Also:
 2. Actions → **Portable writer (GHA)** → `workflow_dispatch` (optional `force_mode=full`).
 3. Expect job exit 0, checkpoint object `checkpoints/builder.sqlite`, public pointer `public/current-release.json`, and Bark silent on success.
 
-## Not in this slice / remaining
+## Not in this slice / remaining backlog
 
-- Non-R2 S3 vendor verification
-- Hard-delete of legacy D1 write modules / `qinglong-bundle` CI artifact (default path is already portable; Compose scheduler removed)
-- Enabling the schedule before the first manual green run (owner choice)
-- Netlify / Vercel read adapters
+- Non-R2 S3 vendor verification (TODO)
+- Netlify / Vercel read adapters (TODO)
+- Enabling the schedule before the first manual green run (owner choice; needs Secrets)
+- Physical deletion of unused D1 adapter modules still used by `portable-legacy-*` migration CLIs
