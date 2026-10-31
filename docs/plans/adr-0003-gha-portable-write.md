@@ -1,7 +1,9 @@
 # ADR 0003 — GitHub Actions write path, portable→S3, public image URLs
 
-- Status: **Accepted (decision 2026-10-31, Asia/Shanghai)**. Implementation has
-  **not** started; merging this ADR does **not** change production behaviour.
+- Status: **Accepted (decision 2026-10-31, Asia/Shanghai)**. Implementation
+  **started** in-repo (workflow + portable writer + S3 checkpoint/public stores);
+  **not production-live** until Secrets are filled and a successful
+  `workflow_dispatch` is observed. See [`../v3/gha-portable-writer.md`](../v3/gha-portable-writer.md).
 - Parent: [Issue #67](https://github.com/Skyline-Gazer/AiringCal/issues/67),
   Project #7.
 - Relates: #69–#73 (v3 gates), #133 / #135 / #136 (CNB write execution — superseded

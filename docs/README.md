@@ -39,6 +39,7 @@ and [Project #7](https://github.com/orgs/Skyline-Gazer/projects/7) (authoritativ
 | Doc | Purpose |
 | --- | --- |
 | [`v3/implementation-baseline.md`](v3/implementation-baseline.md) | Confirmed architecture, phases, delivery gates |
+| [`v3/gha-portable-writer.md`](v3/gha-portable-writer.md) | ADR 0003 GHA writer ops + Secrets fill-in list |
 | [`v3/p0-contract-audit.md`](v3/p0-contract-audit.md) | v2 contract audit + CF/EdgeOne capability matrix (rows stay *candidate* until staging) |
 | [`v3/p0-contract-evidence.md`](v3/p0-contract-evidence.md) | Evidence table: every implemented path with its test/CI guard |
 | [`v3/portable-read-gateway.md`](v3/portable-read-gateway.md) | Filesystem read gateway + worker-safe subpaths |

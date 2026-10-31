@@ -3,7 +3,6 @@ import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { CompleteFullFetch } from '@airing-cal/bgm-api'
 import { subjectDetailImages } from '@airing-cal/domain'
-import { FilesystemPublicStore, MemoryPublicStore, type PublicStore } from '@airing-cal/v3-core'
 import {
   openBuilderDatabase,
   runBuilderOnce,
@@ -19,20 +18,13 @@ import { readSyncUserConfig } from './config.ts'
 import { mediaSubjectsFromFetch } from './media-refresh.ts'
 import { createEnrichMediaSubjectsFromFetch } from './media-subject-resolve.ts'
 import { runPortableMediaRefresh } from './portable-media.ts'
+import { mirrorImageRootToPublicStore } from './mirror-images.ts'
+import { createPortablePublicStoreFromEnv } from './portable-public-store.ts'
 import { materializePortableThumbs } from './portable-thumb.ts'
 import { logPublicSnapshotGcDryRun } from '../cli/portable-public-gc.ts'
 
 function shouldLogGcDryRunAfterPublish(env: Record<string, string | undefined>): boolean {
   return ['1', 'true', 'yes'].includes((env.AIRINGCAL_GC_LOG_AFTER_PUBLISH ?? '').trim().toLowerCase())
-}
-
-function createPortablePublicStore(env: Record<string, string | undefined>): PublicStore {
-  const publicDir = env.AIRINGCAL_BUILDER_PUBLIC_DIR?.trim()
-  if (publicDir) {
-    mkdirSync(publicDir, { recursive: true })
-    return new FilesystemPublicStore(publicDir)
-  }
-  return new MemoryPublicStore()
 }
 
 export type PortableMediaRefreshMode = 'skip' | 'refresh'
@@ -123,7 +115,7 @@ export async function runPortableBuilderSync(
   const db = openBuilderDatabase(builderConfig.sqlitePath)
   const state = new SqliteBuilderStateStore(db)
   const runs = new SyncRunStore(db)
-  const publicStore = createPortablePublicStore(env)
+  const publicStore = createPortablePublicStoreFromEnv(env)
   const runId = randomUUID()
   const ownerToken = env.AIRINGCAL_BUILDER_OWNER?.trim() || `node-jobs-${runId.slice(0, 8)}`
 
@@ -140,6 +132,7 @@ export async function runPortableBuilderSync(
 
   if (!fetchInput) {
     db.close()
+    publicStore.close?.()
     return {
       job: 'airingcal-sync',
       status: 'failed',
@@ -232,6 +225,22 @@ export async function runPortableBuilderSync(
       !failed
       && !skipped
       && builderConfig.publishAfterSync
+      && mediaMode === 'refresh'
+    ) {
+      try {
+        const imageRoot = readPortableImageRoot(env, mediaMode)
+        const mirrored = await mirrorImageRootToPublicStore(imageRoot, publicStore)
+        console.log(JSON.stringify({ status: 'info', stage: 'public_image_mirror', ...mirrored }))
+        mediaSummary += ` images_mirrored=${mirrored.uploaded}`
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'image_mirror_failed'
+        return { job: 'airingcal-sync', status: 'failed', message }
+      }
+    }
+    if (
+      !failed
+      && !skipped
+      && builderConfig.publishAfterSync
       && env.AIRINGCAL_BUILDER_PUBLIC_DIR?.trim()
       && shouldLogGcDryRunAfterPublish(env)
     ) {
@@ -250,5 +259,6 @@ export async function runPortableBuilderSync(
     }
   } finally {
     db.close()
+    publicStore.close?.()
   }
 }

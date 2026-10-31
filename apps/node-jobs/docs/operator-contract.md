@@ -70,10 +70,15 @@ When `AIRINGCAL_BUILDER=portable`, `runSync()` uses `@airing-cal/v3-builder` (SQ
 | `BGM_TOKEN` | yes | Bangumi fetch |
 | `AIRINGCAL_BUILDER_MODE` | no | `incremental` (default) or `full` |
 | `AIRINGCAL_BUILDER_PUBLISH` | no | `true` runs checkpoint publish after sync |
-| `AIRINGCAL_BUILDER_PUBLIC_DIR` | when publishing | Root for immutable snapshot objects + `public/current-release.json` pointer (filesystem `PublicStore`) |
+| `AIRINGCAL_BUILDER_PUBLIC_DIR` | when publishing (filesystem) | Root for immutable snapshot objects + `public/current-release.json` pointer (filesystem `PublicStore`) |
+| `AIRINGCAL_PUBLIC_S3_*` | when publishing (S3/R2) | If set, portable publish uses S3-compatible `PublicStore` instead of `PUBLIC_DIR` (see ADR 0003 / `docs/v3/gha-portable-writer.md`) |
 | `AIRINGCAL_BUILDER_OWNER` | no | Lease owner token; defaults per run |
 
-When `AIRINGCAL_BUILDER_PUBLISH=true` and `AIRINGCAL_BUILDER_PUBLIC_DIR` is unset, publish uses in-process memory only (dev smoke; not durable).
+When `AIRINGCAL_BUILDER_PUBLISH=true` and neither `AIRINGCAL_PUBLIC_S3_*` nor `AIRINGCAL_BUILDER_PUBLIC_DIR` is set, publish uses in-process memory only (dev smoke; not durable).
+
+### GHA one-shot writer (ADR 0003)
+
+Entry: `scripts/gha-portable-writer.sh` → `tsx src/cli/gha-portable-writer-main.ts`. Workflow: `.github/workflows/portable-writer.yml` (04:00 Asia/Shanghai). Requires `AIRINGCAL_CHECKPOINT_S3_*` for durable SQLite checkpoint + lease, and `AIRINGCAL_PUBLIC_S3_*` for Release publish. Optional `BARK_URL` on failure. Fill-in list: [`docs/v3/gha-portable-writer.md`](../../../docs/v3/gha-portable-writer.md).
 
 | `AIRINGCAL_BUILDER_MEDIA_REFRESH` | no | `skip` (default): no download; URL-only `image_status`. `refresh`: download covers to filesystem via builder SQLite `subject_media` (requires `PUBLIC_DIR` or `IMAGE_DIR`). |
 | `AIRINGCAL_BUILDER_IMAGE_DIR` | when refresh without `PUBLIC_DIR` | Root for immutable `images/{hash}/original` blobs (same key layout as R2). |

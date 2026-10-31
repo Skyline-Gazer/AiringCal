@@ -1,0 +1,69 @@
+# ADR 0003 — production portable writer (GitHub Actions one-shot).
+# Schedule: 04:00 Asia/Shanghai == 20:00 UTC.
+name: Portable writer (GHA)
+
+on:
+  schedule:
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+    inputs:
+      force_mode:
+        description: Optional override (incremental|full). Empty = checkpoint self-judge.
+        required: false
+        default: ''
+
+concurrency:
+  group: airingcal-portable-writer
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  write:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 9.15.9
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Run portable writer
+        env:
+          AIRINGCAL_BUILDER: portable
+          AIRINGCAL_BUILDER_SQLITE_PATH: /tmp/airingcal-builder.sqlite
+          AIRINGCAL_BUILDER_IMAGE_DIR: /tmp/airingcal-images
+          AIRINGCAL_BUILDER_PUBLISH: 'true'
+          AIRINGCAL_BUILDER_MEDIA_REFRESH: refresh
+          AIRINGCAL_FULL_EVERY_DAYS: '7'
+          AIRINGCAL_BUILDER_MODE: ${{ github.event.inputs.force_mode || '' }}
+          BGM_TOKEN: ${{ secrets.BGM_TOKEN }}
+          AIRINGCAL_USERS_JSON: ${{ secrets.AIRINGCAL_USERS_JSON }}
+          AIRINGCAL_PRIMARY_USER_ID: ${{ secrets.AIRINGCAL_PRIMARY_USER_ID }}
+          BANGUMI_GIT_COMMIT_SHA: ${{ github.sha }}
+          BARK_URL: ${{ secrets.BARK_URL }}
+          AIRINGCAL_CHECKPOINT_S3_ENDPOINT: ${{ secrets.AIRINGCAL_CHECKPOINT_S3_ENDPOINT }}
+          AIRINGCAL_CHECKPOINT_S3_REGION: ${{ secrets.AIRINGCAL_CHECKPOINT_S3_REGION }}
+          AIRINGCAL_CHECKPOINT_S3_BUCKET: ${{ secrets.AIRINGCAL_CHECKPOINT_S3_BUCKET }}
+          AIRINGCAL_CHECKPOINT_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_CHECKPOINT_S3_ACCESS_KEY_ID }}
+          AIRINGCAL_CHECKPOINT_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_CHECKPOINT_S3_SECRET_ACCESS_KEY }}
+          AIRINGCAL_PUBLIC_S3_ENDPOINT: ${{ secrets.AIRINGCAL_PUBLIC_S3_ENDPOINT }}
+          AIRINGCAL_PUBLIC_S3_REGION: ${{ secrets.AIRINGCAL_PUBLIC_S3_REGION }}
+          AIRINGCAL_PUBLIC_S3_BUCKET: ${{ secrets.AIRINGCAL_PUBLIC_S3_BUCKET }}
+          AIRINGCAL_PUBLIC_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_PUBLIC_S3_ACCESS_KEY_ID }}
+          AIRINGCAL_PUBLIC_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_PUBLIC_S3_SECRET_ACCESS_KEY }}
+          AIRINGCAL_PUBLIC_BASE_URL: ${{ vars.AIRINGCAL_PUBLIC_BASE_URL }}
+        run: bash scripts/gha-portable-writer.sh
