@@ -36,20 +36,27 @@ jobs:
           node-version: '24'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # GHA service containers cannot pass custom command args, and the official
-      # minio image needs `server /data` to start — so launch it as a step instead.
+      # Official minio/minio and quay.io/minio images are no longer anonymously
+      # pullable. Use the coollabsio GHCR mirror; create the bucket with AWS CLI
+      # (preinstalled on ubuntu-latest) — the server image does not ship `mc`.
       - name: Start MinIO (S3-compatible object store)
+        env:
+          MINIO_ROOT_USER: airingcal-ci
+          MINIO_ROOT_PASSWORD: airingcal-ci-secret
+          AWS_ACCESS_KEY_ID: airingcal-ci
+          AWS_SECRET_ACCESS_KEY: airingcal-ci-secret
+          AWS_DEFAULT_REGION: us-east-1
         run: |
           docker run -d --name minio -p 9000:9000 \
-            -e MINIO_ROOT_USER=airingcal-ci \
-            -e MINIO_ROOT_PASSWORD=airingcal-ci-secret \
-            minio/minio:latest server /data
+            -e MINIO_ROOT_USER \
+            -e MINIO_ROOT_PASSWORD \
+            ghcr.io/coollabsio/minio:RELEASE.2025-10-15T17-29-55Z server /data
           for i in $(seq 1 30); do
             curl -sf http://127.0.0.1:9000/minio/health/live && break
             sleep 1
           done
           curl -sf http://127.0.0.1:9000/minio/health/live
-          docker exec minio sh -c 'mc alias set local http://127.0.0.1:9000 airingcal-ci airingcal-ci-secret && mc mb local/airingcal-compat'
+          aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://airingcal-compat
       - name: S3 conditional-put/CAS/412 compatibility suite (MinIO only — not a real-R2 PASS)
         env:
           AIRINGCAL_S3_COMPAT_ENDPOINT: http://127.0.0.1:9000
