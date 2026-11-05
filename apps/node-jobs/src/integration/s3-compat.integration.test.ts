@@ -77,7 +77,8 @@ test('s3 compat: conditional put and 412 semantics (If-None-Match */If-Match)', 
     // HEAD exposes size + etag; list returns keys under the prefix.
     const head = await objects.head(`${prefix}cond.json`)
     assert.equal(head?.size, 2)
-    assert.deepEqual(await objects.list(prefix), [`${prefix}cond.json`])
+    const listed = await objects.list?.(prefix)
+    assert.deepEqual(listed, [`${prefix}cond.json`])
   } finally {
     await objects.delete?.(`${prefix}cond.json`)
     objects.close()
