@@ -2,15 +2,19 @@ import { randomUUID } from 'node:crypto'
 import { openBuilderDatabase, resolveScheduledSyncMode, SyncRunStore } from '@airing-cal/v3-builder'
 import type { ConditionalObjectStore } from '../adapters/object-store.ts'
 import {
+  DEFAULT_CHECKPOINT_OBJECT_KEY,
   acquireCheckpointLease,
   releaseCheckpointLease,
+  renewCheckpointLease,
   restoreCheckpointToFile,
   uploadCheckpointFromFile,
 } from '../adapters/s3-checkpoint-store.ts'
 import type { JobSummary } from '../contracts.ts'
 import { notifyBarkFailure } from '../notify/bark.ts'
+import type { PortableBuilderSyncOverrides } from '../sync/run-portable.ts'
 import { runSync } from '../sync/run.ts'
 
+/** ADR 0003 GHA one-shot writer mode resolution. */
 export function resolveWriterSyncMode(
   nowUnix: number,
   fullEveryDays: number,
@@ -23,7 +27,10 @@ export interface GhaPortableWriterDeps {
   env: Record<string, string | undefined>
   nowUnix?: number
   checkpointStore: ConditionalObjectStore
-  runSync?: (env: Record<string, string | undefined>) => Promise<JobSummary>
+  runSync?: (
+    env: Record<string, string | undefined>,
+    overrides?: PortableBuilderSyncOverrides,
+  ) => Promise<JobSummary>
   notifyFailure?: (
     env: Record<string, string | undefined>,
     payload: { title: string; body: string },
@@ -108,6 +115,38 @@ export async function runGhaPortableWriter(deps: GhaPortableWriterDeps): Promise
   try {
     const restored = await restoreCheckpointToFile(deps.checkpointStore, sqlitePath)
     console.log(JSON.stringify({ status: 'info', stage: 'checkpoint_restore', result: restored }))
+    const priorCheckpointEtag = restored.status === 'restored' ? restored.etag : null
+    let checkpointUploaded = false
+
+    const uploadCheckpoint = async (): Promise<void> => {
+      const uploaded = await uploadCheckpointFromFile(
+        deps.checkpointStore,
+        sqlitePath,
+        undefined,
+        { priorEtag: priorCheckpointEtag },
+      )
+      if (uploaded.status !== 'uploaded') {
+        throw new Error('checkpoint CAS precondition failed; aborting before release commit')
+      }
+      checkpointUploaded = true
+      console.log(JSON.stringify({ status: 'info', stage: 'checkpoint_upload', result: uploaded }))
+    }
+
+    // C4: preCommit runs inside the publish path immediately before the release pointer
+    // commit — checkpoint CAS upload first, then lease renew; failure aborts the commit.
+    const publishPreCommit = async (): Promise<void> => {
+      await uploadCheckpoint()
+      const renewUnix = deps.nowUnix ?? Math.floor(Date.now() / 1000)
+      const renewed = await renewCheckpointLease(deps.checkpointStore, {
+        ownerToken,
+        nowUnix: renewUnix,
+        ttlSeconds: leaseTtlSeconds,
+      })
+      if (renewed.status === 'lost') {
+        throw new Error('checkpoint lease lost before release commit; aborting publish')
+      }
+      console.log(JSON.stringify({ status: 'info', stage: 'checkpoint_lease_renew', result: renewed }))
+    }
 
     const forced = env.AIRINGCAL_BUILDER_MODE?.trim().toLowerCase()
     if (forced === 'full' || forced === 'incremental') {
@@ -136,14 +175,17 @@ export async function runGhaPortableWriter(deps: GhaPortableWriterDeps): Promise
       full_every_days: fullEveryDays,
     }))
 
-    const summary = await runSyncImpl(syncEnv)
+    const summary = await runSyncImpl(syncEnv, { publishPreCommit })
     if (summary.status === 'failed') {
       await safeNotify(notifyFailure, env, summary.message)
       return { status: 'failed', mode, message: summary.message, summary }
     }
 
-    const uploaded = await uploadCheckpointFromFile(deps.checkpointStore, sqlitePath)
-    console.log(JSON.stringify({ status: 'info', stage: 'checkpoint_upload', result: uploaded }))
+    // No pointer commit happened (skipped / no-change / already current): still persist
+    // run-history and any SQLite drift with the same CAS discipline.
+    if (!checkpointUploaded) {
+      await uploadCheckpoint()
+    }
 
     return {
       status: summary.status === 'skipped' ? 'skipped' : 'success',

@@ -8,6 +8,7 @@ import {
   runBuilderOnce,
   SqliteBuilderStateStore,
   SyncRunStore,
+  type PublishCommitContext,
   type SyncRunMode,
 } from '@airing-cal/v3-builder'
 import { createFilesystemBlobStore } from '../adapters/filesystem-blob-store.ts'
@@ -75,6 +76,8 @@ export interface PortableBuilderSyncOverrides {
   fetchImage?: (url: string, signal: AbortSignal) => Promise<Response>
   /** Test/injection seam: replaces the env-derived public store (caller owns closing it). */
   publicStore?: ClosablePublicStore
+  /** C4 deferred publish hook: runs right before the release pointer commit. */
+  publishPreCommit?: (context?: PublishCommitContext) => Promise<void>
 }
 
 /** Portable v3 builder path: SQLite checkpoint via @airing-cal/v3-builder (no Cloudflare D1/R2). */
@@ -243,6 +246,7 @@ export async function runPortableBuilderSync(
           console.log(JSON.stringify({ status: 'info', stage: 'publish_image_gate', ...gate }))
         }
         : undefined,
+      preCommit: overrides.publishPreCommit,
     })
 
     const sync = result.sync.status

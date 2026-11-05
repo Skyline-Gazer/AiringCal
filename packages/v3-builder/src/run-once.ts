@@ -9,6 +9,8 @@ export interface BuilderRunOnceDeps extends BuilderSyncJobDeps {
   publishAfterSync?: boolean
   /** Publish gate (C2): called with the materialized Snapshot before any pointer commit. */
   prePublish?: (snapshot: PublicSnapshotV1) => Promise<void>
+  /** C4 deferred commit: called immediately before the release pointer commit. */
+  preCommit?: PublishCheckpointDeps['preCommit']
 }
 
 export interface BuilderRunOnceResult {
@@ -27,6 +29,7 @@ export async function runBuilderOnce(deps: BuilderRunOnceDeps): Promise<BuilderR
       publicStore: deps.publicStore,
       manifestMetadata: deps.manifestMetadata,
       prePublish: deps.prePublish,
+      preCommit: deps.preCommit,
     })
     return { sync, publish }
   }
@@ -35,6 +38,7 @@ export async function runBuilderOnce(deps: BuilderRunOnceDeps): Promise<BuilderR
     publicStore: deps.publicStore,
     manifestMetadata: deps.manifestMetadata,
     prePublish: deps.prePublish,
+    preCommit: deps.preCommit,
   })
   return { sync, publish }
 }

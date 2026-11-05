@@ -19,6 +19,7 @@ export type PublishCheckpointStatus =
   | 'already_current'
   | 'readback_mismatch'
   | 'pre_publish_failed'
+  | 'pre_commit_failed'
   | 'cas_conflict'
   | 'cas_unsupported'
 
@@ -27,6 +28,13 @@ export interface PublishCheckpointResult {
   pointer: PublicReleasePointer | null
   /** Detail when the publish aborted before or during the commit sequence. */
   error?: string
+}
+
+/** Context handed to the preCommit hook right before the release pointer commit. */
+export interface PublishCommitContext {
+  snapshot: PublicSnapshotV1
+  expected: PublicReleasePointer | null
+  pointer: PublicReleasePointer
 }
 
 export interface PublishCheckpointDeps {
@@ -39,6 +47,11 @@ export interface PublishCheckpointDeps {
    * Throwing aborts the publish with `pre_publish_failed` and leaves the pointer untouched.
    */
   prePublish?: (snapshot: PublicSnapshotV1) => Promise<void>
+  /**
+   * C4 deferred commit: runs immediately before `commitRelease` (e.g. checkpoint CAS upload
+   * + lease renew). Throwing aborts with `pre_commit_failed` and leaves the pointer untouched.
+   */
+  preCommit?: (context: PublishCommitContext) => Promise<void>
 }
 
 /**
@@ -124,6 +137,16 @@ export async function publishBuilderCheckpoint(deps: PublishCheckpointDeps): Pro
     published_at_unix: snapshot.published_at,
     artifact_ref: artifactRef,
     ...(manifestRef ? { manifest_ref: manifestRef } : {}),
+  }
+
+  try {
+    await deps.preCommit?.({ snapshot, expected, pointer })
+  } catch (error) {
+    return {
+      status: 'pre_commit_failed',
+      pointer: null,
+      error: error instanceof Error ? error.message : String(error),
+    }
   }
 
   const commit = await deps.publicStore.commitRelease(expected, pointer)

@@ -5,13 +5,14 @@ import {
   parsePublicSnapshotManifestV1,
   type PublicSnapshotManifestV1,
 } from '@airing-cal/domain'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   PUBLIC_RELEASE_POINTER_KEY,
   FilesystemPublicStore,
   MemoryPublicStore,
+  type PublicStore,
 } from '@airing-cal/v3-core'
 import { openBuilderDatabase } from './migrate.ts'
 import { publishBuilderCheckpoint } from './publish-checkpoint.ts'
@@ -268,3 +269,84 @@ test('publishBuilderCheckpoint publishes a distinct manifest per generation', as
   assert.equal(manifest.generation, 2)
   assert.equal(manifest.snapshot_key, second.pointer!.artifact_ref)
 })
+
+test('preCommit failure aborts before pointer commit and a retry recovers (C4)', async () => {
+  const db = openBuilderDatabase(':memory:')
+  const state = new SqliteBuilderStateStore(db)
+  const runs = new SyncRunStore(db)
+  const publicStore = new MemoryPublicStore()
+  const metadata = {
+    source_observed_at: '2026-01-01T00:00:00.000Z',
+    git_sha: 'a'.repeat(40),
+  }
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-precommit',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => emptyFetch(),
+    now: () => 1_700_000_000_000,
+  })
+
+  const first = await publishBuilderCheckpoint({
+    state,
+    publicStore,
+    manifestMetadata: metadata,
+    preCommit: async () => {
+      throw new Error('checkpoint CAS precondition failed')
+    },
+  })
+  assert.equal(first.status, 'pre_commit_failed')
+  assert.match(first.error ?? '', /checkpoint CAS precondition failed/)
+  assert.equal(publicStore.current, null)
+
+  const retry = await publishBuilderCheckpoint({ state, publicStore, manifestMetadata: metadata })
+  assert.equal(retry.status, 'published')
+  const committed = await publicStore.getCurrentRelease()
+  assert.equal(committed?.generation, 1)
+})
+
+test('pointer CAS rejects the commit when the expected prior pointer mismatches (C4)', async () => {
+  const db = openBuilderDatabase(':memory:')
+  const state = new SqliteBuilderStateStore(db)
+  const runs = new SyncRunStore(db)
+  const publicStore = new MemoryPublicStore()
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-cas',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => emptyFetch(),
+    now: () => 1_700_000_000_000,
+  })
+
+  class ConflictCommitStore implements PublicStore {
+    constructor(private readonly inner: MemoryPublicStore) {}
+    async getCurrentRelease() {
+      return this.inner.getCurrentRelease()
+    }
+    async getSnapshotBytes(ref: string) {
+      return this.inner.getSnapshotBytes(ref)
+    }
+    async putImmutableObject(key: string, body: Uint8Array, contentType: string) {
+      return this.inner.putImmutableObject(key, body, contentType)
+    }
+    async commitRelease() {
+      return 'conflict' as const
+    }
+  }
+
+  const result = await publishBuilderCheckpoint({
+    state,
+    publicStore: new ConflictCommitStore(publicStore),
+    manifestMetadata: {
+      source_observed_at: '2026-01-01T00:00:00.000Z',
+      git_sha: 'a'.repeat(40),
+    },
+  })
+  assert.equal(result.status, 'cas_conflict')
+  assert.equal(publicStore.current, null)
+})
+

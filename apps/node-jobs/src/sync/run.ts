@@ -1,5 +1,5 @@
 import type { JobSummary } from '../contracts.ts'
-import { runPortableBuilderSync } from './run-portable.ts'
+import { runPortableBuilderSync, type PortableBuilderSyncOverrides } from './run-portable.ts'
 
 /** ADR 0003: only portable write path remains. */
 export function resolveSyncBuilderKind(
@@ -11,7 +11,10 @@ export function resolveSyncBuilderKind(
 }
 
 /** Portable sync entry (ADR 0003). D1/KV QingLong write path removed. */
-export async function runSync(env: Record<string, string | undefined> = process.env): Promise<JobSummary> {
+export async function runSync(
+  env: Record<string, string | undefined> = process.env,
+  overrides: PortableBuilderSyncOverrides = {},
+): Promise<JobSummary> {
   if (resolveSyncBuilderKind(env) === 'rejected') {
     return {
       job: 'airingcal-sync',
@@ -20,5 +23,5 @@ export async function runSync(env: Record<string, string | undefined> = process.
         'AIRINGCAL_BUILDER=legacy-d1 (D1/KV write) is retired (ADR 0003); use portable + GitHub Actions writer',
     }
   }
-  return runPortableBuilderSync(env)
+  return runPortableBuilderSync(env, overrides)
 }

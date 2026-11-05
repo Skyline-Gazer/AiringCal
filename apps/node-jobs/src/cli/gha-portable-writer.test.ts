@@ -175,3 +175,82 @@ test('runGhaPortableWriter notifies Bark when sync fails and still releases leas
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('deferred publish uploads checkpoint and renews lease before pointer commit (C4)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-gha-c4-'))
+  const sqlitePath = join(dir, 'builder.sqlite')
+  const objects = new MemoryObjectStore()
+  try {
+    let checkpointUploadedBeforePointerCommit = false
+    const result = await runGhaPortableWriter({
+      env: {
+        AIRINGCAL_BUILDER_SQLITE_PATH: sqlitePath,
+        AIRINGCAL_BUILDER_OWNER: 'gha-c4',
+      },
+      nowUnix: 1_700_000_000,
+      checkpointStore: objects,
+      runSync: async (_env, overrides) => {
+        assert.ok(overrides?.publishPreCommit, 'deferred publish hook must be provided')
+        await overrides.publishPreCommit()
+        checkpointUploadedBeforePointerCommit =
+          (await objects.get(DEFAULT_CHECKPOINT_OBJECT_KEY)) !== null
+        const leased = JSON.parse(
+          new TextDecoder().decode((await objects.get('checkpoints/lease.json'))!.body),
+        ) as { owner_token: string; expires_at_unix: number }
+        assert.equal(leased.owner_token, 'gha-c4')
+        assert.equal(leased.expires_at_unix, 1_700_000_000 + 2_700)
+        return { job: 'airingcal-sync', status: 'success', message: 'ok' }
+      },
+      notifyFailure: async () => {},
+    })
+    assert.equal(result.status, 'success')
+    assert.equal(checkpointUploadedBeforePointerCommit, true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('checkpoint CAS failure aborts before the deferred pointer commit (C4)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-gha-cas-'))
+  const sqlitePath = join(dir, 'builder.sqlite')
+  const objects = new MemoryObjectStore()
+  try {
+    // Another writer's checkpoint is already present and gets replaced mid-run.
+    await objects.put(DEFAULT_CHECKPOINT_OBJECT_KEY, new TextEncoder().encode('other-writer'), {
+      contentType: 'application/octet-stream',
+    })
+    let pointerCommitted = false
+    const result = await runGhaPortableWriter({
+      env: {
+        AIRINGCAL_BUILDER_SQLITE_PATH: sqlitePath,
+        AIRINGCAL_BUILDER_MODE: 'incremental',
+        AIRINGCAL_BUILDER_OWNER: 'gha-cas',
+      },
+      nowUnix: 1_700_000_000,
+      checkpointStore: objects,
+      runSync: async (_env, overrides) => {
+        assert.ok(overrides?.publishPreCommit)
+        try {
+          await objects.put(DEFAULT_CHECKPOINT_OBJECT_KEY, new TextEncoder().encode('hijacked'), {
+            contentType: 'application/octet-stream',
+          })
+          await overrides.publishPreCommit()
+        } catch {
+          return { job: 'airingcal-sync', status: 'failed', message: 'checkpoint CAS precondition failed' }
+        }
+        pointerCommitted = true
+        return { job: 'airingcal-sync', status: 'success', message: 'ok' }
+      },
+      notifyFailure: async () => {},
+    })
+    assert.equal(result.status, 'failed')
+    assert.equal(pointerCommitted, false)
+    assert.equal(
+      new TextDecoder().decode((await objects.get(DEFAULT_CHECKPOINT_OBJECT_KEY))!.body),
+      'hijacked',
+      'stale publisher must not overwrite the newer checkpoint',
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

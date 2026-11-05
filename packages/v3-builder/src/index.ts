@@ -24,5 +24,6 @@ export {
   type PublishCheckpointDeps,
   type PublishCheckpointResult,
   type PublishCheckpointStatus,
+  type PublishCommitContext,
 } from './publish-checkpoint.ts'
 export { runBuilderOnce, type BuilderRunOnceDeps, type BuilderRunOnceResult } from './run-once.ts'
