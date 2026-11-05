@@ -17,6 +17,7 @@ export {
   type EdgeOneBlobListResult,
 } from './edgeone-public-store.ts'
 export { EdgeOneRuntimeAdapter } from './edgeone.ts'
+export { HttpPublicStore, type HttpPublicStoreOptions } from './http-public-store.ts'
 export {
   normalizeRuntimePlatformId,
   resolveRuntimePlatformIdFromEnv,
