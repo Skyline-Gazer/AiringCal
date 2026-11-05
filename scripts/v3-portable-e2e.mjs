@@ -4,8 +4,7 @@
  *
  * Publishes a synthetic release into a temp public store (via
  * `scripts/seed-portable-fixture.ts`), boots
- * `packages/v3-read/src/serve-node.ts` — the same server the Compose `web`
- * service runs — and asserts the v2-compatible read surface over real HTTP.
+ * `packages/v3-read/src/serve-node.ts` — the standalone Node HTTP reader — and asserts the v2-compatible read surface over real HTTP.
  *
  * No browser, no credentials, no network: CI-safe. A real-browser check of the
  * widget is recorded in `docs/v3/portable-read-gateway.md`.

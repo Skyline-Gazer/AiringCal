@@ -20,7 +20,7 @@ Status: Working implementation baseline; governed by [Issue #67](https://github.
 
 ## Runtime and state
 
-- Docker/Compose: local **read** smoke only. Compose write `scheduler` service **removed** (ADR 0003).
+- **Docker/Compose is entirely removed from v3 delivery**, including read deployment, write profiles, CI and image artifacts. Keep standalone portable HTTP smoke as functional coverage, not a Docker distribution.
 - Serverless / CI builder: GitHub Actions one-shot + private checkpoint object storage is the production writer (`.github/workflows/portable-writer.yml`). Prevent two authoritative builders publishing one site without explicit handoff.
 - Daily incremental sync and seven-day full reconciliation by default; manual sync supported. Failed core collections/calendar completeness halts publishing; previously verified subject details/images may be reused with explicit stale/partial status.
 - Credential-bearing private checkpoint and published public store are separate. All published content is explicitly public allowlisted data.

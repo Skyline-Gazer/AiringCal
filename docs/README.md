@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | **Read** | Cloudflare Worker `airing-cal-frontend` (multi-platform adapters follow) | `apps/web-worker` / `packages/v3-read` |
 | **Write** | GitHub Actions one-shot portable builder → S3 (R2 day one) | `.github/workflows/portable-writer.yml`, `apps/node-jobs` |
-| **Retired** | QingLong writer, Compose write scheduler, D1/KV write as default, VPS | historical docs / git history |
+| **Retired delivery targets** | QingLong writer, CNB runner, Docker/Compose (read and write), D1/KV as v3 write authority, VPS | historical docs / git history |
 
 ```text
 Bangumi → GHA portable writer (node-jobs)
