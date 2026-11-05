@@ -12,6 +12,7 @@
  * `README.md` / `docs/v3/edgeone-store.md`.
  */
 import { handleEdgeOneReadRequest } from '@airing-cal/v3-read/edgeone-read-handler'
+import { resolveNsfwShow } from '@airing-cal/v3-read/read-config'
 
 /** Isolate-local handler: built (and configuration-validated) on first use. */
 let cached = { baseUrl: '', handler: null }
@@ -21,7 +22,7 @@ function readHandlerFor(env) {
   if (cached.handler && cached.baseUrl === baseUrl) return cached.handler
   const handler = handleEdgeOneReadRequest({
     publicBaseUrl: baseUrl,
-    nsfwShow: env.NSFW_SHOW ? env.NSFW_SHOW !== 'false' : false,
+    nsfwShow: resolveNsfwShow(env.NSFW_SHOW),
     packageVersion: env.PACKAGE_VERSION,
   })
   cached = { baseUrl, handler }

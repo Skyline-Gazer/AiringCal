@@ -87,9 +87,9 @@ curl -sS 'https://<你的域名>/api/version' | jq '.git.commit_short, .package.
 |----|-----|
 | 认证 | 无 |
 | `AIRINGCAL_PUBLIC_BASE_URL` **unset** | Proxy bytes from R2 binding (`images/{hash}/original` or thumb.v2.webp → v1 fallback) |
-| `AIRINGCAL_PUBLIC_BASE_URL` **set** (ADR 0003) | **302** to `{BASE}/images/{hash}/original` or `{BASE}/images/{hash}/thumb.v2.webp` |
+| `AIRINGCAL_PUBLIC_BASE_URL` **set** (ADR 0003) | **302** to `{BASE}/<object key>` **only after the object is verified present** (thumb.v2 → thumb.v1, original; HEAD when the store supports it) |
 | Proxy success | `200` + immutable cache headers |
-| Proxy miss | `404` |
+| Object missing (with or without base URL) | `404` — never a 302 to a CDN key that would 404 (thumbs are optional for small covers) |
 
 Placeholder example: `AIRINGCAL_PUBLIC_BASE_URL=https://PLACEHOLDER_PUBLIC_CDN`.
 
@@ -133,7 +133,7 @@ Per hash: `HeadObject` thumb key → skip；否则 R2 get original → Cloudflar
 
 ### Thumb 补偿（无 Worker cron）
 
-生产不写 Worker `[triggers].crons`：QingLong sync 后 `node-jobs` 对 `POST /api/thumb-gen` 批量触发；漏网可运维带 Bearer 重 POST。D1 扫描逻辑见 `apps/web-worker/src/thumb-backfill-scheduled.ts`（单元测试，非 Cron 入口）。
+生产不写 Worker `[triggers].crons`：GitHub Actions portable writer 在构建期离线生成 thumb，需要补单时由 node-jobs 对 `POST /api/thumb-gen` 批量触发，或运维带 Bearer 重 POST。D1 扫描逻辑见 `apps/web-worker/src/thumb-backfill-scheduled.ts`（单元测试，非 Cron 入口）。
 
 ## 其他公开路由
 

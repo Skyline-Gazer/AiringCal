@@ -15,11 +15,15 @@ Cloudflare Workers (#72): [`apps/v3-read-worker`](../../apps/v3-read-worker/READ
 
 Every gateway validates `AIRINGCAL_PUBLIC_BASE_URL` when it builds its read configuration: absolute https, no query/fragment, placeholders rejected; invalid config returns **503** `INVALID_READ_CONFIG`.
 
+`NSFW_SHOW` is resolved by one helper on every surface (`resolveNsfwShow` in `packages/v3-read/src/read-config.ts`): unset/`true` **shows** NSFW content (v2 semantics), only `false` hides it — Cloudflare, EdgeOne and the node gateway therefore answer `/api/config` identically.
+
 ## Routes
 
 Same paths as `apps/web-worker` public reads: `/api/collections`, `/api/calendar`, `/api/config`, `/api/health`, `/api/version`, `/api/cache`, `/image/:hash`, `/image/:hash/thumb`.
 
 Cache-Control literals match `packages/v3-core/src/read-contract.ts`.
+
+`/image/*` redirects to the public base URL only for objects the gateway verified are present (thumb.v2 → thumb.v1, original), so a missing optional thumbnail is a plain **404** instead of a 302 to a CDN key that would 404.
 
 ## Static frontend (v2 widget)
 

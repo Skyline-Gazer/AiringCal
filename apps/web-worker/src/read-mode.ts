@@ -4,6 +4,7 @@ import type { CloudflareR2BucketBinding } from '@airing-cal/v3-adapters/cloudfla
 import { createPublicBaseUrlValidator } from '@airing-cal/v3-core/public-image-url'
 import { V2_CACHE_CONTROL } from '@airing-cal/v3-core/read-contract'
 import { createCloudflareReadHandler } from '@airing-cal/v3-read/cloudflare-read-handler'
+import { resolveNsfwShow } from '@airing-cal/v3-read/read-config'
 
 /** Env var that opts the public Worker into reading the v3 Release (C7). */
 export const READ_MODE_ENV = 'AIRINGCAL_READ_MODE'
@@ -102,7 +103,7 @@ export async function handleV3ReleaseReadRequest(
   return createCloudflareReadHandler({
     publicR2: env.AIRINGCAL_PUBLIC_R2,
     publicBaseUrl: config.mode === 'v3-release' ? config.publicBaseUrl : undefined,
-    nsfwShow: env.NSFW_SHOW !== 'false',
+    nsfwShow: resolveNsfwShow(env.NSFW_SHOW),
     packageVersion: env.PACKAGE_VERSION,
   })(request)
 }
