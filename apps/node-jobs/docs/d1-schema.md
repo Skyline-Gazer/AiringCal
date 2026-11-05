@@ -23,7 +23,7 @@ those tools touch the database.
    apps/node-jobs/schema.sql
    ```
 
-## Verify (QingLong)
+## Verify (historical QingLong wrapper; archive-only)
 
 - Wrapper preflight `D1_SCHEMA_MISSING` if `airingcal_job_leases` or required app tables missing.
 - Optional: `wrangler d1 execute <DB> --remote --command "SELECT name FROM sqlite_master WHERE type='table'"`

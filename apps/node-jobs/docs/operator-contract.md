@@ -112,7 +112,9 @@ Shadow-equivalence gate (#73): `tsx apps/node-jobs/src/cli/portable-shadow-gate.
 
 Legacy per-subject KV cleanup (post-cutover, #139): `tsx apps/node-jobs/src/cli/portable-legacy-cleanup.ts [--dry-run]` (needs `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `AIRING_CAL_D1_DATABASE_ID`, `AIRING_CAL_KV_NAMESPACE_ID`, `AIRING_CAL_R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`). Deletes the four legacy keys (`subject:detail:`, `subject:meta:`, `image:status:`, `subject:refresh:`) for at most 25 subjects (100 keys) per run, only when `migrate:read-mode` is `r2`, 14 days have elapsed since `switched_at`, and `public:current` resolves to a readable R2 object. Cursor persists in D1 `app_state['migrate:cleanup:cursor']`; a failing delete stops the run without advancing past the failed subject.
 
-Public snapshot GC (snapshot JSON only, not images): `tsx apps/node-jobs/src/cli/portable-public-gc.ts` (default dry-run; pass `--apply` to delete). Optional `AIRINGCAL_GC_MIN_GENERATIONS` (default `5`), `AIRINGCAL_GC_MIN_AGE_DAYS` (default `30`, uses snapshot `published_at`), `AIRINGCAL_GC_PINNED` (comma-separated artifact refs). Image GC uses current snapshot refs; optional `AIRINGCAL_GC_PINNED_IMAGES` (comma-separated content hashes). CLI: default dry-run for snapshots and images; `--apply` deletes snapshot JSON only; `--apply-images` deletes unreferenced `images/{hash}/` trees (can combine with `--apply`). `AIRINGCAL_GC_LOG_AFTER_PUBLISH=true` logs a dry-run plan after successful portable publish (Compose default on scheduler/sync).
+Public snapshot GC (snapshot JSON only, not images): `tsx apps/node-jobs/src/cli/portable-public-gc.ts` (default dry-run; pass `--apply` to delete). Optional `AIRINGCAL_GC_MIN_GENERATIONS` (default `5`), `AIRINGCAL_GC_MIN_AGE_DAYS` (default `30`, uses snapshot `published_at`), `AIRINGCAL_GC_PINNED` (comma-separated artifact refs). Image GC protects every retained snapshot — the current release AND its rollback candidates (`AIRINGCAL_GC_ROLLBACK_GENERATIONS`, default `2`, newest generations strictly below the current pointer) — and fails closed when a retained snapshot cannot be parsed; optional `AIRINGCAL_GC_PINNED_IMAGES` (comma-separated content hashes). CLI: default dry-run for snapshots and images; `--apply` deletes snapshot JSON only; `--apply-images` deletes unreferenced `images/{hash}/` trees (can combine with `--apply`). `AIRINGCAL_GC_LOG_AFTER_PUBLISH=true` logs a dry-run plan after successful portable publish (Compose default on scheduler/sync).
+
+Release pointer rollback (C9): `tsx apps/node-jobs/src/cli/portable-release-rollback.ts --generation <N> [--apply --writer-frozen] [--receipt <path>]` — freeze the writer (`AIRINGCAL_WRITER_ENABLED=false`), CAS the public pointer back to a prior generation, and emit a receipt with the resume/convergence rule. See [`docs/v3/cutover-rollback.md`](../../../docs/v3/cutover-rollback.md). Shadow-gate checklist: [`docs/v3/shadow-gate-checklist.md`](../../../docs/v3/shadow-gate-checklist.md).
 
 ## Required env (sync)
 
@@ -148,7 +150,7 @@ After sync media refresh persists large covers to R2, node-jobs may **fire-and-f
 | `AIRINGCAL_WEB_ORIGIN` | no | Used when URL unset: `{origin}/api/thumb-gen` |
 | `AIRINGCAL_THUMB_GEN_BEARER` | when URL/origin set | Must match Worker secret **`THUMB_GEN_BEARER`** |
 
-QingLong wrapper preflight (when URL is set) expects unauthenticated `POST` → **401**; see QINGLONG-REPO `AIRINGCAL_SKIP_THUMB_GEN_PROBE`.
+Historical QingLong wrapper preflight (archive only; when URL was set it) expected unauthenticated `POST` → **401**; see QINGLONG-REPO `AIRINGCAL_SKIP_THUMB_GEN_PROBE`.
 
 Backup uses same Cloudflare/R2/D1 vars; no Bangumi user JSON.
 
