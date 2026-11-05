@@ -6,6 +6,8 @@ import {
   FilesystemPublicStore,
   planPublicImageGc,
   planPublicSnapshotGc,
+  type PublicImageGcPlan,
+  type PublicSnapshotGcPlan,
 } from '@airing-cal/v3-core'
 
 function readPublicRoot(env: Record<string, string | undefined>): string {
@@ -73,20 +75,55 @@ function listImageHashDirs(publicRoot: string): string[] {
     throw error
   }
 }
+/** Shared snapshot retention plan (current + rollback candidates + age/min-generations rules). */
+async function planSnapshotGc(publicRoot: string, env: Record<string, string | undefined>): Promise<PublicSnapshotGcPlan> {
+  const store = new FilesystemPublicStore(publicRoot)
+  const snapshotKeys = listSnapshotKeys(publicRoot)
+  const current = await store.getCurrentRelease()
+  return planPublicSnapshotGc({
+    snapshotKeys,
+    currentArtifactRef: current?.artifact_ref ?? null,
+    pinnedArtifactRefs: readPinnedRefs(env),
+    minGenerations: Number(env.AIRINGCAL_GC_MIN_GENERATIONS?.trim() || '5'),
+    minAgeDays: Number(env.AIRINGCAL_GC_MIN_AGE_DAYS?.trim() || '30'),
+    rollbackGenerations: Number(env.AIRINGCAL_GC_ROLLBACK_GENERATIONS?.trim() || '2'),
+    publishedAtUnixByKey: readPublishedAtUnixByKey(publicRoot, snapshotKeys),
+  })
+}
 
+/**
+ * C9: image GC protects every image referenced by any retained snapshot — the
+ * current release AND its rollback candidates — not just the current one.
+ * Fail closed: if a retained snapshot cannot be read or parsed, refuse to plan
+ * any image deletion (deleting a referenced image would break rollback).
+ */
+async function collectRetainedImageHashes(publicRoot: string, keptKeys: readonly string[]): Promise<Set<string>> {
+  const store = new FilesystemPublicStore(publicRoot)
+  const hashes = new Set<string>()
+  for (const key of keptKeys) {
+    if (!key.startsWith('snapshots/v1/')) continue
+    const bytes = await store.getSnapshotBytes(key)
+    if (!bytes) {
+      throw new Error(`Retained snapshot ${key} is unreadable; refusing image GC (fail closed)`)
+    }
+    const snapshot = await parsePublicSnapshotV1(JSON.parse(new TextDecoder().decode(bytes))).catch((error: unknown) => {
+      throw new Error(
+        `Retained snapshot ${key} cannot be parsed; refusing image GC (fail closed): ${error instanceof Error ? error.message : String(error)}`,
+      )
+    })
+    for (const hash of collectReferencedImageHashes(snapshot)) hashes.add(hash)
+  }
+  return hashes
+}
 export async function planPortablePublicImageGc(
   env: Record<string, string | undefined> = process.env,
-): Promise<ReturnType<typeof planPublicImageGc> | null> {
+): Promise<PublicImageGcPlan | null> {
   const publicRoot = readPublicRoot(env)
-  const store = new FilesystemPublicStore(publicRoot)
-  const pointer = await store.getCurrentRelease()
-  if (!pointer) return null
-  const bytes = await store.getSnapshotBytes(pointer.artifact_ref)
-  if (!bytes) return null
-  const snapshot = await parsePublicSnapshotV1(JSON.parse(new TextDecoder().decode(bytes)))
+  const snapshotPlan = await planSnapshotGc(publicRoot, env)
+  const retainedHashes = await collectRetainedImageHashes(publicRoot, snapshotPlan.keep)
   return planPublicImageGc({
     onDiskHashes: listImageHashDirs(publicRoot),
-    referencedHashes: collectReferencedImageHashes(snapshot),
+    referencedHashes: retainedHashes,
     pinnedHashes: readPinnedImageHashes(env),
   })
 }
@@ -154,23 +191,12 @@ export async function logPublicSnapshotGcDryRun(
 export async function runPortablePublicGc(
   env: Record<string, string | undefined> = process.env,
   apply = false,
-): Promise<{ plan: ReturnType<typeof planPublicSnapshotGc>; applied: number }> {
+): Promise<{ plan: PublicSnapshotGcPlan; applied: number }> {
   const publicRoot = readPublicRoot(env)
-  const store = new FilesystemPublicStore(publicRoot)
-  const minGenerations = Number(env.AIRINGCAL_GC_MIN_GENERATIONS?.trim() || '5')
-  const minAgeDays = Number(env.AIRINGCAL_GC_MIN_AGE_DAYS?.trim() || '30')
-  const snapshotKeys = listSnapshotKeys(publicRoot)
-  const current = await store.getCurrentRelease()
-  const plan = planPublicSnapshotGc({
-    snapshotKeys,
-    currentArtifactRef: current?.artifact_ref ?? null,
-    pinnedArtifactRefs: readPinnedRefs(env),
-    minGenerations,
-    minAgeDays,
-    publishedAtUnixByKey: readPublishedAtUnixByKey(publicRoot, snapshotKeys),
-  })
+  const plan = await planSnapshotGc(publicRoot, env)
   let applied = 0
   if (apply) {
+    const store = new FilesystemPublicStore(publicRoot)
     for (const key of plan.delete) {
       unlinkSync(store.resolveObjectPath(key))
       applied += 1

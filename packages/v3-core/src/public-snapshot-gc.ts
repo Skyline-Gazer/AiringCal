@@ -11,6 +11,13 @@ export interface PublicSnapshotGcOptions {
   minAgeDays?: number
   nowUnix?: number
   publishedAtUnixByKey?: ReadonlyMap<string, number>
+  /**
+   * C9 rollback candidates: always retain this many distinct generations strictly
+   * BELOW the current pointer generation (including their images). Default 2;
+   * 0 disables. Candidates are relative to the current pointer so abandoned
+   * generations newer than a rolled-back pointer stay collectable.
+   */
+  rollbackGenerations?: number
 }
 
 export interface PublicSnapshotGcPlan {
@@ -45,6 +52,15 @@ export function planPublicSnapshotGc(options: PublicSnapshotGcOptions): PublicSn
   const keep = new Set<string>()
   if (options.currentArtifactRef) keep.add(options.currentArtifactRef)
   for (const key of pinned) keep.add(key)
+  const currentGeneration = parseGenerationFromSnapshotKey(options.currentArtifactRef ?? '')
+  const rollbackCount = options.rollbackGenerations ?? 2
+  const rollbackGenerations = sortedGenerations
+    .filter((generation) => currentGeneration === null || generation < currentGeneration)
+    .slice(0, rollbackCount)
+  for (const generation of rollbackGenerations) {
+    const key = byGeneration.get(generation)
+    if (key) keep.add(key)
+  }
   for (const generation of keepGenerations) {
     const key = byGeneration.get(generation)
     if (key) keep.add(key)
