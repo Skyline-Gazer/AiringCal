@@ -9,7 +9,8 @@
     "./cloudflare-read-handler": "./src/cloudflare-read-handler.ts",
     "./edgeone-read-handler": "./src/edgeone-read-handler.ts",
     "./portable-read-handler": "./src/portable-read-handler.ts",
-    "./portable-static-handler": "./src/portable-static-handler.ts"
+    "./portable-static-handler": "./src/portable-static-handler.ts",
+    "./read-config": "./src/read-config.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

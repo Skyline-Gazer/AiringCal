@@ -1,11 +1,21 @@
 import type { CloudflareR2BucketBinding } from '@airing-cal/v3-adapters/cloudflare-r2-public-store'
 import { V2_CACHE_CONTROL } from '@airing-cal/v3-core/read-contract'
-import { handleCloudflareReadRequest } from '@airing-cal/v3-read/cloudflare-read-handler'
+import {
+  createCloudflareReadHandler,
+  type CloudflareReadHandler,
+} from '@airing-cal/v3-read/cloudflare-read-handler'
 import { handlePortableStaticRequest } from '@airing-cal/v3-read/portable-static-handler'
+import { readConfigErrorResponse } from '@airing-cal/v3-read/read-config'
 
 export interface ReadWorkerEnv {
   /** R2 binding holding the immutable v3 public store (see `wrangler.toml`). */
   AIRINGCAL_PUBLIC_R2: CloudflareR2BucketBinding
+  /**
+   * Verified public CDN/S3 base URL (C6). Absolute https; a placeholder or
+   * non-https value fails closed as `INVALID_READ_CONFIG` when the read
+   * configuration is built (first data request per isolate, memoized).
+   */
+  AIRINGCAL_PUBLIC_BASE_URL?: string
   /** Git revision rendered on `/` (short sha) and reported by build metadata. */
   BANGUMI_GIT_COMMIT_SHA?: string
   /** Reported by `/api/version`; injected as a Worker var at deploy time. */
@@ -30,10 +40,17 @@ export async function handleReadWorkerRequest(
       },
     }, { status: 503, headers: { 'Cache-Control': V2_CACHE_CONTROL.error } })
   }
-  return handleCloudflareReadRequest(request, {
-    publicR2: env.AIRINGCAL_PUBLIC_R2,
-    packageVersion: env.PACKAGE_VERSION,
-  })
+  let handleRead: CloudflareReadHandler
+  try {
+    handleRead = createCloudflareReadHandler({
+      publicR2: env.AIRINGCAL_PUBLIC_R2,
+      publicBaseUrl: env.AIRINGCAL_PUBLIC_BASE_URL,
+      packageVersion: env.PACKAGE_VERSION,
+    })
+  } catch (error) {
+    return readConfigErrorResponse(error)
+  }
+  return handleRead(request)
 }
 
 export default { fetch: handleReadWorkerRequest }

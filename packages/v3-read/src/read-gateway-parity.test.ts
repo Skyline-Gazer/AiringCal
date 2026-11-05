@@ -14,7 +14,7 @@ import {
   SyncRunStore,
 } from '@airing-cal/v3-builder'
 import { FilesystemPublicStore, PUBLIC_RELEASE_POINTER_KEY } from '@airing-cal/v3-core'
-import { handleCloudflareReadRequest } from './cloudflare-read-handler.ts'
+import { createCloudflareReadHandler } from './cloudflare-read-handler.ts'
 import { handlePortableReadRequest, type PortableReadEnv } from './portable-read-handler.ts'
 
 const IMAGE_HASH = 'a'.repeat(64)
@@ -138,11 +138,12 @@ function filesystemEnv(store: FilesystemPublicStore): PortableReadEnv {
 async function readBoth(path: string, stores: PublishedStores) {
   const url = `https://parity.example${path}`
   const filesystemResponse = await handlePortableReadRequest(new Request(url), filesystemEnv(stores.filesystem))
-  const r2Response = await handleCloudflareReadRequest(new Request(url), {
+  const handleR2 = createCloudflareReadHandler({
     publicR2: stores.r2Bucket,
     nsfwShow: false,
     packageVersion: '3.0.0-alpha.0',
   })
+  const r2Response = await handleR2(new Request(url))
   return { filesystemResponse, r2Response }
 }
 

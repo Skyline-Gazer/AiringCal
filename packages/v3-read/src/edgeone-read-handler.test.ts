@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { assembleFullFetch, type BgmCollection } from '@airing-cal/bgm-api'
-import { MemoryEdgeOneBlob } from '@airing-cal/v3-adapters/memory-edgeone-blob'
-import { EdgeOnePublicStore } from '@airing-cal/v3-adapters/edgeone-public-store'
+import { CloudflareR2PublicStore } from '@airing-cal/v3-adapters/cloudflare-r2-public-store'
+import { MemoryR2Bucket } from '@airing-cal/v3-adapters/memory-r2-binding'
 import {
   openBuilderDatabase,
   publishBuilderCheckpoint,
@@ -11,18 +11,21 @@ import {
   SyncRunStore,
 } from '@airing-cal/v3-builder'
 import { V2_CACHE_CONTROL } from '@airing-cal/v3-core/read-contract'
-import { PUBLIC_RELEASE_POINTER_KEY } from '@airing-cal/v3-core/public-pointer'
-import { handleEdgeOneReadRequest } from './edgeone-read-handler.ts'
+import { createCloudflareReadHandler } from './cloudflare-read-handler.ts'
+import { createEdgeOneReadHandler } from './edgeone-read-handler.ts'
+
+const BASE_URL = 'https://public.example.com'
+const IMAGE_HASH = 'a'.repeat(64)
 
 function collectionEntry(subjectId: number): BgmCollection {
   return {
     subject_id: subjectId,
     subject_type: 2,
-    rate: 0,
+    rate: 7,
     type: 3,
     comment: '',
-    tags: [],
-    ep_status: 0,
+    tags: ['x'],
+    ep_status: 3,
     vol_status: 0,
     updated_at: '2026-01-01T00:00:00.000Z',
     private: false,
@@ -30,14 +33,20 @@ function collectionEntry(subjectId: number): BgmCollection {
       id: subjectId,
       type: 2,
       name: `Subject ${subjectId}`,
-      name_cn: '',
-      summary: '',
+      name_cn: '中文',
+      summary: 'summary',
       nsfw: false,
       date: '2026-01-01',
       eps: 12,
       total_episodes: 12,
-      images: { large: '', common: '', medium: '', small: '', grid: '' },
-      rating: { score: 0, rank: 0, total: 0 },
+      images: {
+        large: 'https://lain.bgm.tv/pic/cover/l/large.jpg',
+        common: 'https://lain.bgm.tv/pic/cover/c/common.jpg',
+        medium: 'https://lain.bgm.tv/pic/cover/c/common.jpg',
+        small: 'https://lain.bgm.tv/pic/cover/c/common.jpg',
+        grid: 'https://lain.bgm.tv/pic/cover/c/common.jpg',
+      },
+      rating: { score: 7, rank: 100, total: 10 },
     },
   }
 }
@@ -50,14 +59,10 @@ function fetchFixture() {
   )
 }
 
-/**
- * Publishes into a Blob namespace the way the platform allows: immutable objects
- * through the store, and the release pointer through a single writer (Blob has no
- * conditional write, so `publishBuilderCheckpoint` reports `cas_unsupported`).
- */
-async function seededBlob(): Promise<MemoryEdgeOneBlob> {
-  const blob = new MemoryEdgeOneBlob()
-  const store = new EdgeOnePublicStore(blob)
+/** Publishes a real builder checkpoint into the R2 public store the GHA writer owns. */
+async function publishedBucket(): Promise<{ bucket: MemoryR2Bucket; store: CloudflareR2PublicStore }> {
+  const bucket = new MemoryR2Bucket()
+  const store = new CloudflareR2PublicStore(bucket)
   const db = openBuilderDatabase(':memory:')
   try {
     const state = new SqliteBuilderStateStore(db)
@@ -77,76 +82,141 @@ async function seededBlob(): Promise<MemoryEdgeOneBlob> {
       publicStore: store,
       manifestMetadata: { source_observed_at: '2026-01-01T00:00:00.000Z', git_sha: 'e'.repeat(40) },
     })
-    assert.equal(published.status, 'cas_unsupported', 'Blob publishing fails closed on the pointer commit')
-
-    const pointer = await store.getCurrentRelease()
-    assert.equal(pointer, null, 'no pointer was written by the failed commit')
-    const snapshotKeys = await store.listObjectKeys('snapshots/')
-    assert.equal(snapshotKeys.length, 1, 'the immutable snapshot object was still written')
-
-    // Single-writer pointer move, as an operator/local publisher would do.
-    const snapshotBytes = await store.getSnapshotBytes(snapshotKeys[0]!)
-    assert.notEqual(snapshotBytes, null)
-    const parsed = JSON.parse(new TextDecoder().decode(snapshotBytes!)) as {
-      generation: number
-      content_hash: string
-    }
-    await blob.set(PUBLIC_RELEASE_POINTER_KEY, `${JSON.stringify({
-      schema_version: 1,
-      generation: parsed.generation,
-      content_hash: parsed.content_hash,
-      published_at_unix: parsed.generation,
-      artifact_ref: snapshotKeys[0],
-    })}\n`)
+    assert.equal(published.status, 'published')
   } finally {
     db.close()
   }
-  return blob
+  await store.putImmutableObject(
+    `images/${IMAGE_HASH}/original`,
+    new TextEncoder().encode('image-bytes'),
+    'image/jpeg',
+  )
+  return { bucket, store }
 }
 
-test('EdgeOne read gateway serves the v2 read surface from Blob', async () => {
-  const blob = await seededBlob()
-  const env = { publicBlob: blob, nsfwShow: false, packageVersion: '3.0.0-alpha.0' }
+/** Fake CDN: serves the public Release objects over `https://public.example.com/<key>`. */
+function cdnFetch(store: CloudflareR2PublicStore) {
+  const requests: string[] = []
+  const impl = (async (input: unknown) => {
+    const url = new URL(String(input))
+    requests.push(url.toString())
+    const key = decodeURIComponent(url.pathname.slice(1))
+    const bytes = await store.getSnapshotBytes(key)
+    if (!bytes) return new Response('Not found', { status: 404 })
+    return new Response(new Uint8Array(bytes), { status: 200 })
+  }) as unknown as typeof fetch
+  return { impl, requests }
+}
 
-  const health = await handleEdgeOneReadRequest(new Request('https://edgeone.example/api/health'), env)
+test('EdgeOne read gateway serves the v2 surface from the public Release over HTTPS', async () => {
+  const { store } = await publishedBucket()
+  const { impl, requests } = cdnFetch(store)
+  const handle = createEdgeOneReadHandler({
+    publicBaseUrl: BASE_URL,
+    nsfwShow: false,
+    packageVersion: '3.0.0-alpha.0',
+    fetch: impl,
+  })
+
+  const health = await handle(new Request('https://edgeone.example/api/health'))
   assert.equal(health.status, 200)
   const healthBody = await health.json() as {
     ok: boolean
-    data: { cron: { scheduler: string }; publish: { generation: number }; cache: { total_subjects: number } }
+    data: { cron: { scheduler: string }; publish: { generation: number; content_hash: string }; cache: { total_subjects: number } }
   }
   assert.equal(healthBody.ok, true)
   assert.equal(healthBody.data.cron.scheduler, 'external')
   assert.equal(healthBody.data.cache.total_subjects, 1)
 
-  const collections = await handleEdgeOneReadRequest(
+  const pointer = await store.getCurrentRelease()
+  assert.equal(healthBody.data.publish.generation, pointer?.generation, 'health reports the current pointer generation')
+  assert.equal(healthBody.data.publish.content_hash, pointer?.content_hash)
+
+  const collections = await handle(
     new Request('https://edgeone.example/api/collections?type=watching&page=1&limit=24'),
-    env,
   )
   assert.equal(collections.status, 200)
   assert.equal(collections.headers.get('Cache-Control'), V2_CACHE_CONTROL.collections)
   const collectionsBody = await collections.json() as { data: Array<{ subject_id: number }>; limit: number }
   assert.deepEqual(collectionsBody.data.map((item) => item.subject_id), [7])
 
-  const calendar = await handleEdgeOneReadRequest(new Request('https://edgeone.example/api/calendar'), env)
+  const calendar = await handle(new Request('https://edgeone.example/api/calendar'))
   assert.equal(calendar.status, 200)
   assert.equal(calendar.headers.get('Cache-Control'), V2_CACHE_CONTROL.calendar)
 
-  const version = await handleEdgeOneReadRequest(new Request('https://edgeone.example/api/version'), env)
+  const version = await handle(new Request('https://edgeone.example/api/version'))
   assert.deepEqual(await version.json(), {
     app: 'airingcal',
     read: 'edgeone',
     package: '3.0.0-alpha.0',
     platform: 'edgeone',
   })
+
+  // Images 302 to the same public base URL instead of proxying bytes.
+  const image = await handle(new Request(`https://edgeone.example/image/${IMAGE_HASH}`))
+  assert.equal(image.status, 302)
+  assert.equal(image.headers.get('Location'), `${BASE_URL}/images/${IMAGE_HASH}/original`)
+
+  // The manifest_ref from the current pointer is fetched over HTTPS (C1 read path).
+  assert.ok(pointer?.manifest_ref)
+  assert.ok(
+    requests.includes(`${BASE_URL}/${pointer.manifest_ref}`),
+    `expected an HTTPS fetch of ${pointer.manifest_ref}, saw ${requests.join(', ')}`,
+  )
+  assert.ok(requests.includes(`${BASE_URL}/public/current-release.json`))
 })
 
-test('EdgeOne read gateway fails closed without a verified pointer', async () => {
-  const env = { publicBlob: new MemoryEdgeOneBlob() }
-  const collections = await handleEdgeOneReadRequest(
-    new Request('https://edgeone.example/api/collections?type=watching'),
-    env,
-  )
+test('EdgeOne gateway and Cloudflare gateway serve the same Release consistently', async () => {
+  const { bucket, store } = await publishedBucket()
+  const { impl } = cdnFetch(store)
+  const handleEdgeOne = createEdgeOneReadHandler({
+    publicBaseUrl: BASE_URL,
+    nsfwShow: false,
+    packageVersion: '3.0.0-alpha.0',
+    fetch: impl,
+  })
+  const handleCloudflare = createCloudflareReadHandler({
+    publicR2: bucket,
+    nsfwShow: false,
+    packageVersion: '3.0.0-alpha.0',
+  })
+
+  for (const route of [
+    '/api/collections?type=watching&page=1&limit=24',
+    '/api/calendar',
+    '/api/cache?limit=24',
+    '/api/health',
+  ]) {
+    const edgeoneResponse = await handleEdgeOne(new Request(`https://parity.example${route}`))
+    const cloudflareResponse = await handleCloudflare(new Request(`https://parity.example${route}`))
+    assert.equal(edgeoneResponse.status, cloudflareResponse.status, `${route} status`)
+    assert.equal(
+      edgeoneResponse.headers.get('Cache-Control'),
+      cloudflareResponse.headers.get('Cache-Control'),
+      `${route} Cache-Control`,
+    )
+    const [edgeoneText, cloudflareText] = await Promise.all([edgeoneResponse.text(), cloudflareResponse.text()])
+    assert.equal(edgeoneText, cloudflareText, `${route} payload must match the Cloudflare gateway`)
+  }
+})
+
+test('EdgeOne read gateway fails closed without a published pointer', async () => {
+  const { impl } = cdnFetch(new CloudflareR2PublicStore(new MemoryR2Bucket()))
+  const handle = createEdgeOneReadHandler({ publicBaseUrl: BASE_URL, fetch: impl })
+  const collections = await handle(new Request('https://edgeone.example/api/collections?type=watching'))
   assert.equal(collections.status, 503)
-  const health = await handleEdgeOneReadRequest(new Request('https://edgeone.example/api/health'), env)
+  const health = await handle(new Request('https://edgeone.example/api/health'))
   assert.equal(health.status, 503)
+})
+
+test('EdgeOne read configuration rejects missing, non-https and placeholder base URLs', () => {
+  assert.throws(() => createEdgeOneReadHandler({ publicBaseUrl: '' }), /required/)
+  assert.throws(
+    () => createEdgeOneReadHandler({ publicBaseUrl: 'https://PLACEHOLDER_PUBLIC_CDN' }),
+    /placeholder value/i,
+  )
+  assert.throws(
+    () => createEdgeOneReadHandler({ publicBaseUrl: 'http://public.example.com' }),
+    /must use https/,
+  )
 })

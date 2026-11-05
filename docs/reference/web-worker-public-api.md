@@ -95,6 +95,26 @@ Placeholder example: `AIRINGCAL_PUBLIC_BASE_URL=https://PLACEHOLDER_PUBLIC_CDN`.
 
 Widget 列表/日历封面：当 API 条目含 `images.large`（`hash` + `uri`）时，`<img>` 优先请求 `/image/{large.hash}/thumb`；加载失败时依次回退 `images.large.uri`、再 `images.common.uri`。仅 `common` 时仍直接用 `common.uri`。
 
+## `AIRINGCAL_READ_MODE=v3-release`（#147 C7）
+
+默认（变量未设置或为 `legacy`）保持上文 Phase 0 读路径 **完全不变**。设置为 `v3-release` 时，
+`/api/collections`、`/api/calendar`、`/api/config`、`/api/health`、`/api/cache`、`/image/*`
+全部由 `@airing-cal/v3-read` 的 `handlePortableReadRequest`（R2 `PublicStore`）提供服务，
+读取与 `apps/v3-read-worker` 相同的公共 Release（`public/current-release.json` 指针 +
+`manifest_ref` 清单校验）；`/api/version` 与 `/api/thumb-gen` 仍由 web-worker 自身处理。
+
+| 变量 / 绑定 | v3-release 模式要求 |
+|-------------|---------------------|
+| `AIRINGCAL_READ_MODE` | `v3-release`；其他非空值视为配置错误 |
+| `AIRINGCAL_PUBLIC_R2` | R2 binding，指向公共 Release bucket（`airing-cal-public` 键布局）。缺失时返回 **503** `NO_PUBLIC_STORE_BINDING` |
+| `AIRINGCAL_PUBLIC_BASE_URL` | 可选；绝对 https，禁止 query/fragment 与 `PLACEHOLDER_*`。设置后 `/image/*` 302 到该 CDN |
+
+配置错误（未知模式、非 https、占位域名）在读取配置时一次性校验并返回 **503** `INVALID_READ_CONFIG`
+（消息含具体变量名），而不是在某个数据路由上按请求报错。启用前需在
+`apps/web-worker/wrangler.toml` 增加公共 Release binding（示例见
+[`docs/v3/cloudflare-read-worker.md`](../v3/cloudflare-read-worker.md)），属运维动作；
+未配置时默认 legacy 行为已被测试锁定。
+
 ## `POST /api/thumb-gen`（Bearer，内部）
 
 Materialize thumbs after sync writes large originals. Implemented in `apps/web-worker/src/thumb-gen.ts`.

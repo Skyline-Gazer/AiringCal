@@ -1,6 +1,7 @@
 import { createServer } from 'node:http'
 import { resolveRuntimeAdapterFromEnv } from '@airing-cal/v3-adapters'
 import { FilesystemPublicStore } from '@airing-cal/v3-core'
+import { parsePublicBaseUrl } from '@airing-cal/v3-core/public-image-url'
 import { handlePortableReadRequest } from './portable-read-handler.ts'
 import { readPortableCronStatus } from './portable-builder-cron.ts'
 import { handlePortableStaticRequest } from './portable-static-handler.ts'
@@ -33,9 +34,12 @@ export function startPortableReadServer(options: {
   nsfwShow?: boolean
   packageVersion?: string
   gitSha?: string
+  publicBaseUrl?: string
 } = {}) {
   const publicDir = options.publicDir ?? readPublicDir()
   const port = options.port ?? Number(process.env.PORT ?? 8787)
+  // C6: validate once at startup, not per request; placeholder values throw here.
+  const publicBaseUrl = parsePublicBaseUrl(options.publicBaseUrl ?? process.env.AIRINGCAL_PUBLIC_BASE_URL) ?? undefined
   const publicStore = new FilesystemPublicStore(publicDir)
   const server = createServer(async (req, res) => {
     try {
@@ -50,6 +54,7 @@ export function startPortableReadServer(options: {
         publicStore,
         nsfwShow: options.nsfwShow ?? process.env.NSFW_SHOW !== 'false',
         packageVersion: options.packageVersion ?? process.env.npm_package_version,
+        publicBaseUrl,
         processEnv: process.env,
         cronStatus: process.env.AIRINGCAL_BUILDER_SQLITE_PATH
           ? () => readPortableCronStatus(process.env)

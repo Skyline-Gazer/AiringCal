@@ -20,6 +20,12 @@ export interface PortableReadEnv {
   publicStore: PublicStore
   nsfwShow?: boolean
   packageVersion?: string
+  /**
+   * Validated public CDN/S3 base URL (C6) used to 302 image requests. Handlers
+   * validate `AIRINGCAL_PUBLIC_BASE_URL` once at config time and pass the result
+   * here; per-request parsing is not part of the contract.
+   */
+  publicBaseUrl?: string
   /** Platform label for `/version`; e.g. `{ AIRINGCAL_PLATFORM: 'cloudflare' }` in the Workers gateway. */
   processEnv?: Record<string, string | undefined>
   /**
@@ -134,14 +140,14 @@ async function handleHealth(
 async function handleImage(
   pathname: string,
   publicStore: PublicStore,
-  processEnv?: Record<string, string | undefined>,
+  publicBaseUrl?: string,
 ): Promise<Response> {
   const match = pathname.match(/^\/image\/([0-9a-f]{64})(?:\/(thumb))?\/?$/i)
   if (!match?.[1]) return new Response('Invalid hash', { status: 400 })
   const hash = match[1].toLowerCase()
   const isThumb = match[2] === 'thumb'
   const redirectTo = resolvePublicImageRedirect(
-    processEnv?.AIRINGCAL_PUBLIC_BASE_URL,
+    publicBaseUrl,
     hash,
     isThumb ? 'thumb' : 'original',
   )
@@ -241,7 +247,7 @@ export async function handlePortableReadRequest(
     if (path === '/collections') return handleCollections(url, snapshot)
     if (path === '/calendar') return handleCalendar(snapshot)
     if (path === '/cache') return handleCache(snapshot, url)
-    if (path.startsWith('/image/')) return handleImage(path, env.publicStore, env.processEnv)
+    if (path.startsWith('/image/')) return handleImage(path, env.publicStore, env.publicBaseUrl)
     return new Response('Not found', { status: 404 })
   } catch (error) {
     if (error instanceof InvalidQueryError) {

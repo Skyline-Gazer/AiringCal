@@ -30,6 +30,7 @@ CI / deploy 见 [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml)（`
 | `src/thumb-gen.ts` | `POST /api/thumb-gen`（Bearer） |
 | `src/thumb-backfill-scheduled.ts` | D1 扫描 helper（仅测试/运维；生产由 QingLong `POST /api/thumb-gen`） |
 | `src/version.ts` | `/api/version` 载荷 |
+| `src/read-mode.ts` | `AIRINGCAL_READ_MODE=v3-release`（#147 C7）：从公共 Release 提供同一读 surface；默认 legacy 不变 |
 
 ### Thumb deploy（AC-2）
 

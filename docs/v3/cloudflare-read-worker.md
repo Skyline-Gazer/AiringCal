@@ -33,6 +33,21 @@ bucket_name = "airing-cal-public"
 `CloudflareR2BucketBinding` requires only `get`, `head`, `put`; the real
 `R2Bucket` binding satisfies it.
 
+### web-worker parity mode (#147 C7)
+
+`apps/web-worker` does **not** ship this binding yet: adding it to the production
+config would make `wrangler deploy` depend on the v3 public bucket existing, which
+is an owner cutover decision. To enable `AIRINGCAL_READ_MODE=v3-release`, add the
+same block to `apps/web-worker/wrangler.toml` (plus the runtime var), run
+`pnpm -F @airing-cal/web-worker cf:types`, and deploy:
+
+```toml
+# C7: public Release store for AIRINGCAL_READ_MODE=v3-release (default stays legacy).
+[[r2_buckets]]
+binding = "AIRINGCAL_PUBLIC_R2"
+bucket_name = "airing-cal-public"
+```
+
 Pointer validation and CAS identity (`parsePublicReleasePointer`, `releasePointersMatch`, `bytesEqual`) live in `@airing-cal/v3-core/public-pointer` and are shared by the filesystem and R2 stores.
 
 Measured against the wrangler local R2 emulation (workerd/miniflare, probe run
@@ -73,22 +88,61 @@ CI runs this in the `v3_operator_smoke` job.
 
 `V3_READ_SMOKE_PORT` overrides the dev-server port (default `8799`); the seed step asserts `wrangler.toml` declares the bucket it writes to.
 
+## `AIRINGCAL_PUBLIC_BASE_URL` (C6)
+
+`createCloudflareReadHandler` accepts the raw `AIRINGCAL_PUBLIC_BASE_URL` and
+validates it **when the read configuration is built** (first data request per
+isolate, memoized):
+
+- absolute `https` only (loopback `http` is allowed only inside the
+  `HttpPublicStore` test/local adapter);
+- no query or fragment;
+- placeholder hosts (`https://PLACEHOLDER_PUBLIC_CDN`, …) are rejected.
+
+A bad value fails closed as **503** `INVALID_READ_CONFIG` with the variable name
+and reason — never as a per-request image error and never as a silent fallback.
+When the value is valid, `/image/:hash` 302s to `{BASE}/images/...`; when unset,
+image bytes are proxied from the R2 public store.
+
+## Staging deploy workflow (C8, #147)
+
+`.github/workflows/v3-read-worker-staging.yml` deploys this Worker to the
+**staging** Environment:
+
+- `workflow_dispatch` only — no `push`, `pull_request` or `schedule` trigger;
+- first step validates required staging config and `exit 1`s before checkout;
+- only `AIRINGCAL_STAGING_*` secrets/vars are expanded
+  (`AIRINGCAL_STAGING_CLOUDFLARE_API_TOKEN`,
+  `AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID`,
+  `AIRINGCAL_STAGING_WORKER_NAME`, `AIRINGCAL_STAGING_PUBLIC_R2_BUCKET`,
+  `AIRINGCAL_STAGING_PUBLIC_BASE_URL`);
+- `scripts/materialize-v3-read-staging-config.mjs` rewrites the
+  `AIRINGCAL_PUBLIC_R2` bucket to the staging bucket, rejects the production
+  bucket, injects the verified base URL/sha as vars, and writes a temp config;
+- `wrangler deploy` only ever sees that materialized config, so a staging run
+  cannot read the production Release.
+
 ## Real-cloudflare staging checklist (owner, manual)
 
-1. Create/reuse a **non-production** bucket and point `bucket_name` at it.
+1. Create a **staging-only** public bucket and pre-create the staging
+   Environment secrets/vars listed above (`AIRINGCAL_STAGING_*`). Never point the
+   staging workflow at the production bucket or production credentials.
 2. Publish a checkpoint with the operator path (`airingcal-config` /
-   `publishBuilderCheckpoint`) so `public/current-release.json`,
-   `public/manifest.json`, and `snapshots/v1/*` exist in the bucket.
-3. `wrangler deploy --config apps/v3-read-worker/wrangler.toml`, then check
-   `/api/health` (`publish.generation`), `/api/collections`, and one `/image/:hash`.
+   `publishBuilderCheckpoint`) into that bucket so `public/current-release.json`,
+   the generation-scoped `public/manifests/*` object, and `snapshots/v1/*` exist.
+3. Dispatch `v3 read worker (staging)` (or run `wrangler deploy` locally), then
+   check `/api/health` (`publish.generation`), `/api/collections`, and one
+   `/image/:hash`.
 4. Verify publisher safety on the real bucket: a repeated immutable put must be a
    no-op, a changed body must be rejected, and a stale `If-Match` pointer commit
    must return a conflict.
-5. Record results in the #69 capability matrix (rows stay *candidate* until then).
+5. Record results in the #69/#147 capability matrix (rows stay *candidate* until
+   then).
 
 ## Still open
 
 - Real-bucket precondition verification (above). **Production anonymized sizing:** done via manual workflow `sizing-probe.yml` (run `39052596856`, 2026-10-17) — gzip **110 769** B, generation **15**, `single_json_viable: true` (counts only; see `p0-contract-evidence.md`).
-- EdgeOne adapter/store (no `EdgeOne*PublicStore` yet).
+- EdgeOne staging run over the same Release (`HttpPublicStore` reads the public
+  base URL; no approved EdgeOne account yet — see `edgeone-store.md`).
 - Operator `airingcal.yaml` setup wiring for bucket names and deploy targets (#72).
 - Frontend parity E2E and the legacy sync tab (returns 410 since v2).

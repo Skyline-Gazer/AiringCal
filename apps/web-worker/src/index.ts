@@ -1,11 +1,19 @@
 export const appBoundary = 'web-worker'
 
 import { cacheJs, renderIndexPage, widgetCss, widgetJs, type BuildInfo } from '@airing-cal/widget'
+import { readConfigErrorResponse } from '@airing-cal/v3-read/read-config'
 import { handleReadRequest, type WebWorkerEnv } from './read-api.ts'
+import {
+  handleV3ReleaseReadRequest,
+  isV3ReleaseReadPath,
+  resolveReadModeConfig,
+  type WebReadModeConfig,
+  type WebReadModeEnv,
+} from './read-mode.ts'
 import { handleThumbGenRequest, type ThumbGenEnv } from './thumb-gen.ts'
 import { versionResponse } from './version.ts'
 
-interface WebEnv extends WebWorkerEnv, ThumbGenEnv {
+interface WebEnv extends WebWorkerEnv, ThumbGenEnv, WebReadModeEnv {
   BANGUMI_GIT_COMMIT_SHA?: string
   BANGUMI_GIT_REPOSITORY_URL?: string
   BANGUMI_BUILD_TIME?: string
@@ -88,6 +96,14 @@ function deprecatedSync(): Response {
 
 async function fetch(request: Request, env: WebEnv): Promise<Response> {
   const url = new URL(request.url)
+  // C6/C7: resolve (and validate) the read configuration before serving any route,
+  // so an unknown mode or placeholder base URL fails closed at config time.
+  let readMode: WebReadModeConfig
+  try {
+    readMode = resolveReadModeConfig(env)
+  } catch (error) {
+    return readConfigErrorResponse(error)
+  }
 
   if (url.pathname === '/') return html(renderIndexPage(pageOptions(env)))
   if (url.pathname === '/src/bangumi.js') return text(widgetJs, 'application/javascript; charset=utf-8')
@@ -96,6 +112,15 @@ async function fetch(request: Request, env: WebEnv): Promise<Response> {
 
   if (url.pathname === '/api/sync/compare' || url.pathname === '/api/sync/apply') return deprecatedSync()
   if (url.pathname.startsWith('/api/check/')) return deprecatedSync()
+
+  if (url.pathname === '/api/version') return versionResponse(env)
+  if (url.pathname === '/api/thumb-gen') return handleThumbGenRequest(request, env)
+
+  // C7: `AIRINGCAL_READ_MODE=v3-release` serves this read surface from the shared
+  // public Release; unset (`legacy`) keeps the phase-0 path below unchanged.
+  if (readMode.mode === 'v3-release' && isV3ReleaseReadPath(url.pathname)) {
+    return handleV3ReleaseReadRequest(request, env)
+  }
 
   if (url.pathname === '/api/collections') {
     return (await handleReadRequest(apiRequest(url, '/collections', request), env)) ?? new Response('Not found', { status: 404 })
@@ -108,12 +133,6 @@ async function fetch(request: Request, env: WebEnv): Promise<Response> {
   }
   if (url.pathname === '/api/health') {
     return (await handleReadRequest(apiRequest(url, '/health', request), env)) ?? new Response('Not found', { status: 404 })
-  }
-  if (url.pathname === '/api/version') {
-    return versionResponse(env)
-  }
-  if (url.pathname === '/api/thumb-gen') {
-    return handleThumbGenRequest(request, env)
   }
   if (url.pathname === '/api/cache') {
     return (await handleReadRequest(apiRequest(url, '/cache', request), env)) ?? new Response('Not found', { status: 404 })
