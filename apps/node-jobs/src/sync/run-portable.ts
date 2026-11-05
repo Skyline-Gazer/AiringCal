@@ -18,8 +18,8 @@ import { readSyncUserConfig } from './config.ts'
 import { mediaSubjectsFromFetch } from './media-refresh.ts'
 import { createEnrichMediaSubjectsFromFetch } from './media-subject-resolve.ts'
 import { runPortableMediaRefresh } from './portable-media.ts'
-import { mirrorImageRootToPublicStore } from './mirror-images.ts'
-import { createPortablePublicStoreFromEnv } from './portable-public-store.ts'
+import { ensurePublishImagesComplete } from './publish-image-gate.ts'
+import { createPortablePublicStoreFromEnv, type ClosablePublicStore } from './portable-public-store.ts'
 import { materializePortableThumbs } from './portable-thumb.ts'
 import { logPublicSnapshotGcDryRun } from '../cli/portable-public-gc.ts'
 
@@ -72,6 +72,8 @@ function readPortableBuilderConfig(env: Record<string, string | undefined>): {
 export interface PortableBuilderSyncOverrides {
   fetchInput?: () => Promise<CompleteFullFetch>
   fetchImage?: (url: string, signal: AbortSignal) => Promise<Response>
+  /** Test/injection seam: replaces the env-derived public store (caller owns closing it). */
+  publicStore?: ClosablePublicStore
 }
 
 /** Portable v3 builder path: SQLite checkpoint via @airing-cal/v3-builder (no Cloudflare D1/R2). */
@@ -115,7 +117,8 @@ export async function runPortableBuilderSync(
   const db = openBuilderDatabase(builderConfig.sqlitePath)
   const state = new SqliteBuilderStateStore(db)
   const runs = new SyncRunStore(db)
-  const publicStore = createPortablePublicStoreFromEnv(env)
+  const publicStore = overrides.publicStore ?? createPortablePublicStoreFromEnv(env)
+  const ownsPublicStore = overrides.publicStore == null
   const runId = randomUUID()
   const ownerToken = env.AIRINGCAL_BUILDER_OWNER?.trim() || `node-jobs-${runId.slice(0, 8)}`
 
@@ -132,7 +135,7 @@ export async function runPortableBuilderSync(
 
   if (!fetchInput) {
     db.close()
-    publicStore.close?.()
+    if (ownsPublicStore) publicStore.close?.()
     return {
       job: 'airingcal-sync',
       status: 'failed',
@@ -148,6 +151,7 @@ export async function runPortableBuilderSync(
 
   let mediaSummary = ''
   let snapshotProjection: Parameters<typeof runBuilderOnce>[0]['snapshotProjection']
+  const publishGateRoot = readPortableImageRoot(env, mediaMode)
 
   try {
     if (mediaMode === 'refresh') {
@@ -211,6 +215,16 @@ export async function runPortableBuilderSync(
       },
       projectFetchMediaHints: mediaMode === 'skip',
       snapshotProjection,
+      prePublish: builderConfig.publishAfterSync
+        ? async (snapshot) => {
+          const gate = await ensurePublishImagesComplete({
+            snapshot,
+            publicStore,
+            imageRoot: publishGateRoot ?? null,
+          })
+          console.log(JSON.stringify({ status: 'info', stage: 'publish_image_gate', ...gate }))
+        }
+        : undefined,
     })
 
     const sync = result.sync.status
@@ -221,22 +235,6 @@ export async function runPortableBuilderSync(
       && result.publish.status !== 'already_current'
     const failed = sync === 'failed' || publishFailed
     const skipped = sync === 'skipped'
-    if (
-      !failed
-      && !skipped
-      && builderConfig.publishAfterSync
-      && mediaMode === 'refresh'
-    ) {
-      try {
-        const imageRoot = readPortableImageRoot(env, mediaMode)
-        const mirrored = await mirrorImageRootToPublicStore(imageRoot, publicStore)
-        console.log(JSON.stringify({ status: 'info', stage: 'public_image_mirror', ...mirrored }))
-        mediaSummary += ` images_mirrored=${mirrored.uploaded}`
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'image_mirror_failed'
-        return { job: 'airingcal-sync', status: 'failed', message }
-      }
-    }
     if (
       !failed
       && !skipped
@@ -259,6 +257,6 @@ export async function runPortableBuilderSync(
     }
   } finally {
     db.close()
-    publicStore.close?.()
+    if (ownsPublicStore) publicStore.close?.()
   }
 }

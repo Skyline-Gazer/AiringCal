@@ -18,12 +18,15 @@ export type PublishCheckpointStatus =
   | 'no_checkpoint'
   | 'already_current'
   | 'readback_mismatch'
+  | 'pre_publish_failed'
   | 'cas_conflict'
   | 'cas_unsupported'
 
 export interface PublishCheckpointResult {
   status: PublishCheckpointStatus
   pointer: PublicReleasePointer | null
+  /** Detail when the publish aborted before or during the commit sequence. */
+  error?: string
 }
 
 export interface PublishCheckpointDeps {
@@ -31,6 +34,11 @@ export interface PublishCheckpointDeps {
   publicStore: PublicStore
   schemaVersion?: number
   manifestMetadata?: { source_observed_at: string; git_sha: string }
+  /**
+   * Publish gate (C2): runs after the Snapshot is materialized and before any pointer commit.
+   * Throwing aborts the publish with `pre_publish_failed` and leaves the pointer untouched.
+   */
+  prePublish?: (snapshot: PublicSnapshotV1) => Promise<void>
 }
 
 /**
@@ -77,6 +85,16 @@ export async function publishBuilderCheckpoint(deps: PublishCheckpointDeps): Pro
     && expected.artifact_ref === artifactRef
   ) {
     return { status: 'already_current', pointer: expected }
+  }
+
+  try {
+    await deps.prePublish?.(snapshot)
+  } catch (error) {
+    return {
+      status: 'pre_publish_failed',
+      pointer: null,
+      error: error instanceof Error ? error.message : String(error),
+    }
   }
 
   const metadata = await resolveManifestMetadata(deps.state, deps.manifestMetadata, snapshot)

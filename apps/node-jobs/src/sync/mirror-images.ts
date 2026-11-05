@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import type { PublicStore } from '@airing-cal/v3-core'
 
-function contentTypeForKey(key: string): string {
+export function contentTypeForKey(key: string): string {
   if (key.endsWith('.webp')) return 'image/webp'
   if (key.endsWith('.png')) return 'image/png'
   if (key.endsWith('.json')) return 'application/json'

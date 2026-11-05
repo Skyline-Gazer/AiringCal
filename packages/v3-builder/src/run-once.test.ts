@@ -57,3 +57,39 @@ test('runBuilderOnce publishes checkpoint after successful sync', async () => {
   assert.equal(result.publish?.status, 'published')
   assert.equal(publicStore.current?.generation, 1)
 })
+
+test('runBuilderOnce runs prePublish gate before pointer commit and fails closed on gate error', async () => {
+  const publicStore = new MemoryPublicStore()
+  const deps = builderDeps(publicStore)
+  const calls: string[] = []
+  const failed = await runBuilderOnce({
+    ...deps,
+    runId: 'run-once-gate-fail',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    publishAfterSync: true,
+    prePublish: async () => {
+      calls.push('gate')
+      throw new Error('referenced image object missing')
+    },
+  })
+  assert.deepEqual(calls, ['gate'])
+  assert.equal(failed.publish?.status, 'pre_publish_failed')
+  assert.match(failed.publish?.error ?? '', /referenced image object missing/)
+  assert.equal(publicStore.current, null)
+
+  const published = await runBuilderOnce({
+    ...deps,
+    runId: 'run-once-gate-ok',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    publishAfterSync: true,
+    prePublish: async () => {
+      calls.push('gate-ok')
+    },
+  })
+  assert.equal(published.publish?.status, 'published')
+  const current = await publicStore.getCurrentRelease()
+  assert.equal(current?.generation, 1)
+  assert.deepEqual(calls, ['gate', 'gate-ok'])
+})
