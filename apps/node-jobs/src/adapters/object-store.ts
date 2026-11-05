@@ -1,8 +1,8 @@
 export interface ObjectHead {
   etag: string
   contentType?: string
+  size?: number
 }
-
 export interface ObjectGet extends ObjectHead {
   body: Uint8Array
 }

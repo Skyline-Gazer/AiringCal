@@ -29,6 +29,7 @@ export class MemoryObjectStore implements ConditionalObjectStore {
       body: new Uint8Array(entry.body),
       etag: entry.etag,
       contentType: entry.contentType,
+      size: entry.body.byteLength,
     }
   }
 

@@ -19,6 +19,12 @@ export interface PublisherCapabilities {
 }
 
 export interface PublicStore {
+  /**
+   * Optional size/etag probe (HEAD) for existence + unchanged checks without
+   * downloading the body (C5 bounded mirror). Stores without it fall back to a
+   * full `getSnapshotBytes` existence check.
+   */
+  headObject?(key: string): Promise<{ size: number; etag: string | null } | null>
   getCurrentRelease(): Promise<PublicReleasePointer | null>
   getSnapshotBytes(artifactRef: string): Promise<Uint8Array | null>
   putImmutableObject(key: string, body: Uint8Array, contentType: string): Promise<void>

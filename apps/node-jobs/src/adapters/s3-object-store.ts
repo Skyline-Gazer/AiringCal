@@ -61,7 +61,6 @@ export function createS3ObjectStore(config: S3BucketConfig): ConditionalObjectSt
         throw error
       }
     },
-
     async head(key: string): Promise<ObjectHead | null> {
       try {
         const response = await client.send(new HeadObjectCommand({
@@ -72,6 +71,7 @@ export function createS3ObjectStore(config: S3BucketConfig): ConditionalObjectSt
         return {
           etag: quoteEtag(response.ETag),
           contentType: response.ContentType,
+          size: response.ContentLength,
         }
       } catch (error) {
         if (isNotFound(error)) return null
