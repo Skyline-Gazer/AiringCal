@@ -12,6 +12,7 @@
 | `Dockerfile.vps-sync` | Removed (no maintained container image) |
 | `scripts/verify-vps-sync-image.*` | Removed |
 | `apps/vps-sync/` | **Removed from monorepo 2026-10-15** (git history only) |
+| Actions workflow `360816866` “Publish VPS sync production image” | Still `active` on 2026-10-31, but `.github/workflows/vps-sync-image.yml` is absent from `dev` (contents API 404). The file remains on `archive/main-before-v3-alignment-20261016` (`d10d3c9b`). Disabling the registration is an owner Actions write and was not done in the 2026-10-31 reconciliation |
 
 ## Active write path
 

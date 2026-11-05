@@ -2,7 +2,28 @@
 
 Operational companion to `adr-0002-cnb-primary-migration.md`.
 
-## Current-state snapshot (verified 2026-10-26)
+> **Write origin is GitHub** (ADR 0002 amendment, 2026-10-27). The 2026-10-26
+> snapshot and the CNB-native daily/release sections below are historical.
+> Do not add a `cnb` remote as the write remote, do not push feature branches
+> to CNB, and do not fast-forward GitHub `main`. Do not replay CNB `dev` onto
+> GitHub `dev`: a push to `dev` deploys Cloudflare and D1.
+
+## Current-state snapshot (verified 2026-10-31)
+
+| Ref | Platform | SHA / value | Verified via |
+| --- | --- | --- | --- |
+| `dev` | GitHub | `c9ea158169632b5b51684b6d97d929b4fe675878` | `git rev-parse origin/dev` |
+| `main` | GitHub | `a4b3b082d15943e11a2d5443077f9ab5f3c175dc` | `git rev-parse origin/main` |
+| `main..dev` | GitHub | 166 commits | `git rev-list --count origin/main..origin/dev` |
+| CNB `dev` / `main` | CNB | not re-queried | this clone has no `cnb` remote; the 2026-10-27 amendment still records `72ebdcf4` / `a4b3b082` as M1 evidence |
+| Open PR | GitHub | #144 only (`cursor/cloud-agent-env-306e` → `dev`) | `gh pr list --state open` |
+| OCR `386430913` | Actions | `disabled_manually` | `gh workflow list --all` |
+| CNB Mirror Pilot `396583960` | Actions | `disabled_manually` | `gh workflow list --all` |
+| VPS image `360816866` | Actions | `active`, workflow file absent from `dev` (404) | contents API; file remains on the archive branch |
+
+Daily development is a feature branch from `origin/dev` and a pull request into `dev`. `protect-dev-main` requires the PR. Branch keep/delete for this date is in [`../v3/implementation-baseline.md`](../v3/implementation-baseline.md).
+
+## Historical snapshot (verified 2026-10-26)
 
 | Ref | Platform | SHA | Verified via |
 | --- | --- | --- | --- |
@@ -20,7 +41,7 @@ Operational companion to `adr-0002-cnb-primary-migration.md`.
 `main` is an ancestor of `dev` on GitHub: 138 commits ahead (re-verified:
 `git rev-list --count main..dev` = 138). CNB `dev` == GitHub `dev` exactly.
 
-## Daily development (CNB-native)
+## Historical daily development (CNB-native — do not execute)
 
 > Until `repo-manage:rw` is granted and CNB `dev`/`main` protections are
 > configured (Known permission gaps #1), CNB `dev` has NO server-side merge
@@ -44,7 +65,7 @@ cnb pulls post-pull --repo KoolingMachine/AiringCal \
 # tests: CI pipeline on PR; owner reviews + merges (no auto-merge)
 ```
 
-## Release (requires separate owner authorization)
+## Historical release path (CNB-primary — do not execute)
 
 1. CNB PR `dev` → `main`; owner review + merge (no auto-merge).
 2. CNB tag `v<semver>` on the merged `main` commit (needs `repo-release:r`
@@ -106,9 +127,14 @@ Either option: if the SHA gate fails, stop, document drift, reconcile before
 any tag publication. GitHub `main` must never silently diverge from CNB
 `main`.
 
-## Rollback (drill-ready)
+## Historical rollback (CNB-as-write-origin — do not execute)
 
-Preconditions preserved by this migration: GitHub `dev`/`main` SHAs are
+The active decision is the opposite of this section: GitHub `dev` stays the
+write origin, and CNB history is not replayed onto it. The steps below were
+the rollback for a CNB-primary cutover that was not activated. They would
+push CNB SHAs onto GitHub `dev`.
+
+Preconditions recorded for that unused cutover: GitHub `dev`/`main` SHAs are
 unchanged (`72ebdcf4` / `a4b3b082`); nothing on either platform was
 force-pushed or history-rewritten (CNB `main` was an empty-repo addition).
 
@@ -148,6 +174,8 @@ If CNB becomes unusable as write origin:
 workflow disabled via API (`state: disabled_manually`, last run
 2026-10-26T04:34Z success — zero runs since token deletion);
 `chore/cnb-sync-pilot` branch preserved on both platforms as evidence.
+Re-checked 2026-10-31: workflow id `396583960` is still `disabled_manually`.
+Secret inventory was not re-listed in this pass.
 
 | Item | State | Action at retirement |
 | --- | --- | --- |

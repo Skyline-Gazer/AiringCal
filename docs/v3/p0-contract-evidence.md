@@ -1,8 +1,10 @@
 # P0 contract evidence (#69)
 
-Measured from source on `dev` (post-#68 bootstrap). Companion to [`p0-contract-audit.md`](./p0-contract-audit.md). Status: **partial** — routes, cache literals, and automated fixtures exist; production payload samples and EdgeOne staging limits remain open.
+Measured from source on `dev` (post-#68 bootstrap). Companion to [`p0-contract-audit.md`](./p0-contract-audit.md). Status: **partial** — routes, cache literals, automated fixtures, and the anonymized production sizing run exist. Cloudflare real-bucket CAS and EdgeOne staging limits remain open.
 
-## Frontend network reads (`public/src/bangumi.js`)
+## Frontend network reads (`packages/widget/assets/theme/bangumi.js`)
+
+There is no `public/src/bangumi.js` on `dev`. The widget has two views (`番组计划`, `放送日历`). The sync tab is gone (#31, #128). Empty-state copy still says `同步可能尚未执行`; that is status text, not a sync form.
 
 | Call site | Method | Path | Purpose |
 |---|---|---|---|
@@ -10,10 +12,10 @@ Measured from source on `dev` (post-#68 bootstrap). Companion to [`p0-contract-a
 | Collection view `load()` | GET | `/api/collections?type=&page=&limit=24` | Paginated lists (`limit` fixed at 24 in UI) |
 | Collection view `activate()` | GET | `/api/health` | Connection / KV snapshot hint before first load |
 | Calendar view | GET | `/api/calendar` | Weekly schedule grid |
-| Sync view (legacy UI) | POST | `/api/sync/apply` | **Worker returns 410** (`index.ts`); UI still present |
-| Sync view (legacy UI) | GET | `/api/sync/compare` | **410**; UI still present |
 
 `API` base resolves to `window.bgmConfig.apiUrl` or `window.location.origin`. v3 must preserve these read paths and JSON shapes unless a documented compatibility break is tested.
+
+`POST /api/sync/apply` and `GET /api/sync/compare` have no widget call site. The Worker still returns **410** for those deprecated routes (`apps/web-worker/src/index.ts`).
 
 ## Worker route map (`apps/web-worker/src/index.ts`)
 
@@ -72,12 +74,12 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Offline thumb v2 (portable builder, sharp) | `apps/node-jobs/src/sync/portable-thumb.ts` |
 | Portable read gateway (filesystem public store) | `packages/v3-read/src/portable-read-handler.ts`, `serve-node.ts` |
 | Portable static widget (`/`, `/src/*`) | `packages/v3-read/src/portable-static-handler.ts` |
-| Docker Compose portable stack | `deploy/v3/docker-compose.yml`, `deploy/v3/Dockerfile` |
-| Sync mode interval helper (used by GHA writer; Compose scheduler retired ADR 0003) | `packages/v3-builder/src/sync-schedule.ts`, `apps/node-jobs/src/cli/gha-portable-writer.ts` |
+| Docker Compose portable stack (retired; historical evidence only) | Removed from v3 delivery in #146; see git history |
+| GHA one-shot writer (incremental + 7-day full) | `apps/node-jobs/src/cli/gha-portable-writer.ts`, `packages/v3-builder/src/sync-schedule.ts` |
 | Checkpoint backup CLI | `apps/node-jobs/src/cli/portable-checkpoint-backup.ts` |
 | Checkpoint restore CLI | `apps/node-jobs/src/cli/portable-checkpoint-restore.ts` |
-| Checkpoint backup retention (scheduler prune) | `apps/node-jobs/src/cli/portable-checkpoint-backup.ts` (`planCheckpointBackupRetention`) |
-| `/health` cron from builder SQLite (Compose web) | `packages/v3-read/src/portable-builder-cron.ts` |
+| Checkpoint backup retention (backup prune) | `apps/node-jobs/src/cli/portable-checkpoint-backup.ts` (`planCheckpointBackupRetention`) |
+| `/health` cron from builder SQLite (standalone local reader) | `packages/v3-read/src/portable-builder-cron.ts` |
 | Public snapshot GC dry-run (generation + pins) | `packages/v3-core/src/public-snapshot-gc.ts`, `apps/node-jobs/src/cli/portable-public-gc.ts` |
 | GC dry-run log after portable publish | `apps/node-jobs/src/sync/run-portable.ts`, `AIRINGCAL_GC_LOG_AFTER_PUBLISH` |
 | Reference-aware image GC dry-run (log) | `packages/v3-core/src/public-image-gc.ts`, `logPublicImageGcDryRun` |
@@ -106,7 +108,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | `airingcal` config v1 JSON (portable env mapping) | `docs/v3/airingcal-config.example.json`, `packages/v3-adapters/src/airingcal-config.ts` |
 | Config → env emit CLI (#72 setup) | `apps/node-jobs/src/cli/airingcal-config-emit.ts` |
 | Config validate + snapshot compare (#73 prep) | `airingcal-config-validate.ts`, `portable-snapshot-compare.ts` |
-| CI v3 operator smoke (config + compose) | `.github/workflows/ci.yml` job `v3_operator_smoke` |
+| CI v3 operator smoke (config + portable HTTP) | `.github/workflows/ci.yml` job `v3_operator_smoke` |
 | Cloudflare Workers read worker (R2 binding; static + 410 + `/api/*`) | `apps/v3-read-worker/src/index.ts`, `index.test.ts` |
 | Non-prod R2 staging smoke (publish → seed `--local` → HTTP assertions) | `apps/v3-read-worker/scripts/staging-smoke.ts`; CI job `v3_operator_smoke` |
 | R2 binding contract + emulation caveats (#72) | [`docs/v3/cloudflare-read-worker.md`](./cloudflare-read-worker.md) |
