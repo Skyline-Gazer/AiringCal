@@ -128,6 +128,7 @@ export function defaultBackupLeaseSeconds(): number {
   return LEASE_SECONDS
 }
 
+/** Staging dir for the backup SQL dump; defaults to the OS temp dir. */
 export function defaultBackupStateDir(): string {
-  return process.env.QL_DATA_DIR?.trim() || tmpdir()
+  return process.env.AIRINGCAL_BACKUP_TMP_DIR?.trim() || tmpdir()
 }

@@ -1,6 +1,6 @@
 # Docs index (for AI & operators)
 
-> **Owner-confirmed (2026-11-05):** GitHub-only development; GHA one-shot Portable Builder is sole v3 writer target with private S3 checkpoint, one authoritative public S3 Release/images (R2 first); Cloudflare/EdgeOne stateless read, Netlify/Vercel later. **No CNB, QingLong or Docker/Compose deployment.** Code in [PR #146](https://github.com/Skyline-Gazer/AiringCal/pull/146) does **not** mean production-live: real staging, API/image parity and owner cutover are tracked in [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147).
+> **Owner-confirmed (2026-11-05):** GitHub-only development; GHA one-shot Portable Builder is sole v3 writer target with private S3 checkpoint, one authoritative public S3 Release/images (R2 first); Cloudflare/EdgeOne stateless read, Netlify/Vercel later. **No CNB, QingLong or Docker/Compose deployment.** The writer implementation is merged into `dev` ([#146](https://github.com/Skyline-Gazer/AiringCal/pull/146), read parity [#148](https://github.com/Skyline-Gazer/AiringCal/pull/148), ops hardening [#149](https://github.com/Skyline-Gazer/AiringCal/pull/149)) but that does **not** mean production-live: real staging, API/image parity and owner cutover are tracked in [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147).
 >
 > **Reality check:** Existing v2 Worker read APIs still reference legacy D1/KV/R2 data; GHA Reader parity must pass before cutover. This feature PR gates Cloudflare Worker deployment / D1 migration to manual dispatch only.
 
@@ -71,7 +71,7 @@ Code entry points: `apps/web-worker` (CF read), `packages/v3-{core,builder,read,
 | `kv-binding-decision.md` | AC-3-03 — keep KV binding |
 | `abandoned-vps-route.md` | Do not use VPS write |
 | `adr-0002-cnb-primary-migration.md` | CNB-primary design, superseded in part by the 2026-10-27 GitHub-primary amendment (#139) |
-| `adr-0003-gha-portable-write.md` | Accepted 2026-10-31: GHA portable→S3 writer, public images, retire QingLong/D1-KV/Docker/CNB write (implemented on this PR; staging/production cutover pending) |
+| `adr-0003-gha-portable-write.md` | Accepted 2026-10-31: GHA portable→S3 writer, public images, retire QingLong/D1-KV/Docker/CNB write (implemented and merged into `dev` via #146/#148/#149; staging/production cutover pending) |
 
 ## Runbooks (`docs/runbook/`)
 

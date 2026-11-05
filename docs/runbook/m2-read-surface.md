@@ -21,7 +21,7 @@
 
 **自动（推荐）：** 青龙面板手动跑一次 **airingcal-sync**（0.2.21 会在有 PAT 时拉 **≥ PR #55** 的 CI artifact）。
 
-**手动：** [Actions → CI → qinglong-bundle](https://github.com/Skyline-Gazer/AiringCal/actions/workflows/ci.yml) 下载 artifact → 解压到容器 `QL_DATA_DIR/airingcal-bundle/`。
+**手动：** ~~QingLong bundle artifact~~ — **已退役（ADR 0003）**：CI 现在产出 `node-jobs-bundle`（portable bundle），定时写库由 [GHA portable writer](../v3/gha-portable-writer.md) 承担；下述面板步骤仅作 2026-10-13 历史记录。
 
 - [ ] 日志无 `BUNDLE_MISSING`；结束 **success**，含 `generation=`
 
