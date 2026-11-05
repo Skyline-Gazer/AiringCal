@@ -104,25 +104,32 @@ test('ensurePublishImagesComplete uploads missing referenced images from the loc
   }
 })
 
-test('ensurePublishImagesComplete reuses existing public objects without re-upload', async () => {
+test('ensurePublishImagesComplete fails closed when an existing immutable image object has different content', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'airingcal-gate-'))
   try {
     const store = new MemoryPublicStore()
-    await store.putImmutableObject(imageOriginalKey(HASH_A), new TextEncoder().encode('public-orig'), 'image/jpeg')
+    await store.putImmutableObject(imageOriginalKey(HASH_A), new TextEncoder().encode('public-oriG'), 'image/jpeg')
     await store.putImmutableObject(imageThumbV2Key(HASH_A), new TextEncoder().encode('public-thumb'), 'image/webp')
     mkdirSync(join(dir, 'images', HASH_A), { recursive: true })
+    // Same byte length as the published object, different content: only a byte
+    // comparison can detect it (the store exposes no comparable md5 etag).
     writeFileSync(join(dir, 'images', HASH_A, 'original'), 'local-orig')
     const counting = new CountingPublicStore(store)
-    const result = await ensurePublishImagesComplete({
-      snapshot: snapshotWithHashes([HASH_A]),
-      publicStore: counting,
-      imageRoot: dir,
-    })
-    assert.equal(result.reused, 1)
-    assert.equal(result.mismatched, 1)
-    assert.equal(result.uploaded, 0)
-    assert.deepEqual(counting.puts, [])
-    assert.equal(new TextDecoder().decode((await store.getSnapshotBytes(imageOriginalKey(HASH_A)))!), 'public-orig')
+    await assert.rejects(
+      () =>
+        ensurePublishImagesComplete({
+          snapshot: snapshotWithHashes([HASH_A]),
+          publicStore: counting,
+          imageRoot: dir,
+        }),
+      /publish gate.*images\/[0-9a-f]{64}\/original.*differs/i,
+    )
+    assert.deepEqual(counting.puts, [], 'immutable content must never be overwritten')
+    assert.equal(
+      new TextDecoder().decode((await store.getSnapshotBytes(imageOriginalKey(HASH_A)))!),
+      'public-oriG',
+      'the published object must be left untouched',
+    )
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -147,7 +154,6 @@ test('ensurePublishImagesComplete skips unchanged images by size/md5 etag withou
     assert.equal(result.skipped_unchanged, 1)
     assert.equal(result.reused, 1)
     assert.equal(result.uploaded, 0)
-    assert.equal(result.mismatched, 0)
     assert.deepEqual(counting.puts, [])
     assert.deepEqual(counting.gets, [], 'unchanged objects must be skipped via head, not downloaded')
   } finally {
@@ -155,7 +161,31 @@ test('ensurePublishImagesComplete skips unchanged images by size/md5 etag withou
   }
 })
 
-test('ensurePublishImagesComplete skips unchanged by size alone when the store has no comparable etag', async () => {
+test('ensurePublishImagesComplete fails closed on an md5-etag mismatch without downloading the object', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-gate-etag-'))
+  try {
+    const store = new Md5HeadStore(new MemoryPublicStore())
+    await store.putImmutableObject(imageOriginalKey(HASH_A), new TextEncoder().encode('published-bytes'), 'image/jpeg')
+    mkdirSync(join(dir, 'images', HASH_A), { recursive: true })
+    writeFileSync(join(dir, 'images', HASH_A, 'original'), 'local-bytes-xx')
+    const counting = new CountingPublicStore(store)
+    await assert.rejects(
+      () =>
+        ensurePublishImagesComplete({
+          snapshot: snapshotWithHashes([HASH_A]),
+          publicStore: counting,
+          imageRoot: dir,
+        }),
+      /publish gate.*images\/[0-9a-f]{64}\/original.*differs/i,
+    )
+    assert.deepEqual(counting.gets, [], 'a comparable etag mismatch is conclusive; no download needed')
+    assert.deepEqual(counting.puts, [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('ensurePublishImagesComplete verifies actual bytes when the store exposes no comparable etag', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'airingcal-gate-size-'))
   try {
     const bytes = 'same-size-content'
@@ -173,7 +203,7 @@ test('ensurePublishImagesComplete skips unchanged by size alone when the store h
     assert.equal(result.skipped_unchanged, 1)
     assert.equal(result.reused, 1)
     assert.deepEqual(counting.puts, [])
-    assert.deepEqual(counting.gets, [])
+    assert.deepEqual(counting.gets, [imageOriginalKey(HASH_A)], 'size alone is not proof: the bytes are compared')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
