@@ -20,6 +20,8 @@ export function parsePublicReleasePointer(raw: string): PublicReleasePointer {
     || typeof value.content_hash !== 'string'
     || typeof value.artifact_ref !== 'string'
     || !Number.isSafeInteger(value.published_at_unix)
+    || value.manifest_ref !== undefined
+      && (typeof value.manifest_ref !== 'string' || value.manifest_ref.length === 0)
   ) {
     throw new Error('Invalid public release pointer object')
   }

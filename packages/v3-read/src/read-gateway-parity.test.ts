@@ -203,8 +203,9 @@ test('portable and Cloudflare gateways agree on health, release identity and lay
     const pointer = await store.getCurrentRelease()
     assert.equal(pointer?.generation, body.data.publish.generation, `${label} pointer generation`)
     assert.equal(pointer?.artifact_ref, body.data.publish.artifact_ref, `${label} pointer artifact`)
-    const manifest = await store.getSnapshotBytes('public/manifest.json')
-    assert.notEqual(manifest, null, `${label} must publish the same manifest layout`)
+    assert.ok(pointer?.manifest_ref, `${label} pointer carries manifest_ref`)
+    assert.match(pointer.manifest_ref, /^public\/manifests\//, `${label} manifest is generation-scoped`)
+    assert.notEqual(await store.getSnapshotBytes(pointer.manifest_ref), null, `${label} manifest object exists`)
   }
 
   const pointer = (store: FilesystemPublicStore | CloudflareR2PublicStore) =>
