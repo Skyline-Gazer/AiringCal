@@ -1,5 +1,7 @@
 # AiringCal v3 implementation baseline
 
+> **Accepted target, 2026-11-05 (not yet cut over):** GitHub-only development; GitHub Actions scheduled/manual one-shot Portable Builder is the **sole v3 writer**, using ephemeral SQLite and **private S3-compatible durable checkpoint**. One authoritative **public immutable Release/images** on S3-compatible object storage (initially Cloudflare R2) is consumed by stateless Cloudflare/EdgeOne read adapters, followed by Netlify/Vercel. **No QingLong, CNB, Docker or Compose runtime/deployment or CI acceptance** in v3. See [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147) and unmerged [PR #146](https://github.com/Skyline-Gazer/AiringCal/pull/146). Actual v2 Worker / D1-KV-R2 legacy source remains on `dev`; do not claim production cutover.
+
 Status: Working implementation baseline; governed by [Issue #67](https://github.com/Skyline-Gazer/AiringCal/issues/67) and [Skyline-Gazer Project #7](https://github.com/orgs/Skyline-Gazer/projects/7).
 
 ## Authoritative workflow
@@ -19,8 +21,8 @@ Status: Working implementation baseline; governed by [Issue #67](https://github.
 
 ## Runtime and state
 
-- Docker/Compose: web, scheduler, builder boundaries; single SQLite durable state on local filesystem, WAL and bounded job leases/fencing; no WAL on network storage.
-- Serverless: external builder e.g. GitHub Actions and private checkpoint storage. Prevent two authoritative builders publishing one site without explicit handoff.
+- **GitHub Actions-only write runner**: one-shot Portable Builder; local SQLite/WAL during the run, restored from a private S3-compatible durable checkpoint and saved conditionally on success. Prevent two authoritative writers publishing one site; cross-runner lease/CAS/fencing and recovery must pass isolated real-R2 staging (#147).
+- **No Docker/Compose deployment or scheduler target**. Remove related build/test/DoD only after retaining portable Builder and HTTP reader contract coverage. CNB and QingLong are historical, not supported delivery platforms.
 - Daily incremental sync and seven-day full reconciliation by default; manual sync supported. Failed core collections/calendar completeness halts publishing; previously verified subject details/images may be reused with explicit stale/partial status.
 - Credential-bearing private checkpoint and published public store are separate. All published content is explicitly public allowlisted data.
 
@@ -66,7 +68,7 @@ The Alibaba OpenCodeReview workflow (`.github/workflows/ocr-review.yml`) is
   workflow id `386430913` is still `disabled_manually`. This pass does not
   re-enable it.
 
-## Progress reconciliation (2026-10-31)
+## Historical progress reconciliation (2026-10-31; superseded by #67/#147 2026-11-05 decisions)
 
 GitHub Project #7 remains the named board in #67 and in #69–#73. This token
 cannot read it: `gh project list --owner Skyline-Gazer` returned no projects,
