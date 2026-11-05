@@ -59,6 +59,10 @@ export class MemoryObjectStore implements ConditionalObjectStore {
     return { etag: entry.etag, contentType: entry.contentType }
   }
 
+  async list(prefix: string): Promise<string[]> {
+    return [...this.objects.keys()].filter((key) => key.startsWith(prefix)).sort()
+  }
+
   async delete(key: string): Promise<void> {
     this.objects.delete(key)
   }
