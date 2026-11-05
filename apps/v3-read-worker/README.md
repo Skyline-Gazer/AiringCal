@@ -4,8 +4,12 @@ Cloudflare Workers entry for the v3 read gateway (#72): serves the v2-compatible
 `/api/*` public surface, `/image/:hash`, and the widget assets from an R2-backed
 v3 public store.
 
-**Non-production.** CI does not deploy this Worker; `apps/web-worker` remains the
-only deployed Worker. Production cutover is gated on #73 DoD.
+**Non-production.** `ci.yml` does not deploy this Worker; the only deploy path is
+the dispatch-only staging workflow
+[`.github/workflows/v3-read-worker-staging.yml`](../../.github/workflows/v3-read-worker-staging.yml)
+(Environment `staging`, `AIRINGCAL_STAGING_*` secrets/vars only, staging bucket
+materialized by `scripts/materialize-v3-read-staging-config.mjs`). Production
+cutover is gated on #73 DoD.
 
 ## Layout
 
@@ -16,6 +20,11 @@ only deployed Worker. Production cutover is gated on #73 DoD.
 | `wrangler.toml` | Binding `AIRINGCAL_PUBLIC_R2` (`airing-cal-public`) |
 | `scripts/staging-smoke.ts` | Local end-to-end smoke over `wrangler dev -l` (no remote resources) |
 | `env.example` | Local vars; bindings live in `wrangler.toml` |
+
+
+`AIRINGCAL_PUBLIC_BASE_URL` (absolute https, placeholders rejected) is validated
+when the read config is built; a bad value fails closed as **503**
+`INVALID_READ_CONFIG`. When set, `/image/:hash` 302s to `{BASE}/images/...`.
 
 ## Local
 

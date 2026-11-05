@@ -122,3 +122,34 @@ test('worker reports a missing R2 binding instead of throwing', async () => {
   const body = await response.json() as { error: { code: string } }
   assert.equal(body.error.code, 'NO_PUBLIC_STORE_BINDING')
 })
+
+test('worker redirects images through a validated AIRINGCAL_PUBLIC_BASE_URL', async () => {
+  const bucket = await publishedBucket()
+  const hash = 'a'.repeat(64)
+  const env = {
+    AIRINGCAL_PUBLIC_R2: bucket,
+    AIRINGCAL_PUBLIC_BASE_URL: 'https://cdn.example.com/',
+  }
+  const original = await handleReadWorkerRequest(new Request(`https://worker.example/image/${hash}`), env)
+  assert.equal(original.status, 302)
+  assert.equal(original.headers.get('Location'), `https://cdn.example.com/images/${hash}/original`)
+  const thumb = await handleReadWorkerRequest(new Request(`https://worker.example/image/${hash}/thumb`), env)
+  assert.equal(thumb.headers.get('Location'), `https://cdn.example.com/images/${hash}/thumb.v2.webp`)
+})
+
+test('worker fails closed on placeholder or non-https AIRINGCAL_PUBLIC_BASE_URL', async () => {
+  const bucket = await publishedBucket()
+  for (const [baseUrl, pattern] of [
+    ['https://PLACEHOLDER_PUBLIC_CDN', /placeholder value/i],
+    ['http://cdn.example.com', /must use https/],
+  ] as const) {
+    const response = await handleReadWorkerRequest(new Request('https://worker.example/api/health'), {
+      AIRINGCAL_PUBLIC_R2: bucket,
+      AIRINGCAL_PUBLIC_BASE_URL: baseUrl,
+    })
+    assert.equal(response.status, 503)
+    const body = await response.json() as { error: { code: string; message: string } }
+    assert.equal(body.error.code, 'INVALID_READ_CONFIG')
+    assert.match(body.error.message, pattern)
+  }
+})
