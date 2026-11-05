@@ -13,15 +13,27 @@ export function publicImageObjectKey(hash: string, variant: PublicImageVariant):
   return variant === 'thumb' ? imageThumbV2Key(normalized) : imageOriginalKey(normalized)
 }
 
+/**
+ * Absolute public URL for an exact public-store object key, or null when the
+ * base is unset. Read gateways must only redirect to keys they verified exist —
+ * the v1 thumb fallback has no variant of its own.
+ */
+export function resolvePublicObjectUrl(
+  publicBaseUrl: string | null | undefined,
+  objectKey: string,
+): string | null {
+  const base = normalizePublicBaseUrl(publicBaseUrl ?? null)
+  if (!base) return null
+  return `${base}/${objectKey.replace(/^\/+/, '')}`
+}
+
 /** Absolute public CDN/S3 URL for an image object, or null when base is unset. */
 export function resolvePublicImageRedirect(
   publicBaseUrl: string | null | undefined,
   hash: string,
   variant: PublicImageVariant,
 ): string | null {
-  const base = normalizePublicBaseUrl(publicBaseUrl ?? null)
-  if (!base) return null
-  return `${base}/${publicImageObjectKey(hash, variant)}`
+  return resolvePublicObjectUrl(publicBaseUrl, publicImageObjectKey(hash, variant))
 }
 
 export class InvalidPublicBaseUrlError extends Error {

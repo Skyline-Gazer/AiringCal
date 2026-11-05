@@ -68,19 +68,33 @@ test('cloudflare read handler serves /api/collections from the R2 PublicStore', 
   assert.equal(versionBody.platform, 'cloudflare')
 })
 
-test('cloudflare read handler redirects images through a validated public base URL', async () => {
+test('cloudflare read handler redirects images through a validated public base URL only when the object exists', async () => {
   const bucket = await publishedBucket()
+  const store = new CloudflareR2PublicStore(bucket)
   const handle = createCloudflareReadHandler({
     publicR2: bucket,
     publicBaseUrl: 'https://cdn.example.com/',
   })
   const hash = 'a'.repeat(64)
+
+  // Nothing published under this hash: the gateway must answer itself instead of
+  // handing the client a CDN URL that 404s.
+  const missing = await handle(new Request(`https://worker.example/image/${hash}/thumb`))
+  assert.equal(missing.status, 404)
+  assert.equal(missing.headers.get('Location'), null)
+
+  await store.putImmutableObject(`images/${hash}/original`, new Uint8Array([1, 2, 3]), 'image/jpeg')
   const original = await handle(new Request(`https://worker.example/image/${hash}`))
   assert.equal(original.status, 302)
   assert.equal(original.headers.get('Location'), `https://cdn.example.com/images/${hash}/original`)
-  const thumb = await handle(new Request(`https://worker.example/image/${hash}/thumb`))
-  assert.equal(thumb.status, 302)
-  assert.equal(thumb.headers.get('Location'), `https://cdn.example.com/images/${hash}/thumb.v2.webp`)
+
+  await store.putImmutableObject(`images/${hash}/thumb.v1.webp`, new Uint8Array([4]), 'image/webp')
+  const v1Thumb = await handle(new Request(`https://worker.example/image/${hash}/thumb`))
+  assert.equal(v1Thumb.headers.get('Location'), `https://cdn.example.com/images/${hash}/thumb.v1.webp`)
+
+  await store.putImmutableObject(`images/${hash}/thumb.v2.webp`, new Uint8Array([5]), 'image/webp')
+  const v2Thumb = await handle(new Request(`https://worker.example/image/${hash}/thumb`))
+  assert.equal(v2Thumb.headers.get('Location'), `https://cdn.example.com/images/${hash}/thumb.v2.webp`)
 })
 
 test('cloudflare read handler rejects a placeholder base URL at config time', async () => {

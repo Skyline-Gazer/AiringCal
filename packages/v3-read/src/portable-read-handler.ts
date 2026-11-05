@@ -8,7 +8,7 @@ import { V2_CACHE_CONTROL } from '@airing-cal/v3-core/read-contract'
 import type { PublicStore } from '@airing-cal/v3-core/ports'
 import {
   publicImageRedirectResponse,
-  resolvePublicImageRedirect,
+  resolvePublicObjectUrl,
 } from '@airing-cal/v3-core/public-image-url'
 import { loadVerifiedPublicSnapshot, type VerifiedPublicSnapshot } from './load-public-snapshot.ts'
 import { resolveRuntimePlatformIdFromEnv } from '@airing-cal/v3-adapters/platform-id'
@@ -137,6 +137,19 @@ async function handleHealth(
   })
 }
 
+interface ImageCandidate {
+  key: string
+  contentType: string
+}
+
+/**
+ * `/image/:hash` and `/image/:hash/thumb`.
+ *
+ * A redirect is only emitted for an object that was verified to exist: thumbs
+ * are optional (only large covers get `thumb.v2.webp`), so redirecting blindly
+ * sent clients to a CDN key that returns 404 with no gateway fallback. Order is
+ * thumb.v2 → thumb.v1 → 404 for thumbs, and original → 404 for originals.
+ */
 async function handleImage(
   pathname: string,
   publicStore: PublicStore,
@@ -146,26 +159,31 @@ async function handleImage(
   if (!match?.[1]) return new Response('Invalid hash', { status: 400 })
   const hash = match[1].toLowerCase()
   const isThumb = match[2] === 'thumb'
-  const redirectTo = resolvePublicImageRedirect(
-    publicBaseUrl,
-    hash,
-    isThumb ? 'thumb' : 'original',
-  )
-  if (redirectTo) return publicImageRedirectResponse(redirectTo)
-  const keys = isThumb
-    ? [imageThumbV2Key(hash), imageThumbV1Key(hash)]
-    : [imageOriginalKey(hash)]
-  for (const key of keys) {
-    const bytes = await publicStore.getSnapshotBytes(key)
-    if (bytes) {
-      return new Response(new Uint8Array(bytes), {
-        headers: {
-          'Cache-Control': V2_CACHE_CONTROL.image,
-          'CDN-Cache-Control': V2_CACHE_CONTROL.imageCdn,
-          'Content-Type': isThumb ? 'image/webp' : 'image/jpeg',
-        },
-      })
+  const candidates: ImageCandidate[] = isThumb
+    ? [
+      { key: imageThumbV2Key(hash), contentType: 'image/webp' },
+      { key: imageThumbV1Key(hash), contentType: 'image/webp' },
+    ]
+    : [{ key: imageOriginalKey(hash), contentType: 'image/jpeg' }]
+  for (const candidate of candidates) {
+    const redirectTo = resolvePublicObjectUrl(publicBaseUrl, candidate.key)
+    if (redirectTo) {
+      // Existence probe only: HEAD when the store supports it (C5 port), else a body read.
+      const exists = publicStore.headObject
+        ? (await publicStore.headObject(candidate.key)) != null
+        : (await publicStore.getSnapshotBytes(candidate.key)) != null
+      if (exists) return publicImageRedirectResponse(redirectTo)
+      continue
     }
+    const bytes = await publicStore.getSnapshotBytes(candidate.key)
+    if (!bytes) continue
+    return new Response(new Uint8Array(bytes), {
+      headers: {
+        'Cache-Control': V2_CACHE_CONTROL.image,
+        'CDN-Cache-Control': V2_CACHE_CONTROL.imageCdn,
+        'Content-Type': candidate.contentType,
+      },
+    })
   }
   return new Response('Not found', { status: 404 })
 }

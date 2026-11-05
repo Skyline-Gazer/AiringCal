@@ -38,7 +38,9 @@ export class MemoryR2Bucket implements CloudflareR2BucketBinding {
 
   async head(key: string): Promise<CloudflareR2HeadResult | null> {
     const entry = this.objects.get(key)
-    return entry ? { etag: entry.etag, httpEtag: `"${entry.etag}"` } : null
+    return entry
+      ? { etag: entry.etag, httpEtag: `"${entry.etag}"`, size: entry.bytes.byteLength }
+      : null
   }
 
   async put(
