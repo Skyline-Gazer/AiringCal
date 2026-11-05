@@ -27,9 +27,8 @@ bucket_name = "airing-cal-data"
 [images]
 binding = "IMAGES"
 
-# ADR 0003: public CDN base for GET /image/* 302s (placeholder until owner fills real host).
-[vars]
-AIRINGCAL_PUBLIC_BASE_URL = "https://PLACEHOLDER_PUBLIC_CDN"
+# AIRINGCAL_PUBLIC_BASE_URL remains unset until a verified public CDN endpoint is configured.
+# Never deploy a placeholder hostname: without this variable, /image/* uses the legacy read fallback.
 
 # Thumb materialization: legacy POST /api/thumb-gen after sync (no Worker cron).
 # Portable GHA writer materializes thumbs offline into the public store.

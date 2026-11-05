@@ -1,5 +1,7 @@
 # GHA portable writer (ADR 0003)
 
+> **Activation gate (2026-11-05):** The default-branch schedule is disabled at the job level unless repository variable `AIRINGCAL_WRITER_ENABLED` is exactly `true`. Do not enable it until real isolated R2 staging, reader parity and owner cutover approval (#147). Manual `workflow_dispatch` is the explicit smoke path; use staging-scoped credentials. `dev` push never deploys the read Worker or applies remote D1 migrations after the PR CI gate change. A real public CDN URL is not configured in `wrangler.toml` by default; the read Worker falls back to its legacy image store until an operator sets and verifies the runtime variable. No Docker/CNB/QingLong delivery. This PR is not proof of production-live sync.
+
 Status: **implemented in repo; not production-live until Secrets/Variables are filled and a successful `workflow_dispatch` is observed.**
 
 Decision: [`../plans/adr-0003-gha-portable-write.md`](../plans/adr-0003-gha-portable-write.md).
@@ -43,7 +45,7 @@ Replace every `PLACEHOLDER_*` with real values. Create **two** R2 buckets (priva
 
 | Variable | Example / placeholder | Notes |
 | --- | --- | --- |
-| `AIRINGCAL_PUBLIC_BASE_URL` | `https://PLACEHOLDER_PUBLIC_CDN` | Also set on the **read Worker** (`AIRINGCAL_PUBLIC_BASE_URL`) so `GET /image/*` 302s to this host. Writer job does not require it. |
+| `AIRINGCAL_PUBLIC_BASE_URL` | verified real public CDN host (optional) | Configure separately in the **read Worker** runtime only after staging. Never deploy `PLACEHOLDER_PUBLIC_CDN`: without a configured URL, the Worker keeps its existing image fallback. Writer job does not require it. |
 
 ### Local / non-Actions env (optional)
 

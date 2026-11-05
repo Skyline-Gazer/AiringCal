@@ -21,6 +21,8 @@ permissions:
 
 jobs:
   write:
+    # Manual dispatch is for explicit staging/owner-run. Schedule remains inert until owner sets AIRINGCAL_WRITER_ENABLED=true.
+    if: ${{ github.event_name == 'workflow_dispatch' || vars.AIRINGCAL_WRITER_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
