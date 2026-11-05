@@ -1,19 +1,43 @@
 # EdgeOne public store (#72)
 
-`EdgeOnePublicStore` (`packages/v3-adapters/src/edgeone-public-store.ts`) implements
-the v3 `PublicStore` port over **EdgeOne Makers Blob**, so an EdgeOne Pages/Edge
-Functions deployment can serve the same immutable release the Cloudflare and
-Compose readers serve.
+Blob is **not** a publish authority: it has no conditional write, so the release
+pointer can never be moved through it safely. EdgeOne readers therefore read the
+same published Release as the Cloudflare gateway, over HTTPS, from the public
+base URL.
 
-The read side is wired: `handleEdgeOneReadRequest`
-(`packages/v3-read/src/edgeone-read-handler.ts`) builds the store from the bound
-Blob namespace and serves the same v2 `/api/*` surface via
+## Read path (#147 C6/C7)
+
+`createEdgeOneReadHandler`
+(`packages/v3-read/src/edgeone-read-handler.ts`) builds a read-only
+`HttpPublicStore` (`packages/v3-adapters/src/http-public-store.ts`) against
+`AIRINGCAL_PUBLIC_BASE_URL` and serves the v2 `/api/*` surface via
 `handlePortableReadRequest`, labelled `platform: 'edgeone'`. Edge Functions call
-it as `onRequest({ request, env })` with `env.<namespace variable name>`.
+it as `onRequest({ request, env })`.
 
-Status: adapter implemented and unit-tested against a Blob double; **no staging
-run yet** (the EdgeOne Blob account is an operator/approval action), so #69's
-capability rows stay candidate.
+- `HttpPublicStore.getCurrentRelease` fetches `public/current-release.json` and
+  `getSnapshotBytes` fetches the referenced snapshot/manifest/image object —
+  the same key layout as the R2/filesystem stores, plus the C1 `manifest_ref`
+  verification done by `loadVerifiedPublicSnapshot`.
+- It is read-only by construction: `commitRelease` returns `unsupported` and
+  `putImmutableObject` throws.
+- The base URL is validated when the handler is built (absolute https, no
+  query/fragment, placeholders rejected); an invalid value fails closed as
+  **503** `INVALID_READ_CONFIG`.
+- When the base URL is set, `/image/:hash` 302s to `{BASE}/images/...` instead
+  of proxying bytes.
+
+Status: `HttpPublicStore` and the handler are unit-tested against a fake HTTPS
+CDN backed by a real published R2 release, including byte parity with the
+Cloudflare gateway. **No EdgeOne staging run yet**, so #69's capability rows stay
+candidate.
+
+## `EdgeOnePublicStore` (Blob adapter, not wired for reads)
+
+`EdgeOnePublicStore` (`packages/v3-adapters/src/edgeone-public-store.ts`) keeps
+implementing the `PublicStore` port over EdgeOne Makers Blob for operator/verification
+tooling, but no read entry point uses it: serving from Blob would silently diverge
+from the Release the writer publishes into R2/S3. It remains unit-tested against a
+Blob double.
 
 ## Why Blob, not KV
 
@@ -60,14 +84,16 @@ needs `projectId` + API token — that is what a staging/verification run would 
 
 ## Still open
 
-- Staging run on an approved EdgeOne account (bind a Blob namespace, publish a
-  fixture, serve reads) → then promote the #69 matrix rows.
+- Staging run on an approved EdgeOne account: configure
+  `AIRINGCAL_PUBLIC_BASE_URL` (verified https CDN over the staging public
+  bucket), deploy the template, serve reads → then promote the #69 matrix rows.
 - **Deployment template** (not staging-verified): `apps/edgeone-read-worker/`
   provides a Pages Functions catch-all (`functions/[[path]].js`) + README that
-  bind the Blob namespace and delegate to `handleEdgeOneReadRequest`. This is
+  build `createEdgeOneReadHandler` against `AIRINGCAL_PUBLIC_BASE_URL`. It is
   template-only — no EdgeOne account, no paid resource, and its `[[path]].js`
-  is **not** bundled or typechecked by this repo (`.js`, external
-  `@edgeone/pages-blob`).
+  is **not** bundled or typechecked by this repo.
 - Read gateway wiring for EdgeOne Edge Functions (Request/Response portability
   limits) — the CF worker entry is not reusable as-is.
 - Image variants/CDN cache behavior on EdgeOne.
+- Pointer freshness: `HttpPublicStore` sends `cache-control: no-cache`, but the
+  public bucket/CDN must not serve `public/current-release.json` with a long TTL.

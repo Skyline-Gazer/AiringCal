@@ -1,38 +1,38 @@
 # apps/edgeone-read-worker
 
-EdgeOne Pages read-gateway **template** for the v3 release contract (#72).
+EdgeOne Pages read-gateway **template** for the v3 release contract (#72, #147).
 
-**Status: template only — NOT deployed or staging-verified.** EdgeOne Makers Blob
-requires an operator-approved account/binding; see
+**Status: template only — NOT deployed or staging-verified.** See
 [`docs/v3/edgeone-store.md`](../../docs/v3/edgeone-store.md) for the storage
-decision (Blob over KV) and what a staging run must prove before #69 matrix rows
-can leave `candidate`.
+decision and what a staging run must prove before #69 matrix rows can leave
+`candidate`.
 
 ## What it is
 
-A catch-all Edge Functions entry
-(`functions/[[path]].js`) that:
+A catch-all Edge Functions entry (`functions/[[path]].js`) that:
 
-1. resolves the bound Blob namespace (`AIRINGCAL_PUBLIC_BLOB`),
-2. returns **503** `NO_PUBLIC_BLOB_BINDING` if the binding is absent (fail closed),
-3. delegates to `handleEdgeOneReadRequest`
+1. reads `AIRINGCAL_PUBLIC_BASE_URL` from the Pages project variables,
+2. fails closed with **503** `INVALID_READ_CONFIG` when it is missing, non-https
+   or a placeholder (validated once per isolate),
+3. delegates to `createEdgeOneReadHandler`
    (`@airing-cal/v3-read/edgeone-read-handler`), which serves the v2-compatible
-   read surface (`/api/*`, `/image/:hash`) from the **same key layout** as the
-   Cloudflare and Compose gateways.
+   read surface (`/api/*`, `/image/:hash`) from the **same published Release** as
+   the Cloudflare gateway, fetched over HTTPS via `HttpPublicStore`
+   (`@airing-cal/v3-adapters/http-public-store`).
 
-Publishing is deliberately outside this worker: Blob has no conditional write, so
-`commitRelease` reports `unsupported` — the release pointer must be moved by a
-CAS-capable store or a single-writer path.
+Blob is intentionally not on the read path: Makers Blob has no conditional
+write, so it never receives the release pointer and would silently diverge from
+the Release the GHA writer publishes into R2/S3.
 
 ## Deploy / staging run (operator)
 
-1. Enable EdgeOne Makers Blob (account approval), create a namespace, and bind it
-   to this Pages project with a **Variable Name** matching `PUBLIC_BLOB`
-   (`AIRINGCAL_PUBLIC_BLOB`).
-2. Publish a release into that namespace (single-writer pointer move), e.g. from
-   the operator pipeline that writes the filesystem/R2 release.
+1. Publish a staging Release into the staging public bucket (R2/S3) and front it
+   with a verified https CDN base URL.
+2. Configure the Pages project variable `AIRINGCAL_PUBLIC_BASE_URL` (plus
+   optional `NSFW_SHOW`, `PACKAGE_VERSION`). Never deploy `PLACEHOLDER_PUBLIC_CDN`.
 3. `edgeone pages deploy` (or the EdgeOne CLI/console) for this directory.
-4. Verify against `docs/v3/edgeone-store.md`'s staging checklist (reads, and the
-   fail-closed 503 without a verified pointer).
+4. Verify `/api/version` (`platform: edgeone`), `/api/health`
+   (`publish.generation` matches the pointer), `/api/collections`, `/api/calendar`
+   and one `/image/:hash` (302 to the CDN base).
 
 None of this is automated by CI, and no paid resource is provisioned by any merge.
