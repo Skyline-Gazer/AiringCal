@@ -1,11 +1,15 @@
 # Docs index (for AI & operators)
 
-## Production architecture (current)
+> **Authoritative target (owner decision 2026-11-05; NOT YET LIVE):** GitHub is the only development origin. GitHub Actions one-shot Portable Builder (schedule/manual) is the only v3 writer; local SQLite + private S3-compatible checkpoint, one shared public immutable Release/images in S3-compatible storage (Cloudflare R2 first); Cloudflare/EdgeOne read adapters with Netlify/Vercel read-only targets to follow. **No CNB, QingLong or Docker/Compose in v3 delivery.** Implementation is in unmerged PR [#146](https://github.com/Skyline-Gazer/AiringCal/pull/146); staging/production gates are [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147). Do not describe the new writer as deployed or automatic cutover as approved.
+>
+> **Observed code on GitHub `dev`:** legacy Cloudflare Worker still reads D1/KV/R2 and its CI can deploy remotely on a `dev` push. The QingLong pipeline described below is historical/stalled; do **not** restore it or claim a running production sync without fresh evidence.
+
+## Legacy v2 architecture (historical implementation, not v3 target)
 
 | Layer | Runtime | Repo path |
 | --- | --- | --- |
 | **Read** | Cloudflare Worker `airing-cal-frontend` | `apps/web-worker` |
-| **Write** | QingLong cron → `qinglong-bundle` | `apps/node-jobs` → artifact; wrappers in **QINGLONG-REPO** |
+| **Historical write** | QingLong cron → `qinglong-bundle` (retired, not a running-v3 claim) | `apps/node-jobs` → artifact; wrappers in **QINGLONG-REPO** |
 | **Removed from repo** | legacy Workers, VPS Postgres | pre-2026-10-15 `apps/*` — see git history / `docs/archive/` |
 
 ```text
@@ -21,7 +25,7 @@ Bangumi → node-jobs (bundle) ← QingLong
 3. [`plans/phase-1-node-jobs.md`](plans/phase-1-node-jobs.md) — write bundle (**Phase 1 closed**)
 4. [`plans/no-cf-write-path.md`](plans/no-cf-write-path.md) — no CF Cron/Workflow write
 5. [`apps/node-jobs/docs/operator-contract.md`](../apps/node-jobs/docs/operator-contract.md) — env, timeouts, exit codes
-6. QingLong panel: [QINGLONG airingcal-operator-checklist](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/usage/airingcal-operator-checklist.md)
+6. [#147 GHA Writer staging/cutover acceptance](https://github.com/Skyline-Gazer/AiringCal/issues/147) (QingLong panel documentation is historical only)
 
 ## v3 (in progress — parallel to v2 production)
 
@@ -57,7 +61,7 @@ Code entry points: `apps/v3-read-worker` (CF), `packages/v3-{core,builder,read,a
 | File | Purpose |
 | --- | --- |
 | `phase-0-web-worker.md` | Single read Worker |
-| `phase-1-node-jobs.md` | node-jobs + bundle |
+| `phase-1-node-jobs.md` | Historical node-jobs + QingLong bundle; v3 GHA writer tracked in #147 |
 | `no-cf-write-path.md` | AC-3-01 confirmation |
 | `kv-binding-decision.md` | AC-3-03 — keep KV binding |
 | `abandoned-vps-route.md` | Do not use VPS write |
