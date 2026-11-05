@@ -4,6 +4,7 @@ import { FilesystemPublicStore } from '@airing-cal/v3-core'
 import { parsePublicBaseUrl } from '@airing-cal/v3-core/public-image-url'
 import { handlePortableReadRequest } from './portable-read-handler.ts'
 import { readPortableCronStatus } from './portable-builder-cron.ts'
+import { resolveNsfwShow } from './read-config.ts'
 import { handlePortableStaticRequest } from './portable-static-handler.ts'
 
 async function writeNodeResponse(res: import('node:http').ServerResponse, response: Response): Promise<void> {
@@ -52,7 +53,7 @@ export function startPortableReadServer(options: {
       })
       const response = staticResponse ?? await handlePortableReadRequest(request, {
         publicStore,
-        nsfwShow: options.nsfwShow ?? process.env.NSFW_SHOW !== 'false',
+        nsfwShow: options.nsfwShow ?? resolveNsfwShow(process.env.NSFW_SHOW),
         packageVersion: options.packageVersion ?? process.env.npm_package_version,
         publicBaseUrl,
         processEnv: process.env,

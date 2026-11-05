@@ -16,7 +16,7 @@ Decision: [`../plans/adr-0003-gha-portable-write.md`](../plans/adr-0003-gha-port
 | Schedule | cron `0 20 * * *` UTC = **04:00 Asia/Shanghai** |
 | Mode | Checkpoint self-judge (≥7 days since last successful **full** → full); `workflow_dispatch` may set `force_mode` |
 
-Flow: acquire lease → restore SQLite checkpoint from **private** R2 → sync portable builder → publish Release + mirror `images/**` to **public** R2 → upload checkpoint → release lease. Failure → Bark (`BARK_URL`).
+Flow (C2/C4): acquire lease → restore SQLite checkpoint from **private** R2 → sync portable builder → **image publish gate** over every referenced hash (upload missing, reuse present, fail closed when a published object's content differs or an original is nowhere available) → upload checkpoint with CAS → renew lease → commit the Release pointer with CAS → expire the lease. Nothing becomes visible before the checkpoint succeeds. Failure → Bark (`BARK_URL`).
 
 ## Operator fill-in (Secrets / Variables)
 

@@ -8,7 +8,7 @@
 |------|------|
 | P0 前端 | `health` 与 `collections` 并行；footer `cache.js` 复用 `window.bgmFetchHealth`；日历按 weekday `IntersectionObserver` 懒渲染 |
 | P1 API | `/api/calendar`、`/api/collections` 响应带 `s-maxage` + `stale-while-revalidate` |
-| P1 发布 | QingLong sync / `node-jobs` publish 写入 `images` + `image_status`（`project-public.ts`）；读 API 对已预注水条目跳过 KV |
+| P1 发布 | GHA portable writer（`node-jobs` publish）写入 `images` + `image_status`（`project-public.ts`）；读 API 对已预注水条目跳过 KV |
 | P1 Thumb | 新生成 `thumb.v2.webp`（320×427 WebP q78）；`GET …/thumb` 优先 v2，回退 v1 |
 | P2 图片 | Worker `caches.default` 缓存 `GET /image/*`；响应含 `CDN-Cache-Control` |
 
@@ -25,11 +25,11 @@
    - Then: Cache eligibility = Eligible for cache；Edge TTL = 1 year
 
 3. **Purge**  
-   - 每次 QingLong/sync 完成并切换 snapshot 后：`Purge Everything` 或按 prefix purge `/api/calendar`、`/api/collections`（避免 stale 条目超过 SWR 窗口）。
+   - 每次一次 writer 运行完成并切换 snapshot 后：`Purge Everything` 或按 prefix purge `/api/calendar`、`/api/collections`（避免 stale 条目超过 SWR 窗口）。
 
 ## Thumb v2 回填
 
-- QingLong sync 后 `POST /api/thumb-gen`（或运维 Bearer batch）写入 `thumb.v2.webp`。  
+- Writer 运行后 `POST /api/thumb-gen`（或运维 Bearer batch）写入 `thumb.v2.webp`。
 - 仅有 v1 的对象会在下次 gen 时补 v2。  
 - 读路径在 v2 缺失时仍用 v1，无中断。
 

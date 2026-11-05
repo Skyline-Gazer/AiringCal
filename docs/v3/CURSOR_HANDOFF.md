@@ -66,7 +66,7 @@ You are taking over the `Skyline-Gazer/AiringCal` v3 engineering work from ChatG
 
 ## Important known concerns
 
-- Current `dev` production read is `apps/web-worker` and QingLong writes `apps/node-jobs`, with Cloudflare D1, KV pointer, R2 images/snapshots. Archived VPS designs are **not** production truth.
+- As of 2026-10-16 the production read was `apps/web-worker` and QingLong wrote `apps/node-jobs` (D1, KV pointer, R2 images/snapshots). **Since #145/#146 the GHA portable writer is the only writer target and QingLong is retired**; the read Worker still defaults to the legacy path until `AIRINGCAL_READ_MODE=v3-release` is enabled. Archived VPS designs are **not** production truth.
 - Existing `apps/web-worker/src/index.ts` exposes `GET /api/collections`, `/api/calendar`, `/api/config`, `/api/health`, `/api/version`, `/api/cache`, and image routes. Authenticated `POST /api/thumb-gen` does CF image processing; must move into Builder.
 - v2 already has canonical snapshots, manifest validation and immutable R2 object versions. Leverage existing code.
 - Avoid oversized generic middleware, multiple frontend rewrites, Xget's generated distribution branch workflow pattern, universal lock services, or a cloud-pricing/deployment wizard in v3 first milestone.

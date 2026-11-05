@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { PublicSnapshotV1 } from '@airing-cal/storage'
 import { imageOriginalKey, imageThumbV2Key } from '@airing-cal/storage'
@@ -18,21 +18,22 @@ export interface PublishImageGateResult {
   uploaded: number
   /** Present in the public store with nothing local to compare against. */
   reused: number
-  /** Present locally and unchanged (size + etag/md5 match) — no download, no upload (C5). */
+  /** Present locally and byte-identical to the published object — no upload (C5). */
   skipped_unchanged: number
-  /** Present in the public store but differing from the local file (public copy wins; keys are immutable). */
-  mismatched: number
   /** Referenced thumb.v2.webp objects absent everywhere (thumbs are optional; originals are not). */
   missing_thumbs: number
 }
 
 const MD5_ETAG = /^[0-9a-f]{32}$/
 
-function etagMatches(localBytes: Uint8Array, etag: string | null): boolean {
-  if (!etag) return false
+/**
+ * Comparable md5 digest of an object-store ETag, or null when the ETag cannot
+ * prove content (multipart uploads, filesystem/memory stores that expose none).
+ */
+function etagDigest(etag: string | null): string | null {
+  if (!etag) return null
   const normalized = etag.trim().replace(/^W\//, '').replaceAll('"', '').toLowerCase()
-  if (!MD5_ETAG.test(normalized)) return false
-  return normalized === createHash('md5').update(localBytes).digest('hex')
+  return MD5_ETAG.test(normalized) ? normalized : null
 }
 
 interface LocalFile {
@@ -48,6 +49,30 @@ function readLocalFile(imageRoot: string | null, key: string): LocalFile | null 
 }
 
 /**
+ * Decides whether the published object and the local file are the same content.
+ *
+ * A comparable md5 ETag is conclusive (and cheap); everything else falls back to
+ * a byte comparison, because equal size alone cannot prove equal content for a
+ * content-addressed immutable key.
+ */
+async function compareWithPublicObject(
+  publicStore: PublicStore,
+  key: string,
+  local: LocalFile,
+  head: { size: number; etag: string | null },
+): Promise<'identical' | 'different' | 'unreadable'> {
+  const digest = etagDigest(head.etag)
+  if (digest != null) {
+    const sameEtag = digest === createHash('md5').update(local.bytes).digest('hex')
+    return sameEtag && local.size === head.size ? 'identical' : 'different'
+  }
+  const existing = await publicStore.getSnapshotBytes(key)
+  if (!existing) return 'unreadable'
+  if (existing.byteLength !== local.bytes.byteLength) return 'different'
+  return existing.every((byte, index) => byte === local.bytes[index]) ? 'identical' : 'different'
+}
+
+/**
  * C2 publish gate + C5 bounded mirror: before any pointer commit, every referenced
  * image hash from the Snapshot under publish must be readable in the PublicStore
  * (`original`). Missing objects are uploaded from the local image root when present;
@@ -55,9 +80,10 @@ function readLocalFile(imageRoot: string | null, key: string): LocalFile | null 
  * covers, so thumbs are mirrored when available locally/publicly and reported (not
  * fatal) when absent.
  *
- * Unchanged objects are skipped by size + etag (HEAD, not a full download) when the
- * store supports `headObject`; keys are content-addressed and immutable, so an
- * object that is already present always wins over re-uploading.
+ * An existing immutable object is never replaced: a content difference between the
+ * published object and the local file fails the publish closed instead of being
+ * counted and skipped, which would otherwise publish a Snapshot referencing bytes
+ * nobody can reconcile.
  */
 export async function ensurePublishImagesComplete(options: {
   snapshot: PublicSnapshotV1
@@ -67,7 +93,6 @@ export async function ensurePublishImagesComplete(options: {
   let uploaded = 0
   let reused = 0
   let skippedUnchanged = 0
-  let mismatched = 0
   let missingThumbs = 0
   const hashes = collectReferencedImageHashes(options.snapshot)
   for (const hash of hashes) {
@@ -77,23 +102,32 @@ export async function ensurePublishImagesComplete(options: {
         ? await options.publicStore.headObject(key)
         : null
       if (head) {
-        const unchanged = local != null
-          && local.size === head.size
-          && (head.etag == null || etagMatches(local.bytes, head.etag))
-        if (unchanged) skippedUnchanged += 1
-        else if (local != null) mismatched += 1
-        else reused += 1
-        continue
+        if (local == null) {
+          reused += 1
+          continue
+        }
+        const verdict = await compareWithPublicObject(options.publicStore, key, local, head)
+        if (verdict === 'identical') {
+          skippedUnchanged += 1
+          continue
+        }
+        throw new Error(
+          verdict === 'unreadable'
+            ? `Publish gate failed: ${key} is reported present but its bytes cannot be read`
+            : `Publish gate failed: ${key} differs from the local file; immutable public image objects must never be replaced`,
+        )
       }
       const existing = await options.publicStore.getSnapshotBytes(key)
       if (existing) {
         if (local == null) {
           reused += 1
-        } else if (local.size === existing.byteLength
-          && local.bytes.every((byte, index) => byte === existing[index])) {
+        } else if (existing.byteLength === local.bytes.byteLength
+          && existing.every((byte, index) => byte === local.bytes[index])) {
           skippedUnchanged += 1
         } else {
-          mismatched += 1
+          throw new Error(
+            `Publish gate failed: ${key} differs from the local file; immutable public image objects must never be replaced`,
+          )
         }
         continue
       }
@@ -116,7 +150,6 @@ export async function ensurePublishImagesComplete(options: {
     uploaded,
     reused,
     skipped_unchanged: skippedUnchanged,
-    mismatched,
     missing_thumbs: missingThumbs,
   }
 }

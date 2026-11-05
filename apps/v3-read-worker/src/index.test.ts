@@ -123,16 +123,26 @@ test('worker reports a missing R2 binding instead of throwing', async () => {
   assert.equal(body.error.code, 'NO_PUBLIC_STORE_BINDING')
 })
 
-test('worker redirects images through a validated AIRINGCAL_PUBLIC_BASE_URL', async () => {
+test('worker redirects images through a validated AIRINGCAL_PUBLIC_BASE_URL only when the object exists', async () => {
   const bucket = await publishedBucket()
+  const store = new CloudflareR2PublicStore(bucket)
   const hash = 'a'.repeat(64)
   const env = {
     AIRINGCAL_PUBLIC_R2: bucket,
     AIRINGCAL_PUBLIC_BASE_URL: 'https://cdn.example.com/',
   }
+
+  // No thumbnail in the store: the Worker answers 404 itself instead of a CDN 302.
+  const missingThumb = await handleReadWorkerRequest(new Request(`https://worker.example/image/${hash}/thumb`), env)
+  assert.equal(missingThumb.status, 404)
+  assert.equal(missingThumb.headers.get('Location'), null)
+
+  await store.putImmutableObject(`images/${hash}/original`, new Uint8Array([1, 2, 3]), 'image/jpeg')
   const original = await handleReadWorkerRequest(new Request(`https://worker.example/image/${hash}`), env)
   assert.equal(original.status, 302)
   assert.equal(original.headers.get('Location'), `https://cdn.example.com/images/${hash}/original`)
+
+  await store.putImmutableObject(`images/${hash}/thumb.v2.webp`, new Uint8Array([4]), 'image/webp')
   const thumb = await handleReadWorkerRequest(new Request(`https://worker.example/image/${hash}/thumb`), env)
   assert.equal(thumb.headers.get('Location'), `https://cdn.example.com/images/${hash}/thumb.v2.webp`)
 })

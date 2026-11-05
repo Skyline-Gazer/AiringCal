@@ -15,11 +15,12 @@ export interface CloudflareR2ObjectBody {
  * Shape of the Workers R2 `head()` result we depend on. Real bindings return
  * `etag` unquoted and `httpEtag` quoted; conditional request headers
  * (`If-Match`) only accept the quoted form — verified against the local R2
- * emulation in `apps/v3-read-worker` smoke.
+ * emulation in `apps/v3-read-worker` smoke. `size` is present on real bindings.
  */
 export interface CloudflareR2HeadResult {
   etag: string
   httpEtag: string
+  size?: number
 }
 
 export interface CloudflareR2PutOptions {
@@ -63,6 +64,17 @@ export class CloudflareR2PublicStore implements PublicStore {
     const object = await this.bucket.get(artifactRef)
     if (!object) return null
     return new Uint8Array(await object.arrayBuffer())
+  }
+  /**
+   * Existence probe for the read path: an image redirect must verify the object
+   * is present before pointing a client at the CDN. `size` is populated only when
+   * the binding exposes it; readers treat a non-null result as "exists".
+   */
+  async headObject(key: string): Promise<{ size: number; etag: string | null } | null> {
+    assertSafeObjectKey(key)
+    const head = await this.bucket.head(key)
+    if (!head) return null
+    return { size: head.size ?? 0, etag: head.etag ?? null }
   }
 
   async putImmutableObject(key: string, body: Uint8Array, contentType: string): Promise<void> {

@@ -33,7 +33,8 @@
     const last = cron.last || {}
     const totalSubjects = Number(cache.total_subjects || 0)
     const scheduler = cron.scheduler === 'gha' ? 'GHA'
-      : cron.scheduler === 'qinglong' ? 'QingLong'
+      : cron.scheduler === 'external' ? 'Writer'
+      : cron.scheduler === 'compose-scheduler' ? 'Scheduler'
       : 'Cron'
     const nextCron = formatTime(cron.next_at) || 'unknown'
     const lastStatus = last.status ? last.status : 'unknown'

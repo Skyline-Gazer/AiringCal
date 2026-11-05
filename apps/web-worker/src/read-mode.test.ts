@@ -297,7 +297,7 @@ test('v3-release mode serves catalog, health and images from the current Release
   assert.deepEqual(advancedBody.data.map((item) => item.subject_id), [8], 'reads follow the current pointer generation')
 })
 
-test('v3-release mode redirects images to a validated public base URL', async () => {
+test('v3-release mode redirects images to a validated public base URL only when the object exists', async () => {
   const release = publishedRelease()
   await release.builder.publish(release.store, {
     runId: 'redirect-run',
@@ -311,10 +311,29 @@ test('v3-release mode redirects images to a validated public base URL', async ()
     AIRINGCAL_PUBLIC_BASE_URL: 'https://cdn.example.com/',
     AIRINGCAL_PUBLIC_R2: release.bucket,
   }
+
+  // The thumbnail is optional: without it the Worker must answer itself instead of
+  // bouncing the client to a CDN key that 404s.
+  const missingThumb = await worker.fetch(new Request(`https://read.local/image/${IMAGE_HASH}/thumb`), env as never)
+  assert.equal(missingThumb.status, 404)
+  assert.equal(missingThumb.headers.get('Location'), null)
+
+  await release.store.putImmutableObject(
+    `images/${IMAGE_HASH}/original`,
+    new TextEncoder().encode('image-bytes'),
+    'image/jpeg',
+  )
   const image = await worker.fetch(new Request(`https://read.local/image/${IMAGE_HASH}`), env as never)
   assert.equal(image.status, 302)
   assert.equal(image.headers.get('Location'), `https://cdn.example.com/images/${IMAGE_HASH}/original`)
+
+  await release.store.putImmutableObject(
+    `images/${IMAGE_HASH}/thumb.v2.webp`,
+    new TextEncoder().encode('thumb-bytes'),
+    'image/webp',
+  )
   const thumb = await worker.fetch(new Request(`https://read.local/image/${IMAGE_HASH}/thumb`), env as never)
+  assert.equal(thumb.status, 302)
   assert.equal(thumb.headers.get('Location'), `https://cdn.example.com/images/${IMAGE_HASH}/thumb.v2.webp`)
 })
 

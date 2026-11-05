@@ -81,7 +81,7 @@ function apiRequest(url: URL, readSuffix: string, request: Request): Request {
 
 const DEPRECATED_SYNC = JSON.stringify({
   ok: false,
-  error: { code: 'DEPRECATED', message: 'In-page account sync was removed; scheduled sync moves to QingLong.' },
+  error: { code: 'DEPRECATED', message: 'In-page account sync was removed; scheduled sync runs in the GitHub Actions portable writer.' },
 })
 
 function deprecatedSync(): Response {

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { assembleFullFetch } from '@airing-cal/bgm-api'
+import { imageOriginalKey, imageThumbV1Key, imageThumbV2Key } from '@airing-cal/storage'
 import {
   openBuilderDatabase,
   publishBuilderCheckpoint,
@@ -107,4 +108,54 @@ test('handlePortableReadRequest /health reports compose-scheduler cron from SQLi
   const gatewayLikeBody = await gatewayLike.json() as { data: { cron: { scheduler: string; next_at: string | null } } }
   assert.equal(gatewayLikeBody.data.cron.scheduler, 'external')
   assert.equal(gatewayLikeBody.data.cron.next_at, null)
+})
+test('image route redirects to the public base URL only for objects that exist (missing thumb is 404, not a CDN 302)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'airingcal-read-image-'))
+  const publicStore = new FilesystemPublicStore(root)
+  const db = openBuilderDatabase(':memory:')
+  const state = new SqliteBuilderStateStore(db)
+  const runs = new SyncRunStore(db)
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-image',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => emptyFetch(),
+    now: () => 1_700_000_000_000,
+  })
+  await publishBuilderCheckpoint({
+    state,
+    publicStore,
+    manifestMetadata: { source_observed_at: '2026-01-01T00:00:00.000Z', git_sha: 'd'.repeat(40) },
+  })
+  db.close()
+
+  const hash = 'c'.repeat(64)
+  const base = 'https://cdn.example.com'
+  const imageRequest = (suffix: string) => new Request(`https://local/image/${hash}${suffix}`)
+
+  for (const suffix of ['', '/thumb']) {
+    const missing = await handlePortableReadRequest(imageRequest(suffix), { publicStore, publicBaseUrl: base })
+    assert.equal(missing.status, 404, `missing${suffix} must 404 instead of redirecting to an absent CDN object`)
+    assert.equal(missing.headers.get('Location'), null)
+  }
+
+  await publicStore.putImmutableObject(imageThumbV1Key(hash), new TextEncoder().encode('thumb-v1'), 'image/webp')
+  const v1 = await handlePortableReadRequest(imageRequest('/thumb'), { publicStore, publicBaseUrl: base })
+  assert.equal(v1.status, 302)
+  assert.equal(v1.headers.get('Location'), `${base}/${imageThumbV1Key(hash)}`)
+
+  await publicStore.putImmutableObject(imageThumbV2Key(hash), new TextEncoder().encode('thumb-v2'), 'image/webp')
+  const v2 = await handlePortableReadRequest(imageRequest('/thumb'), { publicStore, publicBaseUrl: base })
+  assert.equal(v2.headers.get('Location'), `${base}/${imageThumbV2Key(hash)}`)
+
+  await publicStore.putImmutableObject(imageOriginalKey(hash), new TextEncoder().encode('original-bytes'), 'image/jpeg')
+  const original = await handlePortableReadRequest(imageRequest(''), { publicStore, publicBaseUrl: base })
+  assert.equal(original.status, 302)
+  assert.equal(original.headers.get('Location'), `${base}/${imageOriginalKey(hash)}`)
+
+  const served = await handlePortableReadRequest(imageRequest('/thumb'), { publicStore })
+  assert.equal(served.status, 200)
+  assert.equal(await served.text(), 'thumb-v2')
 })
