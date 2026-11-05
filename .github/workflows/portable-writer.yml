@@ -1,5 +1,5 @@
-# ADR 0003 — production portable writer (GitHub Actions one-shot).
-# Schedule: 04:00 Asia/Shanghai == 20:00 UTC.
+# ADR 0003 — portable writer (GitHub Actions one-shot), staging/production isolated (C3).
+# Schedule: 04:00 Asia/Shanghai == 20:00 UTC — production only, gated by vars.AIRINGCAL_WRITER_ENABLED.
 name: Portable writer (GHA)
 
 on:
@@ -7,6 +7,14 @@ on:
     - cron: '0 20 * * *'
   workflow_dispatch:
     inputs:
+      target:
+        description: Publish target. Staging unless production is explicitly selected.
+        required: false
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
       force_mode:
         description: Optional override (incremental|full). Empty = checkpoint self-judge.
         required: false
@@ -20,12 +28,54 @@ permissions:
   contents: read
 
 jobs:
-  write:
-    # Manual dispatch is for explicit staging/owner-run. Schedule remains inert until owner sets AIRINGCAL_WRITER_ENABLED=true.
-    if: ${{ github.event_name == 'workflow_dispatch' || vars.AIRINGCAL_WRITER_ENABLED == 'true' }}
+  staging:
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.target || 'staging') != 'production' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    environment: staging
     steps:
+      - name: Validate required staging config
+        env:
+          AIRINGCAL_STAGING_BGM_TOKEN: ${{ secrets.AIRINGCAL_STAGING_BGM_TOKEN }}
+          AIRINGCAL_STAGING_USERS_JSON: ${{ secrets.AIRINGCAL_STAGING_USERS_JSON }}
+          AIRINGCAL_STAGING_PRIMARY_USER_ID: ${{ secrets.AIRINGCAL_STAGING_PRIMARY_USER_ID }}
+          AIRINGCAL_STAGING_CHECKPOINT_S3_ENDPOINT: ${{ secrets.AIRINGCAL_STAGING_CHECKPOINT_S3_ENDPOINT }}
+          AIRINGCAL_STAGING_CHECKPOINT_S3_REGION: ${{ secrets.AIRINGCAL_STAGING_CHECKPOINT_S3_REGION }}
+          AIRINGCAL_STAGING_CHECKPOINT_S3_BUCKET: ${{ secrets.AIRINGCAL_STAGING_CHECKPOINT_S3_BUCKET }}
+          AIRINGCAL_STAGING_CHECKPOINT_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_STAGING_CHECKPOINT_S3_ACCESS_KEY_ID }}
+          AIRINGCAL_STAGING_CHECKPOINT_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_STAGING_CHECKPOINT_S3_SECRET_ACCESS_KEY }}
+          AIRINGCAL_STAGING_PUBLIC_S3_ENDPOINT: ${{ secrets.AIRINGCAL_STAGING_PUBLIC_S3_ENDPOINT }}
+          AIRINGCAL_STAGING_PUBLIC_S3_REGION: ${{ secrets.AIRINGCAL_STAGING_PUBLIC_S3_REGION }}
+          AIRINGCAL_STAGING_PUBLIC_S3_BUCKET: ${{ secrets.AIRINGCAL_STAGING_PUBLIC_S3_BUCKET }}
+          AIRINGCAL_STAGING_PUBLIC_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_STAGING_PUBLIC_S3_ACCESS_KEY_ID }}
+          AIRINGCAL_STAGING_PUBLIC_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_STAGING_PUBLIC_S3_SECRET_ACCESS_KEY }}
+          AIRINGCAL_STAGING_PUBLIC_BASE_URL: ${{ vars.AIRINGCAL_STAGING_PUBLIC_BASE_URL }}
+        run: |
+          set -u
+          missing=0
+          for var in \
+            AIRINGCAL_STAGING_BGM_TOKEN \
+            AIRINGCAL_STAGING_USERS_JSON \
+            AIRINGCAL_STAGING_PRIMARY_USER_ID \
+            AIRINGCAL_STAGING_CHECKPOINT_S3_ENDPOINT \
+            AIRINGCAL_STAGING_CHECKPOINT_S3_REGION \
+            AIRINGCAL_STAGING_CHECKPOINT_S3_BUCKET \
+            AIRINGCAL_STAGING_CHECKPOINT_S3_ACCESS_KEY_ID \
+            AIRINGCAL_STAGING_CHECKPOINT_S3_SECRET_ACCESS_KEY \
+            AIRINGCAL_STAGING_PUBLIC_S3_ENDPOINT \
+            AIRINGCAL_STAGING_PUBLIC_S3_REGION \
+            AIRINGCAL_STAGING_PUBLIC_S3_BUCKET \
+            AIRINGCAL_STAGING_PUBLIC_S3_ACCESS_KEY_ID \
+            AIRINGCAL_STAGING_PUBLIC_S3_SECRET_ACCESS_KEY \
+            AIRINGCAL_STAGING_PUBLIC_BASE_URL
+          do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::Missing required staging config: ${var}"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+
       - name: Checkout
         uses: actions/checkout@v5
 
@@ -55,20 +105,115 @@ jobs:
           AIRINGCAL_BUILDER_MEDIA_REFRESH: refresh
           AIRINGCAL_FULL_EVERY_DAYS: '7'
           AIRINGCAL_BUILDER_MODE: ${{ github.event.inputs.force_mode || '' }}
-          BGM_TOKEN: ${{ secrets.BGM_TOKEN }}
-          AIRINGCAL_USERS_JSON: ${{ secrets.AIRINGCAL_USERS_JSON }}
-          AIRINGCAL_PRIMARY_USER_ID: ${{ secrets.AIRINGCAL_PRIMARY_USER_ID }}
+          BGM_TOKEN: ${{ secrets.AIRINGCAL_STAGING_BGM_TOKEN }}
+          AIRINGCAL_USERS_JSON: ${{ secrets.AIRINGCAL_STAGING_USERS_JSON }}
+          AIRINGCAL_PRIMARY_USER_ID: ${{ secrets.AIRINGCAL_STAGING_PRIMARY_USER_ID }}
           BANGUMI_GIT_COMMIT_SHA: ${{ github.sha }}
-          BARK_URL: ${{ secrets.BARK_URL }}
-          AIRINGCAL_CHECKPOINT_S3_ENDPOINT: ${{ secrets.AIRINGCAL_CHECKPOINT_S3_ENDPOINT }}
-          AIRINGCAL_CHECKPOINT_S3_REGION: ${{ secrets.AIRINGCAL_CHECKPOINT_S3_REGION }}
-          AIRINGCAL_CHECKPOINT_S3_BUCKET: ${{ secrets.AIRINGCAL_CHECKPOINT_S3_BUCKET }}
-          AIRINGCAL_CHECKPOINT_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_CHECKPOINT_S3_ACCESS_KEY_ID }}
-          AIRINGCAL_CHECKPOINT_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_CHECKPOINT_S3_SECRET_ACCESS_KEY }}
-          AIRINGCAL_PUBLIC_S3_ENDPOINT: ${{ secrets.AIRINGCAL_PUBLIC_S3_ENDPOINT }}
-          AIRINGCAL_PUBLIC_S3_REGION: ${{ secrets.AIRINGCAL_PUBLIC_S3_REGION }}
-          AIRINGCAL_PUBLIC_S3_BUCKET: ${{ secrets.AIRINGCAL_PUBLIC_S3_BUCKET }}
-          AIRINGCAL_PUBLIC_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_PUBLIC_S3_ACCESS_KEY_ID }}
-          AIRINGCAL_PUBLIC_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_PUBLIC_S3_SECRET_ACCESS_KEY }}
-          AIRINGCAL_PUBLIC_BASE_URL: ${{ vars.AIRINGCAL_PUBLIC_BASE_URL }}
+          BARK_URL: ${{ secrets.AIRINGCAL_STAGING_BARK_URL }}
+          AIRINGCAL_CHECKPOINT_S3_ENDPOINT: ${{ secrets.AIRINGCAL_STAGING_CHECKPOINT_S3_ENDPOINT }}
+          AIRINGCAL_CHECKPOINT_S3_REGION: ${{ secrets.AIRINGCAL_STAGING_CHECKPOINT_S3_REGION }}
+          AIRINGCAL_CHECKPOINT_S3_BUCKET: ${{ secrets.AIRINGCAL_STAGING_CHECKPOINT_S3_BUCKET }}
+          AIRINGCAL_CHECKPOINT_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_STAGING_CHECKPOINT_S3_ACCESS_KEY_ID }}
+          AIRINGCAL_CHECKPOINT_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_STAGING_CHECKPOINT_S3_SECRET_ACCESS_KEY }}
+          AIRINGCAL_PUBLIC_S3_ENDPOINT: ${{ secrets.AIRINGCAL_STAGING_PUBLIC_S3_ENDPOINT }}
+          AIRINGCAL_PUBLIC_S3_REGION: ${{ secrets.AIRINGCAL_STAGING_PUBLIC_S3_REGION }}
+          AIRINGCAL_PUBLIC_S3_BUCKET: ${{ secrets.AIRINGCAL_STAGING_PUBLIC_S3_BUCKET }}
+          AIRINGCAL_PUBLIC_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_STAGING_PUBLIC_S3_ACCESS_KEY_ID }}
+          AIRINGCAL_PUBLIC_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_STAGING_PUBLIC_S3_SECRET_ACCESS_KEY }}
+          AIRINGCAL_PUBLIC_BASE_URL: ${{ vars.AIRINGCAL_STAGING_PUBLIC_BASE_URL }}
+        run: bash scripts/gha-portable-writer.sh
+
+  production:
+    if: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.target == 'production')) && vars.AIRINGCAL_WRITER_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: production
+    steps:
+      - name: Validate required production config
+        env:
+          AIRINGCAL_PRODUCTION_BGM_TOKEN: ${{ secrets.AIRINGCAL_PRODUCTION_BGM_TOKEN }}
+          AIRINGCAL_PRODUCTION_USERS_JSON: ${{ secrets.AIRINGCAL_PRODUCTION_USERS_JSON }}
+          AIRINGCAL_PRODUCTION_PRIMARY_USER_ID: ${{ secrets.AIRINGCAL_PRODUCTION_PRIMARY_USER_ID }}
+          AIRINGCAL_PRODUCTION_CHECKPOINT_S3_ENDPOINT: ${{ secrets.AIRINGCAL_PRODUCTION_CHECKPOINT_S3_ENDPOINT }}
+          AIRINGCAL_PRODUCTION_CHECKPOINT_S3_REGION: ${{ secrets.AIRINGCAL_PRODUCTION_CHECKPOINT_S3_REGION }}
+          AIRINGCAL_PRODUCTION_CHECKPOINT_S3_BUCKET: ${{ secrets.AIRINGCAL_PRODUCTION_CHECKPOINT_S3_BUCKET }}
+          AIRINGCAL_PRODUCTION_CHECKPOINT_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_PRODUCTION_CHECKPOINT_S3_ACCESS_KEY_ID }}
+          AIRINGCAL_PRODUCTION_CHECKPOINT_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_PRODUCTION_CHECKPOINT_S3_SECRET_ACCESS_KEY }}
+          AIRINGCAL_PRODUCTION_PUBLIC_S3_ENDPOINT: ${{ secrets.AIRINGCAL_PRODUCTION_PUBLIC_S3_ENDPOINT }}
+          AIRINGCAL_PRODUCTION_PUBLIC_S3_REGION: ${{ secrets.AIRINGCAL_PRODUCTION_PUBLIC_S3_REGION }}
+          AIRINGCAL_PRODUCTION_PUBLIC_S3_BUCKET: ${{ secrets.AIRINGCAL_PRODUCTION_PUBLIC_S3_BUCKET }}
+          AIRINGCAL_PRODUCTION_PUBLIC_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_PRODUCTION_PUBLIC_S3_ACCESS_KEY_ID }}
+          AIRINGCAL_PRODUCTION_PUBLIC_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_PRODUCTION_PUBLIC_S3_SECRET_ACCESS_KEY }}
+          AIRINGCAL_PRODUCTION_PUBLIC_BASE_URL: ${{ vars.AIRINGCAL_PRODUCTION_PUBLIC_BASE_URL }}
+        run: |
+          set -u
+          missing=0
+          for var in \
+            AIRINGCAL_PRODUCTION_BGM_TOKEN \
+            AIRINGCAL_PRODUCTION_USERS_JSON \
+            AIRINGCAL_PRODUCTION_PRIMARY_USER_ID \
+            AIRINGCAL_PRODUCTION_CHECKPOINT_S3_ENDPOINT \
+            AIRINGCAL_PRODUCTION_CHECKPOINT_S3_REGION \
+            AIRINGCAL_PRODUCTION_CHECKPOINT_S3_BUCKET \
+            AIRINGCAL_PRODUCTION_CHECKPOINT_S3_ACCESS_KEY_ID \
+            AIRINGCAL_PRODUCTION_CHECKPOINT_S3_SECRET_ACCESS_KEY \
+            AIRINGCAL_PRODUCTION_PUBLIC_S3_ENDPOINT \
+            AIRINGCAL_PRODUCTION_PUBLIC_S3_REGION \
+            AIRINGCAL_PRODUCTION_PUBLIC_S3_BUCKET \
+            AIRINGCAL_PRODUCTION_PUBLIC_S3_ACCESS_KEY_ID \
+            AIRINGCAL_PRODUCTION_PUBLIC_S3_SECRET_ACCESS_KEY \
+            AIRINGCAL_PRODUCTION_PUBLIC_BASE_URL
+          do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::Missing required production config: ${var}"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 9.15.9
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build portable bundle
+        run: pnpm -F @airing-cal/node-jobs build
+
+      - name: Run portable writer
+        env:
+          AIRINGCAL_BUILDER: portable
+          AIRINGCAL_BUILDER_SQLITE_PATH: /tmp/airingcal-builder.sqlite
+          AIRINGCAL_BUILDER_IMAGE_DIR: /tmp/airingcal-images
+          AIRINGCAL_BUILDER_PUBLISH: 'true'
+          AIRINGCAL_BUILDER_MEDIA_REFRESH: refresh
+          AIRINGCAL_FULL_EVERY_DAYS: '7'
+          AIRINGCAL_BUILDER_MODE: ${{ github.event.inputs.force_mode || '' }}
+          BGM_TOKEN: ${{ secrets.AIRINGCAL_PRODUCTION_BGM_TOKEN }}
+          AIRINGCAL_USERS_JSON: ${{ secrets.AIRINGCAL_PRODUCTION_USERS_JSON }}
+          AIRINGCAL_PRIMARY_USER_ID: ${{ secrets.AIRINGCAL_PRODUCTION_PRIMARY_USER_ID }}
+          BANGUMI_GIT_COMMIT_SHA: ${{ github.sha }}
+          BARK_URL: ${{ secrets.AIRINGCAL_PRODUCTION_BARK_URL }}
+          AIRINGCAL_CHECKPOINT_S3_ENDPOINT: ${{ secrets.AIRINGCAL_PRODUCTION_CHECKPOINT_S3_ENDPOINT }}
+          AIRINGCAL_CHECKPOINT_S3_REGION: ${{ secrets.AIRINGCAL_PRODUCTION_CHECKPOINT_S3_REGION }}
+          AIRINGCAL_CHECKPOINT_S3_BUCKET: ${{ secrets.AIRINGCAL_PRODUCTION_CHECKPOINT_S3_BUCKET }}
+          AIRINGCAL_CHECKPOINT_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_PRODUCTION_CHECKPOINT_S3_ACCESS_KEY_ID }}
+          AIRINGCAL_CHECKPOINT_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_PRODUCTION_CHECKPOINT_S3_SECRET_ACCESS_KEY }}
+          AIRINGCAL_PUBLIC_S3_ENDPOINT: ${{ secrets.AIRINGCAL_PRODUCTION_PUBLIC_S3_ENDPOINT }}
+          AIRINGCAL_PUBLIC_S3_REGION: ${{ secrets.AIRINGCAL_PRODUCTION_PUBLIC_S3_REGION }}
+          AIRINGCAL_PUBLIC_S3_BUCKET: ${{ secrets.AIRINGCAL_PRODUCTION_PUBLIC_S3_BUCKET }}
+          AIRINGCAL_PUBLIC_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_PRODUCTION_PUBLIC_S3_ACCESS_KEY_ID }}
+          AIRINGCAL_PUBLIC_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_PRODUCTION_PUBLIC_S3_SECRET_ACCESS_KEY }}
+          AIRINGCAL_PUBLIC_BASE_URL: ${{ vars.AIRINGCAL_PRODUCTION_PUBLIC_BASE_URL }}
         run: bash scripts/gha-portable-writer.sh

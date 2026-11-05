@@ -11,6 +11,7 @@ import {
   type SyncRunMode,
 } from '@airing-cal/v3-builder'
 import { createFilesystemBlobStore } from '../adapters/filesystem-blob-store.ts'
+import { readPublicS3Config } from '../adapters/s3-env.ts'
 import { createRunContext } from '../adapters/run-context.ts'
 import type { JobSummary } from '../contracts.ts'
 import { createUpstreamBgmClient, fetchCompleteInput } from '../upstream/fetch.ts'
@@ -81,7 +82,18 @@ export async function runPortableBuilderSync(
   env: Record<string, string | undefined> = process.env,
   overrides: PortableBuilderSyncOverrides = {},
 ): Promise<JobSummary> {
+  const publishRequested = ['1', 'true', 'yes'].includes(
+    (env.AIRINGCAL_BUILDER_PUBLISH ?? '').trim().toLowerCase(),
+  )
   if (!env.AIRINGCAL_USERS_JSON?.trim()) {
+    if (publishRequested) {
+      // C3: a publish run must never succeed as `skipped` on missing config.
+      return {
+        job: 'airingcal-sync',
+        status: 'failed',
+        message: 'AIRINGCAL_USERS_JSON is required when AIRINGCAL_BUILDER_PUBLISH=true',
+      }
+    }
     return {
       job: 'airingcal-sync',
       status: 'skipped',
@@ -104,13 +116,19 @@ export async function runPortableBuilderSync(
     return { job: 'airingcal-sync', status: 'failed', message }
   }
 
-  if (mediaMode === 'skip') {
-    console.log(JSON.stringify({
-      status: 'info',
-      stage: 'media',
-      mode: 'skip',
-      reason: 'portable_builder_no_download',
-    }))
+  if (
+    builderConfig.publishAfterSync
+    && overrides.publicStore == null
+    && !readPublicS3Config(env)
+    && !env.AIRINGCAL_BUILDER_PUBLIC_DIR?.trim()
+  ) {
+    // C3: no Memory fallback for publish runs — fail closed on missing public store config.
+    return {
+      job: 'airingcal-sync',
+      status: 'failed',
+      message:
+        'AIRINGCAL_PUBLIC_S3_* or AIRINGCAL_BUILDER_PUBLIC_DIR is required when AIRINGCAL_BUILDER_PUBLISH=true',
+    }
   }
 
   mkdirSync(dirname(builderConfig.sqlitePath), { recursive: true })

@@ -36,6 +36,34 @@ test('runSync portable path skips without AIRINGCAL_USERS_JSON', async () => {
   const summary = await runPortableBuilderSync({ AIRINGCAL_BUILDER: 'portable' })
   assert.equal(summary.status, 'skipped')
 })
+test('publish=true without AIRINGCAL_USERS_JSON fails closed instead of skipping (C3)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-c3-users-'))
+  try {
+    const summary = await runPortableBuilderSync({
+      AIRINGCAL_BUILDER: 'portable',
+      AIRINGCAL_BUILDER_SQLITE_PATH: join(dir, 'builder.sqlite'),
+      AIRINGCAL_BUILDER_PUBLISH: 'true',
+    })
+    assert.equal(summary.status, 'failed')
+    assert.match(summary.message, /AIRINGCAL_USERS_JSON/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('publish=true without explicit public store config fails closed with no memory fallback (C3)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-c3-store-'))
+  try {
+    const summary = await runPortableBuilderSync({
+      ...baseEnv(join(dir, 'builder.sqlite')),
+      AIRINGCAL_BUILDER_PUBLISH: 'true',
+    }, { fetchInput: async () => emptyFetch() })
+    assert.equal(summary.status, 'failed')
+    assert.match(summary.message, /AIRINGCAL_PUBLIC_S3_|AIRINGCAL_BUILDER_PUBLIC_DIR/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 test('runPortableBuilderSync checkpoints snapshot in SQLite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'airingcal-builder-'))
