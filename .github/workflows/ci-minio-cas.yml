@@ -1,0 +1,59 @@
+name: CI (MinIO S3-compat CAS)
+
+# C10 compatibility job: exercises conditional put / CAS / 412 semantics against
+# MinIO via the S3 API. A PASS here is COMPATIBILITY-ONLY and must never be
+# reported as a real-R2 PASS; real-R2 evidence requires staging credentials
+# (#147 OWNER_ACTION).
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - 'apps/node-jobs/**'
+      - 'packages/v3-core/**'
+      - '.github/workflows/ci-minio-cas.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ci-minio-cas-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  minio-cas-compat:
+    name: minio-cas-compat (compatibility-only, NOT a real-R2 PASS)
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
+      - uses: pnpm/action-setup@v5
+        with:
+          version: 9.15.9
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # GHA service containers cannot pass custom command args, and the official
+      # minio image needs `server /data` to start — so launch it as a step instead.
+      - name: Start MinIO (S3-compatible object store)
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=airingcal-ci \
+            -e MINIO_ROOT_PASSWORD=airingcal-ci-secret \
+            minio/minio:latest server /data
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:9000/minio/health/live && break
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:9000/minio/health/live
+          docker exec minio sh -c 'mc alias set local http://127.0.0.1:9000 airingcal-ci airingcal-ci-secret && mc mb local/airingcal-compat'
+      - name: S3 conditional-put/CAS/412 compatibility suite (MinIO only — not a real-R2 PASS)
+        env:
+          AIRINGCAL_S3_COMPAT_ENDPOINT: http://127.0.0.1:9000
+          AIRINGCAL_S3_COMPAT_BUCKET: airingcal-compat
+          AIRINGCAL_S3_COMPAT_ACCESS_KEY_ID: airingcal-ci
+          AIRINGCAL_S3_COMPAT_SECRET_ACCESS_KEY: airingcal-ci-secret
+        run: pnpm -F @airing-cal/node-jobs exec tsx --test src/integration/s3-compat.integration.test.ts
