@@ -125,7 +125,8 @@ test('unified CI pipeline validates, bundles, and deploys without duplicate qual
   assert.doesNotMatch(workflow, /wrangler deploy --dry-run/, 'dry-run belongs in build:check matrix, not deploy')
 
   assert.match(workflow, /BANGUMI_GIT_COMMIT_SHA:\s*\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/, 'web worker deploy should stamp the resolved deployment sha')
-  assert.match(workflow, /qinglong-bundle/, 'push dev should publish the QingLong bundle artifact')
+  assert.match(workflow, /portable-bundle/, 'push dev should publish the ADR 0003 portable writer bundle artifact')
+  assert.match(workflow, /gha-portable-writer\.mjs/, 'portable bundle should include the GHA writer entry')
   assert.match(workflow, /gh workflow run ci\.yml --ref dev -f ref=\$\{\{ needs\.resolve_ref\.outputs\.sha \}\}/, 'recovery report should provide an exact immutable convergence command')
 
   for (const job of ['resolve_ref', 'validate', 'node-jobs-bundle', 'resolve_cloudflare', 'deploy_web_worker', 'recovery_report']) {
@@ -179,24 +180,28 @@ test('README is the Phase 0 entry and points to canonical docs', () => {
   for (const fragment of [
     'apps/web-worker',
     'airing-cal-frontend',
-    'qinglong-bundle',
+    'portable-writer',
     'apps/node-jobs',
     'START_HERE_FOR_AI.md',
     'docs/README.md',
     'docs/archive/README.md',
-    'QINGLONG operator-checklist',
   ]) {
     assert.match(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should document ${fragment}`)
   }
-  for (const fragment of ['frontend-worker', 'sync-worker', 'media-worker', '0 */4 * * *', 'airing-cal-sync-trigger']) {
+  for (const fragment of ['frontend-worker', 'sync-worker', 'media-worker', '0 */4 * * *', 'airing-cal-sync-trigger', 'qinglong-bundle']) {
     assert.doesNotMatch(readme, new RegExp(fragment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `README should not present legacy production path: ${fragment}`)
   }
 })
 
-test('node-jobs remains the QingLong write bundle entry', () => {
+test('node-jobs builds the ADR 0003 portable writer bundle', () => {
   for (const app of productionApps) {
     assert.equal(existsSync(resolve(root, 'apps', app, 'package.json')), true, `${app} should remain`)
   }
   const nodeJobs = readFileSync(resolve(root, 'apps/node-jobs/package.json'), 'utf8')
   assert.match(nodeJobs, /"build"/)
+  assert.match(nodeJobs, /build-portable-bundle\.mjs/)
+  assert.equal(existsSync(resolve(root, 'apps/node-jobs/scripts/build-portable-bundle.mjs')), true)
+  assert.equal(existsSync(resolve(root, 'apps/node-jobs/scripts/build-qinglong-bundle.mjs')), false)
+  assert.equal(existsSync(resolve(root, 'apps/node-jobs/src/cli/portable-scheduler.ts')), false)
+  assert.equal(existsSync(resolve(root, '.github/workflows/portable-writer.yml')), true)
 })

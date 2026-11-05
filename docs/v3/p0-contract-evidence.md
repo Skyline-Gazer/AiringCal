@@ -74,12 +74,12 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Offline thumb v2 (portable builder, sharp) | `apps/node-jobs/src/sync/portable-thumb.ts` |
 | Portable read gateway (filesystem public store) | `packages/v3-read/src/portable-read-handler.ts`, `serve-node.ts` |
 | Portable static widget (`/`, `/src/*`) | `packages/v3-read/src/portable-static-handler.ts` |
-| Docker Compose portable stack | `deploy/v3/docker-compose.yml`, `deploy/v3/Dockerfile` |
-| Compose scheduler (daily incremental + N-day full) | `apps/node-jobs/src/cli/portable-scheduler.ts`, `packages/v3-builder/src/sync-schedule.ts` |
+| Docker Compose portable stack (retired; historical evidence only) | Removed from v3 delivery in #146; see git history |
+| GHA one-shot writer (incremental + 7-day full) | `apps/node-jobs/src/cli/gha-portable-writer.ts`, `packages/v3-builder/src/sync-schedule.ts` |
 | Checkpoint backup CLI | `apps/node-jobs/src/cli/portable-checkpoint-backup.ts` |
 | Checkpoint restore CLI | `apps/node-jobs/src/cli/portable-checkpoint-restore.ts` |
-| Checkpoint backup retention (scheduler prune) | `apps/node-jobs/src/cli/portable-checkpoint-backup.ts` (`planCheckpointBackupRetention`) |
-| `/health` cron from builder SQLite (Compose web) | `packages/v3-read/src/portable-builder-cron.ts` |
+| Checkpoint backup retention (backup prune) | `apps/node-jobs/src/cli/portable-checkpoint-backup.ts` (`planCheckpointBackupRetention`) |
+| `/health` cron from builder SQLite (standalone local reader) | `packages/v3-read/src/portable-builder-cron.ts` |
 | Public snapshot GC dry-run (generation + pins) | `packages/v3-core/src/public-snapshot-gc.ts`, `apps/node-jobs/src/cli/portable-public-gc.ts` |
 | GC dry-run log after portable publish | `apps/node-jobs/src/sync/run-portable.ts`, `AIRINGCAL_GC_LOG_AFTER_PUBLISH` |
 | Reference-aware image GC dry-run (log) | `packages/v3-core/src/public-image-gc.ts`, `logPublicImageGcDryRun` |
@@ -108,7 +108,7 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | `airingcal` config v1 JSON (portable env mapping) | `docs/v3/airingcal-config.example.json`, `packages/v3-adapters/src/airingcal-config.ts` |
 | Config → env emit CLI (#72 setup) | `apps/node-jobs/src/cli/airingcal-config-emit.ts` |
 | Config validate + snapshot compare (#73 prep) | `airingcal-config-validate.ts`, `portable-snapshot-compare.ts` |
-| CI v3 operator smoke (config + compose) | `.github/workflows/ci.yml` job `v3_operator_smoke` |
+| CI v3 operator smoke (config + portable HTTP) | `.github/workflows/ci.yml` job `v3_operator_smoke` |
 | Cloudflare Workers read worker (R2 binding; static + 410 + `/api/*`) | `apps/v3-read-worker/src/index.ts`, `index.test.ts` |
 | Non-prod R2 staging smoke (publish → seed `--local` → HTTP assertions) | `apps/v3-read-worker/scripts/staging-smoke.ts`; CI job `v3_operator_smoke` |
 | R2 binding contract + emulation caveats (#72) | [`docs/v3/cloudflare-read-worker.md`](./cloudflare-read-worker.md) |

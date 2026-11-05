@@ -45,7 +45,7 @@ class MockDataR2 {
   }
 }
 
-test('/health reports QingLong scheduler when public read mode is r2', async () => {
+test('/health reports GHA scheduler when public read mode is r2', async () => {
   const kv = new MockKv()
   const snapshot = await buildPublicSnapshot({
     collections: [],
@@ -76,6 +76,6 @@ test('/health reports QingLong scheduler when public read mode is r2', async () 
   })
   assert.ok(response)
   const body = await response!.json() as { data: { cron: { scheduler: string; last: { source: string } } } }
-  assert.equal(body.data.cron.scheduler, 'qinglong')
-  assert.equal(body.data.cron.last.source, 'qinglong')
+  assert.equal(body.data.cron.scheduler, 'gha')
+  assert.equal(body.data.cron.last.source, 'gha')
 })

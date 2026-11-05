@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node ./scripts/build-qinglong-bundle.mjs",
+    "build": "node ./scripts/build-portable-bundle.mjs",
     "build:check": "tsc --noEmit",
     "test": "tsx --test 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit"

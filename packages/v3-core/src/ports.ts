@@ -6,6 +6,8 @@ export interface PublicReleasePointer {
   published_at_unix: number
   /** Platform-specific key or URL to the immutable snapshot artifact. */
   artifact_ref: string
+  /** Immutable manifest object for this release; absent on legacy pointers (pre C1). */
+  manifest_ref?: string
 }
 
 export interface PublisherCapabilities {

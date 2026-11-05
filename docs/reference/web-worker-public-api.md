@@ -81,21 +81,19 @@ curl -sS 'https://<你的域名>/api/version' | jq '.git.commit_short, .package.
 
 与 GitHub Actions 本次 `resolve_ref` 输出的 SHA 前 7 位、`apps/web-worker/package.json` 的 `version` 对照即可。
 
-## `GET /image/:hash/thumb`
-
-Pre-materialized cover thumb only (`images/{hash}/thumb.v2.webp` preferred, `thumb.v1.webp` fallback). No on-the-fly transform.
+## `GET /image/:hash` and `GET /image/:hash/thumb`
 
 | 项 | 值 |
 |----|-----|
-| 方法 | `GET` |
 | 认证 | 无 |
-| 成功 HTTP | `200`，`Content-Type: image/webp` |
-| 缺失 | `404` |
-| `Cache-Control` | `public, max-age=31536000, immutable`（与 `/image/:hash` 一致） |
+| `AIRINGCAL_PUBLIC_BASE_URL` **unset** | Proxy bytes from R2 binding (`images/{hash}/original` or thumb.v2.webp → v1 fallback) |
+| `AIRINGCAL_PUBLIC_BASE_URL` **set** (ADR 0003) | **302** to `{BASE}/images/{hash}/original` or `{BASE}/images/{hash}/thumb.v2.webp` |
+| Proxy success | `200` + immutable cache headers |
+| Proxy miss | `404` |
 
-`GET /image/:hash` 仍返回 `images/{hash}/original`，行为不变。
+Placeholder example: `AIRINGCAL_PUBLIC_BASE_URL=https://PLACEHOLDER_PUBLIC_CDN`.
 
-Widget 列表/日历封面：当 API 条目含 `images.large`（`hash` + `uri`）时，`<img>` 优先请求 `/image/{large.hash}/thumb`；加载失败（如 thumb 尚未生成，**404**）时依次回退 `images.large.uri`、再 `images.common.uri`。仅 `common` 时仍直接用 `common.uri`。
+Widget 列表/日历封面：当 API 条目含 `images.large`（`hash` + `uri`）时，`<img>` 优先请求 `/image/{large.hash}/thumb`；加载失败时依次回退 `images.large.uri`、再 `images.common.uri`。仅 `common` 时仍直接用 `common.uri`。
 
 ## `POST /api/thumb-gen`（Bearer，内部）
 

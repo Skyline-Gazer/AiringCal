@@ -1,15 +1,18 @@
 # node-jobs operator contract (AC-1-08)
 
-Canonical env, timeouts, and exit behavior for **QingLong** and local CLI. QingLong wrapper codes: [QINGLONG errors/airingcal-sync](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/errors/airingcal-sync.md).
+Canonical env, timeouts, and exit behavior for the **GHA portable writer** and local CLI
+(ADR 0003). Ops fill-in: [`docs/v3/gha-portable-writer.md`](../../../docs/v3/gha-portable-writer.md).
+Historical QingLong wrapper codes (archive only): [QINGLONG errors/airingcal-sync](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/errors/airingcal-sync.md).
 
 ## CLI
 
 | Command | Entry |
 | --- | --- |
-| Sync | `airingcal-sync.mjs` → `runSync()` |
-| Backup | `airingcal-backup.mjs` → `runBackup()` |
+| GHA writer | `gha-portable-writer.mjs` → `runGhaPortableWriter()` |
+| Sync | `airingcal-sync.mjs` → `runSync()` (portable-only) |
+| Backup | `airingcal-backup.mjs` → `runBackup()` (legacy D1 export; migration/ops) |
 
-Build: `pnpm -F @airing-cal/node-jobs build` → `dist/qinglong-bundle/`.
+Build: `pnpm -F @airing-cal/node-jobs build` → `dist/portable-bundle/` (`airingcal-sync.mjs`, `gha-portable-writer.mjs`).
 
 ## Timeouts
 
@@ -60,20 +63,25 @@ Full enum: `src/adapters/errors.ts`.
 
 ## Portable builder sync (v3, optional)
 
-When `AIRINGCAL_BUILDER=portable`, `runSync()` uses `@airing-cal/v3-builder` (SQLite checkpoint) instead of the Cloudflare D1/R2/KV pipeline. Default remains the legacy data-plane path.
+`runSync()` is **portable-only** (`@airing-cal/v3-builder`, SQLite checkpoint) per ADR 0003. `AIRINGCAL_BUILDER=legacy-d1` / `legacy` / `cloudflare` returns failed (retired).
 
 | Variable | Required (portable) | Notes |
 | --- | --- | --- |
-| `AIRINGCAL_BUILDER` | yes | Must be `portable` |
+| `AIRINGCAL_BUILDER` | no | Default / only supported value: `portable` (or unset). |
 | `AIRINGCAL_BUILDER_SQLITE_PATH` | yes | Local filesystem path; parent dirs created |
 | `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `BANGUMI_GIT_COMMIT_SHA` | yes | Same as cloud sync |
 | `BGM_TOKEN` | yes | Bangumi fetch |
 | `AIRINGCAL_BUILDER_MODE` | no | `incremental` (default) or `full` |
 | `AIRINGCAL_BUILDER_PUBLISH` | no | `true` runs checkpoint publish after sync |
-| `AIRINGCAL_BUILDER_PUBLIC_DIR` | when publishing | Root for immutable snapshot objects + `public/current-release.json` pointer (filesystem `PublicStore`) |
+| `AIRINGCAL_BUILDER_PUBLIC_DIR` | when publishing (filesystem) | Root for immutable snapshot objects + `public/current-release.json` pointer (filesystem `PublicStore`) |
+| `AIRINGCAL_PUBLIC_S3_*` | when publishing (S3/R2) | If set, portable publish uses S3-compatible `PublicStore` instead of `PUBLIC_DIR` (see ADR 0003 / `docs/v3/gha-portable-writer.md`) |
 | `AIRINGCAL_BUILDER_OWNER` | no | Lease owner token; defaults per run |
 
-When `AIRINGCAL_BUILDER_PUBLISH=true` and `AIRINGCAL_BUILDER_PUBLIC_DIR` is unset, publish uses in-process memory only (dev smoke; not durable).
+When `AIRINGCAL_BUILDER_PUBLISH=true` and neither `AIRINGCAL_PUBLIC_S3_*` nor `AIRINGCAL_BUILDER_PUBLIC_DIR` is set, publish uses in-process memory only (dev smoke; not durable).
+
+### GHA one-shot writer (ADR 0003)
+
+Entry: `scripts/gha-portable-writer.sh` → `tsx src/cli/gha-portable-writer-main.ts`. Workflow: `.github/workflows/portable-writer.yml` (04:00 Asia/Shanghai). Requires `AIRINGCAL_CHECKPOINT_S3_*` for durable SQLite checkpoint + lease, and `AIRINGCAL_PUBLIC_S3_*` for Release publish. Optional `BARK_URL` on failure. Fill-in list: [`docs/v3/gha-portable-writer.md`](../../../docs/v3/gha-portable-writer.md).
 
 | `AIRINGCAL_BUILDER_MEDIA_REFRESH` | no | `skip` (default): no download; URL-only `image_status`. `refresh`: download covers to filesystem via builder SQLite `subject_media` (requires `PUBLIC_DIR` or `IMAGE_DIR`). |
 | `AIRINGCAL_BUILDER_IMAGE_DIR` | when refresh without `PUBLIC_DIR` | Root for immutable `images/{hash}/original` blobs (same key layout as R2). |
@@ -82,20 +90,11 @@ Portable sync **does not** read Cloudflare R2/D1/KV or call Worker `AIRINGCAL_TH
 
 Cloudflare variables are **not** read on the portable path.
 
-### QingLong / Docker portable template
+### Historical: QingLong / Compose scheduler
 
-See [`deploy/v3/env.example`](../../../deploy/v3/env.example) and [`deploy/v3/README.md`](../../../deploy/v3/README.md). Minimum: `AIRINGCAL_BUILDER=portable`, `AIRINGCAL_BUILDER_SQLITE_PATH`, `AIRINGCAL_BUILDER_PUBLIC_DIR`, `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `BGM_TOKEN`, `BANGUMI_GIT_COMMIT_SHA`.
+QingLong + `qinglong-bundle` and Compose `portable-scheduler` are **removed** as production writers (ADR 0003). Use [GHA portable writer](../../../docs/v3/gha-portable-writer.md). Local Compose **web** / optional `sync` profile: [`deploy/v3/README.md`](../../../deploy/v3/README.md).
 
-| Variable | Required (scheduler) | Notes |
-| --- | --- | --- |
-| `AIRINGCAL_SCHEDULER_DAILY_AT` | no | UTC `HH:MM` (default `03:00`) |
-| `AIRINGCAL_SCHEDULER_FULL_EVERY_DAYS` | no | Full reconcile interval (default `7`) |
-| `AIRINGCAL_SCHEDULER_RUN_ON_START` | no | `true` runs one sync immediately on container start |
-| `AIRINGCAL_SCHEDULER_BACKUP_BEFORE_SYNC` | no | `true` (Compose default) runs checkpoint backup before each scheduled sync |
-| `AIRINGCAL_BUILDER_BACKUP_DIR` | no | Checkpoint backup destination (default `<sqlite-dir>/backups`) |
-| `AIRINGCAL_BUILDER_BACKUP_KEEP` | no | When set ≥1, scheduler prunes older `builder-checkpoint-*.sqlite` files after backup (Compose default `10`) |
-
-Long-running scheduler: `tsx apps/node-jobs/src/cli/portable-scheduler.ts`. One-shot checkpoint backup: `tsx apps/node-jobs/src/cli/portable-checkpoint-backup.ts`. Restore: `tsx apps/node-jobs/src/cli/portable-checkpoint-restore.ts <backup.sqlite>` (add `--force` to overwrite an existing file).
+One-shot checkpoint backup: `tsx apps/node-jobs/src/cli/portable-checkpoint-backup.ts`. Restore: `tsx apps/node-jobs/src/cli/portable-checkpoint-restore.ts <backup.sqlite>` (add `--force` to overwrite an existing file).
 
 Cutover + rollback runbook (#73, owner-approved, never executed by CI): [`docs/v3/cutover-rollback.md`](../../../docs/v3/cutover-rollback.md) — preconditions (shadow gate 0, import complete, fresh checkpoint backup), cutover commands, rollback via checkpoint restore + re-publish, and the executed local rollback drill.
 

@@ -32,7 +32,9 @@
     const cron = health.cron || {}
     const last = cron.last || {}
     const totalSubjects = Number(cache.total_subjects || 0)
-    const scheduler = cron.scheduler === 'qinglong' ? 'QingLong' : 'Cron'
+    const scheduler = cron.scheduler === 'gha' ? 'GHA'
+      : cron.scheduler === 'qinglong' ? 'QingLong'
+      : 'Cron'
     const nextCron = formatTime(cron.next_at) || 'unknown'
     const lastStatus = last.status ? last.status : 'unknown'
     const lastTime = last.completed_at || last.triggered_at

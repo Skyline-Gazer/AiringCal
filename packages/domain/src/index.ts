@@ -9,6 +9,7 @@ export {
 export type { PublicSnapshotInput } from './public-snapshot.ts'
 export {
   buildManifest,
+  manifestObjectKey,
   parsePublicSnapshotManifestV1,
   snapshotKey,
 } from './public-manifest.ts'

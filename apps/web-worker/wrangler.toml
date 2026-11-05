@@ -27,4 +27,8 @@ bucket_name = "airing-cal-data"
 [images]
 binding = "IMAGES"
 
-# Thumb materialization: QingLong/node-jobs POST /api/thumb-gen after sync (no Worker cron).
+# AIRINGCAL_PUBLIC_BASE_URL remains unset until a verified public CDN endpoint is configured.
+# Never deploy a placeholder hostname: without this variable, /image/* uses the legacy read fallback.
+
+# Thumb materialization: legacy POST /api/thumb-gen after sync (no Worker cron).
+# Portable GHA writer materializes thumbs offline into the public store.

@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { assembleFullFetch } from '@airing-cal/bgm-api'
-import { parsePublicSnapshotManifestV1 } from '@airing-cal/domain'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import {
+  parsePublicSnapshotManifestV1,
+  type PublicSnapshotManifestV1,
+} from '@airing-cal/domain'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   PUBLIC_RELEASE_POINTER_KEY,
   FilesystemPublicStore,
   MemoryPublicStore,
+  type PublicStore,
 } from '@airing-cal/v3-core'
 import { openBuilderDatabase } from './migrate.ts'
 import { publishBuilderCheckpoint } from './publish-checkpoint.ts'
@@ -85,7 +89,7 @@ test('publishBuilderCheckpoint persists release to filesystem PublicStore', asyn
   const pointerRaw = readFileSync(join(root, PUBLIC_RELEASE_POINTER_KEY), 'utf8')
   assert.match(pointerRaw, /content_hash/)
   assert.ok(await publicStore.getSnapshotBytes(result.pointer!.artifact_ref))
-  const manifestRaw = readFileSync(join(root, 'public/manifest.json'), 'utf8')
+  const manifestRaw = readFileSync(join(root, result.pointer!.manifest_ref!), 'utf8')
   const manifest = parsePublicSnapshotManifestV1(JSON.parse(manifestRaw))
   assert.equal(manifest.snapshot_key, result.pointer!.artifact_ref)
   assert.equal(manifest.generation, result.pointer!.generation)
@@ -112,3 +116,237 @@ test('publishBuilderCheckpoint fails closed when CAS is unsupported', async () =
   assert.equal(result.status, 'cas_unsupported')
   assert.equal(publicStore.current, null)
 })
+
+const COMMON_URL = 'https://lain.bgm.tv/pic/cover/c/common.jpg'
+const LARGE_URL = 'https://lain.bgm.tv/pic/cover/l/large.jpg'
+
+function collectionFetch(subjectId: number) {
+  const entry = {
+    subject_id: subjectId,
+    subject_type: 2,
+    rate: 0,
+    type: 3,
+    comment: '',
+    tags: [],
+    ep_status: 1,
+    vol_status: 0,
+    updated_at: '2026-01-01T00:00:00.000Z',
+    private: false,
+    subject: {
+      id: subjectId,
+      type: 2,
+      name: 'Name',
+      name_cn: '中文',
+      summary: 'summary',
+      nsfw: false,
+      date: '2026-01-01',
+      eps: 12,
+      total_episodes: 12,
+      images: { large: LARGE_URL, common: COMMON_URL, medium: COMMON_URL, small: COMMON_URL, grid: COMMON_URL },
+      rating: { score: 7, rank: 100, total: 10 },
+    },
+  }
+  return assembleFullFetch(
+    [{ user_id: '1', pageLimit: 50, pages: [{ offset: 0, total: 1, data: [entry] }] }],
+    [{ weekday: { en: 'Mon', cn: '一', ja: '月', id: 1 }, items: [] }],
+    1_700_000_000,
+  )
+}
+
+test('publishBuilderCheckpoint writes a generation-scoped manifest_ref on the pointer', async () => {
+  const db = openBuilderDatabase(':memory:')
+  const state = new SqliteBuilderStateStore(db)
+  const runs = new SyncRunStore(db)
+  const publicStore = new MemoryPublicStore()
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-ref',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => emptyFetch(),
+    now: () => 1_700_000_000_000,
+  })
+  const result = await publishBuilderCheckpoint({
+    state,
+    publicStore,
+    manifestMetadata: {
+      source_observed_at: '2026-01-01T00:00:00.000Z',
+      git_sha: 'd'.repeat(40),
+    },
+  })
+  assert.equal(result.status, 'published')
+  assert.ok(result.pointer!.manifest_ref)
+  assert.match(result.pointer!.manifest_ref!, /^public\/manifests\/1-[0-9a-f]{64}\.json$/)
+  const manifestBytes = await publicStore.getSnapshotBytes(result.pointer!.manifest_ref!)
+  assert.ok(manifestBytes)
+  const manifest = parsePublicSnapshotManifestV1(JSON.parse(new TextDecoder().decode(manifestBytes!)))
+  assert.equal(manifest.snapshot_key, result.pointer!.artifact_ref)
+  assert.equal(await publicStore.getSnapshotBytes('public/manifest.json'), null)
+})
+
+test('publishBuilderCheckpoint reuses persisted metadata so same-generation retries are byte-identical', async () => {
+  const db = openBuilderDatabase(':memory:')
+  const state = new SqliteBuilderStateStore(db)
+  const runs = new SyncRunStore(db)
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-retry',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => emptyFetch(),
+    now: () => 1_700_000_000_000,
+  })
+  const firstStore = new MemoryPublicStore()
+  const first = await publishBuilderCheckpoint({
+    state,
+    publicStore: firstStore,
+    manifestMetadata: {
+      source_observed_at: '2026-01-01T00:00:00.000Z',
+      git_sha: 'e'.repeat(40),
+    },
+  })
+  assert.equal(first.status, 'published')
+
+  // Retry against a fresh public store with advanced wall clock: fresh caller metadata is ignored.
+  const retryStore = new MemoryPublicStore()
+  const retry = await publishBuilderCheckpoint({
+    state,
+    publicStore: retryStore,
+    manifestMetadata: {
+      source_observed_at: '2026-06-01T12:00:00.000Z',
+      git_sha: 'f'.repeat(40),
+    },
+  })
+  assert.equal(retry.status, 'published')
+  assert.equal(retry.pointer!.manifest_ref, first.pointer!.manifest_ref)
+  assert.deepEqual(
+    await retryStore.getSnapshotBytes(retry.pointer!.manifest_ref!),
+    await firstStore.getSnapshotBytes(first.pointer!.manifest_ref!),
+  )
+})
+
+test('publishBuilderCheckpoint publishes a distinct manifest per generation', async () => {
+  const db = openBuilderDatabase(':memory:')
+  const state = new SqliteBuilderStateStore(db)
+  const runs = new SyncRunStore(db)
+  const publicStore = new MemoryPublicStore()
+  const metadata = {
+    source_observed_at: '2026-01-01T00:00:00.000Z',
+    git_sha: 'a'.repeat(40),
+  }
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-gen1',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => emptyFetch(),
+    now: () => 1_700_000_000_000,
+  })
+  const first = await publishBuilderCheckpoint({ state, publicStore, manifestMetadata: metadata })
+  assert.equal(first.status, 'published')
+
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-gen2',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => collectionFetch(42),
+    now: () => 1_700_100_000_000,
+  })
+  const second = await publishBuilderCheckpoint({ state, publicStore, manifestMetadata: metadata })
+  assert.equal(second.status, 'published')
+  assert.notEqual(second.pointer!.manifest_ref, first.pointer!.manifest_ref)
+  assert.match(second.pointer!.manifest_ref!, /^public\/manifests\/2-[0-9a-f]{64}\.json$/)
+  const manifest = parsePublicSnapshotManifestV1(
+    JSON.parse(new TextDecoder().decode(
+      (await publicStore.getSnapshotBytes(second.pointer!.manifest_ref!))!,
+    )),
+  ) as PublicSnapshotManifestV1
+  assert.equal(manifest.generation, 2)
+  assert.equal(manifest.snapshot_key, second.pointer!.artifact_ref)
+})
+
+test('preCommit failure aborts before pointer commit and a retry recovers (C4)', async () => {
+  const db = openBuilderDatabase(':memory:')
+  const state = new SqliteBuilderStateStore(db)
+  const runs = new SyncRunStore(db)
+  const publicStore = new MemoryPublicStore()
+  const metadata = {
+    source_observed_at: '2026-01-01T00:00:00.000Z',
+    git_sha: 'a'.repeat(40),
+  }
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-precommit',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => emptyFetch(),
+    now: () => 1_700_000_000_000,
+  })
+
+  const first = await publishBuilderCheckpoint({
+    state,
+    publicStore,
+    manifestMetadata: metadata,
+    preCommit: async () => {
+      throw new Error('checkpoint CAS precondition failed')
+    },
+  })
+  assert.equal(first.status, 'pre_commit_failed')
+  assert.match(first.error ?? '', /checkpoint CAS precondition failed/)
+  assert.equal(publicStore.current, null)
+
+  const retry = await publishBuilderCheckpoint({ state, publicStore, manifestMetadata: metadata })
+  assert.equal(retry.status, 'published')
+  const committed = await publicStore.getCurrentRelease()
+  assert.equal(committed?.generation, 1)
+})
+
+test('pointer CAS rejects the commit when the expected prior pointer mismatches (C4)', async () => {
+  const db = openBuilderDatabase(':memory:')
+  const state = new SqliteBuilderStateStore(db)
+  const runs = new SyncRunStore(db)
+  const publicStore = new MemoryPublicStore()
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-cas',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => emptyFetch(),
+    now: () => 1_700_000_000_000,
+  })
+
+  class ConflictCommitStore implements PublicStore {
+    constructor(private readonly inner: MemoryPublicStore) {}
+    async getCurrentRelease() {
+      return this.inner.getCurrentRelease()
+    }
+    async getSnapshotBytes(ref: string) {
+      return this.inner.getSnapshotBytes(ref)
+    }
+    async putImmutableObject(key: string, body: Uint8Array, contentType: string) {
+      return this.inner.putImmutableObject(key, body, contentType)
+    }
+    async commitRelease() {
+      return 'conflict' as const
+    }
+  }
+
+  const result = await publishBuilderCheckpoint({
+    state,
+    publicStore: new ConflictCommitStore(publicStore),
+    manifestMetadata: {
+      source_observed_at: '2026-01-01T00:00:00.000Z',
+      git_sha: 'a'.repeat(40),
+    },
+  })
+  assert.equal(result.status, 'cas_conflict')
+  assert.equal(publicStore.current, null)
+})
+

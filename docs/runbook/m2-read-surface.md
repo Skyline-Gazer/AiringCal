@@ -1,5 +1,9 @@
 # M2 一条过（读面验收）
 
+> **Historical (homelab M2, 2026-10-13).** Production write is now **GHA portable
+> writer** ([`docs/v3/gha-portable-writer.md`](../v3/gha-portable-writer.md), ADR 0003).
+> Do not treat QingLong / `qinglong-bundle` steps below as current delivery truth.
+
 **前提：** M1 已能跑通 sync（preflight → success / `generation=`）。下面 **按序号一次做完** 即 M2。
 
 **变量：** 把 `SITE` 换成你的站点根 URL（无尾 `/`），例如 `https://airing.example.com`。

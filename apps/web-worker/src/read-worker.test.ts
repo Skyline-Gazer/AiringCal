@@ -372,6 +372,38 @@ test('read-worker serves images from R2 by hash', async () => {
   assert.equal(await response.text(), 'image')
 })
 
+test('read-worker redirects images to AIRINGCAL_PUBLIC_BASE_URL when set', async () => {
+  const hash = 'a'.repeat(64)
+  const response = await worker.fetch(
+    new Request(`https://read.local/image/${hash}`),
+    {
+      ...env(),
+      AIRINGCAL_PUBLIC_BASE_URL: 'https://PLACEHOLDER_PUBLIC_CDN',
+    } as any,
+  )
+  assert.equal(response.status, 302)
+  assert.equal(
+    response.headers.get('Location'),
+    `https://PLACEHOLDER_PUBLIC_CDN/images/${hash}/original`,
+  )
+})
+
+test('read-worker redirects thumbs to public CDN thumb.v2.webp key', async () => {
+  const hash = 'b'.repeat(64)
+  const response = await worker.fetch(
+    new Request(`https://read.local/image/${hash}/thumb`),
+    {
+      ...env(),
+      AIRINGCAL_PUBLIC_BASE_URL: 'https://PLACEHOLDER_PUBLIC_CDN/',
+    } as any,
+  )
+  assert.equal(response.status, 302)
+  assert.equal(
+    response.headers.get('Location'),
+    `https://PLACEHOLDER_PUBLIC_CDN/images/${hash}/thumb.v2.webp`,
+  )
+})
+
 test('read-worker serves pre-materialized thumb webp only', async () => {
   const response = await worker.fetch(new Request(`https://read.local/image/${'b'.repeat(64)}/thumb`), env() as any)
 

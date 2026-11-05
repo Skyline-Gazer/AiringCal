@@ -3,15 +3,16 @@ import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { CompleteFullFetch } from '@airing-cal/bgm-api'
 import { subjectDetailImages } from '@airing-cal/domain'
-import { FilesystemPublicStore, MemoryPublicStore, type PublicStore } from '@airing-cal/v3-core'
 import {
   openBuilderDatabase,
   runBuilderOnce,
   SqliteBuilderStateStore,
   SyncRunStore,
+  type PublishCommitContext,
   type SyncRunMode,
 } from '@airing-cal/v3-builder'
 import { createFilesystemBlobStore } from '../adapters/filesystem-blob-store.ts'
+import { readPublicS3Config } from '../adapters/s3-env.ts'
 import { createRunContext } from '../adapters/run-context.ts'
 import type { JobSummary } from '../contracts.ts'
 import { createUpstreamBgmClient, fetchCompleteInput } from '../upstream/fetch.ts'
@@ -19,20 +20,13 @@ import { readSyncUserConfig } from './config.ts'
 import { mediaSubjectsFromFetch } from './media-refresh.ts'
 import { createEnrichMediaSubjectsFromFetch } from './media-subject-resolve.ts'
 import { runPortableMediaRefresh } from './portable-media.ts'
+import { ensurePublishImagesComplete } from './publish-image-gate.ts'
+import { createPortablePublicStoreFromEnv, type ClosablePublicStore } from './portable-public-store.ts'
 import { materializePortableThumbs } from './portable-thumb.ts'
 import { logPublicSnapshotGcDryRun } from '../cli/portable-public-gc.ts'
 
 function shouldLogGcDryRunAfterPublish(env: Record<string, string | undefined>): boolean {
   return ['1', 'true', 'yes'].includes((env.AIRINGCAL_GC_LOG_AFTER_PUBLISH ?? '').trim().toLowerCase())
-}
-
-function createPortablePublicStore(env: Record<string, string | undefined>): PublicStore {
-  const publicDir = env.AIRINGCAL_BUILDER_PUBLIC_DIR?.trim()
-  if (publicDir) {
-    mkdirSync(publicDir, { recursive: true })
-    return new FilesystemPublicStore(publicDir)
-  }
-  return new MemoryPublicStore()
 }
 
 export type PortableMediaRefreshMode = 'skip' | 'refresh'
@@ -80,6 +74,10 @@ function readPortableBuilderConfig(env: Record<string, string | undefined>): {
 export interface PortableBuilderSyncOverrides {
   fetchInput?: () => Promise<CompleteFullFetch>
   fetchImage?: (url: string, signal: AbortSignal) => Promise<Response>
+  /** Test/injection seam: replaces the env-derived public store (caller owns closing it). */
+  publicStore?: ClosablePublicStore
+  /** C4 deferred publish hook: runs right before the release pointer commit. */
+  publishPreCommit?: (context?: PublishCommitContext) => Promise<void>
 }
 
 /** Portable v3 builder path: SQLite checkpoint via @airing-cal/v3-builder (no Cloudflare D1/R2). */
@@ -87,7 +85,18 @@ export async function runPortableBuilderSync(
   env: Record<string, string | undefined> = process.env,
   overrides: PortableBuilderSyncOverrides = {},
 ): Promise<JobSummary> {
+  const publishRequested = ['1', 'true', 'yes'].includes(
+    (env.AIRINGCAL_BUILDER_PUBLISH ?? '').trim().toLowerCase(),
+  )
   if (!env.AIRINGCAL_USERS_JSON?.trim()) {
+    if (publishRequested) {
+      // C3: a publish run must never succeed as `skipped` on missing config.
+      return {
+        job: 'airingcal-sync',
+        status: 'failed',
+        message: 'AIRINGCAL_USERS_JSON is required when AIRINGCAL_BUILDER_PUBLISH=true',
+      }
+    }
     return {
       job: 'airingcal-sync',
       status: 'skipped',
@@ -110,20 +119,27 @@ export async function runPortableBuilderSync(
     return { job: 'airingcal-sync', status: 'failed', message }
   }
 
-  if (mediaMode === 'skip') {
-    console.log(JSON.stringify({
-      status: 'info',
-      stage: 'media',
-      mode: 'skip',
-      reason: 'portable_builder_no_download',
-    }))
+  if (
+    builderConfig.publishAfterSync
+    && overrides.publicStore == null
+    && !readPublicS3Config(env)
+    && !env.AIRINGCAL_BUILDER_PUBLIC_DIR?.trim()
+  ) {
+    // C3: no Memory fallback for publish runs — fail closed on missing public store config.
+    return {
+      job: 'airingcal-sync',
+      status: 'failed',
+      message:
+        'AIRINGCAL_PUBLIC_S3_* or AIRINGCAL_BUILDER_PUBLIC_DIR is required when AIRINGCAL_BUILDER_PUBLISH=true',
+    }
   }
 
   mkdirSync(dirname(builderConfig.sqlitePath), { recursive: true })
   const db = openBuilderDatabase(builderConfig.sqlitePath)
   const state = new SqliteBuilderStateStore(db)
   const runs = new SyncRunStore(db)
-  const publicStore = createPortablePublicStore(env)
+  const publicStore = overrides.publicStore ?? createPortablePublicStoreFromEnv(env)
+  const ownsPublicStore = overrides.publicStore == null
   const runId = randomUUID()
   const ownerToken = env.AIRINGCAL_BUILDER_OWNER?.trim() || `node-jobs-${runId.slice(0, 8)}`
 
@@ -140,6 +156,7 @@ export async function runPortableBuilderSync(
 
   if (!fetchInput) {
     db.close()
+    if (ownsPublicStore) publicStore.close?.()
     return {
       job: 'airingcal-sync',
       status: 'failed',
@@ -155,6 +172,7 @@ export async function runPortableBuilderSync(
 
   let mediaSummary = ''
   let snapshotProjection: Parameters<typeof runBuilderOnce>[0]['snapshotProjection']
+  const publishGateRoot = readPortableImageRoot(env, mediaMode)
 
   try {
     if (mediaMode === 'refresh') {
@@ -218,6 +236,17 @@ export async function runPortableBuilderSync(
       },
       projectFetchMediaHints: mediaMode === 'skip',
       snapshotProjection,
+      prePublish: builderConfig.publishAfterSync
+        ? async (snapshot) => {
+          const gate = await ensurePublishImagesComplete({
+            snapshot,
+            publicStore,
+            imageRoot: publishGateRoot ?? null,
+          })
+          console.log(JSON.stringify({ status: 'info', stage: 'publish_image_gate', ...gate }))
+        }
+        : undefined,
+      preCommit: overrides.publishPreCommit,
     })
 
     const sync = result.sync.status
@@ -250,5 +279,6 @@ export async function runPortableBuilderSync(
     }
   } finally {
     db.close()
+    if (ownsPublicStore) publicStore.close?.()
   }
 }

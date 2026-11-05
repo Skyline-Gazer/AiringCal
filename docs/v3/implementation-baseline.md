@@ -1,6 +1,6 @@
 # AiringCal v3 implementation baseline
 
-> **Accepted target, 2026-11-05 (not yet cut over):** GitHub-only development; GitHub Actions scheduled/manual one-shot Portable Builder is the **sole v3 writer**, using ephemeral SQLite and **private S3-compatible durable checkpoint**. One authoritative **public immutable Release/images** on S3-compatible object storage (initially Cloudflare R2) is consumed by stateless Cloudflare/EdgeOne read adapters, followed by Netlify/Vercel. **No QingLong, CNB, Docker or Compose runtime/deployment or CI acceptance** in v3. See [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147) and unmerged [PR #146](https://github.com/Skyline-Gazer/AiringCal/pull/146). Actual v2 Worker / D1-KV-R2 legacy source remains on `dev`; do not claim production cutover.
+> **Accepted target, 2026-11-05 (not yet cut over):** GitHub-only development; GitHub Actions scheduled/manual one-shot Portable Builder is the **sole v3 writer**, using ephemeral SQLite and **private S3-compatible durable checkpoint**. One authoritative **public immutable Release/images** on S3-compatible object storage (initially Cloudflare R2) is consumed by stateless Cloudflare/EdgeOne read adapters, followed by Netlify/Vercel. **No QingLong, CNB, Docker or Compose runtime/deployment or CI acceptance** in v3. See [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147) and implementation [PR #146](https://github.com/Skyline-Gazer/AiringCal/pull/146). Legacy v2 read API / D1-KV-R2 paths still require v3 Release parity; do not claim production cutover.
 
 Status: Working implementation baseline; governed by [Issue #67](https://github.com/Skyline-Gazer/AiringCal/issues/67) and [Skyline-Gazer Project #7](https://github.com/orgs/Skyline-Gazer/projects/7).
 
@@ -20,6 +20,8 @@ Status: Working implementation baseline; governed by [Issue #67](https://github.
 - Core is portable: thin platform adapters, shared domain/Builder/Release contract, same published assets across platforms. Do not copy Xget runtime/infra blindly; Xget is a request-proxy, AiringCal is an offline builder plus static reader.
 
 ## Runtime and state
+
+- **ADR 0003 (PR #146)** implements GHA Writer and S3-compatible stores, with manual-only Cloudflare deployment and a scheduler activation gate. R2 staging, reader parity, and owner cutover remain pending #147. Docker/Compose deployment files, scripts and CI are retired.
 
 - **GitHub Actions-only write runner**: one-shot Portable Builder; local SQLite/WAL during the run, restored from a private S3-compatible durable checkpoint and saved conditionally on success. Prevent two authoritative writers publishing one site; cross-runner lease/CAS/fencing and recovery must pass isolated real-R2 staging (#147).
 - **No Docker/Compose deployment or scheduler target**. Remove related build/test/DoD only after retaining portable Builder and HTTP reader contract coverage. CNB and QingLong are historical, not supported delivery platforms.

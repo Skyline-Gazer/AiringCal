@@ -23,8 +23,9 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Production Worker deploy/D1 migration must be explicitly dispatched, never on dev push.
   resolve_ref:
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     timeout-minutes: 5
     runs-on: ubuntu-latest
     outputs:
@@ -96,23 +97,10 @@ jobs:
       - run: pnpm exec tsx apps/node-jobs/src/cli/airingcal-config-validate.ts docs/v3/airingcal-config.example.yaml
       - run: pnpm exec tsx apps/node-jobs/src/cli/airingcal-setup.ts docs/v3/airingcal-config.example.yaml --emit-env
       - run: pnpm exec tsx apps/node-jobs/src/cli/airingcal-config-emit.ts docs/v3/airingcal-config.example.yaml >/dev/null
-      - run: docker compose -f deploy/v3/docker-compose.yml config
       - name: Cloudflare read gateway smoke (local R2 emulation)
         run: pnpm exec tsx apps/v3-read-worker/scripts/staging-smoke.ts
       - name: Portable read gateway E2E (serve-node + published fixture)
         run: node scripts/v3-portable-e2e.mjs
-
-  v3_compose_e2e:
-    name: v3 compose stack E2E
-    needs: [validate]
-    timeout-minutes: 25
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.sha }}
-      - name: Compose stack E2E (build image, seed, up web, assert reads)
-        run: node scripts/v3-compose-e2e.mjs
 
   node-jobs-bundle:
     needs: [validate]
@@ -131,17 +119,17 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm -F @airing-cal/node-jobs build
       - run: |
-          test -f apps/node-jobs/dist/qinglong-bundle/airingcal-sync.mjs
-          test -f apps/node-jobs/dist/qinglong-bundle/airingcal-backup.mjs
-          test -f apps/node-jobs/dist/qinglong-bundle/manifest.json
+          test -f apps/node-jobs/dist/portable-bundle/airingcal-sync.mjs
+          test -f apps/node-jobs/dist/portable-bundle/gha-portable-writer.mjs
+          test -f apps/node-jobs/dist/portable-bundle/manifest.json
       - uses: actions/upload-artifact@v4
         with:
-          name: qinglong-bundle
-          path: apps/node-jobs/dist/qinglong-bundle/
+          name: portable-bundle
+          path: apps/node-jobs/dist/portable-bundle/
 
   resolve_cloudflare:
     needs: resolve_ref
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     timeout-minutes: 5
     runs-on: ubuntu-latest
     outputs:
@@ -166,7 +154,7 @@ jobs:
 
   deploy_web_worker:
     needs: [resolve_ref, validate, resolve_cloudflare]
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'workflow_dispatch'
     timeout-minutes: 25
     runs-on: ubuntu-latest
     concurrency:
@@ -218,7 +206,7 @@ jobs:
 
   recovery_report:
     needs: [resolve_ref, validate, resolve_cloudflare, deploy_web_worker]
-    if: ${{ always() && github.event_name != 'pull_request' && (needs.resolve_cloudflare.result == 'failure' || needs.deploy_web_worker.result == 'failure') }}
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && (needs.resolve_cloudflare.result == 'failure' || needs.deploy_web_worker.result == 'failure') }}
     timeout-minutes: 10
     runs-on: ubuntu-latest
     env:

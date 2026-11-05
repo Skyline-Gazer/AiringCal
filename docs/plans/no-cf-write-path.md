@@ -1,6 +1,9 @@
 # No Cloudflare write path (AC-3-01)
 
-**Decision:** Production writes **only** via QingLong + `apps/node-jobs` bundle. Cloudflare Workers do **not** run scheduled sync, Workflow, Queue consumers, or public `/api/sync/*` writes.
+**Decision (updated ADR 0003):** Production writes via **GitHub Actions** portable
+one-shot (`apps/node-jobs` + S3). QingLong + `qinglong-bundle` are retired as the
+live writer. Cloudflare Workers do **not** run scheduled sync, Workflow, Queue
+consumers, or public `/api/sync/*` writes.
 
 ## Evidence
 
@@ -16,6 +19,8 @@
 - Cloudflare dashboard: no Cron Triggers on write Workers.
 - GitHub Actions: deploy workflow targets **web-worker** only (no sync-worker deploy).
 
-## QingLong
+## Writer (ADR 0003)
 
-Write cron: `airingcal-sync.js` / `airingcal-backup.js` only.
+GitHub Actions: `.github/workflows/portable-writer.yml` → `scripts/gha-portable-writer.sh`.
+Ops: `docs/v3/gha-portable-writer.md`. Historical QingLong wrappers remain in
+QINGLONG-REPO for archive only.
