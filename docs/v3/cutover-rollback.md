@@ -43,31 +43,58 @@ start the observation window: run the shadow gate daily for **14 days** before
 enabling legacy cleanup; any mismatch resets the streak to 0 and blocks further
 cutover steps.
 
-## Rollback
+## Rollback (pointer CAS, C9)
 
-Checkpoint state is the authoritative v3 side; the public store is
-content-addressed, so rolling back is two steps: restore the checkpoint, then
-re-publish so the release pointer moves back to the restored generation
-(`publishBuilderCheckpoint` is a no-op if the pointer already matches).
+Before production pointer rollback, freeze writes and confirm no in-flight run;
+then CAS the pointer back to a chosen prior generation and record a receipt.
+
+1. **Freeze the writer.** Set `AIRINGCAL_WRITER_ENABLED=false` (GitHub repo
+   variable) so neither the schedule nor a manual dispatch can start a
+   production writer run. Confirm the last GHA writer run has finished.
+2. **Roll back the pointer.** The rollback CLI derives rollback candidates from
+   the generation-scoped snapshot/manifest keys already in the store (no
+   separate state service), takes the checkpoint lease to fence any in-flight
+   writer (a held lease aborts the rollback), verifies every referenced image of
+   the target generation, resolves its versioned manifest, and CAS-commits the
+   pointer. Dry run by default; `--apply` requires the freeze attestation.
 
 ```bash
-export AIRINGCAL_BUILDER_SQLITE_PATH=/data/builder.sqlite
-export AIRINGCAL_BUILDER_BACKUP_DIR=/data/backups
+export AIRINGCAL_PUBLIC_S3_ENDPOINT=...   # staging/production public bucket
+export AIRINGCAL_PUBLIC_S3_BUCKET=...
+export AIRINGCAL_PUBLIC_S3_ACCESS_KEY_ID=...
+export AIRINGCAL_PUBLIC_S3_SECRET_ACCESS_KEY=...
+export AIRINGCAL_CHECKPOINT_S3_*=...      # enables the lease-based in-flight check
+export AIRINGCAL_WRITER_ENABLED=false     # freeze attestation (matches the repo variable)
 
-# 1. restore the pre-cutover checkpoint (overwrites the target SQLite)
-tsx apps/node-jobs/src/cli/portable-checkpoint-restore.ts \
-  "$AIRINGCAL_BUILDER_BACKUP_DIR/builder-checkpoint-<timestamp>.sqlite" --force
-
-# 2. re-publish so the release pointer matches the restored state
-AIRINGCAL_BUILDER=portable AIRINGCAL_BUILDER_PUBLISH=true \
-  tsx apps/node-jobs/src/cli/sync-main.ts
-
-# 3. if the Worker itself regressed, re-deploy the previous Worker version
-wrangler deployments list --name airing-cal-v3-read
+tsx apps/node-jobs/src/cli/portable-release-rollback.ts --generation <N>            # dry run
+tsx apps/node-jobs/src/cli/portable-release-rollback.ts --generation <N> \
+  --apply --writer-frozen --receipt rollback-receipt-<date>.json                    # CAS commit
 ```
 
-Do **not** run public-store GC with `--apply`/`--apply-images` while a rollback is
-in progress: the retained generations are the rollback targets.
+The receipt records the **prior pointer**, the **target generation**
+(`target_generation` / `target_artifact_ref` / `target_manifest_ref`), the image
+gate result, the CAS outcome, and the resume rule. Attach it to #147.
+
+3. **Resume rule (required before re-enabling the writer).** The builder SQLite
+   checkpoint is independent of the public pointer: after a rollback the
+   checkpoint may still hold a NEWER generation than the pointer. Before setting
+   `AIRINGCAL_WRITER_ENABLED=true`, the owner must record how the checkpoint
+   converges with the rolled-back Release:
+   - **Restore/rebuild** the checkpoint to match the rolled-back generation
+     (`portable-checkpoint-restore` from a backup, then verify), **or**
+   - **Deliberately republish**: accept that the next writer run republishes the
+     newer checkpoint state after review.
+   Re-enable the writer only after that choice is recorded (receipt + #147).
+
+If the Worker itself regressed (not the Release), re-deploy the previous Worker
+version instead: `wrangler deployments list --name airing-cal-v3-read`.
+
+**GC interaction:** public-store GC retains the current Release **and** its
+rollback candidates — the `AIRINGCAL_GC_ROLLBACK_GENERATIONS` newest
+generations strictly below the current pointer (default **2**), including the
+images they reference. Do **not** run GC with `--apply`/`--apply-images` while a
+rollback is in progress: the retained generations are the rollback targets.
+Image GC fails closed when a retained snapshot cannot be parsed.
 
 ### Local drill (executed 2026-10-17, no production resources)
 

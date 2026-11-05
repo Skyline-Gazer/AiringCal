@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { canonicalJson } from '@airing-cal/storage'
 import type { PublicReleasePointer, PublicStore } from './ports.ts'
@@ -24,6 +24,18 @@ export class FilesystemPublicStore implements PublicStore {
     return full
   }
 
+  async headObject(key: string): Promise<{ size: number; etag: string | null } | null> {
+    const path = this.resolveObjectPath(key)
+    try {
+      const stats = await stat(path)
+      return stats.isFile() ? { size: stats.size, etag: null } : null
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+        return null
+      }
+      throw error
+    }
+  }
   async getCurrentRelease(): Promise<PublicReleasePointer | null> {
     const path = this.resolveObjectPath(PUBLIC_RELEASE_POINTER_KEY)
     try {

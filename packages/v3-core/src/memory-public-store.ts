@@ -13,6 +13,10 @@ export class MemoryPublicStore implements PublicStore {
     const value = this.objects.get(artifactRef)
     return value ? new Uint8Array(value) : null
   }
+  async headObject(key: string): Promise<{ size: number; etag: string | null } | null> {
+    const value = this.objects.get(key)
+    return value ? { size: value.byteLength, etag: null } : null
+  }
 
   async putImmutableObject(key: string, body: Uint8Array, _contentType: string): Promise<void> {
     this.objects.set(key, new Uint8Array(body))

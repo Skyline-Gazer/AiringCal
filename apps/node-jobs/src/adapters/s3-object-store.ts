@@ -2,6 +2,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
@@ -61,7 +62,6 @@ export function createS3ObjectStore(config: S3BucketConfig): ConditionalObjectSt
         throw error
       }
     },
-
     async head(key: string): Promise<ObjectHead | null> {
       try {
         const response = await client.send(new HeadObjectCommand({
@@ -72,11 +72,29 @@ export function createS3ObjectStore(config: S3BucketConfig): ConditionalObjectSt
         return {
           etag: quoteEtag(response.ETag),
           contentType: response.ContentType,
+          size: response.ContentLength,
         }
       } catch (error) {
         if (isNotFound(error)) return null
         throw error
       }
+    },
+
+    async list(prefix: string): Promise<string[]> {
+      const keys: string[] = []
+      let token: string | undefined
+      do {
+        const response = await client.send(new ListObjectsV2Command({
+          Bucket: config.bucket,
+          Prefix: prefix,
+          ContinuationToken: token,
+        }))
+        for (const object of response.Contents ?? []) {
+          if (object.Key) keys.push(object.Key)
+        }
+        token = response.IsTruncated ? response.NextContinuationToken : undefined
+      } while (token)
+      return keys.sort()
     },
 
     async put(key: string, body: Uint8Array, options: ObjectPutOptions = {}): Promise<ObjectHead> {

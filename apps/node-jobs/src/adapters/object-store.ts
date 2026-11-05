@@ -1,6 +1,7 @@
 export interface ObjectHead {
   etag: string
   contentType?: string
+  size?: number
 }
 
 export interface ObjectGet extends ObjectHead {
@@ -28,6 +29,8 @@ export interface ConditionalObjectStore {
   head(key: string): Promise<ObjectHead | null>
   put(key: string, body: Uint8Array, options?: ObjectPutOptions): Promise<ObjectHead>
   delete?(key: string): Promise<void>
+  /** Keys under a prefix, sorted ascending. Only stores with listing support implement it. */
+  list?(prefix: string): Promise<string[]>
 }
 
 export function normalizeEtag(etag: string): string {

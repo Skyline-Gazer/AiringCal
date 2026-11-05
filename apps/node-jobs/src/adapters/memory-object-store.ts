@@ -29,6 +29,7 @@ export class MemoryObjectStore implements ConditionalObjectStore {
       body: new Uint8Array(entry.body),
       etag: entry.etag,
       contentType: entry.contentType,
+      size: entry.body.byteLength,
     }
   }
 
@@ -56,6 +57,10 @@ export class MemoryObjectStore implements ConditionalObjectStore {
     }
     this.objects.set(key, entry)
     return { etag: entry.etag, contentType: entry.contentType }
+  }
+
+  async list(prefix: string): Promise<string[]> {
+    return [...this.objects.keys()].filter((key) => key.startsWith(prefix)).sort()
   }
 
   async delete(key: string): Promise<void> {

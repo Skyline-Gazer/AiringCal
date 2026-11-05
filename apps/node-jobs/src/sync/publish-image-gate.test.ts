@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -24,6 +25,38 @@ function snapshotWithHashes(hashes: string[]): PublicSnapshotV1 {
 
 class CountingPublicStore implements PublicStore {
   puts: string[] = []
+  gets: string[] = []
+  constructor(private readonly inner: PublicStore) {}
+
+  async getCurrentRelease() {
+    return this.inner.getCurrentRelease()
+  }
+
+  async getSnapshotBytes(ref: string) {
+    this.gets.push(ref)
+    return this.inner.getSnapshotBytes(ref)
+  }
+  async headObject(key: string) {
+    return this.inner.headObject?.(key) ?? null
+  }
+
+  async putImmutableObject(key: string, body: Uint8Array, contentType: string) {
+    this.puts.push(key)
+    return this.inner.putImmutableObject(key, body, contentType)
+  }
+
+  async commitRelease(expected: Parameters<PublicStore['commitRelease']>[0], next: Parameters<PublicStore['commitRelease']>[1]) {
+    return this.inner.commitRelease(expected, next)
+  }
+}
+
+interface HeadShape {
+  size: number
+  etag: string | null
+}
+
+/** Store whose headObject reports S3-style md5 etags so the etag/size fast path is exercised. */
+class Md5HeadStore implements PublicStore {
   constructor(private readonly inner: MemoryPublicStore) {}
 
   async getCurrentRelease() {
@@ -35,12 +68,17 @@ class CountingPublicStore implements PublicStore {
   }
 
   async putImmutableObject(key: string, body: Uint8Array, contentType: string) {
-    this.puts.push(key)
     return this.inner.putImmutableObject(key, body, contentType)
   }
 
   async commitRelease(expected: Parameters<PublicStore['commitRelease']>[0], next: Parameters<PublicStore['commitRelease']>[1]) {
     return this.inner.commitRelease(expected, next)
+  }
+
+  async headObject(key: string): Promise<HeadShape | null> {
+    const bytes = await this.inner.getSnapshotBytes(key)
+    if (!bytes) return null
+    return { size: bytes.byteLength, etag: `"${createHash('md5').update(bytes).digest('hex')}"` }
   }
 }
 
@@ -80,13 +118,77 @@ test('ensurePublishImagesComplete reuses existing public objects without re-uplo
       publicStore: counting,
       imageRoot: dir,
     })
-    assert.equal(result.reused, 2)
+    assert.equal(result.reused, 1)
+    assert.equal(result.mismatched, 1)
     assert.equal(result.uploaded, 0)
     assert.deepEqual(counting.puts, [])
     assert.equal(new TextDecoder().decode((await store.getSnapshotBytes(imageOriginalKey(HASH_A)))!), 'public-orig')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('ensurePublishImagesComplete skips unchanged images by size/md5 etag without downloading or uploading (C5)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-gate-c5-'))
+  try {
+    const bytes = 'identical-image-bytes'
+    const store = new Md5HeadStore(new MemoryPublicStore())
+    await store.putImmutableObject(imageOriginalKey(HASH_A), new TextEncoder().encode(bytes), 'image/jpeg')
+    await store.putImmutableObject(imageThumbV2Key(HASH_A), new TextEncoder().encode('thumb-bytes'), 'image/webp')
+    mkdirSync(join(dir, 'images', HASH_A), { recursive: true })
+    writeFileSync(join(dir, 'images', HASH_A, 'original'), bytes)
+    const counting = new CountingPublicStore(store)
+    const result = await ensurePublishImagesComplete({
+      snapshot: snapshotWithHashes([HASH_A]),
+      publicStore: counting,
+      imageRoot: dir,
+    })
+    assert.equal(result.hashes, 1)
+    assert.equal(result.skipped_unchanged, 1)
+    assert.equal(result.reused, 1)
+    assert.equal(result.uploaded, 0)
+    assert.equal(result.mismatched, 0)
+    assert.deepEqual(counting.puts, [])
+    assert.deepEqual(counting.gets, [], 'unchanged objects must be skipped via head, not downloaded')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('ensurePublishImagesComplete skips unchanged by size alone when the store has no comparable etag', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-gate-size-'))
+  try {
+    const bytes = 'same-size-content'
+    const store = new MemoryPublicStore()
+    await store.putImmutableObject(imageOriginalKey(HASH_A), new TextEncoder().encode(bytes), 'image/jpeg')
+    await store.putImmutableObject(imageThumbV2Key(HASH_A), new TextEncoder().encode(bytes), 'image/webp')
+    mkdirSync(join(dir, 'images', HASH_A), { recursive: true })
+    writeFileSync(join(dir, 'images', HASH_A, 'original'), bytes)
+    const counting = new CountingPublicStore(store)
+    const result = await ensurePublishImagesComplete({
+      snapshot: snapshotWithHashes([HASH_A]),
+      publicStore: counting,
+      imageRoot: dir,
+    })
+    assert.equal(result.skipped_unchanged, 1)
+    assert.equal(result.reused, 1)
+    assert.deepEqual(counting.puts, [])
+    assert.deepEqual(counting.gets, [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+test('ensurePublishImagesComplete still fails closed when a referenced image is nowhere available', async () => {
+  const store = new MemoryPublicStore()
+  await assert.rejects(
+    () =>
+      ensurePublishImagesComplete({
+        snapshot: snapshotWithHashes([HASH_A, HASH_B]),
+        publicStore: store,
+        imageRoot: null,
+      }),
+    /publish gate.*images\/[0-9a-f]{64}\/(original|thumb\.v2\.webp)/i,
+  )
 })
 
 test('ensurePublishImagesComplete fails closed when a referenced image is nowhere available', async () => {
