@@ -262,11 +262,28 @@ export async function handlePortableReadRequest(
     }
     // Image routes never pay the verified-snapshot load (CPU / origin).
     if (path.startsWith('/image/')) {
-      return handleImage(path, env.publicStore, env.publicBaseUrl)
+      return await handleImage(path, env.publicStore, env.publicBaseUrl)
     }
-    const loaded = env.snapshotCache
-      ? await env.snapshotCache.load(env.publicStore)
-      : await loadVerifiedPublicSnapshot(env.publicStore)
+    let loaded
+    try {
+      loaded = env.snapshotCache
+        ? await env.snapshotCache.load(env.publicStore)
+        : await loadVerifiedPublicSnapshot(env.publicStore)
+    } catch (error) {
+      if (error instanceof Error) {
+        return json({
+          ok: false,
+          error: {
+            code: 'RELEASE_INVALID',
+            message: error.message || 'Verified public release is invalid',
+          },
+        }, {
+          status: 503,
+          headers: { 'Cache-Control': V2_CACHE_CONTROL.error },
+        })
+      }
+      throw error
+    }
     if (!loaded && path !== '/health') {
       return json({ ok: false, error: { code: 'NO_RELEASE', message: 'No verified public release' } }, {
         status: 503,
@@ -291,18 +308,6 @@ export async function handlePortableReadRequest(
     if (error instanceof InvalidQueryError) {
       return json({ ok: false, error: { code: 'INVALID_QUERY', message: 'Invalid query parameter' } }, {
         status: 400,
-        headers: { 'Cache-Control': V2_CACHE_CONTROL.error },
-      })
-    }
-    if (error instanceof Error) {
-      return json({
-        ok: false,
-        error: {
-          code: 'RELEASE_INVALID',
-          message: error.message || 'Verified public release is invalid',
-        },
-      }, {
-        status: 503,
         headers: { 'Cache-Control': V2_CACHE_CONTROL.error },
       })
     }

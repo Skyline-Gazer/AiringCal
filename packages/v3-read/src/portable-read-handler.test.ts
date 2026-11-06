@@ -336,3 +336,27 @@ test('loader Error maps to 503 RELEASE_INVALID with no-store', async () => {
   assert.equal(body.ok, false)
   assert.equal(body.error.code, 'RELEASE_INVALID')
 })
+
+test('image existence probe Error is not RELEASE_INVALID', async () => {
+  const hash = 'a'.repeat(64)
+  const publicStore = {
+    async getCurrentRelease() {
+      return null
+    },
+    async getSnapshotBytes() {
+      throw new Error('R2 head failed')
+    },
+    async putImmutableObject() {},
+    async headObject() {
+      throw new Error('R2 head failed')
+    },
+  } as unknown as PublicStore
+
+  await assert.rejects(
+    () => handlePortableReadRequest(
+      new Request(`https://local/image/${hash}`),
+      { publicStore, publicBaseUrl: 'https://cdn.example' },
+    ),
+    (error: unknown) => error instanceof Error && error.message === 'R2 head failed',
+  )
+})
