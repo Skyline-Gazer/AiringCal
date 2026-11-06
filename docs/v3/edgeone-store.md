@@ -87,11 +87,15 @@ needs `projectId` + API token — that is what a staging/verification run would 
 - Staging run on an approved EdgeOne account: configure
   `AIRINGCAL_PUBLIC_BASE_URL` (verified https CDN over the staging public
   bucket), deploy the template, serve reads → then promote the #69 matrix rows.
-- **Deployment template** (not staging-verified): `apps/edgeone-read-worker/`
-  provides a Pages Functions catch-all (`functions/[[path]].js`) + README that
-  build `createEdgeOneReadHandler` against `AIRINGCAL_PUBLIC_BASE_URL`. It is
-  template-only — no EdgeOne account, no paid resource, and its `[[path]].js`
-  is **not** bundled or typechecked by this repo.
+- **Deployment template** (staging-verified 2026-11-06 on project
+  `airingcal-edgeone-read`): `apps/edgeone-read-worker/` provides a catch-all
+  (`edge-functions/[[default]].js`) + statically emitted widget page, built by
+  `pnpm -F @airing-cal/node-jobs build:edgeone-read` into
+  `apps/edgeone-read-worker/dist`. Use the documented `[[default]].js` name —
+  `functions/[[path]].js` is not registered as a route and 404s every path. The
+  edge runtime has **no `Response.json`/`Buffer`/`process`** and a **200 ms CPU
+  budget per invocation** (the read handler re-fetches pointer/snapshot/manifest
+  per request unless a layer caches them).
 - Read gateway wiring for EdgeOne Edge Functions (Request/Response portability
   limits) — the CF worker entry is not reusable as-is.
 - Image variants/CDN cache behavior on EdgeOne.
