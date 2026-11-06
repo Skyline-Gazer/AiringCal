@@ -1,4 +1,5 @@
-import { readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, writeFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import { parsePublicSnapshotManifestV1, parsePublicSnapshotV1 } from '@airing-cal/domain'
 import type { PublicSnapshotV1 } from '@airing-cal/storage'
 import { FilesystemPublicStore, type PublicReleasePointer, type PublicStore } from '@airing-cal/v3-core'
@@ -23,6 +24,21 @@ export interface RollbackTarget {
   /** Publish image gate over the target snapshot (existence proof for every referenced image). */
   image_gate: PublishImageGateResult
 }
+
+/**
+ * A receipt path is an audit requirement: validate it before the pointer commit so a
+ * typo cannot apply a rollback and then lose the receipt. Returns an absolute path.
+ */
+export function assertReceiptWritable(receiptPath: string | null): string | null {
+  if (!receiptPath) return null
+  const resolved = resolve(receiptPath)
+  const directory = dirname(resolved)
+  if (!existsSync(directory)) {
+    throw new Error(`--receipt directory does not exist: ${directory}`)
+  }
+  return resolved
+}
+
 
 export interface RollbackReceipt {
   schema_version: 1
@@ -302,6 +318,17 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
+  let resolvedReceiptPath: string | null
+  try {
+    resolvedReceiptPath = assertReceiptWritable(receiptPath)
+  } catch (error) {
+    console.error(JSON.stringify({
+      status: 'failed',
+      stage: 'receipt_preflight',
+      message: error instanceof Error ? error.message : String(error),
+    }))
+    process.exit(1)
+  }
   const publicS3 = readPublicS3Config(process.env)
   let publicStore: PublicStore
   let close: (() => void) | null = null
@@ -330,7 +357,7 @@ async function main(): Promise<void> {
       { apply, writerFrozenAttested },
     )
     console.log(JSON.stringify(receipt, null, 2))
-    if (receiptPath) writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`)
+    if (resolvedReceiptPath) writeFileSync(resolvedReceiptPath, `${JSON.stringify(receipt, null, 2)}\n`)
     if (receipt.cas_result === 'conflict') process.exitCode = 1
   } catch (error) {
     console.error(JSON.stringify({
