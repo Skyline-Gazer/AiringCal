@@ -10,6 +10,8 @@ import {
 } from './public-pointer.ts'
 
 export class FilesystemPublicStore implements PublicStore {
+  private readonly contentTypes = new Map<string, string>()
+
   constructor(readonly rootDir: string) {}
 
   resolveObjectPath(key: string): string {
@@ -24,11 +26,16 @@ export class FilesystemPublicStore implements PublicStore {
     return full
   }
 
-  async headObject(key: string): Promise<{ size: number; etag: string | null } | null> {
+  async headObject(key: string): Promise<{ size: number; etag: string | null; contentType?: string | null } | null> {
     const path = this.resolveObjectPath(key)
     try {
       const stats = await stat(path)
-      return stats.isFile() ? { size: stats.size, etag: null } : null
+      if (!stats.isFile()) return null
+      return {
+        size: stats.size,
+        etag: null,
+        contentType: this.contentTypes.get(key) ?? null,
+      }
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
         return null
@@ -61,17 +68,19 @@ export class FilesystemPublicStore implements PublicStore {
     }
   }
 
-  async putImmutableObject(key: string, body: Uint8Array, _contentType: string): Promise<void> {
+  async putImmutableObject(key: string, body: Uint8Array, contentType: string): Promise<void> {
     const path = this.resolveObjectPath(key)
     await mkdir(dirname(path), { recursive: true })
     try {
       await writeFile(path, body, { flag: 'wx' })
+      this.contentTypes.set(key, contentType)
     } catch (error) {
       if (error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST') {
         const existing = await readFile(path)
         if (!bytesEqual(existing, body)) {
           throw new Error(`Immutable object already exists with different bytes: ${key}`)
         }
+        this.contentTypes.set(key, contentType)
         return
       }
       throw error

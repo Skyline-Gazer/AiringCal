@@ -45,3 +45,18 @@ test('FilesystemPublicStore enforces immutable objects and pointer CAS', async (
   const readback = await store.getSnapshotBytes(pointer.artifact_ref)
   assert.equal(readback?.byteLength, body.byteLength)
 })
+
+test('FilesystemPublicStore headObject returns put contentType', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'airingcal-public-head-'))
+  const store = new FilesystemPublicStore(root)
+  const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10])
+  const key = 'images/' + 'a'.repeat(64) + '/original'
+
+  await store.putImmutableObject(key, jpeg, 'image/jpeg')
+  const head = await store.headObject(key)
+
+  assert.equal(head?.size, jpeg.byteLength)
+  assert.equal(head?.etag, null)
+  assert.equal(head?.contentType, 'image/jpeg')
+  assert.equal(await store.headObject('images/missing/original'), null)
+})
