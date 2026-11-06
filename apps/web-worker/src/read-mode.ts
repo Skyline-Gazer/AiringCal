@@ -27,6 +27,8 @@ export interface WebReadModeEnv {
   AIRINGCAL_READ_MODE?: string
   /** Verified public CDN/S3 base URL (C6): absolute https, placeholder rejected. */
   AIRINGCAL_PUBLIC_BASE_URL?: string
+  /** Optional Image CDN base; unset keeps `/image/*` on `AIRINGCAL_PUBLIC_BASE_URL`. */
+  AIRINGCAL_IMAGE_BASE_URL?: string
   /** R2 binding holding the v3 public Release (`airing-cal-public` layout). */
   AIRINGCAL_PUBLIC_R2?: CloudflareR2BucketBinding
   NSFW_SHOW?: 'true' | 'false'
@@ -35,7 +37,7 @@ export interface WebReadModeEnv {
 
 export type WebReadModeConfig =
   | { mode: 'legacy' }
-  | { mode: 'v3-release'; publicBaseUrl?: string }
+  | { mode: 'v3-release'; publicBaseUrl?: string; imageBaseUrl?: string }
 
 export class InvalidReadModeError extends Error {
   readonly code = 'INVALID_READ_MODE'
@@ -72,20 +74,29 @@ let cachedV3Handler: {
   handler: CloudflareReadHandler
 } | null = null
 
-function v3HandlerFingerprint(env: WebReadModeEnv, publicBaseUrl?: string): string {
+function v3HandlerFingerprint(
+  env: WebReadModeEnv,
+  publicBaseUrl?: string,
+  imageBaseUrl?: string,
+): string {
   return [
     publicBaseUrl ?? '',
+    imageBaseUrl ?? '',
     String(resolveNsfwShow(env.NSFW_SHOW)),
     env.PACKAGE_VERSION ?? '',
   ].join('|')
 }
 
-function readHandlerFor(env: WebReadModeEnv, publicBaseUrl?: string): CloudflareReadHandler {
+function readHandlerFor(
+  env: WebReadModeEnv,
+  publicBaseUrl?: string,
+  imageBaseUrl?: string,
+): CloudflareReadHandler {
   const binding = env.AIRINGCAL_PUBLIC_R2
   if (!binding) {
     throw new Error('AIRINGCAL_PUBLIC_R2 binding is required')
   }
-  const fingerprint = v3HandlerFingerprint(env, publicBaseUrl)
+  const fingerprint = v3HandlerFingerprint(env, publicBaseUrl, imageBaseUrl)
   if (
     cachedV3Handler
     && cachedV3Handler.binding === binding
@@ -96,6 +107,7 @@ function readHandlerFor(env: WebReadModeEnv, publicBaseUrl?: string): Cloudflare
   const handler = createCloudflareReadHandler({
     publicR2: binding,
     publicBaseUrl,
+    imageBaseUrl,
     nsfwShow: resolveNsfwShow(env.NSFW_SHOW),
     packageVersion: env.PACKAGE_VERSION,
   })
@@ -116,6 +128,7 @@ export function resolveReadModeConfig(env: WebReadModeEnv): WebReadModeConfig {
   return {
     mode,
     publicBaseUrl: validatePublicBaseUrl(env.AIRINGCAL_PUBLIC_BASE_URL) ?? undefined,
+    imageBaseUrl: validatePublicBaseUrl(env.AIRINGCAL_IMAGE_BASE_URL) ?? undefined,
   }
 }
 
@@ -143,5 +156,6 @@ export async function handleV3ReleaseReadRequest(
   return readHandlerFor(
     env,
     config.mode === 'v3-release' ? config.publicBaseUrl : undefined,
+    config.mode === 'v3-release' ? config.imageBaseUrl : undefined,
   )(request)
 }

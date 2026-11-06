@@ -181,6 +181,29 @@ test('image route redirects to the public base URL only for objects that exist (
   assert.equal(await served.text(), 'thumb-v2')
 })
 
+test('image redirect prefers imageBaseUrl over publicBaseUrl when set', async () => {
+  const publicStore = new MemoryPublicStore()
+  const hash = 'd'.repeat(64)
+  await publicStore.putImmutableObject(imageOriginalKey(hash), new TextEncoder().encode('original'), 'image/jpeg')
+  const publicBase = 'https://cdn.example.com'
+  const imageBase = 'https://img.cdn.example.com'
+
+  const preferred = await handlePortableReadRequest(
+    new Request(`https://local/image/${hash}`),
+    { publicStore, publicBaseUrl: publicBase, imageBaseUrl: imageBase },
+  )
+  assert.equal(preferred.status, 302)
+  assert.equal(preferred.headers.get('Location'), `${imageBase}/${imageOriginalKey(hash)}`)
+
+  const fallback = await handlePortableReadRequest(
+    new Request(`https://local/image/${hash}`),
+    { publicStore, publicBaseUrl: publicBase },
+  )
+  assert.equal(fallback.status, 302)
+  assert.equal(fallback.headers.get('Location'), `${publicBase}/${imageOriginalKey(hash)}`)
+})
+
+
 test('image proxy honors Content-Type from store headObject', async () => {
   const inner = new MemoryPublicStore()
   const db = openBuilderDatabase(':memory:')

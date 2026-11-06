@@ -11,6 +11,11 @@ import { createVerifiedSnapshotCache } from './verified-snapshot-cache.ts'
 export interface EdgeOneReadConfig {
   /** Raw `AIRINGCAL_PUBLIC_BASE_URL` (C6): absolute https, placeholder rejected. */
   publicBaseUrl: string
+  /**
+   * Optional raw `AIRINGCAL_IMAGE_BASE_URL`. When set, `/image/*` redirects use this
+   * host; when unset, redirects reuse `publicBaseUrl` (Image CDN off by default).
+   */
+  imageBaseUrl?: string
   nsfwShow?: boolean
   packageVersion?: string
   /** Pointer object key (default `public/current-release.json`). */
@@ -36,6 +41,7 @@ export function createEdgeOneReadHandler(config: EdgeOneReadConfig): EdgeOneRead
   if (!publicBaseUrl) {
     throw new Error('AIRINGCAL_PUBLIC_BASE_URL is required for the EdgeOne read gateway')
   }
+  const imageBaseUrl = validatePublicBaseUrl(config.imageBaseUrl) ?? undefined
   const publicStore = new HttpPublicStore(publicBaseUrl, config.pointerKey, {
     fetch: config.fetch,
   })
@@ -45,6 +51,7 @@ export function createEdgeOneReadHandler(config: EdgeOneReadConfig): EdgeOneRead
     nsfwShow: config.nsfwShow,
     packageVersion: config.packageVersion,
     publicBaseUrl,
+    imageBaseUrl,
     processEnv: { AIRINGCAL_PLATFORM: 'edgeone' },
     snapshotCache,
   })

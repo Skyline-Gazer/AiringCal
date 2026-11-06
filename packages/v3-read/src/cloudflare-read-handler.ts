@@ -20,6 +20,11 @@ export interface CloudflareReadConfig {
    * per request.
    */
   publicBaseUrl?: string
+  /**
+   * Optional raw `AIRINGCAL_IMAGE_BASE_URL`. When set, `/image/*` redirects use this
+   * host; when unset, redirects reuse `publicBaseUrl` (Image CDN off by default).
+   */
+  imageBaseUrl?: string
 }
 
 export type CloudflareReadHandler = (request: Request) => Promise<Response>
@@ -29,6 +34,7 @@ const validatePublicBaseUrl = createPublicBaseUrlValidator()
 /** Builds the Workers read gateway handler (#72, C6): v2-compatible `/api/*` over an R2 PublicStore. */
 export function createCloudflareReadHandler(config: CloudflareReadConfig): CloudflareReadHandler {
   const publicBaseUrl = validatePublicBaseUrl(config.publicBaseUrl) ?? undefined
+  const imageBaseUrl = validatePublicBaseUrl(config.imageBaseUrl) ?? undefined
   const publicStore = new CloudflareR2PublicStore(
     config.publicR2,
     config.pointerKey ?? PUBLIC_RELEASE_POINTER_KEY,
@@ -39,6 +45,7 @@ export function createCloudflareReadHandler(config: CloudflareReadConfig): Cloud
     nsfwShow: config.nsfwShow,
     packageVersion: config.packageVersion,
     publicBaseUrl,
+    imageBaseUrl,
     processEnv: { AIRINGCAL_PLATFORM: 'cloudflare' },
     snapshotCache,
   })

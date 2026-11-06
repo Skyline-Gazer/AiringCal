@@ -16,6 +16,8 @@ export interface ReadWorkerEnv {
    * configuration is built (first data request per isolate, memoized).
    */
   AIRINGCAL_PUBLIC_BASE_URL?: string
+  /** Optional Image CDN base; unset keeps `/image/*` on `AIRINGCAL_PUBLIC_BASE_URL`. */
+  AIRINGCAL_IMAGE_BASE_URL?: string
   /** Git revision rendered on `/` (short sha) and reported by build metadata. */
   BANGUMI_GIT_COMMIT_SHA?: string
   /** Reported by `/api/version`; injected as a Worker var at deploy time. */
@@ -32,6 +34,7 @@ let cachedReadHandler: {
 function readHandlerFingerprint(env: ReadWorkerEnv): string {
   return [
     env.AIRINGCAL_PUBLIC_BASE_URL ?? '',
+    env.AIRINGCAL_IMAGE_BASE_URL ?? '',
     env.PACKAGE_VERSION ?? '',
   ].join('|')
 }
@@ -49,6 +52,7 @@ function readHandlerFor(env: ReadWorkerEnv): CloudflareReadHandler {
   const handler = createCloudflareReadHandler({
     publicR2: binding,
     publicBaseUrl: env.AIRINGCAL_PUBLIC_BASE_URL,
+    imageBaseUrl: env.AIRINGCAL_IMAGE_BASE_URL,
     packageVersion: env.PACKAGE_VERSION,
   })
   cachedReadHandler = { fingerprint, binding, handler }

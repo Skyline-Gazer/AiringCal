@@ -454,14 +454,19 @@ test('read mode parsing accepts only documented values', () => {
   assert.deepEqual(resolveReadModeConfig({}), { mode: 'legacy' })
   assert.deepEqual(
     resolveReadModeConfig({ AIRINGCAL_READ_MODE: 'v3-release' }),
-    { mode: 'v3-release', publicBaseUrl: undefined },
+    { mode: 'v3-release', publicBaseUrl: undefined, imageBaseUrl: undefined },
   )
   assert.deepEqual(
     resolveReadModeConfig({
       AIRINGCAL_READ_MODE: 'v3-release',
       AIRINGCAL_PUBLIC_BASE_URL: 'https://cdn.example.com/airingcal/',
+      AIRINGCAL_IMAGE_BASE_URL: 'https://img.cdn.example.com/',
     }),
-    { mode: 'v3-release', publicBaseUrl: 'https://cdn.example.com/airingcal' },
+    {
+      mode: 'v3-release',
+      publicBaseUrl: 'https://cdn.example.com/airingcal',
+      imageBaseUrl: 'https://img.cdn.example.com',
+    },
   )
   assert.equal(isV3ReleaseReadPath('/api/collections'), true)
   assert.equal(isV3ReleaseReadPath(`/image/${'a'.repeat(64)}`), true)

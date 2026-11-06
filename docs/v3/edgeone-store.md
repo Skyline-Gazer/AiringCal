@@ -24,12 +24,14 @@ it as `onRequest({ request, env })`.
   query/fragment, placeholders rejected); an invalid value fails closed as
   **503** `INVALID_READ_CONFIG`.
 - When the base URL is set, `/image/:hash` 302s to `{BASE}/images/...` instead
-  of proxying bytes.
+  of proxying bytes. Optional `AIRINGCAL_IMAGE_BASE_URL` overrides that redirect
+  host (`imageBaseUrl ?? publicBaseUrl`); leave it unset to keep Image CDN off.
 
 Status: `HttpPublicStore` and the handler are unit-tested against a fake HTTPS
 CDN backed by a real published R2 release, including byte parity with the
 Cloudflare gateway. **No EdgeOne staging run yet**, so #69's capability rows stay
 candidate.
+
 
 ## `EdgeOnePublicStore` (Blob adapter, not wired for reads)
 
@@ -101,3 +103,27 @@ needs `projectId` + API token — that is what a staging/verification run would 
 - Image variants/CDN cache behavior on EdgeOne.
 - Pointer freshness: `HttpPublicStore` sends `cache-control: no-cache`, but the
   public bucket/CDN must not serve `public/current-release.json` with a long TTL.
+
+## Single-bucket Development + overseas project
+
+Development cutover (`scripts/deploy-env.mjs`) targets **one** R2 bucket
+(`airingcal-development`) with key prefixes `checkpoints/**` (private),
+`public/**`, `snapshots/**`, and `images/**` (public). Dual staging buckets remain
+source-of-copy only and are not deleted in this change.
+
+Readers deploy to Cloudflare plus a new EdgeOne Makers project
+`airingcal-edgeone-read-overseas` (`AIRINGCAL_EDGEONE_REGION=overseas`). The
+existing `airingcal-edgeone-read` project stays as rollback until domain cutover
+acceptance.
+
+**Image CDN:** `AIRINGCAL_IMAGE_BASE_URL` is optional and **off by default**.
+Unset → `/image/*` redirects reuse `AIRINGCAL_PUBLIC_BASE_URL`. When set, the
+deploy CLI requires https, a host different from the reader/public base (loop
+rejection), and origin Host/SNI equal to the public R2 host.
+
+**Isolation abort:** before any real checkpoint copy, deploy writes a
+non-sensitive `checkpoints/_isolation-probe.txt`, then anonymous GET/HEAD of that
+key on every public entrypoint must return 403/404 (`r2.dev` disabled). Any
+failure **aborts cutover** — no silent dual-bucket fallback; staging readers and
+writer freeze remain in place until isolation is proven.
+

@@ -22,6 +22,7 @@ let cached = { fingerprint: '', handler: null }
 function handlerFingerprint(env) {
   return [
     env.AIRINGCAL_PUBLIC_BASE_URL ?? '',
+    env.AIRINGCAL_IMAGE_BASE_URL ?? '',
     String(resolveNsfwShow(env.NSFW_SHOW)),
     env.PACKAGE_VERSION ?? '',
   ].join('|')
@@ -32,6 +33,7 @@ function readHandlerFor(env) {
   if (cached.handler && cached.fingerprint === fingerprint) return cached.handler
   const handler = createEdgeOneReadHandler({
     publicBaseUrl: env.AIRINGCAL_PUBLIC_BASE_URL,
+    imageBaseUrl: env.AIRINGCAL_IMAGE_BASE_URL,
     nsfwShow: resolveNsfwShow(env.NSFW_SHOW),
     packageVersion: env.PACKAGE_VERSION,
   })

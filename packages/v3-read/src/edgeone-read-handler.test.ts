@@ -254,3 +254,25 @@ test('EdgeOne read configuration rejects missing, non-https and placeholder base
     /must use https/,
   )
 })
+
+test('EdgeOne read handler redirects images via imageBaseUrl when provided', async () => {
+  const { store } = await publishedBucket()
+  const { impl } = cdnFetch(store)
+  const imageBase = 'https://img.cdn.example.com'
+  const handle = createEdgeOneReadHandler({
+    publicBaseUrl: BASE_URL,
+    imageBaseUrl: `${imageBase}/`,
+    fetch: impl,
+  })
+  const preferred = await handle(new Request(`https://edgeone.example/image/${IMAGE_HASH}`))
+  assert.equal(preferred.status, 302)
+  assert.equal(preferred.headers.get('Location'), `${imageBase}/images/${IMAGE_HASH}/original`)
+
+  const fallback = createEdgeOneReadHandler({
+    publicBaseUrl: BASE_URL,
+    fetch: impl,
+  })
+  const without = await fallback(new Request(`https://edgeone.example/image/${IMAGE_HASH}`))
+  assert.equal(without.headers.get('Location'), `${BASE_URL}/images/${IMAGE_HASH}/original`)
+})
+

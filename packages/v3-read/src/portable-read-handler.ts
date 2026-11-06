@@ -28,6 +28,12 @@ export interface PortableReadEnv {
    * here; per-request parsing is not part of the contract.
    */
   publicBaseUrl?: string
+  /**
+   * Optional Image CDN base (`AIRINGCAL_IMAGE_BASE_URL`). When set, `/image/*`
+   * redirects use this host; when unset, redirects fall back to `publicBaseUrl`
+   * (Image CDN off by default).
+   */
+  imageBaseUrl?: string
   /** Platform label for `/version`; e.g. `{ AIRINGCAL_PLATFORM: 'cloudflare' }` in the Workers gateway. */
   processEnv?: Record<string, string | undefined>
   /**
@@ -164,6 +170,7 @@ async function handleImage(
   pathname: string,
   publicStore: PublicStore,
   publicBaseUrl?: string,
+  imageBaseUrl?: string,
 ): Promise<Response> {
   const match = pathname.match(/^\/image\/([0-9a-f]{64})(?:\/(thumb))?\/?$/i)
   if (!match?.[1]) return new Response('Invalid hash', { status: 400 })
@@ -176,7 +183,7 @@ async function handleImage(
     ]
     : [{ key: imageOriginalKey(hash), contentType: 'application/octet-stream' }]
   for (const candidate of candidates) {
-    const redirectTo = resolvePublicObjectUrl(publicBaseUrl, candidate.key)
+    const redirectTo = resolvePublicObjectUrl(imageBaseUrl ?? publicBaseUrl, candidate.key)
     if (redirectTo) {
       // Existence probe only: HEAD when the store supports it (C5 port), else a body read.
       const exists = publicStore.headObject
@@ -262,7 +269,7 @@ export async function handlePortableReadRequest(
     }
     // Image routes never pay the verified-snapshot load (CPU / origin).
     if (path.startsWith('/image/')) {
-      return await handleImage(path, env.publicStore, env.publicBaseUrl)
+      return await handleImage(path, env.publicStore, env.publicBaseUrl, env.imageBaseUrl)
     }
     let loaded
     try {

@@ -79,3 +79,38 @@ If authentication succeeds but the R2 preflight reports `Authentication error [c
 - Netlify / Vercel read adapters (TODO)
 - Enabling the schedule before the first manual green run (owner choice; needs Secrets)
 - Physical deletion of unused D1 adapter modules still used by `portable-legacy-*` migration CLIs
+
+## Development single-bucket cutover (`AIRINGCAL_ENV=development`)
+
+PR-D replaces the dual staging-bucket layout with **one** Development bucket
+`airingcal-development` via `scripts/deploy-env.mjs` (driven by `.env` +
+`AIRINGCAL_ENV` / `AIRINGCAL_DEPLOY_TARGET`). Key prefixes:
+
+| Prefix | Visibility |
+| --- | --- |
+| `checkpoints/**` | Private — must be unreachable on the public custom domain |
+| `public/**`, `snapshots/**`, `images/**` | Public via custom domain CDN |
+
+Staging buckets (`airingcal-staging-checkpoint` / `airingcal-staging-public`)
+remain as copy sources and are **not** deleted in this change. Production stays
+frozen (`AIRINGCAL_WRITER_ENABLED` unset/false).
+
+EdgeOne readers deploy to a new overseas project
+`airingcal-edgeone-read-overseas` (`AIRINGCAL_EDGEONE_REGION=overseas`); keep
+`airingcal-edgeone-read` until domain cutover acceptance.
+
+**Image CDN off by default:** leave `AIRINGCAL_IMAGE_BASE_URL` unset so reader
+`/image/*` redirects reuse `AIRINGCAL_PUBLIC_BASE_URL`
+(`imageBaseUrl ?? publicBaseUrl`). When set, deploy validates https, rejects
+same-host loops, and requires origin Host/SNI = public R2 host.
+
+**Isolation abort (hard gate):** disable `r2.dev`, attach the custom domain, write
+only `checkpoints/_isolation-probe.txt`, then prove anonymous GET/HEAD return
+403/404 on every public entrypoint **before** copying real checkpoints. Failure
+aborts cutover with a non-zero exit — no silent dual-bucket fallback; staging
+readers stay active and the writer freeze remains until isolation passes.
+
+Workflow `inputs.target` gains `development` (Environment `development` +
+`AIRINGCAL_DEVELOPMENT_*`). Until isolation+copy succeed, the development writer
+job stays disabled so only one effective writer can run.
+
