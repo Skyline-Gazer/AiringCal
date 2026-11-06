@@ -94,23 +94,97 @@
   ]
 
   // ---------------------------------------------------------------
-  // NSFW 年龄确认（保持原逻辑不变）
+  // NSFW gate: server policy + ageConfirmed + configStatus
   // ---------------------------------------------------------------
-  async function checkNSFW() {
+  var nsfwGate = null
+  var nsfwGateListeners = []
+
+  function createNsfwGate() {
+    var confirmed = false
     try {
-      const res = await fetch(API + '/api/config?key=nsfw')
-      const data = await res.json()
-      if (data.nsfw && !sessionStorage.getItem('bgm-age-confirmed')) {
-        document.getElementById('bgm-age-modal').style.display = 'block'
-      } else if (!data.nsfw) {
-        sessionStorage.removeItem('bgm-age-confirmed')
+      if (typeof sessionStorage !== 'undefined' && sessionStorage) {
+        confirmed = !!sessionStorage.getItem('bgm-age-confirmed')
       }
-    } catch (e) {}
+    } catch (_) {}
+    return {
+      configStatus: 'pending',
+      nsfwAllowed: false,
+      ageConfirmed: confirmed,
+    }
+  }
+
+  function entriesVisibleUnderGate(gate, entries) {
+    var list = entries || []
+    var out = []
+    for (var i = 0; i < list.length; i++) {
+      var entry = list[i]
+      if (entry && entry.nsfw) {
+        if (gate.configStatus !== 'ok' || !gate.nsfwAllowed || !gate.ageConfirmed) continue
+      }
+      out.push(entry)
+    }
+    return out
+  }
+
+  function applyNsfwConfigResult(gate, result, storage) {
+    var store = storage || sessionStorage
+    if (!result || !result.ok) {
+      gate.configStatus = 'error'
+      gate.nsfwAllowed = false
+      return
+    }
+    gate.configStatus = 'ok'
+    gate.nsfwAllowed = result.nsfw === true
+    if (!gate.nsfwAllowed) {
+      store.removeItem('bgm-age-confirmed')
+      gate.ageConfirmed = false
+      return
+    }
+    gate.ageConfirmed = !!store.getItem('bgm-age-confirmed')
+  }
+
+  function setAgeModalVisible(visible) {
+    var modal = document.getElementById('bgm-age-modal')
+    if (!modal) return
+    modal.style.display = visible ? 'block' : 'none'
+  }
+
+  function syncAgeModalFromGate(gate) {
+    var show = gate.configStatus === 'ok' && gate.nsfwAllowed && !gate.ageConfirmed
+    setAgeModalVisible(show)
+  }
+
+  function notifyNsfwGateChange() {
+    for (var i = 0; i < nsfwGateListeners.length; i++) {
+      try { nsfwGateListeners[i](nsfwGate) } catch (_) {}
+    }
+  }
+
+  function onNsfwGateChange(listener) {
+    nsfwGateListeners.push(listener)
+  }
+
+  nsfwGate = createNsfwGate()
+
+  async function loadNsfwConfig() {
+    try {
+      var res = await fetch(API + '/api/config?key=nsfw')
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      var data = await res.json()
+      applyNsfwConfigResult(nsfwGate, { ok: true, nsfw: !!data.nsfw }, sessionStorage)
+    } catch (e) {
+      applyNsfwConfigResult(nsfwGate, { ok: false }, sessionStorage)
+    }
+    syncAgeModalFromGate(nsfwGate)
+    notifyNsfwGateChange()
+    return nsfwGate
   }
 
   window.bgmConfirmAge = function () {
     sessionStorage.setItem('bgm-age-confirmed', '1')
-    document.getElementById('bgm-age-modal').style.display = 'none'
+    nsfwGate.ageConfirmed = true
+    setAgeModalVisible(false)
+    notifyNsfwGateChange()
   }
 
   window.bgmLeaveAge = function () {
@@ -156,8 +230,13 @@
         dataAttrs += ' data-fallback-common="' + escapeAttribute(commonUrl) + '"'
       }
     }
-    var imgAttrs = attrs || 'width="300" height="400" loading="lazy" decoding="async"'
-    if (coverOpts && coverOpts.priority) imgAttrs += ' fetchpriority="high"'
+    var loading = coverOpts && coverOpts.priority ? 'eager' : 'lazy'
+    var imgAttrs = attrs || ('width="300" height="400" loading="' + loading + '" decoding="async"')
+    if (coverOpts && coverOpts.priority) {
+      if (imgAttrs.indexOf('loading=') === -1) imgAttrs += ' loading="eager"'
+      else imgAttrs = imgAttrs.replace(/loading="(?:lazy|eager)"/, 'loading="eager"')
+      if (imgAttrs.indexOf('fetchpriority=') === -1) imgAttrs += ' fetchpriority="high"'
+    }
     return '<img class="bgm-cover-img" src="' + escapeAttribute(imgUrl) + '"' + dataAttrs + ' alt="' + escapeAttribute(alt) + '" ' + imgAttrs + '>'
   }
 
@@ -167,7 +246,7 @@
     if (card.nsfw) html += ' bgm-nsfw'
     html += '">' +
       '<div class="bgm-card-cover">' +
-        renderCover(card.images, card.imageStatus, card.name, 'width="300" height="400" loading="lazy" decoding="async"', coverOpts)
+        renderCover(card.images, card.imageStatus, card.name, null, coverOpts)
     if (card.nsfw) html += '<button type="button" class="bgm-nsfw-overlay">R18</button>'
     html += '</div>' +
       '<div class="bgm-card-info">' +
@@ -220,10 +299,11 @@
 
   function fillWeekdayGrid(gridEl, items, coverOpts) {
     if (!gridEl) return
+    var visible = entriesVisibleUnderGate(nsfwGate, items || [])
     var html = ''
-    for (var j = 0; j < items.length; j++) {
-      var priority = coverOpts && coverOpts.priorityFirst && j < 6
-      html += renderCalendarCard(items[j], priority ? { priority: true } : null)
+    for (var j = 0; j < visible.length; j++) {
+      var priority = coverOpts && coverOpts.priorityFirst && j < 2
+      html += renderCalendarCard(visible[j], priority ? { priority: true } : null)
     }
     gridEl.innerHTML = html
     gridEl.classList.remove('bgm-grid-pending')
@@ -347,6 +427,56 @@
     var currentType = 'watching'
     var currentPage = 1
     var loaded = false
+    var lastLoadedData = null
+    var statusBarEl = null
+
+    function paintCollectionData(data, seq) {
+      if (seq != null && seq !== loadSeq) return
+      lastLoadedData = data
+      if (!data || data.total === 0) {
+        grid.innerHTML = '<p class="bgm-empty">暂无数据 — 同步可能尚未执行，数据尚未发布，请稍后再试</p>'
+        pagination.innerHTML = ''
+        grid.classList.remove('bgm-grid-skeleton')
+        grid.style.minHeight = ''
+        return
+      }
+
+      var visible = entriesVisibleUnderGate(nsfwGate, data.data || [])
+      var cardsHtml = ''
+      for (var i = 0; i < visible.length; i++) {
+        cardsHtml += renderCard(visible[i], i < 2 ? { priority: true } : null)
+      }
+      grid.innerHTML = cardsHtml
+      grid.classList.remove('bgm-grid-skeleton')
+      grid.style.minHeight = ''
+
+      var totalPages = Math.ceil(data.total / PAGE_LIMIT)
+      renderPaginationControls(pagination, currentPage, totalPages, function (p) {
+        currentPage = p
+        load(currentType, p)
+      })
+    }
+
+    function refreshVisibleCards() {
+      if (!lastLoadedData) return
+      if (grid.childElementCount > 0) {
+        grid.style.minHeight = grid.offsetHeight + 'px'
+      }
+      paintCollectionData(lastLoadedData, null)
+    }
+
+    function noteConfigDenied() {
+      if (!statusBarEl) return
+      if (nsfwGate.configStatus !== 'error') return
+      var note = document.createElement('p')
+      note.className = 'bgm-status-warn'
+      note.setAttribute('data-bgm-config-note', '1')
+      note.textContent = 'NSFW 配置不可用，已隐藏受限内容'
+      var existing = statusBarEl.querySelector('[data-bgm-config-note]')
+      if (existing) existing.remove()
+      statusBarEl.appendChild(note)
+      statusBarEl.style.opacity = '1'
+    }
 
     async function load(type, page) {
       if (loadAbort) {
@@ -372,32 +502,15 @@
         }
         if (seq !== loadSeq) return
 
-        if (data.total === 0) {
-          grid.innerHTML = '<p class="bgm-empty">暂无数据 — 同步可能尚未执行，数据尚未发布，请稍后再试</p>'
-          pagination.innerHTML = ''
-          grid.classList.remove('bgm-grid-skeleton')
-          grid.style.minHeight = ''
-          return
-        }
+        paintCollectionData(data, seq)
+        if (seq !== loadSeq) return
 
-        var cardsHtml = ''
-        for (var i = 0; i < data.data.length; i++) {
-          cardsHtml += renderCard(data.data[i], i < 8 ? { priority: true } : null)
-        }
-        grid.innerHTML = cardsHtml
-        grid.classList.remove('bgm-grid-skeleton')
-        grid.style.minHeight = ''
-
-        var totalPages = Math.ceil(data.total / PAGE_LIMIT)
-        renderPaginationControls(pagination, page, totalPages, function (p) {
-          currentPage = p
-          load(currentType, p)
-        })
-
+        var totalPages = Math.ceil((data.total || 0) / PAGE_LIMIT)
         prefetchNextPage(type, page, totalPages)
       } catch (e) {
         if (seq !== loadSeq) return
         if (e && (e.name === 'AbortError' || e.code === 20)) return
+        lastLoadedData = null
         grid.innerHTML = '<p class="bgm-error">加载失败: ' + escapeHtml(e.message || '未知错误') + '<br><small>API: ' + escapeHtml(API) + '</small></p>'
         pagination.innerHTML = ''
         grid.classList.remove('bgm-grid-skeleton')
@@ -434,32 +547,42 @@
       }
     })
 
+    onNsfwGateChange(function () {
+      noteConfigDenied()
+      refreshVisibleCards()
+      syncAgeModalFromGate(nsfwGate)
+    })
+
     return {
       el: view,
+      refreshVisibleCards: refreshVisibleCards,
       // 首次切换到该视图时再加载（含健康检查）
       async activate() {
         if (loaded) return
         loaded = true
-        var statusBar = document.createElement('div')
-        statusBar.className = 'bgm-status bgm-status-bar'
-        statusBar.innerHTML = '<p>正在连接...</p>'
-        view.insertBefore(statusBar, nav)
+        statusBarEl = document.createElement('div')
+        statusBarEl.className = 'bgm-status bgm-status-bar'
+        statusBarEl.innerHTML = '<p>正在连接...</p>'
+        view.insertBefore(statusBarEl, nav)
         load(currentType, 1)
+        noteConfigDenied()
         fetchHealthJson(false).then(function (health) {
           if (health.ok && health.data && health.data.collections) {
             var c = health.data.collections
-            statusBar.innerHTML = '<p>已连接 | 条目 ' + safeNumber(c.types && c.types._total, 0) + ' | 更新于 ' + escapeHtml((c.updated_at || '?').slice(0, 10)) + '</p>'
+            statusBarEl.innerHTML = '<p>已连接 | 条目 ' + safeNumber(c.types && c.types._total, 0) + ' | 更新于 ' + escapeHtml((c.updated_at || '?').slice(0, 10)) + '</p>'
           } else if (health.ok) {
             var hint = '数据尚未发布，请稍后再试'
             if (health.data && health.data.last_error) hint += '<br>上次同步错误: ' + escapeHtml(health.data.last_error)
-            statusBar.innerHTML = '<p class="bgm-status-warn">已连接，但 KV 无数据。' + hint + '</p>'
+            statusBarEl.innerHTML = '<p class="bgm-status-warn">已连接，但 KV 无数据。' + hint + '</p>'
           } else {
-            statusBar.innerHTML = '<p class="bgm-status-warn">健康检查失败: ' + escapeHtml(health.error || '') + '</p>'
+            statusBarEl.innerHTML = '<p class="bgm-status-warn">健康检查失败: ' + escapeHtml(health.error || '') + '</p>'
           }
+          noteConfigDenied()
         }).catch(function (e) {
-          statusBar.innerHTML = '<p class="bgm-status-warn">无法连接 Worker: ' + escapeHtml(e.message || '') + '</p>'
+          statusBarEl.innerHTML = '<p class="bgm-status-warn">无法连接 Worker: ' + escapeHtml(e.message || '') + '</p>'
+          noteConfigDenied()
         })
-        setTimeout(function () { statusBar.style.opacity = '0.4' }, 3000)
+        setTimeout(function () { if (statusBarEl) statusBarEl.style.opacity = '0.4' }, 3000)
       },
     }
   }
@@ -601,7 +724,8 @@ function statusBadgeColor(s) {
       if (e.target.tagName === 'BUTTON') activate(e.target.dataset.view)
     })
 
-    await checkNSFW()
+    // Concurrent: /api/config + first collections (activate starts load)
+    loadNsfwConfig()
     activate('collection')
   }
 

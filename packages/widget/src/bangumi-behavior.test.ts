@@ -118,3 +118,93 @@ test('widgetCss reserves skeleton cover aspect-ratio and status/grid min-height'
   assert.match(widgetCss, /\.bgm-status-bar[^{]*\{[^}]*min-height/)
   assert.match(widgetCss, /\.bgm-grid[^{]*\{[^}]*min-height|\.bgm-grid\.bgm-grid-skeleton/)
 })
+
+function loadNsfwGateHelpers() {
+  const source = [
+    extractFunction(widgetJs, 'createNsfwGate'),
+    extractFunction(widgetJs, 'entriesVisibleUnderGate'),
+    extractFunction(widgetJs, 'applyNsfwConfigResult'),
+    'return { createNsfwGate, entriesVisibleUnderGate, applyNsfwConfigResult }',
+  ].join('\n')
+  return Function(source)() as {
+    createNsfwGate(): {
+      configStatus: 'pending' | 'ok' | 'error'
+      nsfwAllowed: boolean
+      ageConfirmed: boolean
+    }
+    entriesVisibleUnderGate(
+      gate: { configStatus: string; nsfwAllowed: boolean; ageConfirmed: boolean },
+      entries: Array<{ nsfw?: boolean; id?: number }>,
+    ): Array<{ nsfw?: boolean; id?: number }>
+    applyNsfwConfigResult(
+      gate: { configStatus: string; nsfwAllowed: boolean; ageConfirmed: boolean },
+      result: { ok: boolean; nsfw?: boolean },
+      storage: { getItem(key: string): string | null; removeItem(key: string): void; setItem?(key: string, value: string): void },
+    ): void
+  }
+}
+
+test('createNsfwGate starts pending and never shows restricted cards until policy allows', () => {
+  const { createNsfwGate, entriesVisibleUnderGate, applyNsfwConfigResult } = loadNsfwGateHelpers()
+  const gate = createNsfwGate()
+  assert.equal(gate.configStatus, 'pending')
+  const mixed = [{ id: 1, nsfw: false }, { id: 2, nsfw: true }]
+  assert.deepEqual(entriesVisibleUnderGate(gate, mixed).map((e) => e.id), [1])
+
+  const storage = {
+    store: new Map<string, string>(),
+    getItem(key: string) { return this.store.has(key) ? this.store.get(key)! : null },
+    setItem(key: string, value: string) { this.store.set(key, value) },
+    removeItem(key: string) { this.store.delete(key) },
+  }
+
+  applyNsfwConfigResult(gate, { ok: false }, storage)
+  assert.equal(gate.configStatus, 'error')
+  assert.equal(gate.nsfwAllowed, false)
+  assert.deepEqual(entriesVisibleUnderGate(gate, mixed).map((e) => e.id), [1])
+
+  applyNsfwConfigResult(gate, { ok: true, nsfw: false }, storage)
+  assert.equal(gate.configStatus, 'ok')
+  assert.equal(gate.nsfwAllowed, false)
+  assert.equal(storage.getItem('bgm-age-confirmed'), null)
+  assert.deepEqual(entriesVisibleUnderGate(gate, mixed).map((e) => e.id), [1])
+
+  storage.setItem('bgm-age-confirmed', '1')
+  gate.ageConfirmed = true
+  applyNsfwConfigResult(gate, { ok: true, nsfw: false }, storage)
+  assert.equal(storage.getItem('bgm-age-confirmed'), null)
+  assert.equal(gate.ageConfirmed, false)
+
+  applyNsfwConfigResult(gate, { ok: true, nsfw: true }, storage)
+  assert.equal(gate.nsfwAllowed, true)
+  assert.equal(gate.ageConfirmed, false)
+  assert.deepEqual(entriesVisibleUnderGate(gate, mixed).map((e) => e.id), [1])
+
+  gate.ageConfirmed = true
+  assert.deepEqual(entriesVisibleUnderGate(gate, mixed).map((e) => e.id), [1, 2])
+})
+
+test('widgetJs starts config concurrently and replaces empty catch with deny path', () => {
+  assert.match(widgetJs, /configStatus/)
+  assert.match(widgetJs, /entriesVisibleUnderGate/)
+  assert.match(widgetJs, /createNsfwGate/)
+  assert.doesNotMatch(widgetJs, /catch\s*\(\s*e\s*\)\s*\{\s*\}/)
+  assert.match(widgetJs, /bgm-status|status-bar|NSFW|年龄|配置/)
+  const renderFn = extractFunction(widgetJs, 'render')
+  assert.match(renderFn, /\/api\/config/)
+  assert.match(renderFn, /activate\(['\"]collection['\"]\)/)
+})
+
+test('bgmConfirmAge reveals gated cards without full reload', () => {
+  assert.match(widgetJs, /window\.bgmConfirmAge\s*=\s*function/)
+  assert.match(widgetJs, /bgm-age-confirmed/)
+  assert.match(widgetJs, /onNsfwGateChange|nsfwGateListeners|revealNsfw|repaintCollection|refreshVisibleCards/)
+})
+
+test('first two first-paint cards use fetchpriority high and eager loading', () => {
+  const paintFn = extractFunction(widgetJs, 'paintCollectionData')
+  assert.match(paintFn, /i\s*<\s*2/)
+  assert.doesNotMatch(paintFn, /i\s*<\s*8/)
+  assert.match(widgetJs, /loading=["']eager["']/)
+  assert.match(widgetJs, /fetchpriority=["']high["']/)
+})

@@ -45,6 +45,8 @@ function loadWidgetProductionRenderers() {
     'safeUrl',
     'safeNumber',
     'safeScore',
+    'createNsfwGate',
+    'entriesVisibleUnderGate',
     'subjectImageRef',
     'subjectImageUrl',
     'subjectImageThumbUrl',
@@ -60,6 +62,7 @@ function loadWidgetProductionRenderers() {
     `var API = location.origin
     var calendarLazyObserver = null
     ${source}
+    var nsfwGate = createNsfwGate()
     function mockElement() {
       var el = {
         className: '',
@@ -149,6 +152,16 @@ test('public pages reuse the exact shared footer output', () => {
   const footer = renderFooter(build)
 
   assert.equal(renderIndexPage({ build }).includes(footer), true)
+})
+
+test('renderIndexPage emits hidden #bgm-age-modal with confirm/deny wired to globals', () => {
+  const html = renderIndexPage()
+  assert.match(html, /id="bgm-age-modal"/)
+  assert.match(html, /id="bgm-age-modal"[^>]*(hidden|style="[^"]*display:\s*none)/)
+  assert.match(html, /onclick="bgmConfirmAge\(\)"|onclick='bgmConfirmAge\(\)'/)
+  assert.match(html, /onclick="bgmLeaveAge\(\)"|onclick='bgmLeaveAge\(\)'/)
+  assert.match(html, /确认已满18岁|我已满18岁/)
+  assert.match(html, /退出|离开/)
 })
 
 test('renderFooter exposes an inline runtime status slot without cache loading copy', () => {
