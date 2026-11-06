@@ -6,7 +6,7 @@
   "scripts": {
     "build": "node ./scripts/build-portable-bundle.mjs",
     "build:check": "tsc --noEmit",
-    "build:edgeone-read": "node ./scripts/build-edgeone-read-bundle.mjs",
+    "build:edgeone-read": "tsx ./scripts/build-edgeone-read-bundle.mts",
     "test": "tsx --test 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },

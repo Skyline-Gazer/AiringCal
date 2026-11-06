@@ -6,10 +6,12 @@
  * Blob is not a publish authority — the GHA writer never moves the release
  * pointer through Blob — so this entry does not serve from a Blob namespace.
  *
- * STATUS: template only — NOT deployed or staging-verified by CI. Configure
- * `AIRINGCAL_PUBLIC_BASE_URL` as a Pages project Variable (absolute https; a
- * placeholder value fails closed with INVALID_READ_CONFIG) and run the checks in
- * `README.md` / `docs/v3/edgeone-store.md`.
+ * STATUS: deployed and staging-verified on the EdgeOne Makers project
+ * `airingcal-edgeone-read` (2026-11-06). The file must keep the documented
+ * catch-all name `[[default]].js` under `edge-functions/`; a `[[path]].js` route
+ * is not registered and every request 404s. Configure `AIRINGCAL_PUBLIC_BASE_URL`
+ * as a project variable (absolute https; a placeholder fails closed with
+ * INVALID_READ_CONFIG).
  */
 import { createEdgeOneReadHandler } from '@airing-cal/v3-read/edgeone-read-handler'
 import { resolveNsfwShow } from '@airing-cal/v3-read/read-config'

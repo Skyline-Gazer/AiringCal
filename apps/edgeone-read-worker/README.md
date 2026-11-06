@@ -11,10 +11,11 @@ enforces platform access protection. See
 decision and what a staging run must prove.
 
 **Build the deployable artifact** (workspace imports and `Response.json` are not
-available in EdgeOne's V8 runtime, so the function is bundled to one file):
+available in EdgeOne's V8 runtime, so the function is bundled to one file and the
+page is emitted as static assets):
 
 ```bash
-pnpm -F @airing-cal/node-jobs build:edgeone-read   # -> apps/edgeone-read-worker/dist/functions/[[path]].js
+pnpm -F @airing-cal/node-jobs build:edgeone-read   # -> apps/edgeone-read-worker/dist/{index.html,src/*,edge-functions/[[default]].js}
 pnpm -F @airing-cal/node-jobs build:edgeone-read && \
   edgeone makers deploy apps/edgeone-read-worker/dist -n airingcal-edgeone-read
 ```
@@ -24,7 +25,7 @@ deploying a new artifact takes about 1–2 minutes to propagate to the domain.
 
 ## What it is
 
-A catch-all Edge Functions entry (`functions/[[path]].js`) that:
+A catch-all Edge Functions entry (`edge-functions/[[default]].js` — the platform's documented catch-all name; a `functions/[[path]].js` file is **not** registered as a route, so every request fell through to the platform 404) that:
 
 1. reads `AIRINGCAL_PUBLIC_BASE_URL` from the Pages project variables,
 2. fails closed with **503** `INVALID_READ_CONFIG` when it is missing, non-https
@@ -39,6 +40,11 @@ Blob is intentionally not on the read path: Makers Blob has no conditional
 write, so it never receives the release pointer and would silently diverge from
 the Release the GHA writer publishes into R2/S3.
 
+The deploy directory also carries the widget page as **static files**
+(`index.html`, `src/bangumi.js`, `src/bangumi.css`, `src/cache.js`), so `/` is
+served by the filesystem handler and never spends edge-function CPU (200 ms per
+invocation). Only `/api/*` and `/image/:hash` reach the function.
+
 ## Deploy / staging run (operator)
 
 1. Publish a staging Release into the staging public bucket (R2/S3) and front it
@@ -48,9 +54,9 @@ the Release the GHA writer publishes into R2/S3.
    (plus optional `NSFW_SHOW`, `PACKAGE_VERSION`). Never deploy `PLACEHOLDER_PUBLIC_CDN`.
 3. Build the bundle (`pnpm -F @airing-cal/node-jobs build:edgeone-read`) and
    deploy `apps/edgeone-read-worker/dist` with `edgeone makers deploy`.
-4. Verify `/api/version` (`platform: edgeone`), `/api/health`
-   (`publish.generation` matches the pointer), `/api/collections`, `/api/calendar`
-   and one `/image/:hash` (302 to the CDN base).
+4. Verify `/` (widget page), `/src/bangumi.js`, `/api/version` (`platform: edgeone`),
+   `/api/health` (`publish.generation` matches the pointer), `/api/collections`,
+   `/api/calendar` and one `/image/:hash` (302 to the CDN base).
 
 Runtime constraints confirmed by a deployed probe: the V8 isolate provides
 `fetch`, `Request`/`Response`, `TextEncoder`/`TextDecoder`, `URL`, `crypto.subtle`
