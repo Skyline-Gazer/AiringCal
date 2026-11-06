@@ -10,6 +10,8 @@ import {
   extractPendingOwnerItems,
   parseAcceptArgs,
   runPortableE2e,
+  runRollbackDryRun,
+  runShadowGateStatus,
   summarizeAcceptReport,
 } from './reader-delivery-accept.mjs'
 
@@ -346,4 +348,150 @@ test('runPortableE2e treats checks:9 stdout as pass when child hangs after ok', 
   assert.equal(gate.ok, true)
   assert.equal(gate.measurable, true)
   assert.equal(gate.status, 'ok')
+})
+
+test('runShadowGateStatus stays pending and never spawns mutating portable-shadow-gate', async () => {
+  const previous = {
+    AIRINGCAL_BUILDER_SQLITE_PATH: process.env.AIRINGCAL_BUILDER_SQLITE_PATH,
+    AIRINGCAL_SHADOW_LEGACY_JSON: process.env.AIRINGCAL_SHADOW_LEGACY_JSON,
+    AIRINGCAL_SHADOW_CANDIDATE_JSON: process.env.AIRINGCAL_SHADOW_CANDIDATE_JSON,
+  }
+  process.env.AIRINGCAL_BUILDER_SQLITE_PATH = '/tmp/builder.sqlite'
+  process.env.AIRINGCAL_SHADOW_LEGACY_JSON = '/tmp/legacy.json'
+  process.env.AIRINGCAL_SHADOW_CANDIDATE_JSON = '/tmp/candidate.json'
+  const calls = []
+  try {
+    const gate = await runShadowGateStatus({
+      spawnImpl: async (command, args) => {
+        calls.push({ command, args })
+        return { ok: true, code: 0, timedOut: false, stdout: '{\"streak\":1}\n', stderr: '' }
+      },
+    })
+    assert.equal(calls.length, 0, 'must not invoke portable-shadow-gate (writes migrate:shadow:streak)')
+    assert.equal(gate.id, 'shadow_gate')
+    assert.equal(gate.ok, true)
+    assert.equal(gate.measurable, false)
+    assert.equal(gate.status, 'pending')
+    assert.match(String(gate.reason), /read-only|pending|no RO|without mutation/i)
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
+test('runShadowGateStatus reports RO streak JSON when provided without spawning CLI', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'accept-shadow-ro-'))
+  const statusPath = join(dir, 'shadow-status.json')
+  writeFileSync(
+    statusPath,
+    JSON.stringify({
+      streak: 7,
+      required_matches: 7,
+      cutover_allowed: true,
+      equal: true,
+      updated_at: 1_700_000_000,
+    }),
+  )
+  const previous = process.env.AIRINGCAL_SHADOW_GATE_STATUS_JSON
+  process.env.AIRINGCAL_SHADOW_GATE_STATUS_JSON = statusPath
+  const calls = []
+  try {
+    const gate = await runShadowGateStatus({
+      spawnImpl: async (command, args) => {
+        calls.push({ command, args })
+        return { ok: true, code: 0, timedOut: false, stdout: '', stderr: '' }
+      },
+    })
+    assert.equal(calls.length, 0)
+    assert.equal(gate.status, 'ok')
+    assert.equal(gate.measurable, true)
+    assert.equal(gate.ok, true)
+    assert.equal(gate.streak, 7)
+    assert.equal(gate.cutover_allowed, true)
+  } finally {
+    if (previous === undefined) delete process.env.AIRINGCAL_SHADOW_GATE_STATUS_JSON
+    else process.env.AIRINGCAL_SHADOW_GATE_STATUS_JSON = previous
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('runRollbackDryRun does not rubber-stamp non-zero exits that only mention Usage/generation', async () => {
+  const previous = {
+    AIRINGCAL_PUBLIC_S3_ENDPOINT: process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT,
+    AIRINGCAL_S3_ACCESS_KEY_ID: process.env.AIRINGCAL_S3_ACCESS_KEY_ID,
+  }
+  process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT = 'https://example-bucket.r2.cloudflarestorage.com'
+  process.env.AIRINGCAL_S3_ACCESS_KEY_ID = 'AKIA_TEST'
+  try {
+    const gate = await runRollbackDryRun({
+      spawnImpl: async () => ({
+        ok: false,
+        code: 1,
+        timedOut: false,
+        stdout: '',
+        stderr: 'Usage: portable-release-rollback.ts --generation <n> [--apply]\n',
+      }),
+    })
+    assert.equal(gate.ok, false)
+    assert.equal(gate.measurable, true)
+    assert.equal(gate.status, 'failed')
+    assert.match(String(gate.reason), /failed exit 1/i)
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+})
+
+test('runRollbackDryRun accepts structured dry_run receipt even when exit is non-zero', async () => {
+  const previous = process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT
+  process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT = 'https://example-bucket.r2.cloudflarestorage.com'
+  try {
+    const gate = await runRollbackDryRun({
+      spawnImpl: async () => ({
+        ok: false,
+        code: 1,
+        timedOut: false,
+        stdout: JSON.stringify({
+          dry_run: true,
+          cas_result: 'conflict',
+          target_generation: 2,
+        }) + '\n',
+        stderr: '',
+      }),
+    })
+    assert.equal(gate.ok, true)
+    assert.equal(gate.measurable, true)
+    assert.equal(gate.status, 'ok')
+    assert.equal(gate.dry_run, true)
+  } finally {
+    if (previous === undefined) delete process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT
+    else process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT = previous
+  }
+})
+
+test('runRollbackDryRun requires dry_run receipt on zero exit (no bare success)', async () => {
+  const previous = process.env.AIRINGCAL_S3_ACCESS_KEY_ID
+  process.env.AIRINGCAL_S3_ACCESS_KEY_ID = 'AKIA_TEST'
+  try {
+    const gate = await runRollbackDryRun({
+      spawnImpl: async () => ({
+        ok: true,
+        code: 0,
+        timedOut: false,
+        stdout: 'rolled back somehow\n',
+        stderr: '',
+      }),
+    })
+    assert.equal(gate.ok, false)
+    assert.equal(gate.measurable, true)
+    assert.equal(gate.status, 'failed')
+    assert.match(String(gate.reason), /dry_run|receipt/i)
+  } finally {
+    if (previous === undefined) delete process.env.AIRINGCAL_S3_ACCESS_KEY_ID
+    else process.env.AIRINGCAL_S3_ACCESS_KEY_ID = previous
+  }
 })

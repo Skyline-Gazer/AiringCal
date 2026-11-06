@@ -549,13 +549,22 @@ export async function runRollbackDryRun({ skip = false, spawnImpl = spawnCapture
     ['exec', 'tsx', 'apps/node-jobs/src/cli/portable-release-rollback.ts', '--generation', '0'],
     { timeoutMs: 60_000 },
   )
-  // Generation 0 dry-run may exit non-zero for "target not found" while still proving CLI wires;
-  // only treat credential/scope failures as pending, hard failures as measurable when command runs.
-  if (result.ok) {
-    return { id: 'rollback_dry_run', ok: true, measurable: true, status: 'ok', reason: null }
-  }
   const combined = `${result.stdout}\n${result.stderr}`
-  if (/credential|AccessDenied|Missing|required env|ENOENT|login/i.test(combined)) {
+  const receipt = extractRollbackDryRunReceipt(result.stdout)
+  if (receipt?.dry_run === true) {
+    return {
+      id: 'rollback_dry_run',
+      ok: true,
+      measurable: true,
+      status: 'ok',
+      reason: null,
+      dry_run: true,
+      cas_result: receipt.cas_result ?? null,
+      target_generation: receipt.target_generation ?? null,
+      code: result.code,
+    }
+  }
+  if (/credential|AccessDenied|Missing|required env|ENOENT|login|Configure AIRINGCAL_PUBLIC_S3/i.test(combined)) {
     return {
       id: 'rollback_dry_run',
       ok: true,
@@ -565,26 +574,56 @@ export async function runRollbackDryRun({ skip = false, spawnImpl = spawnCapture
       stderr_tail: result.stderr.slice(-1200),
     }
   }
-  // Dry-run without --apply that rejects generation is still a successful "ran without apply".
-  if (/dry.?run|without --apply|Usage:|generation/i.test(combined)) {
-    return {
-      id: 'rollback_dry_run',
-      ok: true,
-      measurable: true,
-      status: 'ok',
-      reason: null,
-      note: 'CLI invoked without --apply; non-zero treated as dry-run wiring proof',
-      stderr_tail: result.stderr.slice(-800),
-    }
-  }
   return {
     id: 'rollback_dry_run',
     ok: false,
     measurable: true,
     status: 'failed',
-    reason: `rollback dry-run failed exit ${result.code}`,
+    reason: receipt
+      ? `rollback dry-run receipt missing dry_run:true (exit ${result.code})`
+      : `rollback dry-run failed exit ${result.code}: no dry_run receipt`,
     stderr_tail: result.stderr.slice(-1200),
+    stdout_tail: result.stdout.slice(-800),
   }
+}
+
+/** Parse a RollbackReceipt-like JSON object from CLI stdout (first object with dry_run). */
+export function extractRollbackDryRunReceipt(stdout) {
+  const text = String(stdout ?? '').trim()
+  if (!text) return null
+  try {
+    const parsed = JSON.parse(text)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'dry_run' in parsed) {
+      return parsed
+    }
+  } catch {
+    // Fall through to line / brace scanning.
+  }
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('{')) continue
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'dry_run' in parsed) {
+        return parsed
+      }
+    } catch {
+      // ignore non-JSON lines
+    }
+  }
+  const firstBrace = text.indexOf('{')
+  const lastBrace = text.lastIndexOf('}')
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    try {
+      const parsed = JSON.parse(text.slice(firstBrace, lastBrace + 1))
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'dry_run' in parsed) {
+        return parsed
+      }
+    } catch {
+      return null
+    }
+  }
+  return null
 }
 
 export async function runShadowGateStatus({ skip = false, spawnImpl = spawnCapture } = {}) {
@@ -597,53 +636,70 @@ export async function runShadowGateStatus({ skip = false, spawnImpl = spawnCaptu
       reason: 'skipped via --skip-shadow-gate',
     }
   }
-  const sqlite = process.env.AIRINGCAL_BUILDER_SQLITE_PATH?.trim()
-  const legacy = process.env.AIRINGCAL_SHADOW_LEGACY_JSON?.trim()
-  const candidate = process.env.AIRINGCAL_SHADOW_CANDIDATE_JSON?.trim()
-  if (!sqlite || !legacy || !candidate) {
+  // Never invoke portable-shadow-gate: it mutates migrate:shadow:streak.
+  // Prefer an Owner-supplied RO status JSON, else pending.
+  void spawnImpl
+  const statusPath = process.env.AIRINGCAL_SHADOW_GATE_STATUS_JSON?.trim()
+  if (!statusPath) {
     return {
       id: 'shadow_gate',
       ok: true,
       measurable: false,
       status: 'pending',
       reason:
-        'shadow-gate read-only pending: set AIRINGCAL_BUILDER_SQLITE_PATH + AIRINGCAL_SHADOW_LEGACY_JSON + AIRINGCAL_SHADOW_CANDIDATE_JSON',
+        'shadow-gate read-only pending: no RO reader (set AIRINGCAL_SHADOW_GATE_STATUS_JSON); refuse mutating portable-shadow-gate',
     }
   }
-  const result = await spawnImpl(
-    'pnpm',
-    [
-      'exec',
-      'tsx',
-      'apps/node-jobs/src/cli/portable-shadow-gate.ts',
-      '--sqlite',
-      sqlite,
-      '--legacy',
-      legacy,
-      '--candidate',
-      candidate,
-    ],
-    { timeoutMs: 120_000 },
-  )
-  if (result.ok) {
+  const resolved = resolve(ROOT, statusPath)
+  if (!existsSync(resolved)) {
     return {
       id: 'shadow_gate',
       ok: true,
-      measurable: true,
-      status: 'ok',
-      reason: null,
-      stdout_tail: result.stdout.slice(-1000),
+      measurable: false,
+      status: 'pending',
+      reason: `shadow-gate RO status JSON missing: ${statusPath}`,
+      path: resolved,
     }
   }
+  let status
+  try {
+    status = JSON.parse(readFileSync(resolved, 'utf8'))
+  } catch (error) {
+    return {
+      id: 'shadow_gate',
+      ok: false,
+      measurable: true,
+      status: 'failed',
+      reason: `shadow-gate RO status JSON unreadable: ${error instanceof Error ? error.message : String(error)}`,
+      path: resolved,
+    }
+  }
+  if (!status || typeof status !== 'object' || Array.isArray(status)) {
+    return {
+      id: 'shadow_gate',
+      ok: false,
+      measurable: true,
+      status: 'failed',
+      reason: 'shadow-gate RO status JSON must be an object',
+      path: resolved,
+    }
+  }
+  const streak = Number(status.streak)
+  const cutoverAllowed = status.cutover_allowed === true
   return {
     id: 'shadow_gate',
     ok: true,
-    measurable: false,
-    status: 'pending',
-    reason: `shadow-gate not open / inputs incomplete (exit ${result.code}); recorded pending read-only`,
-    stderr_tail: result.stderr.slice(-1000),
+    measurable: true,
+    status: 'ok',
+    reason: null,
+    streak: Number.isFinite(streak) ? streak : null,
+    cutover_allowed: cutoverAllowed,
+    required_matches: status.required_matches ?? null,
+    path: resolved,
+    note: 'read-only status JSON; portable-shadow-gate not invoked',
   }
 }
+
 
 export function loadChecklistPending(checklistPath) {
   const resolved = resolve(ROOT, checklistPath)
