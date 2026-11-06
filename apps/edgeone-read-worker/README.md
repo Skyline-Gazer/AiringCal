@@ -2,10 +2,25 @@
 
 EdgeOne Pages read-gateway **template** for the v3 release contract (#72, #147).
 
-**Status: template only — NOT deployed or staging-verified.** See
+**Status: deployed to EdgeOne Makers and staging-verified (2026-11-06).** Project
+`airingcal-edgeone-read` (`makers-bj3mt2hqynok`, global), serving the same
+published Release as the Cloudflare gateway. The preset `*.edgeone.cool` domain
+requires a bound public domain (or a valid `eo_token`/`eo_time` pair) because it
+enforces platform access protection. See
 [`docs/v3/edgeone-store.md`](../../docs/v3/edgeone-store.md) for the storage
-decision and what a staging run must prove before #69 matrix rows can leave
-`candidate`.
+decision and what a staging run must prove.
+
+**Build the deployable artifact** (workspace imports and `Response.json` are not
+available in EdgeOne's V8 runtime, so the function is bundled to one file):
+
+```bash
+pnpm -F @airing-cal/node-jobs build:edgeone-read   # -> apps/edgeone-read-worker/dist/functions/[[path]].js
+pnpm -F @airing-cal/node-jobs build:edgeone-read && \
+  edgeone makers deploy apps/edgeone-read-worker/dist -n airingcal-edgeone-read
+```
+
+Set the project variable `AIRINGCAL_PUBLIC_BASE_URL` (absolute https) first;
+deploying a new artifact takes about 1–2 minutes to propagate to the domain.
 
 ## What it is
 
@@ -28,11 +43,18 @@ the Release the GHA writer publishes into R2/S3.
 
 1. Publish a staging Release into the staging public bucket (R2/S3) and front it
    with a verified https CDN base URL.
-2. Configure the Pages project variable `AIRINGCAL_PUBLIC_BASE_URL` (plus
-   optional `NSFW_SHOW`, `PACKAGE_VERSION`). Never deploy `PLACEHOLDER_PUBLIC_CDN`.
-3. `edgeone pages deploy` (or the EdgeOne CLI/console) for this directory.
+2. Configure the project variable with
+   `edgeone makers env set AIRINGCAL_PUBLIC_BASE_URL <https-url> -e production`
+   (plus optional `NSFW_SHOW`, `PACKAGE_VERSION`). Never deploy `PLACEHOLDER_PUBLIC_CDN`.
+3. Build the bundle (`pnpm -F @airing-cal/node-jobs build:edgeone-read`) and
+   deploy `apps/edgeone-read-worker/dist` with `edgeone makers deploy`.
 4. Verify `/api/version` (`platform: edgeone`), `/api/health`
    (`publish.generation` matches the pointer), `/api/collections`, `/api/calendar`
    and one `/image/:hash` (302 to the CDN base).
 
-None of this is automated by CI, and no paid resource is provisioned by any merge.
+Runtime constraints confirmed by a deployed probe: the V8 isolate provides
+`fetch`, `Request`/`Response`, `TextEncoder`/`TextDecoder`, `URL`, `crypto.subtle`
+and `setTimeout`, but **no `Response.json`**, `Buffer` or `process`. JSON responses
+are therefore constructed explicitly in `@airing-cal/v3-read`.
+
+Deployment is manual (no CI step), and no paid resource is provisioned by any merge.

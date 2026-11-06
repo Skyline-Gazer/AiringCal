@@ -20,11 +20,15 @@ export function resolveNsfwShow(raw: string | null | undefined): boolean {
  */
 export function readConfigErrorResponse(error: unknown): Response {
   const message = error instanceof Error ? error.message : 'Invalid read configuration'
-  return Response.json({
+  // EdgeOne edge functions do not implement the static `Response.json()`.
+  return new Response(JSON.stringify({
     ok: false,
     error: { code: 'INVALID_READ_CONFIG', message },
-  }, {
+  }), {
     status: 503,
-    headers: { 'Cache-Control': V2_CACHE_CONTROL.error },
+    headers: {
+      'content-type': 'application/json; charset=utf-8',
+      'Cache-Control': V2_CACHE_CONTROL.error,
+    },
   })
 }
