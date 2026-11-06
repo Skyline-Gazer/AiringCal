@@ -46,6 +46,8 @@ test('v3 read staging deploy expands only AIRINGCAL_STAGING_ secrets and vars (C
   for (const name of refs) {
     assert.match(name, /^AIRINGCAL_STAGING_/, `unexpected non-staging reference: ${name}`)
   }
+  assert.doesNotMatch(source, /secrets\.AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID/, 'Account ID is non-secret var')
+  assert.match(source, /vars\.AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID/, 'Account ID comes from vars')
 })
 
 test('first step validates required staging config and exits 1 before any build (C8)', () => {
@@ -60,12 +62,12 @@ test('first step validates required staging config and exits 1 before any build 
   for (const required of [
     'AIRINGCAL_STAGING_CLOUDFLARE_API_TOKEN',
     'AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID',
-    'AIRINGCAL_STAGING_WORKER_NAME',
-    'AIRINGCAL_STAGING_PUBLIC_R2_BUCKET',
     'AIRINGCAL_STAGING_PUBLIC_BASE_URL',
   ]) {
     assert.match(validation, new RegExp(required), `${required} must be required`)
   }
+  assert.match(validation, /airing-cal-v3-read-staging/, 'defaults staging worker name')
+  assert.match(validation, /airingcal-staging-public/, 'defaults staging public bucket')
 
   const order = [
     'Validate required staging config',

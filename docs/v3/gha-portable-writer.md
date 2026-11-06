@@ -1,6 +1,6 @@
 # GHA portable writer (ADR 0003)
 
-> **Activation gate (2026-11-05):** The default-branch schedule is disabled at the job level unless repository variable `AIRINGCAL_WRITER_ENABLED` is exactly `true`. Do not enable it until real isolated R2 staging, reader parity and owner cutover approval (#147). Manual `workflow_dispatch` is the explicit smoke path; use staging-scoped credentials. `dev` push never deploys the read Worker or applies remote D1 migrations after the PR CI gate change. A real public CDN URL is not configured in `wrangler.toml` by default; the read Worker falls back to its legacy image store until an operator sets and verifies the runtime variable. No Docker/CNB/QingLong delivery. This PR is not proof of production-live sync.
+> **Activation gate (2026-11-06):** The default-branch schedule is disabled at the job level unless repository variable `AIRINGCAL_WRITER_ENABLED` is exactly `true`. Do not enable it until real isolated R2 staging, reader parity and owner cutover approval (#147). Manual `workflow_dispatch` is the explicit smoke path; use staging-scoped credentials initialized via `scripts/setup-staging.sh`. `dev` push never deploys the read Worker or applies remote D1 migrations after the PR CI gate change. A real public CDN URL is not configured in `wrangler.toml` by default; the read Worker falls back to its legacy image store until an operator sets and verifies the runtime variable. No Docker/CNB/QingLong delivery. This PR is not proof of production-live sync.
 
 Status: **implemented in repo; not production-live until Secrets/Variables are filled and a successful `workflow_dispatch` is observed.**
 
@@ -11,6 +11,7 @@ Decision: [`../plans/adr-0003-gha-portable-write.md`](../plans/adr-0003-gha-port
 | Piece | Path |
 | --- | --- |
 | Workflow | `.github/workflows/portable-writer.yml` |
+| Staging setup CLI | `scripts/setup-staging.sh` (`scripts/setup-staging-lib.mjs`) |
 | Shell entry | `scripts/gha-portable-writer.sh` |
 | Orchestrator | `apps/node-jobs/src/cli/gha-portable-writer.ts` (+ `-main.ts`) |
 | Schedule | cron `0 20 * * *` UTC = **04:00 Asia/Shanghai** |
@@ -18,38 +19,42 @@ Decision: [`../plans/adr-0003-gha-portable-write.md`](../plans/adr-0003-gha-port
 
 Flow (C2/C4): acquire lease → restore SQLite checkpoint from **private** R2 → sync portable builder → **image publish gate** over every referenced hash (upload missing, reuse present, fail closed when a published object's content differs or an original is nowhere available) → upload checkpoint with CAS → renew lease → commit the Release pointer with CAS → expire the lease. Nothing becomes visible before the checkpoint succeeds. Failure → Bark (`BARK_URL`).
 
-## Operator fill-in (Secrets / Variables)
+## Unified Environment Configuration (`AIRINGCAL_{ENVIRONMENT}_{SERVICE}_{KEY}`)
 
-Replace every `PLACEHOLDER_*` with real values. Create **two** R2 buckets (private checkpoint ≠ public release).
+All GitHub Actions Environment settings follow `AIRINGCAL_{ENVIRONMENT}_{SERVICE}_{KEY}` (`STAGING` vs `PRODUCTION`). Checkpoint and Public buckets share a single scoped S3 credential pair per environment; non-sensitive infrastructure values (`CLOUDFLARE_ACCOUNT_ID`, `S3_ENDPOINT`, `S3_REGION`, bucket names, Worker name, `PUBLIC_BASE_URL`) are Variables or automatically derived in the workflow — never Secrets.
 
-### Repository Secrets
+### Staging (`staging` Environment — initialized via `bash scripts/setup-staging.sh`)
 
-| Secret | Example / placeholder | Notes |
+| Name | Type | Purpose / Derivation |
 | --- | --- | --- |
-| `BGM_TOKEN` | Bangumi access token | Required for sync |
-| `AIRINGCAL_USERS_JSON` | `[{"id":"…","username":"…"}]` | Same contract as node-jobs |
-| `AIRINGCAL_PRIMARY_USER_ID` | Bangumi user id string | |
-| `BARK_URL` | `https://api.day.app/<device_key>` | Failure push; omit to skip notify |
-| `AIRINGCAL_CHECKPOINT_S3_ENDPOINT` | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` | Private bucket API |
-| `AIRINGCAL_CHECKPOINT_S3_REGION` | `auto` | Optional (defaults `auto`) |
-| `AIRINGCAL_CHECKPOINT_S3_BUCKET` | e.g. `airingcal-checkpoint` | Private |
-| `AIRINGCAL_CHECKPOINT_S3_ACCESS_KEY_ID` | R2 API token access key | Checkpoint only |
-| `AIRINGCAL_CHECKPOINT_S3_SECRET_ACCESS_KEY` | R2 API token secret | Checkpoint only |
-| `AIRINGCAL_PUBLIC_S3_ENDPOINT` | `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` | May share account with checkpoint |
-| `AIRINGCAL_PUBLIC_S3_REGION` | `auto` | Optional |
-| `AIRINGCAL_PUBLIC_S3_BUCKET` | e.g. `airingcal-public` | Public release + images |
-| `AIRINGCAL_PUBLIC_S3_ACCESS_KEY_ID` | R2 API token access key | Public bucket |
-| `AIRINGCAL_PUBLIC_S3_SECRET_ACCESS_KEY` | R2 API token secret | Public bucket |
+| `AIRINGCAL_STAGING_BANGUMI_TOKEN` | **Secret** | Bangumi API token (mapped to `BGM_TOKEN` inside workflow) |
+| `AIRINGCAL_STAGING_S3_ACCESS_KEY_ID` | **Secret** | R2 S3 Access Key ID (scoped to `airingcal-staging-checkpoint` + `airingcal-staging-public`) |
+| `AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY` | **Secret** | R2 S3 Secret Access Key |
+| `AIRINGCAL_STAGING_PRIMARY_USER_ID` | **Variable** | Default Bangumi user ID |
+| `AIRINGCAL_STAGING_USERS_JSON` | **Variable** | Bangumi user list (`[{"userId":"…","username":"…"}]`); auto-generated by `scripts/setup-staging.sh` from `PRIMARY_USER_ID` when omitted |
+| `AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID` | **Variable** (auto) | 32-char Cloudflare account ID; used to derive `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` |
+| `AIRINGCAL_STAGING_PUBLIC_BASE_URL` | **Variable** (auto) | Verified HTTPS `r2.dev` / custom domain for `airingcal-staging-public` |
+| `AIRINGCAL_STAGING_CHECKPOINT_R2_BUCKET` | **Variable** (auto) | Defaults to `airingcal-staging-checkpoint` (private) |
+| `AIRINGCAL_STAGING_PUBLIC_R2_BUCKET` | **Variable** (auto) | Defaults to `airingcal-staging-public` (public HTTPS read) |
+| `AIRINGCAL_STAGING_S3_ENDPOINT` | **Variable** (auto) | Defaults to `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` |
+| `AIRINGCAL_STAGING_S3_REGION` | **Variable** (auto) | Defaults to `auto` |
+| `AIRINGCAL_STAGING_BARK_URL` | **Secret** (optional) | Optional Bark failure notification URL |
 
-### Repository Variables
+Production uses the corresponding `AIRINGCAL_PRODUCTION_*` names in the `production` Environment (plus repository variable `AIRINGCAL_WRITER_ENABLED=true` only after owner cutover approval).
 
-| Variable | Example / placeholder | Notes |
-| --- | --- | --- |
-| `AIRINGCAL_PUBLIC_BASE_URL` | verified real public CDN host (optional) | Configure separately in the **read Worker** runtime only after staging. Never deploy `PLACEHOLDER_PUBLIC_CDN`: without a configured URL, the Worker keeps its existing image fallback. Writer job does not require it. |
+### One-shot Staging initialization
 
-### Local / non-Actions env (optional)
+```bash
+export AIRINGCAL_STAGING_PRIMARY_USER_ID="<bangumi_user_id>"
+export AIRINGCAL_STAGING_BANGUMI_TOKEN="<bangumi_token>"
+export AIRINGCAL_STAGING_S3_ACCESS_KEY_ID="<r2_staging_access_key_id>"
+export AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY="<r2_staging_secret_access_key>"
+bash scripts/setup-staging.sh
+```
 
-Same names as above. Also:
+### Local / non-Actions runtime env (`node-jobs` internal contract)
+
+`.github/workflows/portable-writer.yml` maps the Environment secrets/variables above to the existing `node-jobs` runtime env (`BGM_TOKEN`, `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `AIRINGCAL_CHECKPOINT_S3_*`, `AIRINGCAL_PUBLIC_S3_*`, `AIRINGCAL_PUBLIC_BASE_URL`). Local CLI defaults:
 
 | Env | Default in shell | Notes |
 | --- | --- | --- |
@@ -59,8 +64,8 @@ Same names as above. Also:
 
 ## Smoke
 
-1. Fill Secrets (and optional `AIRINGCAL_PUBLIC_BASE_URL`).
-2. Actions → **Portable writer (GHA)** → `workflow_dispatch` (optional `force_mode=full`).
+1. Run `bash scripts/setup-staging.sh` to provision/reuse the two staging buckets, enable public HTTPS on `airingcal-staging-public`, configure the `staging` Environment Variables + 3 Secrets, and deploy the staging read Worker.
+2. Actions → **Portable writer (GHA)** → `workflow_dispatch` (`target=staging`, optional `force_mode=full`).
 3. Expect job exit 0, checkpoint object `checkpoints/builder.sqlite`, public pointer `public/current-release.json`, and Bark silent on success.
 
 ## Not in this slice / remaining backlog

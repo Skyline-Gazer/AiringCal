@@ -111,11 +111,12 @@ image bytes are proxied from the R2 public store.
 
 - `workflow_dispatch` only — no `push`, `pull_request` or `schedule` trigger;
 - first step validates required staging config and `exit 1`s before checkout;
-- only `AIRINGCAL_STAGING_*` secrets/vars are expanded
-  (`AIRINGCAL_STAGING_CLOUDFLARE_API_TOKEN`,
-  `AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID`,
-  `AIRINGCAL_STAGING_WORKER_NAME`, `AIRINGCAL_STAGING_PUBLIC_R2_BUCKET`,
-  `AIRINGCAL_STAGING_PUBLIC_BASE_URL`);
+- only `AIRINGCAL_STAGING_*` secrets/vars are expanded:
+  secret `AIRINGCAL_STAGING_CLOUDFLARE_API_TOKEN`, plus non-secret `vars.*`
+  (`AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID`,
+  `AIRINGCAL_STAGING_PUBLIC_BASE_URL`, and optional overrides
+  `AIRINGCAL_STAGING_WORKER_NAME` defaulting to `airing-cal-v3-read-staging` and
+  `AIRINGCAL_STAGING_PUBLIC_R2_BUCKET` defaulting to `airingcal-staging-public`);
 - `scripts/materialize-v3-read-staging-config.mjs` rewrites the
   `AIRINGCAL_PUBLIC_R2` bucket to the staging bucket, rejects the production
   bucket, injects the verified base URL/sha as vars, and writes a temp config;

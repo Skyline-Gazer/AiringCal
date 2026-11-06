@@ -78,6 +78,27 @@ test('production job expands only production-prefixed secrets and vars (C3)', ()
   }
 })
 
+test('unified AIRINGCAL_{ENV}_{SERVICE}_{KEY} naming: 3 core secrets, shared S3 creds, non-secrets in vars', () => {
+  const source = readFileSync(WORKFLOW_PATH, 'utf8')
+  const staging = jobSection(source, 'staging')
+  const stagingSecrets = new Set(
+    [...staging.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((match) => match[1]),
+  )
+  assert.deepEqual(
+    stagingSecrets,
+    new Set([
+      'AIRINGCAL_STAGING_BANGUMI_TOKEN',
+      'AIRINGCAL_STAGING_S3_ACCESS_KEY_ID',
+      'AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY',
+      'AIRINGCAL_STAGING_BARK_URL',
+    ]),
+  )
+  assert.doesNotMatch(staging, /AIRINGCAL_STAGING_CHECKPOINT_S3_|AIRINGCAL_STAGING_PUBLIC_S3_|AIRINGCAL_STAGING_BGM_TOKEN/)
+  assert.match(staging, /vars\.AIRINGCAL_STAGING_USERS_JSON/)
+  assert.match(staging, /vars\.AIRINGCAL_STAGING_PRIMARY_USER_ID/)
+  assert.match(staging, /vars\.AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID/)
+})
+
 test('first step of each job validates required config and exits before the Builder (C3)', () => {
   const source = readFileSync(WORKFLOW_PATH, 'utf8')
   for (const job of ['staging', 'production']) {
