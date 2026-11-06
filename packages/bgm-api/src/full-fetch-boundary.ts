@@ -31,24 +31,24 @@ function isSafeNonNegativeInteger(value: unknown): value is number {
 function normalizeCalendarSubject(value: unknown): BgmCalendarItem['items'][number] | null {
   if (!isRecord(value) || !isSafeNonNegativeInteger(value.id) || value.id === 0) return null
   if (![1, 2, 3, 4, 6].includes(value.type as number)) return null
-  for (const field of ['name', 'name_cn', 'summary']) if (value[field] !== undefined && typeof value[field] !== 'string') return null
-  if (value.eps !== undefined && !isSafeNonNegativeInteger(value.eps)) return null
-  if (value.images !== undefined) {
+  for (const field of ['name', 'name_cn', 'summary']) if (value[field] != null && typeof value[field] !== 'string') return null
+  if (value.eps != null && !isSafeNonNegativeInteger(value.eps)) return null
+  if (value.images != null) {
     if (!isRecord(value.images)) return null
-    for (const size of ['large', 'common', 'medium', 'small', 'grid']) if (value.images[size] !== undefined && typeof value.images[size] !== 'string') return null
+    for (const size of ['large', 'common', 'medium', 'small', 'grid']) if (value.images[size] != null && typeof value.images[size] !== 'string') return null
   }
-  if (value.rating !== undefined) {
+  if (value.rating != null) {
     if (!isRecord(value.rating)) return null
-    if (value.rating.score !== undefined && (typeof value.rating.score !== 'number' || !Number.isFinite(value.rating.score))) return null
-    if (value.rating.total !== undefined && !isSafeNonNegativeInteger(value.rating.total)) return null
-    if (value.rating.rank !== undefined && !isSafeNonNegativeInteger(value.rating.rank)) return null
+    if (value.rating.score != null && (typeof value.rating.score !== 'number' || !Number.isFinite(value.rating.score))) return null
+    if (value.rating.total != null && !isSafeNonNegativeInteger(value.rating.total)) return null
+    if (value.rating.rank != null && !isSafeNonNegativeInteger(value.rating.rank)) return null
   }
-  if (value.rank !== undefined && !isSafeNonNegativeInteger(value.rank)) return null
-  if (value.eps_count !== undefined && !isSafeNonNegativeInteger(value.eps_count)) return null
-  if (value.total_episodes !== undefined && !isSafeNonNegativeInteger(value.total_episodes)) return null
-  if (value.nsfw !== undefined && typeof value.nsfw !== 'boolean') return null
-  if (value.date !== undefined && typeof value.date !== 'string') return null
-  if (value.air_date !== undefined && typeof value.air_date !== 'string') return null
+  if (value.rank != null && !isSafeNonNegativeInteger(value.rank)) return null
+  if (value.eps_count != null && !isSafeNonNegativeInteger(value.eps_count)) return null
+  if (value.total_episodes != null && !isSafeNonNegativeInteger(value.total_episodes)) return null
+  if (value.nsfw != null && typeof value.nsfw !== 'boolean') return null
+  if (value.date != null && typeof value.date !== 'string') return null
+  if (value.air_date != null && typeof value.air_date !== 'string') return null
   const images = isRecord(value.images) ? value.images : undefined
   const ratingValue = isRecord(value.rating) ? value.rating : undefined
   const rating = ratingValue && (
