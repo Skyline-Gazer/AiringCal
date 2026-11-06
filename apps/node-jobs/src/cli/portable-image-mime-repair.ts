@@ -379,26 +379,25 @@ async function checkCdnSample(input: {
   const publicUrl = joinPublicUrl(base, input.item.key)
   const head = await input.cdn.head(publicUrl)
   const type = head.contentType?.toLowerCase() ?? null
-  if (type && type.startsWith('image/')) {
+  const mediaType = type?.split(';', 1)[0]?.trim() ?? null
+  if (mediaType && mediaType.startsWith('image/')) {
     return { ...input.item, publicUrl }
   }
-  if (type === 'application/octet-stream' || type == null) {
-    const purged = input.cdn.purge ? await input.cdn.purge(publicUrl) : false
-    if (purged) {
-      const after = await input.cdn.head(publicUrl)
-      const afterType = after.contentType?.toLowerCase() ?? null
-      if (afterType && afterType.startsWith('image/')) {
-        return { ...input.item, publicUrl, message: 'cdn purged' }
-      }
-    }
-    return {
-      ...input.item,
-      status: 'cdn_stale_pending',
-      publicUrl,
-      message: `public URL still Content-Type=${type ?? 'missing'}; manual purge required before P5 MIME gate`,
+  const purged = input.cdn.purge ? await input.cdn.purge(publicUrl) : false
+  if (purged) {
+    const after = await input.cdn.head(publicUrl)
+    const afterType = after.contentType?.toLowerCase() ?? null
+    const afterMedia = afterType?.split(';', 1)[0]?.trim() ?? null
+    if (afterMedia && afterMedia.startsWith('image/')) {
+      return { ...input.item, publicUrl, message: 'cdn purged' }
     }
   }
-  return { ...input.item, publicUrl }
+  return {
+    ...input.item,
+    status: 'cdn_stale_pending',
+    publicUrl,
+    message: `public URL still Content-Type=${type ?? 'missing'}; manual purge required before P5 MIME gate`,
+  }
 }
 
 export async function runImageMimeRepair(

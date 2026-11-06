@@ -427,6 +427,58 @@ test('CDN still serving octet-stream records cdn_stale_pending', async () => {
   assert.equal(report.complete, false)
 })
 
+test('CDN parameterized octet-stream records cdn_stale_pending', async () => {
+  const store = new RepairStoreDouble()
+  store.seed(KEY_A, jpegBytes(), 'application/octet-stream')
+  const cdn: ImageMimeRepairCdnClient = {
+    head: async () => ({ contentType: 'application/octet-stream; charset=binary' }),
+    purge: async () => false,
+  }
+
+  const report = await runImageMimeRepair({
+    store,
+    apply: true,
+    prefix: 'images/',
+    env: {
+      AIRINGCAL_ENV: 'development',
+      AIRINGCAL_PUBLIC_BASE_URL: 'https://cdn.example',
+    },
+    bucket: 'airingcal-staging-public',
+    cdn,
+  })
+
+  assert.equal(report.counts.repaired, 1)
+  assert.equal(report.counts.cdn_stale_pending, 1)
+  assert.ok(report.items.some((row) => row.status === 'cdn_stale_pending'))
+  assert.equal(report.complete, false)
+})
+
+test('CDN text/html Content-Type records cdn_stale_pending', async () => {
+  const store = new RepairStoreDouble()
+  store.seed(KEY_A, jpegBytes(), 'application/octet-stream')
+  const cdn: ImageMimeRepairCdnClient = {
+    head: async () => ({ contentType: 'text/html' }),
+    purge: async () => false,
+  }
+
+  const report = await runImageMimeRepair({
+    store,
+    apply: true,
+    prefix: 'images/',
+    env: {
+      AIRINGCAL_ENV: 'development',
+      AIRINGCAL_PUBLIC_BASE_URL: 'https://cdn.example',
+    },
+    bucket: 'airingcal-staging-public',
+    cdn,
+  })
+
+  assert.equal(report.counts.repaired, 1)
+  assert.equal(report.counts.cdn_stale_pending, 1)
+  assert.ok(report.items.some((row) => row.status === 'cdn_stale_pending'))
+  assert.equal(report.complete, false)
+})
+
 test('writes report JSON when reportPath set', async () => {
   const store = new RepairStoreDouble()
   store.seed(KEY_A, jpegBytes(), 'application/octet-stream')
