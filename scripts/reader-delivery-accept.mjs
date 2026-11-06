@@ -50,6 +50,8 @@ export function parseAcceptArgs(argv = process.argv) {
   let imagePublicUrl = process.env.AIRINGCAL_ACCEPT_IMAGE_URL?.trim() || null
   let imageHash = process.env.AIRINGCAL_ACCEPT_IMAGE_HASH?.trim() || null
   let publicBaseUrl = process.env.AIRINGCAL_PUBLIC_BASE_URL?.trim() || process.env.AIRINGCAL_IMAGE_BASE_URL?.trim() || null
+  let rollbackGeneration = parsePositiveInt(process.env.AIRINGCAL_ACCEPT_ROLLBACK_GENERATION)
+  let currentGeneration = parsePositiveInt(process.env.AIRINGCAL_ACCEPT_CURRENT_GENERATION)
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
@@ -59,6 +61,8 @@ export function parseAcceptArgs(argv = process.argv) {
     else if (arg === '--image-url' && args[i + 1]) imagePublicUrl = args[++i]
     else if (arg === '--image-hash' && args[i + 1]) imageHash = args[++i]
     else if (arg === '--public-base' && args[i + 1]) publicBaseUrl = args[++i]
+    else if (arg === '--rollback-generation' && args[i + 1]) rollbackGeneration = parsePositiveInt(args[++i])
+    else if (arg === '--current-generation' && args[i + 1]) currentGeneration = parsePositiveInt(args[++i])
     else if (arg === '--skip-e2e') skipE2e = true
     else if (arg === '--skip-cf-smoke') skipCfSmoke = true
     else if (arg === '--skip-mime-head') skipMimeHead = true
@@ -80,6 +84,62 @@ export function parseAcceptArgs(argv = process.argv) {
     imagePublicUrl,
     imageHash,
     publicBaseUrl,
+    rollbackGeneration,
+    currentGeneration,
+  }
+}
+
+function parsePositiveInt(value) {
+  if (value == null || value === '') return null
+  const n = typeof value === 'number' ? value : Number(String(value).trim())
+  if (!Number.isSafeInteger(n) || n < 0) return null
+  return n
+}
+
+/**
+ * Resolve a reachable prior generation for rollback dry-run.
+ * Explicit override wins; otherwise current-1 when current ≥ 2.
+ * Returns null when no reachable prior exists (gate should be pending).
+ */
+export function resolveRollbackTargetGeneration({
+  explicit = null,
+  currentGeneration = null,
+} = {}) {
+  if (explicit != null) {
+    const n = Number(explicit)
+    if (!Number.isSafeInteger(n) || n < 1) return null
+    return n
+  }
+  const current = Number(currentGeneration)
+  if (!Number.isSafeInteger(current) || current < 2) return null
+  return current - 1
+}
+
+function currentGenerationFromBenchReceipt(receipt) {
+  if (!receipt || typeof receipt !== 'object') return null
+  const hosts = Array.isArray(receipt.hosts) ? receipt.hosts : []
+  for (const host of hosts) {
+    const gen = host?.identity?.generation
+    if (Number.isSafeInteger(gen) && gen >= 1) return gen
+  }
+  const cfGen = receipt.cf_vs_eo?.generation
+  if (Number.isSafeInteger(cfGen) && cfGen >= 1) return cfGen
+  return null
+}
+
+async function fetchCurrentGenerationFromHealth(publicBaseUrl, fetchImpl) {
+  if (!publicBaseUrl) return null
+  const base = String(publicBaseUrl).replace(/\/$/, '')
+  try {
+    const res = await fetchImpl(`${base}/api/health`, {
+      headers: { 'cache-control': 'no-cache', pragma: 'no-cache' },
+    })
+    if (!res?.ok) return null
+    const body = await res.json()
+    const gen = body?.data?.publish?.generation
+    return Number.isSafeInteger(gen) && gen >= 1 ? gen : null
+  } catch {
+    return null
   }
 }
 
@@ -518,7 +578,15 @@ export async function runMimeSampleHead({
   }
 }
 
-export async function runRollbackDryRun({ skip = false, spawnImpl = spawnCapture } = {}) {
+export async function runRollbackDryRun({
+  skip = false,
+  spawnImpl = spawnCapture,
+  rollbackGeneration = null,
+  currentGeneration = null,
+  publicBaseUrl = null,
+  baselineReceipt = null,
+  fetchImpl = globalThis.fetch,
+} = {}) {
   if (skip) {
     return {
       id: 'rollback_dry_run',
@@ -544,9 +612,37 @@ export async function runRollbackDryRun({ skip = false, spawnImpl = spawnCapture
       reason: 'rollback dry-run pending: no S3/public store credentials in environment',
     }
   }
+
+  const explicit = rollbackGeneration ?? parsePositiveInt(process.env.AIRINGCAL_ACCEPT_ROLLBACK_GENERATION)
+  let resolvedCurrent = currentGeneration
+    ?? parsePositiveInt(process.env.AIRINGCAL_ACCEPT_CURRENT_GENERATION)
+    ?? currentGenerationFromBenchReceipt(baselineReceipt)
+  if (resolvedCurrent == null) {
+    const healthBase = publicBaseUrl
+      || process.env.AIRINGCAL_PUBLIC_BASE_URL?.trim()
+      || process.env.AIRINGCAL_IMAGE_BASE_URL?.trim()
+      || null
+    resolvedCurrent = await fetchCurrentGenerationFromHealth(healthBase, fetchImpl)
+  }
+
+  const targetGeneration = resolveRollbackTargetGeneration({
+    explicit,
+    currentGeneration: resolvedCurrent,
+  })
+  if (targetGeneration == null) {
+    return {
+      id: 'rollback_dry_run',
+      ok: true,
+      measurable: false,
+      status: 'pending',
+      reason: 'rollback dry-run pending: no reachable prior generation (need --rollback-generation or current generation ≥ 2)',
+      current_generation: resolvedCurrent,
+    }
+  }
+
   const result = await spawnImpl(
     'pnpm',
-    ['exec', 'tsx', 'apps/node-jobs/src/cli/portable-release-rollback.ts', '--generation', '0'],
+    ['exec', 'tsx', 'apps/node-jobs/src/cli/portable-release-rollback.ts', '--generation', String(targetGeneration)],
     { timeoutMs: 60_000 },
   )
   const combined = `${result.stdout}\n${result.stderr}`
@@ -560,7 +656,7 @@ export async function runRollbackDryRun({ skip = false, spawnImpl = spawnCapture
       reason: null,
       dry_run: true,
       cas_result: receipt.cas_result ?? null,
-      target_generation: receipt.target_generation ?? null,
+      target_generation: receipt.target_generation ?? targetGeneration,
       code: result.code,
     }
   }
@@ -572,6 +668,7 @@ export async function runRollbackDryRun({ skip = false, spawnImpl = spawnCapture
       status: 'pending',
       reason: 'rollback dry-run pending after credential/env failure',
       stderr_tail: result.stderr.slice(-1200),
+      target_generation: targetGeneration,
     }
   }
   return {
@@ -584,6 +681,7 @@ export async function runRollbackDryRun({ skip = false, spawnImpl = spawnCapture
       : `rollback dry-run failed exit ${result.code}: no dry_run receipt`,
     stderr_tail: result.stderr.slice(-1200),
     stdout_tail: result.stdout.slice(-800),
+    target_generation: targetGeneration,
   }
 }
 
@@ -760,6 +858,8 @@ export async function runAccept(options = {}) {
     imagePublicUrl = null,
     imageHash = null,
     publicBaseUrl = null,
+    rollbackGeneration = null,
+    currentGeneration = null,
     spawnImpl = spawnCapture,
     fetchImpl = globalThis.fetch,
   } = options
@@ -778,7 +878,15 @@ export async function runAccept(options = {}) {
     fetchImpl,
     baselineReceipt: baselineGate.receipt ?? null,
   })
-  const rollbackGate = await runRollbackDryRun({ skip: skipRollback, spawnImpl })
+  const rollbackGate = await runRollbackDryRun({
+    skip: skipRollback,
+    spawnImpl,
+    fetchImpl,
+    rollbackGeneration,
+    currentGeneration,
+    publicBaseUrl,
+    baselineReceipt: baselineGate.receipt ?? null,
+  })
   const shadowGate = await runShadowGateStatus({ skip: skipShadowGate, spawnImpl })
 
   const gates = [baselineGate, postGate, e2eGate, cfGate, mimeGate, rollbackGate, shadowGate]
@@ -818,6 +926,8 @@ Options:
   --image-url <url>   public URL for MIME HEAD sample
   --image-hash <hex>  used with --public-base / AIRINGCAL_PUBLIC_BASE_URL
   --public-base <url> image public base
+  --rollback-generation <n>  prior generation for rollback dry-run
+  --current-generation <n>   derive prior as current-1 when ≥ 2
   --skip-e2e          skip portable e2e (unit/dev)
   --skip-cf-smoke     skip CF staging smoke
   --skip-mime-head    skip MIME HEAD

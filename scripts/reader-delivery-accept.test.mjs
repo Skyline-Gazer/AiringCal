@@ -9,6 +9,7 @@ import {
   evaluatePostBenchGates,
   extractPendingOwnerItems,
   parseAcceptArgs,
+  resolveRollbackTargetGeneration,
   runPortableE2e,
   runRollbackDryRun,
   runShadowGateStatus,
@@ -426,6 +427,7 @@ test('runRollbackDryRun does not rubber-stamp non-zero exits that only mention U
   process.env.AIRINGCAL_S3_ACCESS_KEY_ID = 'AKIA_TEST'
   try {
     const gate = await runRollbackDryRun({
+      rollbackGeneration: 2,
       spawnImpl: async () => ({
         ok: false,
         code: 1,
@@ -451,6 +453,7 @@ test('runRollbackDryRun accepts structured dry_run receipt even when exit is non
   process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT = 'https://example-bucket.r2.cloudflarestorage.com'
   try {
     const gate = await runRollbackDryRun({
+      rollbackGeneration: 2,
       spawnImpl: async () => ({
         ok: false,
         code: 1,
@@ -478,6 +481,7 @@ test('runRollbackDryRun requires dry_run receipt on zero exit (no bare success)'
   process.env.AIRINGCAL_S3_ACCESS_KEY_ID = 'AKIA_TEST'
   try {
     const gate = await runRollbackDryRun({
+      rollbackGeneration: 2,
       spawnImpl: async () => ({
         ok: true,
         code: 0,
@@ -495,3 +499,163 @@ test('runRollbackDryRun requires dry_run receipt on zero exit (no bare success)'
     else process.env.AIRINGCAL_S3_ACCESS_KEY_ID = previous
   }
 })
+
+test('parseAcceptArgs reads --rollback-generation',
+  () => {
+    const parsed = parseAcceptArgs([
+      'node',
+      'accept.mjs',
+      '--rollback-generation',
+      '4',
+    ])
+    assert.equal(parsed.rollbackGeneration, 4)
+  },
+)
+
+test('resolveRollbackTargetGeneration prefers explicit override',
+  () => {
+    assert.equal(
+      resolveRollbackTargetGeneration({ explicit: 3, currentGeneration: 9 }),
+      3,
+    )
+  },
+)
+
+test('resolveRollbackTargetGeneration uses current-1 when prior is at least 1',
+  () => {
+    assert.equal(
+      resolveRollbackTargetGeneration({ explicit: null, currentGeneration: 5 }),
+      4,
+    )
+    assert.equal(
+      resolveRollbackTargetGeneration({ explicit: null, currentGeneration: 2 }),
+      1,
+    )
+  },
+)
+
+test('resolveRollbackTargetGeneration returns null when no reachable prior',
+  () => {
+    assert.equal(
+      resolveRollbackTargetGeneration({ explicit: null, currentGeneration: 1 }),
+      null,
+    )
+    assert.equal(
+      resolveRollbackTargetGeneration({ explicit: null, currentGeneration: 0 }),
+      null,
+    )
+    assert.equal(
+      resolveRollbackTargetGeneration({ explicit: null, currentGeneration: null }),
+      null,
+    )
+    assert.equal(
+      resolveRollbackTargetGeneration({ explicit: 0, currentGeneration: 5 }),
+      null,
+    )
+  },
+)
+
+test('runRollbackDryRun is pending when no reachable prior generation',
+  async () => {
+    const previous = {
+      AIRINGCAL_PUBLIC_S3_ENDPOINT: process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT,
+      AIRINGCAL_ACCEPT_ROLLBACK_GENERATION: process.env.AIRINGCAL_ACCEPT_ROLLBACK_GENERATION,
+      AIRINGCAL_ACCEPT_CURRENT_GENERATION: process.env.AIRINGCAL_ACCEPT_CURRENT_GENERATION,
+    }
+    process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT = 'https://example-bucket.r2.cloudflarestorage.com'
+    delete process.env.AIRINGCAL_ACCEPT_ROLLBACK_GENERATION
+    process.env.AIRINGCAL_ACCEPT_CURRENT_GENERATION = '1'
+    const calls = []
+    try {
+      const gate = await runRollbackDryRun({
+        spawnImpl: async (command, args) => {
+          calls.push({ command, args })
+          return { ok: true, code: 0, timedOut: false, stdout: '', stderr: '' }
+        },
+      })
+      assert.equal(calls.length, 0)
+      assert.equal(gate.ok, true)
+      assert.equal(gate.measurable, false)
+      assert.equal(gate.status, 'pending')
+      assert.match(String(gate.reason), /no reachable prior generation/i)
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+  },
+)
+
+test('runRollbackDryRun spawns resolved prior generation not hardcoded 0',
+  async () => {
+    const previous = {
+      AIRINGCAL_PUBLIC_S3_ENDPOINT: process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT,
+      AIRINGCAL_ACCEPT_ROLLBACK_GENERATION: process.env.AIRINGCAL_ACCEPT_ROLLBACK_GENERATION,
+      AIRINGCAL_ACCEPT_CURRENT_GENERATION: process.env.AIRINGCAL_ACCEPT_CURRENT_GENERATION,
+    }
+    process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT = 'https://example-bucket.r2.cloudflarestorage.com'
+    delete process.env.AIRINGCAL_ACCEPT_ROLLBACK_GENERATION
+    process.env.AIRINGCAL_ACCEPT_CURRENT_GENERATION = '7'
+    const calls = []
+    try {
+      const gate = await runRollbackDryRun({
+        spawnImpl: async (command, args) => {
+          calls.push({ command, args })
+          return {
+            ok: true,
+            code: 0,
+            timedOut: false,
+            stdout: JSON.stringify({
+              dry_run: true,
+              cas_result: 'not_attempted',
+              target_generation: 6,
+            }) + '\n',
+            stderr: '',
+          }
+        },
+      })
+      assert.equal(calls.length, 1)
+      assert.deepEqual(calls[0].args.slice(-2), ['--generation', '6'])
+      assert.equal(gate.status, 'ok')
+      assert.equal(gate.measurable, true)
+      assert.equal(gate.dry_run, true)
+      assert.equal(gate.target_generation, 6)
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+  },
+)
+
+test('runRollbackDryRun honors --rollback-generation / explicit option',
+  async () => {
+    const previous = process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT
+    process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT = 'https://example-bucket.r2.cloudflarestorage.com'
+    const calls = []
+    try {
+      const gate = await runRollbackDryRun({
+        rollbackGeneration: 3,
+        spawnImpl: async (command, args) => {
+          calls.push({ command, args })
+          return {
+            ok: true,
+            code: 0,
+            timedOut: false,
+            stdout: JSON.stringify({ dry_run: true, target_generation: 3 }) + '\n',
+            stderr: '',
+          }
+        },
+      })
+      assert.equal(calls.length, 1)
+      assert.deepEqual(calls[0].args.slice(-2), ['--generation', '3'])
+      assert.equal(gate.ok, true)
+      assert.equal(gate.dry_run, true)
+    } finally {
+      if (previous === undefined) delete process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT
+      else process.env.AIRINGCAL_PUBLIC_S3_ENDPOINT = previous
+    }
+  },
+)
