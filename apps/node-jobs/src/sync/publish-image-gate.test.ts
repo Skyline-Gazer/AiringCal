@@ -233,3 +233,66 @@ test('ensurePublishImagesComplete fails closed when a referenced image is nowher
     /publish gate.*images\/[0-9a-f]{64}\/(original|thumb\.v2\.webp)/i,
   )
 })
+
+test('ensurePublishImagesComplete uploads with bounded concurrency while preserving counts', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-gate-'))
+  const hashes = ['c', 'd', 'e', 'f', '1', '2'].map((char) => char.repeat(64))
+  try {
+    for (const hash of hashes) {
+      mkdirSync(join(dir, 'images', hash), { recursive: true })
+      writeFileSync(join(dir, 'images', hash, 'original'), `orig-${hash.slice(0, 1)}`)
+    }
+    let inFlight = 0
+    let maxInFlight = 0
+    const inner = new MemoryPublicStore()
+    const yieldingStore: PublicStore = {
+      getCurrentRelease: () => inner.getCurrentRelease(),
+      getSnapshotBytes: (ref) => inner.getSnapshotBytes(ref),
+      headObject: (key) => inner.headObject(key),
+      commitRelease: (expected, next) => inner.commitRelease(expected, next),
+      async putImmutableObject(key, body, contentType) {
+        inFlight += 1
+        maxInFlight = Math.max(maxInFlight, inFlight)
+        await Promise.resolve()
+        try {
+          return await inner.putImmutableObject(key, body, contentType)
+        } finally {
+          inFlight -= 1
+        }
+      },
+    }
+    const result = await ensurePublishImagesComplete({
+      snapshot: snapshotWithHashes(hashes),
+      publicStore: yieldingStore,
+      imageRoot: dir,
+      concurrency: 4,
+    })
+    assert.equal(result.hashes, hashes.length)
+    assert.equal(result.uploaded, hashes.length)
+    assert.ok(maxInFlight > 1, `expected concurrent uploads, max in flight was ${maxInFlight}`)
+    assert.ok(maxInFlight <= 4, `concurrency must stay bounded, max in flight was ${maxInFlight}`)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('ensurePublishImagesComplete fails closed without uploading when an original is missing under concurrency', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-gate-'))
+  try {
+    mkdirSync(join(dir, 'images', HASH_A), { recursive: true })
+    writeFileSync(join(dir, 'images', HASH_A, 'original'), 'orig-a')
+    const store = new MemoryPublicStore()
+    await assert.rejects(
+      () =>
+        ensurePublishImagesComplete({
+          snapshot: snapshotWithHashes([HASH_A, HASH_B]),
+          publicStore: store,
+          imageRoot: dir,
+          concurrency: 2,
+        }),
+      /publish gate.*images\/[0-9a-f]{64}\/(original|thumb\.v2\.webp)/i,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

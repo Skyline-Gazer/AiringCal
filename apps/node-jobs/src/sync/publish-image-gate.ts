@@ -4,6 +4,17 @@ import { join } from 'node:path'
 import type { PublicSnapshotV1 } from '@airing-cal/storage'
 import { imageOriginalKey, imageThumbV2Key } from '@airing-cal/storage'
 import { collectReferencedImageHashes, type PublicStore } from '@airing-cal/v3-core'
+import { emitProgress, emitStage } from './sync-progress.ts'
+
+/** Parallel object operations; keeps a 676-hash first publish inside the job timeout. */
+const DEFAULT_CONCURRENCY = 8
+const MAX_CONCURRENCY = 32
+const PROGRESS_EVERY = 25
+
+function clampConcurrency(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_CONCURRENCY
+  return Math.min(MAX_CONCURRENCY, Math.max(1, Math.floor(value)))
+}
 
 export function contentTypeForKey(key: string): string {
   if (key.endsWith('.webp')) return 'image/webp'
@@ -89,62 +100,63 @@ export async function ensurePublishImagesComplete(options: {
   snapshot: PublicSnapshotV1
   publicStore: PublicStore
   imageRoot: string | null
+  /** Bounded parallel object work; R2 upload latency dominates a first publish. */
+  concurrency?: number
 }): Promise<PublishImageGateResult> {
+  const hashes = collectReferencedImageHashes(options.snapshot)
+  const concurrency = clampConcurrency(options.concurrency ?? DEFAULT_CONCURRENCY)
+  // Originals first: a fatal original failure must not leave thumb-only side effects.
+  const phases = [
+    [...hashes].map((hash) => imageOriginalKey(hash)),
+    [...hashes].map((hash) => imageThumbV2Key(hash)),
+  ]
+  const total = hashes.size * 2
   let uploaded = 0
   let reused = 0
   let skippedUnchanged = 0
   let missingThumbs = 0
-  const hashes = collectReferencedImageHashes(options.snapshot)
-  for (const hash of hashes) {
-    for (const key of [imageOriginalKey(hash), imageThumbV2Key(hash)]) {
-      const local = readLocalFile(options.imageRoot, key)
-      const head = options.publicStore.headObject
-        ? await options.publicStore.headObject(key)
-        : null
-      if (head) {
-        if (local == null) {
-          reused += 1
-          continue
+  let done = 0
+  let failure: unknown = null
+
+  emitStage('Publish image gate started', {
+    stage: 'publish_images',
+    referenced_hashes: hashes.size,
+    objects: total,
+    concurrency,
+  })
+
+  for (const keys of phases) {
+    if (failure !== null) break
+    let nextIndex = 0
+    const worker = async (): Promise<void> => {
+      while (failure === null) {
+        const key = keys[nextIndex]
+        nextIndex += 1
+        if (!key) return
+        const outcome = await processObject(key, options, hashes)
+        if (outcome === 'uploaded') uploaded += 1
+        else if (outcome === 'reused') reused += 1
+        else if (outcome === 'skipped_unchanged') skippedUnchanged += 1
+        else missingThumbs += 1
+        done += 1
+        if (done % PROGRESS_EVERY === 0 || done === total) {
+          emitProgress('publish', 'publish_images_progress', done, total, {
+            uploaded,
+            reused,
+            skipped_unchanged: skippedUnchanged,
+            missing_thumbs: missingThumbs,
+          })
         }
-        const verdict = await compareWithPublicObject(options.publicStore, key, local, head)
-        if (verdict === 'identical') {
-          skippedUnchanged += 1
-          continue
-        }
-        throw new Error(
-          verdict === 'unreadable'
-            ? `Publish gate failed: ${key} is reported present but its bytes cannot be read`
-            : `Publish gate failed: ${key} differs from the local file; immutable public image objects must never be replaced`,
-        )
       }
-      const existing = await options.publicStore.getSnapshotBytes(key)
-      if (existing) {
-        if (local == null) {
-          reused += 1
-        } else if (existing.byteLength === local.bytes.byteLength
-          && existing.every((byte, index) => byte === local.bytes[index])) {
-          skippedUnchanged += 1
-        } else {
-          throw new Error(
-            `Publish gate failed: ${key} differs from the local file; immutable public image objects must never be replaced`,
-          )
-        }
-        continue
-      }
-      if (local) {
-        await options.publicStore.putImmutableObject(key, local.bytes, contentTypeForKey(key))
-        uploaded += 1
-        continue
-      }
-      if (key === imageThumbV2Key(hash)) {
-        missingThumbs += 1
-        continue
-      }
-      throw new Error(
-        `Publish gate failed: referenced image object ${key} is missing from the public store and no local source exists`,
-      )
     }
+    const runners = Array.from({ length: Math.min(concurrency, keys.length) }, () =>
+      worker().catch((error: unknown) => {
+        if (failure === null) failure = error
+      }))
+    await Promise.all(runners)
   }
+  if (failure !== null) throw failure
+
   return {
     hashes: hashes.size,
     uploaded,
@@ -153,3 +165,49 @@ export async function ensurePublishImagesComplete(options: {
     missing_thumbs: missingThumbs,
   }
 }
+
+type ObjectOutcome = 'uploaded' | 'reused' | 'skipped_unchanged' | 'missing_thumb'
+
+/** One referenced object: verify existing content or upload from the local image root (immutable). */
+async function processObject(
+  key: string,
+  options: { publicStore: PublicStore; imageRoot: string | null },
+  hashes: ReadonlySet<string>,
+): Promise<ObjectOutcome> {
+  const hash = key.split('/')[1] ?? ''
+  if (!hashes.has(hash)) {
+    throw new Error(`Publish gate received an object key outside the snapshot: ${key}`)
+  }
+  const local = readLocalFile(options.imageRoot, key)
+  const head = options.publicStore.headObject
+    ? await options.publicStore.headObject(key)
+    : null
+  if (head) {
+    if (local == null) return 'reused'
+    const verdict = await compareWithPublicObject(options.publicStore, key, local, head)
+    if (verdict === 'identical') return 'skipped_unchanged'
+    throw new Error(
+      verdict === 'unreadable'
+        ? `Publish gate failed: ${key} is reported present but its bytes cannot be read`
+        : `Publish gate failed: ${key} differs from the local file; immutable public image objects must never be replaced`,
+    )
+  }
+  const existing = await options.publicStore.getSnapshotBytes(key)
+  if (existing) {
+    if (local == null) return 'reused'
+    if (existing.byteLength === local.bytes.byteLength
+      && existing.every((byte, index) => byte === local.bytes[index])) return 'skipped_unchanged'
+    throw new Error(
+      `Publish gate failed: ${key} differs from the local file; immutable public image objects must never be replaced`,
+    )
+  }
+  if (local) {
+    await options.publicStore.putImmutableObject(key, local.bytes, contentTypeForKey(key))
+    return 'uploaded'
+  }
+  if (key === imageThumbV2Key(hash)) return 'missing_thumb'
+  throw new Error(
+    `Publish gate failed: referenced image object ${key} is missing from the public store and no local source exists`,
+  )
+}
+
