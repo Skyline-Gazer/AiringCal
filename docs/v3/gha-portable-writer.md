@@ -42,15 +42,15 @@ All GitHub Actions Environment settings follow `AIRINGCAL_{ENVIRONMENT}_{SERVICE
 
 Production uses the corresponding `AIRINGCAL_PRODUCTION_*` names in the `production` Environment (plus repository variable `AIRINGCAL_WRITER_ENABLED=true` only after owner cutover approval).
 
-### One-shot Staging initialization
+### One-shot Staging initialization (local `.env` driven)
+
+Copy `.env.example` to `.env` (git-ignored) and fill in the 4 required keys (`AIRINGCAL_STAGING_BANGUMI_TOKEN`, `AIRINGCAL_STAGING_PRIMARY_USER_ID`, `AIRINGCAL_STAGING_S3_ACCESS_KEY_ID`, `AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY`), then run:
 
 ```bash
-export AIRINGCAL_STAGING_PRIMARY_USER_ID="<bangumi_user_id>"
-export AIRINGCAL_STAGING_BANGUMI_TOKEN="<bangumi_token>"
-export AIRINGCAL_STAGING_S3_ACCESS_KEY_ID="<r2_staging_access_key_id>"
-export AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY="<r2_staging_secret_access_key>"
 bash scripts/setup-staging.sh
 ```
+
+`scripts/setup-staging.sh` safely parses `.env` without shell evaluation, queries the Bangumi API (`/v0/users/{username}` with `/v0/me` fallback) to resolve the real `userId` and `username` into `AIRINGCAL_STAGING_USERS_JSON`, verifies that `airingcal-staging-checkpoint` has `r2.dev` public access disabled, enables `r2.dev` HTTPS on `airingcal-staging-public`, syncs GitHub `staging` Variables/Secrets, and deploys `airing-cal-v3-read-staging` with `--env-file /dev/null`.
 
 ### Local / non-Actions runtime env (`node-jobs` internal contract)
 
