@@ -11,7 +11,7 @@
  * placeholder value fails closed with INVALID_READ_CONFIG) and run the checks in
  * `README.md` / `docs/v3/edgeone-store.md`.
  */
-import { handleEdgeOneReadRequest } from '@airing-cal/v3-read/edgeone-read-handler'
+import { createEdgeOneReadHandler } from '@airing-cal/v3-read/edgeone-read-handler'
 import { resolveNsfwShow } from '@airing-cal/v3-read/read-config'
 
 /** Isolate-local handler: built (and configuration-validated) on first use. */
@@ -20,7 +20,7 @@ let cached = { baseUrl: '', handler: null }
 function readHandlerFor(env) {
   const baseUrl = env.AIRINGCAL_PUBLIC_BASE_URL
   if (cached.handler && cached.baseUrl === baseUrl) return cached.handler
-  const handler = handleEdgeOneReadRequest({
+  const handler = createEdgeOneReadHandler({
     publicBaseUrl: baseUrl,
     nsfwShow: resolveNsfwShow(env.NSFW_SHOW),
     packageVersion: env.PACKAGE_VERSION,
