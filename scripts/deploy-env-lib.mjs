@@ -685,8 +685,10 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
   await requireIoMethod(io, 'ensureBucket')(ctx)
   completed.push('ensure-bucket')
 
-  await requireIoMethod(io, 'disableR2Dev')(ctx)
+  const disableResult = await requireIoMethod(io, 'disableR2Dev')(ctx)
   completed.push('disable-r2-dev')
+  // Provenance: only the disable-r2-dev adapter result may claim r2.dev is off.
+  ctx.r2DevDisabled = Boolean(disableResult?.disabled)
 
   await requireIoMethod(io, 'attachCustomDomain')(ctx)
   completed.push('attach-custom-domain')
@@ -706,7 +708,7 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
   const probeResult = await requireIoMethod(io, 'probeAnonymousAccess')(ctx)
   completed.push('isolation-probe-check')
   const isolation = evaluateIsolationProbe({
-    r2DevDisabled: Boolean(probeResult?.r2DevDisabled),
+    r2DevDisabled: Boolean(ctx.r2DevDisabled),
     probes: probeResult?.probes ?? [],
   })
 

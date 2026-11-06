@@ -62,7 +62,7 @@ function unsupportedLive(stepId) {
  * `runDevelopmentApply({ io })`; here they either call platform APIs or fail
  * closed with an explicit missing-capability error (never silent dual-bucket).
  */
-export function createLiveDevelopmentApplyIo({ env, plan, fetchImpl = globalThis.fetch } = {}) {
+function createLiveDevelopmentApplyIo({ env, plan, fetchImpl = globalThis.fetch } = {}) {
   const probeUrl = `${plan.publicBaseUrl}/${DEVELOPMENT_DEFAULTS.isolationProbeKey}`
 
   return {
@@ -106,7 +106,7 @@ export function createLiveDevelopmentApplyIo({ env, plan, fetchImpl = globalThis
     applyCors: unsupportedLive('cors'),
     configureWaf: unsupportedLive('waf-checkpoints'),
     writeIsolationProbe: unsupportedLive('isolation-probe-write'),
-    async probeAnonymousAccess() {
+    async probeAnonymousAccess(ctx = {}) {
       if (typeof fetchImpl !== 'function') {
         throw new Error('fetchImpl required for isolation anonymous GET/HEAD probes')
       }
@@ -116,7 +116,8 @@ export function createLiveDevelopmentApplyIo({ env, plan, fetchImpl = globalThis
         const response = await fetchImpl(probeUrl, { method, redirect: 'manual' })
         probes.push({ url: probeUrl, method, status: Number(response.status) })
       }
-      return { r2DevDisabled: true, probes }
+      // Never assume r2.dev is disabled; require prior disable-r2-dev evidence on ctx.
+      return { r2DevDisabled: Boolean(ctx?.r2DevDisabled), probes }
     },
     copyPublicPrefixes: unsupportedLive('copy-public'),
     copyCheckpoints: unsupportedLive('copy-checkpoints'),

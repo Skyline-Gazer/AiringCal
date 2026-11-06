@@ -485,6 +485,65 @@ test('runDevelopmentApply aborts before copy when isolation fails', async () => 
   assert.ok(io.calls.includes('isolation-probe-check'))
   assert.equal(result.developmentWriterEnabled, false)
 })
+test('runDevelopmentApply derives r2DevDisabled from disableR2Dev result, not probe hardcode', async () => {
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const io = createRecordingApplyIo({
+    disableR2Dev: async () => ({ disabled: false }),
+    probeAnonymousAccess: async () => ({
+      // Vacuous true must not override missing disable evidence.
+      r2DevDisabled: true,
+      probes: [
+        {
+          url: 'https://dev-cdn.example.test/checkpoints/_isolation-probe.txt',
+          method: 'GET',
+          status: 403,
+        },
+        {
+          url: 'https://dev-cdn.example.test/checkpoints/_isolation-probe.txt',
+          method: 'HEAD',
+          status: 404,
+        },
+      ],
+    }),
+  })
+
+  const result = await runDevelopmentApply({
+    plan,
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'test-token',
+      AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes',
+    },
+    io,
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.abortCutover, true)
+  assert.equal(result.dualBucketFallback, false)
+  assert.ok(!io.calls.includes('copy-public'))
+  assert.match(String(result.reason ?? result.isolation?.reason ?? ''), /r2\.dev|disabled/i)
+})
+
+test('createLiveDevelopmentApplyIo probeAnonymousAccess does not assume r2DevDisabled', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const io = createLiveDevelopmentApplyIo({
+    env: {},
+    plan,
+    fetchImpl: async () => ({ status: 403 }),
+  })
+  const probe = await io.probeAnonymousAccess({ plan })
+  assert.equal(probe.r2DevDisabled, false)
+  assert.equal(probe.probes.length, 2)
+})
+
 
 test('validateImageCdnConfig defaults off and rejects loops / non-https / same host', () => {
   assert.deepEqual(validateImageCdnConfig({ publicBaseUrl: 'https://cdn.example.test' }), {
