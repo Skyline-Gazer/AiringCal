@@ -150,3 +150,40 @@ All samples `n_ok === 5` on both hosts (thin `n_ok=3` collections repeat from pr
 - CDN HIT still often unobserved (`cdn_shared_attempted`).
 - Transient CF `fetch failed` can still happen; harness now refuses to claim `ok` when a host errors or samples are thin.
 - Widget / mainland unchanged (`skipped_no_browser` / `pending_owner_node`).
+
+## Important review fix2 — `isSuccessfulRun` HTTP success gate
+
+**Finding:** `isSuccessfulRun` treated any non-null status without thrown error as success, so EdgeOne `545` inflated `n_ok` and allowed `status: ok` with 5xx inside sample sets.
+
+### Change
+
+- `isSuccessfulRun` now requires `run.ok === true` (from `timedFetch`: `res.ok || 3xx`) and no `error`.
+- Unit test: calendar always returning HTTP 545 → `n_ok === 0`, host/receipt `incomplete`.
+
+### TDD
+
+**RED** — new test failed with `host.status === 'ok'` while calendar was 545.
+
+**GREEN** — after `run.ok === true` gate:
+
+```text
+node --test scripts/reader-delivery-bench.test.mjs
+ℹ tests 12
+ℹ pass 12
+ℹ fail 0
+```
+
+### Baseline re-capture
+
+Re-ran live hosts with the fixed gate:
+
+```json
+{"status":"ok","hosts":[{"host":"https://airing-cal-v3-read-staging.r7a.workers.dev","status":"ok"},{"host":"https://test.air.teijp.cn","status":"ok"}],"cf_vs_eo_equal":true}
+```
+
+EO still saw intermittent `HTTP 545` on some CDN attempts (recorded in `errors`), but only real 2xx counted toward `n_ok`; every sample reached `n_ok === 5` via retries. No 5xx remains inside `http_statuses` of any `ok` sample.
+
+### Concerns
+
+- EO 545 remains intermittent; completeness now depends on retries filling N with real successes.
+- CDN HIT warm and MIME octet-stream baseline notes unchanged.

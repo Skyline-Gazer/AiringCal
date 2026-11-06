@@ -398,6 +398,79 @@ test('runBench marks host incomplete when a sample stays below N after retries',
     rmSync(dir, { recursive: true, force: true })
   }
 })
+test('runBench excludes HTTP 5xx from n_ok and marks host incomplete', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'reader-delivery-bench-5xx-'))
+  const out = join(dir, 'out.json')
+  let calendarGets = 0
+  const fetchImpl = async (input) => {
+    const url = String(input)
+    if (url.includes('/api/calendar')) {
+      calendarGets++
+      // Always 545: must never count toward N completeness even without thrown errors.
+      return new Response('edge function error', {
+        status: 545,
+        headers: { 'content-type': 'text/plain', 'eo-cache-status': 'DYNAMIC' },
+      })
+    }
+    if (url.includes('/api/health') || url.includes('/api/collections')) {
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          data: {
+            publish: { generation: 2, content_hash: 'a'.repeat(64) },
+            items: [{ hash: 'b'.repeat(64) }],
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'cf-cache-status': 'HIT' },
+        },
+      )
+    }
+    if (url.includes('/image/')) {
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'https://cdn.example/img' },
+      })
+    }
+    if (url.includes('cdn.example')) {
+      return new Response(null, {
+        status: 200,
+        headers: { 'content-type': 'image/jpeg' },
+      })
+    }
+    return new Response('missing', { status: 404 })
+  }
+
+  try {
+    const receipt = await runBench({
+      hosts: ['https://eo-5xx.example'],
+      out,
+      runs: 3,
+      fetchImpl,
+      now: () => 1_700_000_000_100,
+      env: {},
+      browserAvailable: false,
+      isolateRecycleAvailable: false,
+      sleep: async () => {},
+    })
+    const host = receipt.hosts[0]
+    assert.ok(calendarGets > 0, 'calendar path must be exercised')
+    assert.equal(host.status, 'incomplete')
+    assert.match(host.error, /n_ok < 3/)
+    assert.equal(receipt.status, 'incomplete')
+    const calendar = host.paths.calendar.samples
+    assert.ok(calendar.first_after_deploy.n_ok < 3)
+    assert.equal(calendar.first_after_deploy.n_ok, 0)
+    assert.ok(
+      calendar.first_after_deploy.errors.some((e) => /HTTP 545/.test(e)),
+      'errors should record HTTP 545 rather than counting it as success',
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 
 
 

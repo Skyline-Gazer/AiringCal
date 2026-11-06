@@ -275,7 +275,7 @@ async function timedFetch(fetchImpl, url, init = {}, options = {}) {
 }
 
 function isSuccessfulRun(run) {
-  return Boolean(run) && !run.error && run.status != null
+  return Boolean(run) && run.ok === true && !run.error
 }
 
 function countOkRuns(runs) {
