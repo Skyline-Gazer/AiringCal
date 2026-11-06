@@ -70,7 +70,7 @@ If authentication succeeds but the R2 preflight reports `Authentication error [c
 
 1. Run `bash scripts/setup-staging.sh` to provision/reuse the two staging buckets, enable public HTTPS on `airingcal-staging-public`, configure the `staging` Environment Variables + 3 Secrets, and deploy the staging read Worker.
 2. Actions → **Portable writer (GHA)** → `workflow_dispatch` (`target=staging`, optional `force_mode=full`).
-3. Expect job exit 0, checkpoint object `checkpoints/builder.sqlite`, public pointer `public/current-release.json`, and Bark silent on success.
+3. Expect job exit 0, `checkpoint_restore` / `gha_portable_writer_tick` / `checkpoint_upload` log events, checkpoint object `checkpoints/builder.sqlite`, public pointer `public/current-release.json`, and Bark silent on success. The built entry is `dist/portable-bundle/gha-portable-writer.mjs`; an exit 0 without Writer events or R2 artifacts is not a successful publish.
 
 ## Not in this slice / remaining backlog
 

@@ -26,7 +26,7 @@ async function main(env: Record<string, string | undefined> = process.env): Prom
 }
 
 if (process.argv[1]?.endsWith('gha-portable-writer-main.ts')
-  || process.argv[1]?.endsWith('gha-portable-writer-main.mjs')) {
+  || process.argv[1]?.endsWith('gha-portable-writer.mjs')) {
   main().then((code) => {
     process.exitCode = code
   }).catch((error) => {
