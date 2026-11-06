@@ -81,13 +81,13 @@ async function run() {
     await check('/api/health', { status: 200, includes: ['"ok":true', '"generation":1', '"total_subjects":3', '"scheduler":"external"'] })
     await check('/api/collections?type=watching&page=1&limit=24', {
       status: 200,
-      cacheControl: 'public, max-age=30, s-maxage=300, stale-while-revalidate=120',
+      cacheControl: 'public, max-age=30, s-maxage=60, stale-while-revalidate=30',
       includes: ['"subject_id":11', '"limit":24'],
     })
     await check('/api/collections?type=watched&page=1&limit=24', { status: 200, includes: ['"subject_id":21'] })
     await check('/api/calendar', {
       status: 200,
-      cacheControl: 'public, max-age=60, s-maxage=600, stale-while-revalidate=300',
+      cacheControl: 'public, max-age=30, s-maxage=60, stale-while-revalidate=30',
       includes: ['"id":11'],
     })
     await check('/api/config?key=nsfw', { status: 200, cacheControl: 'public, max-age=60' })

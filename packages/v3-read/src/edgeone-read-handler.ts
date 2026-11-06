@@ -1,6 +1,7 @@
 import { HttpPublicStore } from '@airing-cal/v3-adapters/http-public-store'
 import { createPublicBaseUrlValidator } from '@airing-cal/v3-core/public-image-url'
 import { handlePortableReadRequest } from './portable-read-handler.ts'
+import { createVerifiedSnapshotCache } from './verified-snapshot-cache.ts'
 
 /**
  * EdgeOne read configuration: the Edge runtime fetches the public Release over
@@ -38,11 +39,13 @@ export function createEdgeOneReadHandler(config: EdgeOneReadConfig): EdgeOneRead
   const publicStore = new HttpPublicStore(publicBaseUrl, config.pointerKey, {
     fetch: config.fetch,
   })
+  const snapshotCache = createVerifiedSnapshotCache()
   return (request) => handlePortableReadRequest(request, {
     publicStore,
     nsfwShow: config.nsfwShow,
     packageVersion: config.packageVersion,
     publicBaseUrl,
     processEnv: { AIRINGCAL_PLATFORM: 'edgeone' },
+    snapshotCache,
   })
 }

@@ -27,8 +27,8 @@ Deprecated sync routes respond **410** with JSON `code: DEPRECATED` and `Cache-C
 
 From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v3-core/src/read-contract.ts`):
 
-- Calendar JSON: `public, max-age=60, s-maxage=600, stale-while-revalidate=300`
-- Collections JSON: `public, max-age=30, s-maxage=300, stale-while-revalidate=120`
+- Calendar JSON: `public, max-age=30, s-maxage=60, stale-while-revalidate=30`
+- Collections JSON: `public, max-age=30, s-maxage=60, stale-while-revalidate=30`
 - Images: `IMAGE_CACHE_CONTROL` / `IMAGE_CDN_CACHE_CONTROL` (see `read-api.ts`)
 
 ## Automated contract evidence

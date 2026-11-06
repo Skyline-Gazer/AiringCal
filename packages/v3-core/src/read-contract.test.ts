@@ -16,8 +16,8 @@ test('v2 read route inventory is stable for contract tests', () => {
   assert.ok(V2_RETIRED_ROUTES.length >= 3)
 })
 
-test('v2 cache-control literals match web-worker read-api constants', () => {
-  assert.match(V2_CACHE_CONTROL.collections, /max-age=30/)
-  assert.match(V2_CACHE_CONTROL.calendar, /s-maxage=600/)
+test('v2 cache-control literals match unified reader soft/CDN budget', () => {
+  assert.equal(V2_CACHE_CONTROL.collections, 'public, max-age=30, s-maxage=60, stale-while-revalidate=30')
+  assert.equal(V2_CACHE_CONTROL.calendar, 'public, max-age=30, s-maxage=60, stale-while-revalidate=30')
   assert.equal(V2_CACHE_CONTROL.image, 'public, max-age=31536000, immutable')
 })

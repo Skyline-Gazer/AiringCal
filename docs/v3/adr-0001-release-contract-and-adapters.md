@@ -69,8 +69,8 @@ payload; splitting is only justified by measured production size (see Decision 5
 
 | Route | `Cache-Control` |
 |---|---|
-| `/api/collections` | `public, max-age=30, s-maxage=300, stale-while-revalidate=120` |
-| `/api/calendar` | `public, max-age=60, s-maxage=600, stale-while-revalidate=300` |
+| `/api/collections` | `public, max-age=30, s-maxage=60, stale-while-revalidate=30` |
+| `/api/calendar` | `public, max-age=30, s-maxage=60, stale-while-revalidate=30` |
 | `/api/config`, `/api/version`, other JSON | `public, max-age=60` |
 | `/image/:hash(/thumb)` | `public, max-age=31536000, immutable` + `CDN-Cache-Control: max-age=31536000` |
 | errors / retired routes | `no-store` |

@@ -14,6 +14,7 @@ import {
 import { loadVerifiedPublicSnapshot, type VerifiedPublicSnapshot } from './load-public-snapshot.ts'
 import { resolveRuntimePlatformIdFromEnv } from '@airing-cal/v3-adapters/platform-id'
 import type { PortableCronStatus } from './portable-builder-cron.ts'
+import type { VerifiedSnapshotCache } from './verified-snapshot-cache.ts'
 
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
 
@@ -34,6 +35,11 @@ export interface PortableReadEnv {
    * gateways without local SQLite omit it. Injected (not imported) so Workers bundles stay free of `node:sqlite`.
    */
   cronStatus?: () => PortableCronStatus
+  /**
+   * Isolate-lifetime verified-snapshot cache. Factories construct one instance;
+   * tests inject a fresh cache. When omitted, each request loads through the pure loader.
+   */
+  snapshotCache?: VerifiedSnapshotCache
 }
 
 class InvalidQueryError extends Error {}
@@ -254,7 +260,13 @@ export async function handlePortableReadRequest(
         ...(platform ? { platform } : {}),
       }, { headers: { 'Cache-Control': V2_CACHE_CONTROL.version } })
     }
-    const loaded = await loadVerifiedPublicSnapshot(env.publicStore)
+    // Image routes never pay the verified-snapshot load (CPU / origin).
+    if (path.startsWith('/image/')) {
+      return handleImage(path, env.publicStore, env.publicBaseUrl)
+    }
+    const loaded = env.snapshotCache
+      ? await env.snapshotCache.load(env.publicStore)
+      : await loadVerifiedPublicSnapshot(env.publicStore)
     if (!loaded && path !== '/health') {
       return json({ ok: false, error: { code: 'NO_RELEASE', message: 'No verified public release' } }, {
         status: 503,
@@ -274,12 +286,23 @@ export async function handlePortableReadRequest(
     if (path === '/collections') return handleCollections(url, snapshot)
     if (path === '/calendar') return handleCalendar(snapshot)
     if (path === '/cache') return handleCache(snapshot, url)
-    if (path.startsWith('/image/')) return handleImage(path, env.publicStore, env.publicBaseUrl)
     return new Response('Not found', { status: 404 })
   } catch (error) {
     if (error instanceof InvalidQueryError) {
       return json({ ok: false, error: { code: 'INVALID_QUERY', message: 'Invalid query parameter' } }, {
         status: 400,
+        headers: { 'Cache-Control': V2_CACHE_CONTROL.error },
+      })
+    }
+    if (error instanceof Error) {
+      return json({
+        ok: false,
+        error: {
+          code: 'RELEASE_INVALID',
+          message: error.message || 'Verified public release is invalid',
+        },
+      }, {
+        status: 503,
         headers: { 'Cache-Control': V2_CACHE_CONTROL.error },
       })
     }

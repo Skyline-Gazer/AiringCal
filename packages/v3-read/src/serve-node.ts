@@ -6,6 +6,7 @@ import { handlePortableReadRequest } from './portable-read-handler.ts'
 import { readPortableCronStatus } from './portable-builder-cron.ts'
 import { resolveNsfwShow } from './read-config.ts'
 import { handlePortableStaticRequest } from './portable-static-handler.ts'
+import { createVerifiedSnapshotCache } from './verified-snapshot-cache.ts'
 
 async function writeNodeResponse(res: import('node:http').ServerResponse, response: Response): Promise<void> {
   const headers: Record<string, string> = {}
@@ -42,6 +43,7 @@ export function startPortableReadServer(options: {
   // C6: validate once at startup, not per request; placeholder values throw here.
   const publicBaseUrl = parsePublicBaseUrl(options.publicBaseUrl ?? process.env.AIRINGCAL_PUBLIC_BASE_URL) ?? undefined
   const publicStore = new FilesystemPublicStore(publicDir)
+  const snapshotCache = createVerifiedSnapshotCache()
   const server = createServer(async (req, res) => {
     try {
       const host = req.headers.host ?? '127.0.0.1'
@@ -60,6 +62,7 @@ export function startPortableReadServer(options: {
         cronStatus: process.env.AIRINGCAL_BUILDER_SQLITE_PATH
           ? () => readPortableCronStatus(process.env)
           : undefined,
+        snapshotCache,
       })
       await writeNodeResponse(res, response)
     } catch (error) {

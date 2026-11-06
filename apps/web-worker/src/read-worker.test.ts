@@ -423,7 +423,7 @@ test('read-worker calendar JSON is edge-cacheable', async () => {
   await setActiveSnapshot(kv, 'live-perf', { calendar: days })
   const response = await worker.fetch(new Request('https://read.local/calendar'), env(kv) as any)
   assert.equal(response.status, 200)
-  assert.match(response.headers.get('Cache-Control') ?? '', /s-maxage=600/)
+  assert.match(response.headers.get('Cache-Control') ?? '', /s-maxage=60/)
 })
 
 test('read-worker health reports collection snapshot status when KV has data', async () => {

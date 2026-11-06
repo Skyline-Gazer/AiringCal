@@ -28,8 +28,8 @@ export const V2_RETIRED_ROUTES = [
 ] as const
 
 export const V2_CACHE_CONTROL = {
-  collections: 'public, max-age=30, s-maxage=300, stale-while-revalidate=120',
-  calendar: 'public, max-age=60, s-maxage=600, stale-while-revalidate=300',
+  collections: 'public, max-age=30, s-maxage=60, stale-while-revalidate=30',
+  calendar: 'public, max-age=30, s-maxage=60, stale-while-revalidate=30',
   config: 'public, max-age=60',
   version: 'public, max-age=60',
   defaultJson: 'public, max-age=60',

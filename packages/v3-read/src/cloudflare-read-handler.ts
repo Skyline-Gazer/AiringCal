@@ -5,6 +5,7 @@ import {
 import { createPublicBaseUrlValidator } from '@airing-cal/v3-core/public-image-url'
 import { PUBLIC_RELEASE_POINTER_KEY } from '@airing-cal/v3-core/public-pointer'
 import { handlePortableReadRequest } from './portable-read-handler.ts'
+import { createVerifiedSnapshotCache } from './verified-snapshot-cache.ts'
 
 /** Write-once configuration: everything the R2-backed gateway needs to serve a Release. */
 export interface CloudflareReadConfig {
@@ -32,11 +33,13 @@ export function createCloudflareReadHandler(config: CloudflareReadConfig): Cloud
     config.publicR2,
     config.pointerKey ?? PUBLIC_RELEASE_POINTER_KEY,
   )
+  const snapshotCache = createVerifiedSnapshotCache()
   return (request) => handlePortableReadRequest(request, {
     publicStore,
     nsfwShow: config.nsfwShow,
     packageVersion: config.packageVersion,
     publicBaseUrl,
     processEnv: { AIRINGCAL_PLATFORM: 'cloudflare' },
+    snapshotCache,
   })
 }

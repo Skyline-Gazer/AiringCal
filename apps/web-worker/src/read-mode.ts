@@ -63,6 +63,46 @@ export function isV3ReleaseReadPath(pathname: string): boolean {
 
 const validatePublicBaseUrl = createPublicBaseUrlValidator()
 
+type CloudflareReadHandler = (request: Request) => Promise<Response>
+
+/** Isolate-lifetime handler: rebuilt only when binding/config fingerprint changes. */
+let cachedV3Handler: {
+  fingerprint: string
+  binding: CloudflareR2BucketBinding
+  handler: CloudflareReadHandler
+} | null = null
+
+function v3HandlerFingerprint(env: WebReadModeEnv, publicBaseUrl?: string): string {
+  return [
+    publicBaseUrl ?? '',
+    String(resolveNsfwShow(env.NSFW_SHOW)),
+    env.PACKAGE_VERSION ?? '',
+  ].join('|')
+}
+
+function readHandlerFor(env: WebReadModeEnv, publicBaseUrl?: string): CloudflareReadHandler {
+  const binding = env.AIRINGCAL_PUBLIC_R2
+  if (!binding) {
+    throw new Error('AIRINGCAL_PUBLIC_R2 binding is required')
+  }
+  const fingerprint = v3HandlerFingerprint(env, publicBaseUrl)
+  if (
+    cachedV3Handler
+    && cachedV3Handler.binding === binding
+    && cachedV3Handler.fingerprint === fingerprint
+  ) {
+    return cachedV3Handler.handler
+  }
+  const handler = createCloudflareReadHandler({
+    publicR2: binding,
+    publicBaseUrl,
+    nsfwShow: resolveNsfwShow(env.NSFW_SHOW),
+    packageVersion: env.PACKAGE_VERSION,
+  })
+  cachedV3Handler = { fingerprint, binding, handler }
+  return handler
+}
+
 /**
  * Resolves the read-mode configuration (C6/C7).
  *
@@ -100,10 +140,8 @@ export async function handleV3ReleaseReadRequest(
       },
     }, { status: 503, headers: { 'Cache-Control': V2_CACHE_CONTROL.error } })
   }
-  return createCloudflareReadHandler({
-    publicR2: env.AIRINGCAL_PUBLIC_R2,
-    publicBaseUrl: config.mode === 'v3-release' ? config.publicBaseUrl : undefined,
-    nsfwShow: resolveNsfwShow(env.NSFW_SHOW),
-    packageVersion: env.PACKAGE_VERSION,
-  })(request)
+  return readHandlerFor(
+    env,
+    config.mode === 'v3-release' ? config.publicBaseUrl : undefined,
+  )(request)
 }

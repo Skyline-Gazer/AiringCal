@@ -22,6 +22,39 @@ export interface ReadWorkerEnv {
   PACKAGE_VERSION?: string
 }
 
+/** Isolate-lifetime handler: rebuilt only when binding/config fingerprint changes. */
+let cachedReadHandler: {
+  fingerprint: string
+  binding: CloudflareR2BucketBinding
+  handler: CloudflareReadHandler
+} | null = null
+
+function readHandlerFingerprint(env: ReadWorkerEnv): string {
+  return [
+    env.AIRINGCAL_PUBLIC_BASE_URL ?? '',
+    env.PACKAGE_VERSION ?? '',
+  ].join('|')
+}
+
+function readHandlerFor(env: ReadWorkerEnv): CloudflareReadHandler {
+  const binding = env.AIRINGCAL_PUBLIC_R2
+  const fingerprint = readHandlerFingerprint(env)
+  if (
+    cachedReadHandler
+    && cachedReadHandler.binding === binding
+    && cachedReadHandler.fingerprint === fingerprint
+  ) {
+    return cachedReadHandler.handler
+  }
+  const handler = createCloudflareReadHandler({
+    publicR2: binding,
+    publicBaseUrl: env.AIRINGCAL_PUBLIC_BASE_URL,
+    packageVersion: env.PACKAGE_VERSION,
+  })
+  cachedReadHandler = { fingerprint, binding, handler }
+  return handler
+}
+
 /** Cloudflare Workers entry for the v3 read gateway (#72): widget assets, v2 `/api/*`, `/image/:hash`. */
 export async function handleReadWorkerRequest(
   request: Request,
@@ -42,11 +75,7 @@ export async function handleReadWorkerRequest(
   }
   let handleRead: CloudflareReadHandler
   try {
-    handleRead = createCloudflareReadHandler({
-      publicR2: env.AIRINGCAL_PUBLIC_R2,
-      publicBaseUrl: env.AIRINGCAL_PUBLIC_BASE_URL,
-      packageVersion: env.PACKAGE_VERSION,
-    })
+    handleRead = readHandlerFor(env)
   } catch (error) {
     return readConfigErrorResponse(error)
   }
