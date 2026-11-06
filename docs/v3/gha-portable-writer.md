@@ -17,7 +17,7 @@ Decision: [`../plans/adr-0003-gha-portable-write.md`](../plans/adr-0003-gha-port
 | Schedule | cron `0 20 * * *` UTC = **04:00 Asia/Shanghai** |
 | Mode | Checkpoint self-judge (≥7 days since last successful **full** → full); `workflow_dispatch` may set `force_mode` |
 
-Flow (C2/C4): acquire lease → restore SQLite checkpoint from **private** R2 → sync portable builder → **image publish gate** over every referenced hash (upload missing, reuse present, fail closed when a published object's content differs or an original is nowhere available) → upload checkpoint with CAS → renew lease → commit the Release pointer with CAS → expire the lease. Nothing becomes visible before the checkpoint succeeds. Failure → Bark (`BARK_URL`).
+Flow (C2/C4): acquire lease → restore SQLite checkpoint from **private** R2 → sync portable builder → **image publish gate** over every referenced hash (upload missing, reuse present, fail closed when a published object's content differs or an original is nowhere available) → upload checkpoint with CAS → renew lease → commit the Release pointer with CAS → expire the lease. Nothing becomes visible before the checkpoint succeeds. The gate verifies/upload originals first, then thumbs, with bounded concurrency (default 8, max 32) and `publish_images_progress` events every 25 objects; the staging job allows 90 minutes because a first publish mirrors ~2.7k objects. Failure → Bark (`BARK_URL`).
 
 ## Unified Environment Configuration (`AIRINGCAL_{ENVIRONMENT}_{SERVICE}_{KEY}`)
 

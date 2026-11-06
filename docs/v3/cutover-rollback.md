@@ -75,6 +75,13 @@ The receipt records the **prior pointer**, the **target generation**
 (`target_generation` / `target_artifact_ref` / `target_manifest_ref`), the image
 gate result, the CAS outcome, and the resume rule. Attach it to #147.
 
+`--receipt` is validated before any store or lease work: its parent directory must
+exist, and the path is resolved to an absolute path. A missing directory fails with
+`stage: receipt_preflight` and the pointer is untouched, so a typo cannot apply a
+rollback while losing the audit record. A full image-gate pass over a large Release
+(~1.35k hashes) takes a few minutes; the CLI verifies objects with the same bounded
+concurrency as the publish gate.
+
 3. **Resume rule (required before re-enabling the writer).** The builder SQLite
    checkpoint is independent of the public pointer: after a rollback the
    checkpoint may still hold a NEWER generation than the pointer. Before setting
