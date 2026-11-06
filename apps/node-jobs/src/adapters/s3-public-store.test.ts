@@ -34,3 +34,33 @@ test('S3CompatiblePublicStore enforces immutable objects and pointer CAS', async
   assert.deepEqual(await store.getCurrentRelease(), second)
   assert.equal(store.pointerKey, PUBLIC_RELEASE_POINTER_KEY)
 })
+
+test('S3CompatiblePublicStore sets immutable cache headers for image content types', async () => {
+  const objects = new MemoryObjectStore()
+  const puts: Array<{ key: string; options: Record<string, unknown> }> = []
+  const recording: typeof objects = {
+    get: (key) => objects.get(key),
+    head: (key) => objects.head(key),
+    list: (prefix) => objects.list(prefix),
+    delete: (key) => objects.delete(key),
+    async put(key, body, options = {}) {
+      puts.push({ key, options: { ...options } })
+      return objects.put(key, body, options)
+    },
+  }
+  const store = new S3CompatiblePublicStore(recording)
+  const jpeg = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0])
+  await store.putImmutableObject('images/aa/original', jpeg, 'image/jpeg')
+  assert.equal(puts.length, 1)
+  assert.equal(puts[0]?.options.contentType, 'image/jpeg')
+  assert.equal(puts[0]?.options.cacheControl, 'public, max-age=31536000, immutable')
+  assert.equal(puts[0]?.options.contentDisposition, 'inline')
+
+  puts.length = 0
+  const json = new TextEncoder().encode('{"ok":true}')
+  await store.putImmutableObject('snapshots/v1/1-a.json', json, 'application/json')
+  assert.equal(puts.length, 1)
+  assert.equal(puts[0]?.options.contentType, 'application/json')
+  assert.equal(puts[0]?.options.cacheControl, undefined)
+  assert.equal(puts[0]?.options.contentDisposition, undefined)
+})

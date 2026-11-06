@@ -104,6 +104,8 @@ export function createS3ObjectStore(config: S3BucketConfig): ConditionalObjectSt
           Key: key,
           Body: body,
           ContentType: options.contentType,
+          CacheControl: options.cacheControl,
+          ContentDisposition: options.contentDisposition,
           ContentLength: body.byteLength,
           IfMatch: options.ifMatch,
           IfNoneMatch: options.ifNoneMatch,

@@ -10,6 +10,8 @@ export interface ObjectGet extends ObjectHead {
 
 export interface ObjectPutOptions {
   contentType?: string
+  cacheControl?: string
+  contentDisposition?: string
   /** Quoted or unquoted etag; store normalizes comparison. */
   ifMatch?: string
   /** Use `*` to require the key be absent. */

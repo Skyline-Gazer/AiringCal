@@ -53,8 +53,16 @@ export class S3CompatiblePublicStore implements PublicStore {
       }
       return
     }
+    const options = contentType.startsWith('image/')
+      ? {
+          contentType,
+          cacheControl: 'public, max-age=31536000, immutable',
+          contentDisposition: 'inline',
+          ifNoneMatch: '*',
+        }
+      : { contentType, ifNoneMatch: '*' }
     try {
-      await this.objects.put(key, body, { contentType, ifNoneMatch: '*' })
+      await this.objects.put(key, body, options)
     } catch (error) {
       if (!(error instanceof ObjectStorePreconditionError)) throw error
       const existing = await this.getSnapshotBytes(key)

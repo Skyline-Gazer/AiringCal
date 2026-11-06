@@ -7,10 +7,25 @@ import test from 'node:test'
 import type { PublicSnapshotV1 } from '@airing-cal/storage'
 import { MemoryPublicStore, type PublicStore } from '@airing-cal/v3-core'
 import { imageOriginalKey, imageThumbV2Key } from '@airing-cal/storage'
-import { ensurePublishImagesComplete } from './publish-image-gate.ts'
+import {
+  UnrecognizedImageContentTypeError,
+  contentTypeForKey,
+  ensurePublishImagesComplete,
+} from './publish-image-gate.ts'
 
 const HASH_A = 'a'.repeat(64)
 const HASH_B = 'b'.repeat(64)
+
+/** Minimal JPEG SOI + APP0 marker used as a sniffable original fixture. */
+const JPEG_BYTES = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, ...Buffer.from('JFIF')])
+
+function writeJpegOriginal(dir: string, hash: string, suffix = ''): void {
+  mkdirSync(join(dir, 'images', hash), { recursive: true })
+  const body = suffix
+    ? Uint8Array.from([...JPEG_BYTES, ...Buffer.from(suffix)])
+    : JPEG_BYTES
+  writeFileSync(join(dir, 'images', hash, 'original'), body)
+}
 
 function snapshotWithHashes(hashes: string[]): PublicSnapshotV1 {
   const items = hashes.map((hash) => ({
@@ -25,6 +40,7 @@ function snapshotWithHashes(hashes: string[]): PublicSnapshotV1 {
 
 class CountingPublicStore implements PublicStore {
   puts: string[] = []
+  putContentTypes: Array<{ key: string; contentType: string }> = []
   gets: string[] = []
   constructor(private readonly inner: PublicStore) {}
 
@@ -42,6 +58,7 @@ class CountingPublicStore implements PublicStore {
 
   async putImmutableObject(key: string, body: Uint8Array, contentType: string) {
     this.puts.push(key)
+    this.putContentTypes.push({ key, contentType })
     return this.inner.putImmutableObject(key, body, contentType)
   }
 
@@ -85,8 +102,7 @@ class Md5HeadStore implements PublicStore {
 test('ensurePublishImagesComplete uploads missing referenced images from the local root', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'airingcal-gate-'))
   try {
-    mkdirSync(join(dir, 'images', HASH_A), { recursive: true })
-    writeFileSync(join(dir, 'images', HASH_A, 'original'), 'orig-a')
+    writeJpegOriginal(dir, HASH_A)
     writeFileSync(join(dir, 'images', HASH_A, 'thumb.v2.webp'), 'thumb-a')
     const store = new MemoryPublicStore()
     const result = await ensurePublishImagesComplete({
@@ -97,11 +113,77 @@ test('ensurePublishImagesComplete uploads missing referenced images from the loc
     assert.equal(result.hashes, 1)
     assert.equal(result.uploaded, 2)
     assert.equal(result.reused, 0)
-    assert.equal(new TextDecoder().decode((await store.getSnapshotBytes(imageOriginalKey(HASH_A)))!), 'orig-a')
+    assert.deepEqual(
+      await store.getSnapshotBytes(imageOriginalKey(HASH_A)),
+      JPEG_BYTES,
+    )
     assert.equal(new TextDecoder().decode((await store.getSnapshotBytes(imageThumbV2Key(HASH_A)))!), 'thumb-a')
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+test('ensurePublishImagesComplete puts sniffed image/jpeg for an extensionless original', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-gate-mime-'))
+  try {
+    writeJpegOriginal(dir, HASH_A)
+    writeFileSync(join(dir, 'images', HASH_A, 'thumb.v2.webp'), 'thumb-a')
+    const store = new CountingPublicStore(new MemoryPublicStore())
+    const result = await ensurePublishImagesComplete({
+      snapshot: snapshotWithHashes([HASH_A]),
+      publicStore: store,
+      imageRoot: dir,
+    })
+    assert.equal(result.uploaded, 2)
+    assert.deepEqual(store.putContentTypes, [
+      { key: imageOriginalKey(HASH_A), contentType: 'image/jpeg' },
+      { key: imageThumbV2Key(HASH_A), contentType: 'image/webp' },
+    ])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('ensurePublishImagesComplete refuses unsniffable originals with zero puts', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-gate-unknown-'))
+  try {
+    mkdirSync(join(dir, 'images', HASH_A), { recursive: true })
+    writeFileSync(join(dir, 'images', HASH_A, 'original'), Buffer.from([0x00, 0x01, 0x02, 0x03]))
+    writeFileSync(join(dir, 'images', HASH_A, 'thumb.v2.webp'), 'thumb-a')
+    const store = new CountingPublicStore(new MemoryPublicStore())
+    await assert.rejects(
+      () =>
+        ensurePublishImagesComplete({
+          snapshot: snapshotWithHashes([HASH_A]),
+          publicStore: store,
+          imageRoot: dir,
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof UnrecognizedImageContentTypeError)
+        assert.equal(error.key, imageOriginalKey(HASH_A))
+        return /Unrecognized image bytes/i.test(error.message)
+      },
+    )
+    assert.deepEqual(store.puts, [])
+    assert.deepEqual(store.putContentTypes, [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('contentTypeForKey sniffs extensionless originals and fails closed without bytes', () => {
+  const key = imageOriginalKey(HASH_A)
+  assert.equal(contentTypeForKey(key, JPEG_BYTES), 'image/jpeg')
+  assert.throws(
+    () => contentTypeForKey(key),
+    (error: unknown) => error instanceof UnrecognizedImageContentTypeError,
+  )
+  assert.throws(
+    () => contentTypeForKey(key, Uint8Array.from([0x00, 0x01])),
+    (error: unknown) => error instanceof UnrecognizedImageContentTypeError,
+  )
+  assert.equal(contentTypeForKey(imageThumbV2Key(HASH_A)), 'image/webp')
+  assert.equal(contentTypeForKey('snapshots/v1/1-a.json'), 'application/json')
 })
 
 test('ensurePublishImagesComplete fails closed when an existing immutable image object has different content', async () => {
@@ -239,8 +321,7 @@ test('ensurePublishImagesComplete uploads with bounded concurrency while preserv
   const hashes = ['c', 'd', 'e', 'f', '1', '2'].map((char) => char.repeat(64))
   try {
     for (const hash of hashes) {
-      mkdirSync(join(dir, 'images', hash), { recursive: true })
-      writeFileSync(join(dir, 'images', hash, 'original'), `orig-${hash.slice(0, 1)}`)
+      writeJpegOriginal(dir, hash, hash.slice(0, 1))
     }
     let inFlight = 0
     let maxInFlight = 0
@@ -279,8 +360,7 @@ test('ensurePublishImagesComplete uploads with bounded concurrency while preserv
 test('ensurePublishImagesComplete fails closed without uploading when an original is missing under concurrency', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'airingcal-gate-'))
   try {
-    mkdirSync(join(dir, 'images', HASH_A), { recursive: true })
-    writeFileSync(join(dir, 'images', HASH_A, 'original'), 'orig-a')
+    writeJpegOriginal(dir, HASH_A)
     const store = new MemoryPublicStore()
     await assert.rejects(
       () =>
