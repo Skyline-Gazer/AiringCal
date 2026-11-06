@@ -152,7 +152,7 @@ if [[ "$REPO_CHECK" != "$REPO" ]]; then
   exit 1
 fi
 
-WHOAMI_JSON="$(pnpm exec wrangler --env-file /dev/null whoami --json)"
+WHOAMI_JSON="$(pnpm exec wrangler whoami --json --env-file /dev/null)"
 if [[ -z "${AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
   if [[ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ]]; then
     export AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID="$CLOUDFLARE_ACCOUNT_ID"
@@ -163,7 +163,7 @@ fi
 export CLOUDFLARE_ACCOUNT_ID="$AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID"
 
 # Verify actual R2 permission before mutating anything
-pnpm exec wrangler --env-file /dev/null r2 bucket list >/dev/null
+pnpm exec wrangler r2 bucket list --env-file /dev/null >/dev/null
 
 CHECKPOINT_BUCKET="${AIRINGCAL_STAGING_CHECKPOINT_R2_BUCKET:-airingcal-staging-checkpoint}"
 PUBLIC_BUCKET="${AIRINGCAL_STAGING_PUBLIC_R2_BUCKET:-airingcal-staging-public}"
@@ -177,10 +177,10 @@ for bucket in "$CHECKPOINT_BUCKET" "$PUBLIC_BUCKET"; do
       exit 1
       ;;
   esac
-  if pnpm exec wrangler --env-file /dev/null r2 bucket info "$bucket" --json >/dev/null 2>&1; then
+  if pnpm exec wrangler r2 bucket info "$bucket" --json --env-file /dev/null >/dev/null 2>&1; then
     echo "  Reused existing R2 bucket: $bucket"
   else
-    pnpm exec wrangler --env-file /dev/null r2 bucket create "$bucket" >/dev/null
+    pnpm exec wrangler r2 bucket create "$bucket" --env-file /dev/null >/dev/null
     echo "  Created R2 bucket: $bucket"
   fi
 done
@@ -188,12 +188,12 @@ done
 # Step 3: Disable public access on Checkpoint bucket (must not fail silently) & verify private;
 #         enable public HTTPS r2.dev access on Public bucket
 echo "[3/10] Enforcing private checkpoint bucket and enabling public HTTPS r2.dev URL..."
-pnpm exec wrangler --env-file /dev/null r2 bucket dev-url disable "$CHECKPOINT_BUCKET" -y >/dev/null
-CHECKPOINT_DEV_URL_STATUS="$(pnpm exec wrangler --env-file /dev/null r2 bucket dev-url get "$CHECKPOINT_BUCKET")"
+pnpm exec wrangler r2 bucket dev-url disable "$CHECKPOINT_BUCKET" -y --env-file /dev/null >/dev/null
+CHECKPOINT_DEV_URL_STATUS="$(pnpm exec wrangler r2 bucket dev-url get "$CHECKPOINT_BUCKET" --env-file /dev/null)"
 printf '%s' "$CHECKPOINT_DEV_URL_STATUS" | node scripts/setup-staging-lib.mjs assert-checkpoint-private "$CHECKPOINT_BUCKET"
 
-pnpm exec wrangler --env-file /dev/null r2 bucket dev-url enable "$PUBLIC_BUCKET" -y >/dev/null
-DEV_URL_OUT="$(pnpm exec wrangler --env-file /dev/null r2 bucket dev-url get "$PUBLIC_BUCKET")"
+pnpm exec wrangler r2 bucket dev-url enable "$PUBLIC_BUCKET" -y --env-file /dev/null >/dev/null
+DEV_URL_OUT="$(pnpm exec wrangler r2 bucket dev-url get "$PUBLIC_BUCKET" --env-file /dev/null)"
 if [[ -z "${AIRINGCAL_STAGING_PUBLIC_BASE_URL:-}" ]]; then
   export AIRINGCAL_STAGING_PUBLIC_BASE_URL="$(printf '%s' "$DEV_URL_OUT" | node scripts/setup-staging-lib.mjs parse-dev-url)"
 fi
@@ -229,7 +229,7 @@ BANGUMI_GIT_COMMIT_SHA="$GIT_SHA" \
 WORKER_URL=""
 if [[ "$SKIP_DEPLOY" -eq 0 ]]; then
   echo "[9/10] Deploying Staging Read Worker (${WORKER_NAME})..."
-  DEPLOY_OUT="$(pnpm exec wrangler --env-file /dev/null deploy --config "$STAGING_WRANGLER_TOML" --name "$WORKER_NAME" 2>&1)"
+  DEPLOY_OUT="$(pnpm exec wrangler deploy --config "$STAGING_WRANGLER_TOML" --name "$WORKER_NAME" --env-file /dev/null 2>&1)"
   WORKER_URL="$(printf '%s
 ' "$DEPLOY_OUT" | grep -Eo 'https://[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev' | head -n 1 || true)"
   echo "  Deployed worker: ${WORKER_NAME} (${WORKER_URL:-url-not-parsed})"
@@ -239,8 +239,8 @@ fi
 
 # Step 10: Verify Buckets, Binding, HTTPS URL and Worker health
 echo "[10/10] Verifying staging buckets, HTTPS URL and Worker health..."
-pnpm exec wrangler --env-file /dev/null r2 bucket info "$CHECKPOINT_BUCKET" --json >/dev/null
-pnpm exec wrangler --env-file /dev/null r2 bucket info "$PUBLIC_BUCKET" --json >/dev/null
+pnpm exec wrangler r2 bucket info "$CHECKPOINT_BUCKET" --json --env-file /dev/null >/dev/null
+pnpm exec wrangler r2 bucket info "$PUBLIC_BUCKET" --json --env-file /dev/null >/dev/null
 PUBLIC_HTTP_CODE="$(curl -sS -o /dev/null -w '%{http_code}' "${RESOLVED_PUBLIC_URL}/public/current-release.json" || echo "000")"
 if [[ "$PUBLIC_HTTP_CODE" != "200" && "$PUBLIC_HTTP_CODE" != "404" ]]; then
   echo "Public HTTPS URL probe failed with unexpected status=${PUBLIC_HTTP_CODE}" >&2
