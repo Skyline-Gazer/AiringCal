@@ -218,6 +218,69 @@ test('calendar refreshes from last days when NSFW gate changes', () => {
   )
 })
 
+test('calendar defers non-today day fills via requestIdleCallback with setTimeout fallback', () => {
+  const calendarViewFn = extractFunction(widgetJs, 'buildCalendarView')
+  assert.match(widgetJs, /requestIdleCallback/)
+  assert.match(calendarViewFn, /runWhenIdle\s*\(/)
+  assert.match(widgetJs, /setTimeout\s*\(\s*[^,]+,\s*0\s*\)/)
+  assert.doesNotMatch(
+    calendarViewFn,
+    /else\s*\{[\s\S]*for\s*\(\s*var\s+\w+\s*=\s*0;[\s\S]*fillWeekdayGrid\s*\(\s*pendingGrids/,
+  )
+})
+
+test('runWhenIdle prefers requestIdleCallback and falls back to setTimeout(0)', () => {
+  const runWhenIdleFn = extractFunction(widgetJs, 'runWhenIdle')
+  assert.match(runWhenIdleFn, /requestIdleCallback/)
+  assert.match(runWhenIdleFn, /setTimeout\s*\(\s*\w+\s*,\s*0\s*\)/)
+
+  const calls: string[] = []
+  const { runWhenIdle } = Function(
+    'requestIdleCallback',
+    'setTimeout',
+    `${runWhenIdleFn}\nreturn { runWhenIdle }`,
+  )(
+    (cb: () => void) => {
+      calls.push('ric')
+      cb()
+      return 1
+    },
+    (cb: () => void, ms: number) => {
+      calls.push(`timeout:${ms}`)
+      cb()
+      return 2
+    },
+  ) as { runWhenIdle(cb: () => void): unknown }
+
+  runWhenIdle(() => calls.push('done-ric'))
+  assert.deepEqual(calls, ['ric', 'done-ric'])
+
+  const fallbackCalls: string[] = []
+  const { runWhenIdle: runWhenIdleFallback } = Function(
+    'requestIdleCallback',
+    'setTimeout',
+    `${runWhenIdleFn}\nreturn { runWhenIdle }`,
+  )(
+    undefined,
+    (cb: () => void, ms: number) => {
+      fallbackCalls.push(`timeout:${ms}`)
+      cb()
+      return 3
+    },
+  ) as { runWhenIdle(cb: () => void): unknown }
+
+  runWhenIdleFallback(() => fallbackCalls.push('done-timeout'))
+  assert.deepEqual(fallbackCalls, ['timeout:0', 'done-timeout'])
+})
+
+test('calendar keeps bgm-grid-pending on deferred days until fill commits', () => {
+  const calendarViewFn = extractFunction(widgetJs, 'buildCalendarView')
+  assert.match(calendarViewFn, /bgm-grid-pending/)
+  assert.match(calendarViewFn, /isToday[\s\S]*fillWeekdayGrid/)
+  // today fills immediately; deferred path schedules before fill
+  assert.match(calendarViewFn, /runWhenIdle\s*\(|requestIdleCallback/)
+})
+
 
 test('first two first-paint cards use fetchpriority high and eager loading', () => {
   const paintFn = extractFunction(widgetJs, 'paintCollectionData')

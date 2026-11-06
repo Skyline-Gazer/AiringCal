@@ -8,6 +8,7 @@
 
   var healthFlight = null
   var calendarLazyObserver = null
+  var calendarIdleHandles = []
   var HEALTH_TTL_MS = 15000
 
   function fetchHealthJson(force) {
@@ -310,6 +311,30 @@
     gridEl.removeAttribute('data-bgm-pending')
   }
 
+  function runWhenIdle(cb) {
+    if (typeof requestIdleCallback === 'function') {
+      return { kind: 'idle', id: requestIdleCallback(cb) }
+    }
+    return { kind: 'timeout', id: setTimeout(cb, 0) }
+  }
+
+  function cancelWhenIdle(handle) {
+    if (!handle) return
+    if (handle.kind === 'idle' && typeof cancelIdleCallback === 'function') {
+      cancelIdleCallback(handle.id)
+      return
+    }
+    clearTimeout(handle.id)
+  }
+
+  function clearCalendarIdleHandles() {
+    for (var i = 0; i < calendarIdleHandles.length; i++) {
+      cancelWhenIdle(calendarIdleHandles[i])
+    }
+    calendarIdleHandles = []
+  }
+
+
   let loadAbort = null
   let loadSeq = 0
   var PAGE_LIMIT = 24
@@ -605,6 +630,7 @@
 
     function renderCalendar(days) {
       lastCalendarDays = days
+      clearCalendarIdleHandles()
       if (calendarLazyObserver) {
         calendarLazyObserver.disconnect()
         calendarLazyObserver = null
@@ -642,6 +668,17 @@
           grid.removeAttribute('data-bgm-pending')
         }
       }
+      for (var f = 0; f < pendingGrids.length; f++) {
+        ;(function (pending) {
+          pending.grid.__bgmWeekdayItems = pending.items
+          calendarIdleHandles.push(runWhenIdle(function () {
+            if (!pending.grid.getAttribute('data-bgm-pending')) return
+            fillWeekdayGrid(pending.grid, pending.items, null)
+            pending.grid.__bgmWeekdayItems = null
+            if (calendarLazyObserver) calendarLazyObserver.unobserve(pending.grid)
+          }))
+        })(pendingGrids[f])
+      }
       if (pendingGrids.length && typeof IntersectionObserver === 'function') {
         calendarLazyObserver = new IntersectionObserver(function (entries) {
           for (var e = 0; e < entries.length; e++) {
@@ -656,12 +693,7 @@
           }
         }, { root: null, rootMargin: '240px 0px', threshold: 0.01 })
         for (var p = 0; p < pendingGrids.length; p++) {
-          pendingGrids[p].grid.__bgmWeekdayItems = pendingGrids[p].items
           calendarLazyObserver.observe(pendingGrids[p].grid)
-        }
-      } else {
-        for (var f = 0; f < pendingGrids.length; f++) {
-          fillWeekdayGrid(pendingGrids[f].grid, pendingGrids[f].items, null)
         }
       }
     }

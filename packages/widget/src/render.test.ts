@@ -61,6 +61,27 @@ function loadWidgetProductionRenderers() {
     'location',
     `var API = location.origin
     var calendarLazyObserver = null
+    var calendarIdleHandles = []
+    function runWhenIdle(cb) {
+      if (typeof requestIdleCallback === 'function') {
+        return { kind: 'idle', id: requestIdleCallback(cb) }
+      }
+      return { kind: 'timeout', id: setTimeout(cb, 0) }
+    }
+    function cancelWhenIdle(handle) {
+      if (!handle) return
+      if (handle.kind === 'idle' && typeof cancelIdleCallback === 'function') {
+        cancelIdleCallback(handle.id)
+        return
+      }
+      clearTimeout(handle.id)
+    }
+    function clearCalendarIdleHandles() {
+      for (var i = 0; i < calendarIdleHandles.length; i++) {
+        cancelWhenIdle(calendarIdleHandles[i])
+      }
+      calendarIdleHandles = []
+    }
     ${source}
     var nsfwGate = createNsfwGate()
     function mockElement() {
@@ -74,6 +95,7 @@ function loadWidgetProductionRenderers() {
         },
         setAttribute: function () {},
         removeAttribute: function () {},
+        getAttribute: function () { return null },
         appendChild: function (child) {
           el.children.push(child)
           return child
