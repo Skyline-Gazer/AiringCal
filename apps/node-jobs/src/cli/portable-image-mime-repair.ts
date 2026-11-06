@@ -122,10 +122,19 @@ export function parseImageMimeRepairArgs(argv: readonly string[]): ImageMimeRepa
   }
 }
 
+const PRODUCTION_FORBIDDEN_BUCKETS: Record<string, true> = {
+  'airing-cal-public': true,
+  'airing-cal-images': true,
+  'airing-cal-data': true,
+  'airing-cal-checkpoint': true,
+  'airingcal-production': true,
+}
+
 function isProductionBucket(bucket: string | null | undefined): boolean {
   if (!bucket) return false
   const lower = bucket.toLowerCase()
-  return lower.includes('production') || lower === 'airingcal-production'
+  if (PRODUCTION_FORBIDDEN_BUCKETS[lower]) return true
+  return lower.includes('production')
 }
 
 export function assertProductionRepairAllowed(input: {
@@ -138,11 +147,25 @@ export function assertProductionRepairAllowed(input: {
   const envIsProduction = (input.env.AIRINGCAL_ENV ?? '').trim().toLowerCase() === 'production'
   const bucketIsProduction = isProductionBucket(input.bucket)
   if (!envIsProduction && !bucketIsProduction) return
-  if (envIsProduction && input.iAmSureProduction) return
-  if (bucketIsProduction && envIsProduction && input.iAmSureProduction) return
+  if (envIsProduction && bucketIsProduction && input.iAmSureProduction) return
+  if (envIsProduction && input.iAmSureProduction && !bucketIsProduction) return
   throw new Error(
     'Refusing production MIME repair apply: require both --i-am-sure-production and AIRINGCAL_ENV=production',
   )
+}
+
+export function imageMimeRepairExitCode(report: {
+  aborted: boolean
+  complete: boolean
+  counts: Pick<ImageMimeRepairCounts, 'conflict' | 'verify_failed' | 'error' | 'cdn_stale_pending'>
+}): number {
+  if (report.aborted) return 1
+  if (!report.complete) return 1
+  if (report.counts.conflict > 0) return 1
+  if (report.counts.verify_failed > 0) return 1
+  if (report.counts.error > 0) return 1
+  if (report.counts.cdn_stale_pending > 0) return 1
+  return 0
 }
 
 function emptyCounts(): ImageMimeRepairCounts {
@@ -550,9 +573,7 @@ async function main(argv: readonly string[] = process.argv.slice(2)): Promise<nu
       complete: report.complete,
       sample: report.items.slice(0, 20),
     }, null, 2))
-    if (report.aborted) return 1
-    if (report.counts.verify_failed > 0 || report.counts.error > 0) return 1
-    return 0
+    return imageMimeRepairExitCode(report)
   } finally {
     store.close()
   }

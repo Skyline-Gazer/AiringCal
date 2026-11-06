@@ -20,7 +20,7 @@ deleted by a merge.
 
 | Gate | How to check |
 |---|---|
-| Single-bucket `airingcal-development` built + isolation proven | `AIRINGCAL_ENV=development AIRINGCAL_DEPLOY_TARGET=both AIRINGCAL_CLOUDFLARE_API_TOKEN=… AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes node scripts/deploy-env.mjs --apply` exits **0** with `isolation.ok: true` (see [deploy contract](./gha-portable-writer.md#development-single-bucket-cutover-airingcal_envdevelopment)). A non-zero abort with `aborted: true` means checkpoints were **not** copied — fix WAF/`r2.dev` and re-run; never fall back to dual buckets. |
+| Single-bucket `airingcal-development` built + isolation proven | Owner session only: after live Cloudflare/EdgeOne/GitHub adapters are implemented, `AIRINGCAL_ENV=development … AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes node scripts/deploy-env.mjs --apply` exits **0** with `isolation.ok: true`. Until adapters exist, the same command exits **non-zero** with `status: "owner-gated"` / `reason: "not-implemented: …"` and an `unimplementedSteps` / `pendingOwnerSteps` list — that is **not** isolation proof. A non-zero abort with `aborted: true` means checkpoints were **not** copied — never fall back to dual buckets. |
 | One effective writer only | Staging `portable-writer.yml` dispatch is blocked for the cutover window; `AIRINGCAL_WRITER_ENABLED` remains unset/false (Production gate); the Development writer test is the only `target=development` run. |
 | Image CDN decision locked | `AIRINGCAL_IMAGE_BASE_URL` unset (reuse public base) **or** an Owner-supplied validated https host with origin Host/SNI = public R2 host and a loop check passing. Default is **off**. |
 

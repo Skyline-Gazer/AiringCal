@@ -18,10 +18,10 @@
       "title": "AIRINGCAL_ENV=development deploy-env --apply built airingcal-development with isolation.ok=true",
       "kind": "action",
       "status": "pending_owner",
-      "requiresOwner": "Cloudflare API token (R2 admin, Workers write) + AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes",
+      "requiresOwner": "Implemented live I/O adapters + Cloudflare API token (R2 admin, Workers write) + AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes",
       "evidence": null,
       "command": "AIRINGCAL_ENV=development AIRINGCAL_DEPLOY_TARGET=both AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes node scripts/deploy-env.mjs --apply",
-      "gate": "exit 0 AND result.isolation.ok === true (else abort; no dual-bucket fallback)"
+      "gate": "exit 0 AND result.isolation.ok === true; owner-gated/not-implemented exit is NOT isolation proof (else abort; no dual-bucket fallback)"
     },
     {
       "id": "cf-eo-overseas-parity-pre",

@@ -109,6 +109,9 @@ only `checkpoints/_isolation-probe.txt`, then prove anonymous GET/HEAD return
 403/404 on every public entrypoint **before** copying real checkpoints. Failure
 aborts cutover with a non-zero exit — no silent dual-bucket fallback; staging
 readers stay active and the writer freeze remains until isolation passes.
+Until live I/O adapters are implemented, `--apply` + `AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes`
+exits non-zero with `status: "owner-gated"` and `not-implemented` step list; do **not**
+treat that as isolation proof success.
 
 Workflow `inputs.target` gains `development` (Environment `development` +
 `AIRINGCAL_DEVELOPMENT_*`). Until isolation+copy succeed, the development writer

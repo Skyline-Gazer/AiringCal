@@ -659,10 +659,121 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
   const completed = []
   const ctx = { plan, env, completed }
 
-  const tokenResult = await requireIoMethod(io, 'probeToken')(ctx)
-  completed.push('token-probe')
-  if (tokenResult && tokenResult.ok === false) {
-    const missing = tokenResult.missingScopes ?? []
+  try {
+
+    const tokenResult = await requireIoMethod(io, 'probeToken')(ctx)
+    completed.push('token-probe')
+    if (tokenResult && tokenResult.ok === false) {
+      const missing = tokenResult.missingScopes ?? []
+      return {
+        ok: false,
+        aborted: true,
+        abortCutover: true,
+        dualBucketFallback: false,
+        developmentWriterEnabled: false,
+        exitCode: 2,
+        reason: missingScopeExitMessage(missing),
+        completed,
+        missingScopes: missing,
+      }
+    }
+
+    await requireIoMethod(io, 'deriveAndVerifyS3')(ctx)
+    completed.push('derive-s3')
+
+    await requireIoMethod(io, 'freezeWriter')(ctx)
+    completed.push('writer-freeze')
+
+    await requireIoMethod(io, 'ensureBucket')(ctx)
+    completed.push('ensure-bucket')
+
+    const disableResult = await requireIoMethod(io, 'disableR2Dev')(ctx)
+    completed.push('disable-r2-dev')
+    // Provenance: only the disable-r2-dev adapter result may claim r2.dev is off.
+    ctx.r2DevDisabled = Boolean(disableResult?.disabled)
+
+    await requireIoMethod(io, 'attachCustomDomain')(ctx)
+    completed.push('attach-custom-domain')
+
+    await requireIoMethod(io, 'applyCacheRules')(ctx)
+    completed.push('cache-rules')
+
+    await requireIoMethod(io, 'applyCors')(ctx)
+    completed.push('cors')
+
+    await requireIoMethod(io, 'configureWaf')(ctx)
+    completed.push('waf-checkpoints')
+
+    await requireIoMethod(io, 'writeIsolationProbe')(ctx)
+    completed.push('isolation-probe-write')
+
+    const probeResult = await requireIoMethod(io, 'probeAnonymousAccess')(ctx)
+    completed.push('isolation-probe-check')
+    const isolation = evaluateIsolationProbe({
+      r2DevDisabled: Boolean(ctx.r2DevDisabled),
+      probes: probeResult?.probes ?? [],
+    })
+
+    if (!isolation.ok) {
+      return {
+        ok: false,
+        aborted: true,
+        abortCutover: true,
+        dualBucketFallback: false,
+        developmentWriterEnabled: false,
+        exitCode: 1,
+        reason: isolation.reason,
+        isolation,
+        completed,
+      }
+    }
+
+    await requireIoMethod(io, 'copyPublicPrefixes')(ctx)
+    completed.push('copy-public')
+
+    await requireIoMethod(io, 'copyCheckpoints')(ctx)
+    completed.push('copy-checkpoints')
+
+    await requireIoMethod(io, 'syncGithubEnvironment')(ctx)
+    completed.push('sync-gh-env')
+
+    if (plan.target === 'cloudflare' || plan.target === 'both') {
+      await requireIoMethod(io, 'deployCloudflareReader')(ctx)
+      completed.push('deploy-cloudflare')
+    }
+    if (plan.target === 'edgeone' || plan.target === 'both') {
+      await requireIoMethod(io, 'deployEdgeoneOverseas')(ctx)
+      completed.push('deploy-edgeone')
+    }
+
+    await requireIoMethod(io, 'validateImageCdn')(ctx)
+    completed.push('image-cdn-validate')
+
+    // Writer stays disabled until isolation+copy pass; the I/O adapter may
+    // still record a controlled dispatch, but the runner never flips the flag.
+    await requireIoMethod(io, 'runSingleWriterTest')({
+      ...ctx,
+      developmentWriterEnabled: false,
+    })
+    completed.push('single-writer-test')
+
+    return {
+      ok: true,
+      aborted: false,
+      abortCutover: false,
+      dualBucketFallback: false,
+      developmentWriterEnabled: false,
+      isolation,
+      completed,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const unsupported = /Live I\/O adapter for .+ requires Owner-approved|unsupportedLive|not implemented/i.test(message)
+    if (!unsupported) throw error
+    const stepMatch = message.match(/Live I\/O adapter for ([^\s]+)/i)
+    const unimplementedSteps = stepMatch
+      ? [stepMatch[1], ...(plan.ownerGatedLiveSteps ?? [])]
+      : [...(plan.ownerGatedLiveSteps ?? [])]
     return {
       ok: false,
       aborted: true,
@@ -670,98 +781,11 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
       dualBucketFallback: false,
       developmentWriterEnabled: false,
       exitCode: 2,
-      reason: missingScopeExitMessage(missing),
-      completed,
-      missingScopes: missing,
-    }
-  }
-
-  await requireIoMethod(io, 'deriveAndVerifyS3')(ctx)
-  completed.push('derive-s3')
-
-  await requireIoMethod(io, 'freezeWriter')(ctx)
-  completed.push('writer-freeze')
-
-  await requireIoMethod(io, 'ensureBucket')(ctx)
-  completed.push('ensure-bucket')
-
-  const disableResult = await requireIoMethod(io, 'disableR2Dev')(ctx)
-  completed.push('disable-r2-dev')
-  // Provenance: only the disable-r2-dev adapter result may claim r2.dev is off.
-  ctx.r2DevDisabled = Boolean(disableResult?.disabled)
-
-  await requireIoMethod(io, 'attachCustomDomain')(ctx)
-  completed.push('attach-custom-domain')
-
-  await requireIoMethod(io, 'applyCacheRules')(ctx)
-  completed.push('cache-rules')
-
-  await requireIoMethod(io, 'applyCors')(ctx)
-  completed.push('cors')
-
-  await requireIoMethod(io, 'configureWaf')(ctx)
-  completed.push('waf-checkpoints')
-
-  await requireIoMethod(io, 'writeIsolationProbe')(ctx)
-  completed.push('isolation-probe-write')
-
-  const probeResult = await requireIoMethod(io, 'probeAnonymousAccess')(ctx)
-  completed.push('isolation-probe-check')
-  const isolation = evaluateIsolationProbe({
-    r2DevDisabled: Boolean(ctx.r2DevDisabled),
-    probes: probeResult?.probes ?? [],
-  })
-
-  if (!isolation.ok) {
-    return {
-      ok: false,
-      aborted: true,
-      abortCutover: true,
-      dualBucketFallback: false,
-      developmentWriterEnabled: false,
-      exitCode: 1,
-      reason: isolation.reason,
-      isolation,
+      status: 'owner-gated',
+      reason: `not-implemented: ${message}`,
+      pendingOwnerSteps: plan.ownerGatedLiveSteps ?? [],
+      unimplementedSteps,
       completed,
     }
-  }
-
-  await requireIoMethod(io, 'copyPublicPrefixes')(ctx)
-  completed.push('copy-public')
-
-  await requireIoMethod(io, 'copyCheckpoints')(ctx)
-  completed.push('copy-checkpoints')
-
-  await requireIoMethod(io, 'syncGithubEnvironment')(ctx)
-  completed.push('sync-gh-env')
-
-  if (plan.target === 'cloudflare' || plan.target === 'both') {
-    await requireIoMethod(io, 'deployCloudflareReader')(ctx)
-    completed.push('deploy-cloudflare')
-  }
-  if (plan.target === 'edgeone' || plan.target === 'both') {
-    await requireIoMethod(io, 'deployEdgeoneOverseas')(ctx)
-    completed.push('deploy-edgeone')
-  }
-
-  await requireIoMethod(io, 'validateImageCdn')(ctx)
-  completed.push('image-cdn-validate')
-
-  // Writer stays disabled until isolation+copy pass; the I/O adapter may
-  // still record a controlled dispatch, but the runner never flips the flag.
-  await requireIoMethod(io, 'runSingleWriterTest')({
-    ...ctx,
-    developmentWriterEnabled: false,
-  })
-  completed.push('single-writer-test')
-
-  return {
-    ok: true,
-    aborted: false,
-    abortCutover: false,
-    dualBucketFallback: false,
-    developmentWriterEnabled: false,
-    isolation,
-    completed,
   }
 }

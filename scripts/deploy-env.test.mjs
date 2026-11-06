@@ -544,6 +544,49 @@ test('createLiveDevelopmentApplyIo probeAnonymousAccess does not assume r2DevDis
   assert.equal(probe.probes.length, 2)
 })
 
+test('createLiveDevelopmentApplyIo marks mutating steps unsupportedLive', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'both',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const io = createLiveDevelopmentApplyIo({ env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 't' }, plan })
+  await assert.rejects(() => io.freezeWriter({}), /Owner-approved|not implemented|unsupported|credentials/i)
+  await assert.rejects(() => io.writeIsolationProbe({}), /Owner-approved|not implemented|unsupported|credentials/i)
+})
+
+test('runDevelopmentApply with unsupportedLive adapters returns owner-pending not-implemented', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'both',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const io = createLiveDevelopmentApplyIo({
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'token' },
+    plan,
+    fetchImpl: async () => ({ status: 403 }),
+  })
+  const result = await runDevelopmentApply({
+    plan,
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'token',
+      AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes',
+    },
+    io,
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.aborted, true)
+  assert.notEqual(result.exitCode ?? 0, 0)
+  assert.match(String(result.status ?? result.reason ?? ''), /owner-gated|not-implemented|unsupported/i)
+  assert.ok(Array.isArray(result.pendingOwnerSteps) || Array.isArray(result.unimplementedSteps))
+  const steps = result.pendingOwnerSteps ?? result.unimplementedSteps
+  assert.ok(steps.length > 0)
+  assert.equal(result.dualBucketFallback, false)
+})
+
+
 
 test('validateImageCdnConfig defaults off and rejects loops / non-https / same host', () => {
   assert.deepEqual(validateImageCdnConfig({ publicBaseUrl: 'https://cdn.example.test' }), {

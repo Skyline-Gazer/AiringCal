@@ -200,6 +200,30 @@ test('bgmConfirmAge reveals gated cards without full reload', () => {
   assert.match(widgetJs, /bgm-age-confirmed/)
   assert.match(widgetJs, /onNsfwGateChange|nsfwGateListeners|revealNsfw|repaintCollection|refreshVisibleCards/)
 })
+
+test('age modal uses data-bgm-age listeners instead of inline onclick', () => {
+  assert.match(widgetJs, /data-bgm-age/)
+  assert.match(widgetJs, /addEventListener\(['"]click['"]/)
+  assert.match(
+    widgetJs,
+    /querySelector(?:All)?\([^)]*data-bgm-age|closest\([^)]*data-bgm-age|getAttribute\(['"]data-bgm-age['"]\)/,
+  )
+  assert.doesNotMatch(widgetJs, /\sonclick\s*=/i)
+})
+
+test('NSFW gate refresh skips in-flight load or mismatched type/page', () => {
+  const collectionViewFn = extractFunction(widgetJs, 'buildCollectionView')
+  assert.match(collectionViewFn, /lastLoadedData/)
+  assert.match(
+    collectionViewFn,
+    /lastLoadedData\.(?:type|page)|type:\s*currentType|page:\s*currentPage/,
+  )
+  assert.match(
+    collectionViewFn,
+    /refreshVisibleCards[\s\S]{0,500}(?:loadSeq|in.?flight|currentType|currentPage)/,
+  )
+})
+
 test('calendar refreshes from last days when NSFW gate changes', () => {
   const calendarViewFn = extractFunction(widgetJs, 'buildCalendarView')
   assert.match(calendarViewFn, /onNsfwGateChange\s*\(/)

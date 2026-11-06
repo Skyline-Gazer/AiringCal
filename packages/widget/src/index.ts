@@ -92,8 +92,8 @@ export function renderIndexPage(options: { build?: BuildInfo; verification?: Ver
       <div style="background:#16213e;padding:40px;border-radius:12px;text-align:center;max-width:400px;">
         <h2 style="color:#fff;">内容警告</h2>
         <p style="color:#a0a0b0;margin:20px 0;">本页面包含成人内容（R18），您是否已满18岁？</p>
-        <button onclick="bgmConfirmAge()" style="padding:12px 32px;background:#e94560;border:none;border-radius:8px;color:#fff;cursor:pointer;margin:4px;">确认已满18岁</button>
-        <button onclick="bgmLeaveAge()" style="padding:12px 32px;background:#0f3460;border:none;border-radius:8px;color:#fff;cursor:pointer;margin:4px;">退出</button>
+        <button type="button" data-bgm-age="confirm" style="padding:12px 32px;background:#e94560;border:none;border-radius:8px;color:#fff;cursor:pointer;margin:4px;">确认已满18岁</button>
+        <button type="button" data-bgm-age="deny" style="padding:12px 32px;background:#0f3460;border:none;border-radius:8px;color:#fff;cursor:pointer;margin:4px;">退出</button>
       </div>
     </div>
   </div>

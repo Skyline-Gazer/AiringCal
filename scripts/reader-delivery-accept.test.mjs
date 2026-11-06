@@ -10,6 +10,7 @@ import {
   extractPendingOwnerItems,
   parseAcceptArgs,
   resolveRollbackTargetGeneration,
+  runCfSmoke,
   runPortableE2e,
   runRollbackDryRun,
   runShadowGateStatus,
@@ -350,6 +351,44 @@ test('runPortableE2e treats checks:9 stdout as pass when child hangs after ok', 
   assert.equal(gate.measurable, true)
   assert.equal(gate.status, 'ok')
 })
+
+test('runCfSmoke fails measurable when smoke JSON includes wranglerLog but is a real failure', async () => {
+  const gate = await runCfSmoke({
+    spawnImpl: async () => ({
+      ok: false,
+      code: 1,
+      timedOut: false,
+      stdout: '',
+      stderr: JSON.stringify({
+        status: 'failed',
+        stage: 'v3_cf_read_smoke',
+        message: 'assertResponse /api/health expected 200 got 500',
+        wranglerLog: '⎔ Starting local server...\n',
+      }) + '\n',
+    }),
+  })
+  assert.equal(gate.id, 'cf_smoke')
+  assert.equal(gate.ok, false)
+  assert.equal(gate.measurable, true)
+  assert.equal(gate.status, 'failed')
+  assert.doesNotMatch(String(gate.reason), /pending/i)
+})
+
+test('runCfSmoke stays pending for genuine missing credential/tooling', async () => {
+  const gate = await runCfSmoke({
+    spawnImpl: async () => ({
+      ok: false,
+      code: 1,
+      timedOut: false,
+      stdout: '',
+      stderr: 'Error: Missing Cloudflare API token; wrangler login required\n',
+    }),
+  })
+  assert.equal(gate.ok, true)
+  assert.equal(gate.measurable, false)
+  assert.equal(gate.status, 'pending')
+})
+
 
 test('runShadowGateStatus stays pending and never spawns mutating portable-shadow-gate', async () => {
   const previous = {

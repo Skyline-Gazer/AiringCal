@@ -176,12 +176,13 @@ test('public pages reuse the exact shared footer output', () => {
   assert.equal(renderIndexPage({ build }).includes(footer), true)
 })
 
-test('renderIndexPage emits hidden #bgm-age-modal with confirm/deny wired to globals', () => {
+test('renderIndexPage emits hidden #bgm-age-modal without inline onclick handlers', () => {
   const html = renderIndexPage()
   assert.match(html, /id="bgm-age-modal"/)
   assert.match(html, /id="bgm-age-modal"[^>]*(hidden|style="[^"]*display:\s*none)/)
-  assert.match(html, /onclick="bgmConfirmAge\(\)"|onclick='bgmConfirmAge\(\)'/)
-  assert.match(html, /onclick="bgmLeaveAge\(\)"|onclick='bgmLeaveAge\(\)'/)
+  assert.doesNotMatch(html, /\sonclick\s*=/i)
+  assert.match(html, /data-bgm-age="confirm"/)
+  assert.match(html, /data-bgm-age="deny"/)
   assert.match(html, /确认已满18岁|我已满18岁/)
   assert.match(html, /退出|离开/)
 })

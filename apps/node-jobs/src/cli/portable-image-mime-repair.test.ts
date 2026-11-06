@@ -18,6 +18,7 @@ import {
   IMAGE_CACHE_CONTROL,
   IMAGE_CONTENT_DISPOSITION,
   assertProductionRepairAllowed,
+  imageMimeRepairExitCode,
   parseImageMimeRepairArgs,
   runImageMimeRepair,
   type ImageMimeRepairCdnClient,
@@ -199,6 +200,73 @@ test('assertProductionRepairAllowed refuses production-named bucket on apply wit
     /production/,
   )
 })
+
+test('assertProductionRepairAllowed refuses known production buckets without dual gate', () => {
+  for (const bucket of ['airing-cal-public', 'airing-cal-images', 'airing-cal-data', 'airing-cal-checkpoint']) {
+    assert.throws(
+      () => assertProductionRepairAllowed({
+        apply: true,
+        env: { AIRINGCAL_ENV: 'development' },
+        bucket,
+        iAmSureProduction: false,
+      }),
+      /production|airing-cal-public|forbidden/i,
+      `expected refuse for ${bucket}`,
+    )
+  }
+})
+
+test('imageMimeRepairExitCode is non-zero when report is incomplete', () => {
+  assert.equal(imageMimeRepairExitCode({
+    aborted: false,
+    complete: false,
+    counts: {
+      scanned: 1,
+      ok: 0,
+      would_fix: 0,
+      repaired: 1,
+      skipped_unknown: 0,
+      conflict: 0,
+      verify_failed: 0,
+      cdn_stale_pending: 1,
+      missing: 0,
+      error: 0,
+    },
+  }), 1)
+  assert.equal(imageMimeRepairExitCode({
+    aborted: false,
+    complete: false,
+    counts: {
+      scanned: 1,
+      ok: 0,
+      would_fix: 0,
+      repaired: 0,
+      skipped_unknown: 0,
+      conflict: 1,
+      verify_failed: 0,
+      cdn_stale_pending: 0,
+      missing: 0,
+      error: 0,
+    },
+  }), 1)
+  assert.equal(imageMimeRepairExitCode({
+    aborted: false,
+    complete: true,
+    counts: {
+      scanned: 1,
+      ok: 1,
+      would_fix: 0,
+      repaired: 0,
+      skipped_unknown: 0,
+      conflict: 0,
+      verify_failed: 0,
+      cdn_stale_pending: 0,
+      missing: 0,
+      error: 0,
+    },
+  }), 0)
+})
+
 
 test('dry-run reports would_fix without calling rewriteMetadata', async () => {
   const store = new RepairStoreDouble()

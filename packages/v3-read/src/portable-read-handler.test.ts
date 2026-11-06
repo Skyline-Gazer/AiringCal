@@ -249,6 +249,34 @@ test('image proxy honors Content-Type from store headObject', async () => {
   assert.deepEqual(new Uint8Array(await response.arrayBuffer()), pngBytes)
 })
 
+test('image proxy sniffs bytes when HEAD Content-Type is missing or non-image', async () => {
+  const inner = new MemoryPublicStore()
+  await publishEmptyRelease(inner)
+  const hash = 'c'.repeat(64)
+  const jpegBytes = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10])
+  await inner.putImmutableObject(imageOriginalKey(hash), jpegBytes, 'application/octet-stream')
+
+  const publicStore: PublicStore = {
+    getCurrentRelease: () => inner.getCurrentRelease(),
+    getSnapshotBytes: (ref) => inner.getSnapshotBytes(ref),
+    putImmutableObject: (key, body, contentType) => inner.putImmutableObject(key, body, contentType),
+    commitRelease: (expected, next) => inner.commitRelease(expected, next),
+    async headObject(key) {
+      const head = await inner.headObject(key)
+      return head ? { ...head, contentType: 'application/octet-stream' } : null
+    },
+  }
+
+  const response = await handlePortableReadRequest(
+    new Request(`https://local/image/${hash}`),
+    { publicStore },
+  )
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('Content-Type'), 'image/jpeg')
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), jpegBytes)
+})
+
+
 function countingPublicStore(inner: MemoryPublicStore): PublicStore & {
   pointerReads: number
   byteReads: number

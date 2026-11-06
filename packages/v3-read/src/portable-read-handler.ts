@@ -195,10 +195,12 @@ async function handleImage(
     const head = publicStore.headObject ? await publicStore.headObject(candidate.key) : null
     const bytes = await publicStore.getSnapshotBytes(candidate.key)
     if (!bytes) continue
-    const contentType =
-      (head?.contentType && head.contentType.trim() !== '' ? head.contentType : null)
-      ?? sniffImage(bytes)
-      ?? candidate.contentType
+    const storedType = head?.contentType?.trim() || ''
+    const storedIsImage = storedType.toLowerCase().startsWith('image/')
+    const sniffed = sniffImage(bytes)
+    const contentType = !storedIsImage
+      ? (sniffed ?? candidate.contentType)
+      : storedType
     return new Response(new Uint8Array(bytes), {
       headers: {
         'Cache-Control': V2_CACHE_CONTROL.image,

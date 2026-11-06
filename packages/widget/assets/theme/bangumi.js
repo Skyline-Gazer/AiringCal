@@ -192,6 +192,23 @@
     window.location.href = 'https://www.google.com'
   }
 
+  document.addEventListener('click', function (event) {
+    var target = event.target
+    if (!target || !target.closest) return
+    var button = target.closest('[data-bgm-age]')
+    if (!button) return
+    var action = button.getAttribute('data-bgm-age')
+    if (action === 'confirm') {
+      event.preventDefault()
+      window.bgmConfirmAge()
+      return
+    }
+    if (action === 'deny') {
+      event.preventDefault()
+      window.bgmLeaveAge()
+    }
+  })
+
   function subjectImageRef(images) {
     return images?.large?.uri ? images.large : images?.common
   }
@@ -453,11 +470,16 @@
     var currentPage = 1
     var loaded = false
     var lastLoadedData = null
+    var loadInFlight = false
     var statusBarEl = null
 
     function paintCollectionData(data, seq) {
       if (seq != null && seq !== loadSeq) return
-      lastLoadedData = data
+      lastLoadedData = {
+        data: data,
+        type: currentType,
+        page: currentPage,
+      }
       if (!data || data.total === 0) {
         grid.innerHTML = '<p class="bgm-empty">暂无数据 — 同步可能尚未执行，数据尚未发布，请稍后再试</p>'
         pagination.innerHTML = ''
@@ -484,10 +506,12 @@
 
     function refreshVisibleCards() {
       if (!lastLoadedData) return
+      if (loadInFlight) return
+      if (lastLoadedData.type !== currentType || lastLoadedData.page !== currentPage) return
       if (grid.childElementCount > 0) {
         grid.style.minHeight = grid.offsetHeight + 'px'
       }
-      paintCollectionData(lastLoadedData, null)
+      paintCollectionData(lastLoadedData.data, null)
     }
 
     function noteConfigDenied() {
@@ -510,6 +534,7 @@
       loadAbort = typeof AbortController !== 'undefined' ? new AbortController() : null
       var seq = ++loadSeq
       var signal = loadAbort ? loadAbort.signal : undefined
+      loadInFlight = true
 
       if (grid.childElementCount > 0) {
         grid.style.minHeight = grid.offsetHeight + 'px'
@@ -540,6 +565,8 @@
         pagination.innerHTML = ''
         grid.classList.remove('bgm-grid-skeleton')
         grid.style.minHeight = ''
+      } finally {
+        if (seq === loadSeq) loadInFlight = false
       }
     }
 

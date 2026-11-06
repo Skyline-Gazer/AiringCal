@@ -458,6 +458,29 @@ export async function runPortableE2e({ skip = false, spawnImpl = spawnCapture } 
   }
 }
 
+
+/** True only for genuine missing credential/tooling — not failure JSON that happens to mention wrangler. */
+export function isCfSmokeOwnerGated(combined, code = null) {
+  if (code == null) return true
+  const text = String(combined ?? '')
+  // Explicit credential / login / missing-tool signals.
+  if (/missing\s+(cloudflare\s+)?(api\s+)?token/i.test(text)) return true
+  if (/wrangler\s+login/i.test(text)) return true
+  if (/\bENOENT\b/.test(text) && /wrangler|tsx|node/i.test(text)) return true
+  if (/credential|permission denied|unauthorized|authentication error/i.test(text)
+    && !/"status"\s*:\s*"failed"/i.test(text)) {
+    return true
+  }
+  // Structured smoke failure JSON with wranglerLog is a measurable fail, not pending.
+  if (/"stage"\s*:\s*"v3_cf_read_smoke"/i.test(text) && /"status"\s*:\s*"failed"/i.test(text)) {
+    return false
+  }
+  if (/"wranglerLog"\s*:/.test(text) && /"status"\s*:\s*"failed"/i.test(text)) {
+    return false
+  }
+  return false
+}
+
 export async function runCfSmoke({ skip = false, spawnImpl = spawnCapture } = {}) {
   if (skip) {
     return {
@@ -468,7 +491,8 @@ export async function runCfSmoke({ skip = false, spawnImpl = spawnCapture } = {}
       reason: 'skipped via --skip-cf-smoke',
     }
   }
-  // Local wrangler smoke is heavy; treat missing tooling/credentials as pending, not measurable fail.
+  // Missing tooling/credentials → pending. Never treat the literal `wranglerLog`
+  // key / command path alone as owner-gated — real smoke failures always include that key.
   const result = await spawnImpl('pnpm', ['exec', 'tsx', 'apps/v3-read-worker/scripts/staging-smoke.ts'], {
     timeoutMs: 240_000,
   })
@@ -476,8 +500,7 @@ export async function runCfSmoke({ skip = false, spawnImpl = spawnCapture } = {}
     return { id: 'cf_smoke', ok: true, measurable: true, status: 'ok', reason: null }
   }
   const combined = `${result.stdout}\n${result.stderr}`
-  const ownerGated = /credential|token|wrangler|ENOENT|login|permission|missing/i.test(combined)
-    || result.code == null
+  const ownerGated = isCfSmokeOwnerGated(combined, result.code)
   if (ownerGated) {
     return {
       id: 'cf_smoke',
