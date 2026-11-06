@@ -18,6 +18,16 @@ export interface ObjectPutOptions {
   ifNoneMatch?: string
 }
 
+export interface ObjectRewriteMetadata {
+  contentType: string
+  cacheControl?: string
+  contentDisposition?: string
+  /** Preserve non-replaced user metadata; implementation must not drop unrelated keys. */
+  preserveUserMetadata?: boolean // default true
+  /** Required: prior object ETag/generation token used as CopySourceIfMatch / conditional. */
+  expectedEtag: string
+}
+
 export class ObjectStorePreconditionError extends Error {
   constructor(message = 'Object store precondition failed') {
     super(message)
@@ -33,6 +43,11 @@ export interface ConditionalObjectStore {
   delete?(key: string): Promise<void>
   /** Keys under a prefix, sorted ascending. Only stores with listing support implement it. */
   list?(prefix: string): Promise<string[]>
+  /**
+   * Rewrite object metadata without changing body bytes.
+   * Prefer same-key CopyObject REPLACE + CopySourceIfMatch; fallback Get+Put IfMatch.
+   */
+  rewriteMetadata?(key: string, meta: ObjectRewriteMetadata): Promise<ObjectHead>
 }
 
 export function normalizeEtag(etag: string): string {
