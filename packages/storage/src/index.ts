@@ -1,4 +1,6 @@
 export const packageBoundary = '@airing-cal/storage'
+export { sniffImage, type SniffedImageMime } from './sniff-image.ts'
+
 
 export {
   canonicalJson,
