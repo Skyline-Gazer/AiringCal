@@ -69,6 +69,25 @@ test('handlePortableReadRequest /version includes platform when env set', async 
   assert.equal(body.platform, 'portable')
 })
 
+test('handlePortableReadRequest serves JSON when the runtime lacks Response.json (EdgeOne)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'airingcal-read-noresponsejson-'))
+  const publicStore = new FilesystemPublicStore(root)
+  const descriptor = Object.getOwnPropertyDescriptor(Response, 'json')
+  Object.defineProperty(Response, 'json', { value: undefined, configurable: true, writable: true })
+  try {
+    const response = await handlePortableReadRequest(new Request('https://local/api/version'), {
+      publicStore,
+      processEnv: { AIRINGCAL_PLATFORM: 'edgeone' },
+    })
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-type'), 'application/json; charset=utf-8')
+    const body = await response.json() as { platform?: string }
+    assert.equal(body.platform, 'edgeone')
+  } finally {
+    if (descriptor) Object.defineProperty(Response, 'json', descriptor)
+  }
+})
+
 test('handlePortableReadRequest /health reports compose-scheduler cron from SQLite', async () => {
   const root = mkdtempSync(join(tmpdir(), 'airingcal-read-health-'))
   const sqlitePath = join(root, 'builder.sqlite')

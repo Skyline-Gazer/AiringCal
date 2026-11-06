@@ -47,9 +47,12 @@ function readPlatformId(processEnv?: Record<string, string | undefined>): string
 }
 
 function json(data: unknown, init?: ResponseInit): Response {
-  return Response.json(data, {
+  // EdgeOne edge functions do not implement the static `Response.json()`; build the
+  // response explicitly so every runtime (Cloudflare, EdgeOne, Node) behaves the same.
+  return new Response(JSON.stringify(data), {
     ...init,
     headers: {
+      'content-type': 'application/json; charset=utf-8',
       'Cache-Control': V2_CACHE_CONTROL.defaultJson,
       ...(init?.headers instanceof Headers
         ? Object.fromEntries(init.headers.entries())
