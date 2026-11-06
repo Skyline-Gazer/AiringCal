@@ -2,9 +2,9 @@
 #
 # Manual dispatch ONLY: this workflow must never run on push, pull_request or a
 # schedule, and it must never deploy the production Worker or read the production
-# Release bucket. Only `AIRINGCAL_STAGING_*` secrets/vars are expanded; the
-# generated Wrangler config points the `AIRINGCAL_PUBLIC_R2` binding at the
-# staging bucket and injects the verified staging public base URL.
+# Release bucket. Only `AIRINGCAL_STAGING_*` secrets/vars are expanded; non-secret
+# infrastructure settings come from `vars.*` with safe staging defaults, and the
+# generated Wrangler config points `AIRINGCAL_PUBLIC_R2` at the staging bucket.
 name: v3 read worker (staging)
 
 on:
@@ -25,9 +25,10 @@ jobs:
     environment: staging
     steps:
       - name: Validate required staging config
+        id: config
         env:
           AIRINGCAL_STAGING_CLOUDFLARE_API_TOKEN: ${{ secrets.AIRINGCAL_STAGING_CLOUDFLARE_API_TOKEN }}
-          AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID: ${{ secrets.AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID }}
+          AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID: ${{ vars.AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID }}
           AIRINGCAL_STAGING_WORKER_NAME: ${{ vars.AIRINGCAL_STAGING_WORKER_NAME }}
           AIRINGCAL_STAGING_PUBLIC_R2_BUCKET: ${{ vars.AIRINGCAL_STAGING_PUBLIC_R2_BUCKET }}
           AIRINGCAL_STAGING_PUBLIC_BASE_URL: ${{ vars.AIRINGCAL_STAGING_PUBLIC_BASE_URL }}
@@ -37,8 +38,6 @@ jobs:
           for var in \
             AIRINGCAL_STAGING_CLOUDFLARE_API_TOKEN \
             AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID \
-            AIRINGCAL_STAGING_WORKER_NAME \
-            AIRINGCAL_STAGING_PUBLIC_R2_BUCKET \
             AIRINGCAL_STAGING_PUBLIC_BASE_URL
           do
             if [ -z "${!var:-}" ]; then
@@ -47,17 +46,31 @@ jobs:
             fi
           done
           if [ "$missing" -ne 0 ]; then
-            echo "::error::Staging deploy aborted before checkout/build; configure the 'staging' Environment secrets/vars (see docs/v3/cloudflare-read-worker.md)."
+            echo "::error::Staging deploy aborted before checkout/build; run scripts/setup-staging.sh or configure the 'staging' Environment (see docs/v3/cloudflare-read-worker.md)."
             exit 1
           fi
           if ! printf '%s' "$AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID" | grep -Eq '^[0-9a-fA-F]{32}$'; then
             echo "::error::AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID must be a 32 character Cloudflare account id"
             exit 1
           fi
-          if ! printf '%s' "$AIRINGCAL_STAGING_WORKER_NAME" | grep -Eq '^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$'; then
+          worker_name="${AIRINGCAL_STAGING_WORKER_NAME:-airing-cal-v3-read-staging}"
+          public_bucket="${AIRINGCAL_STAGING_PUBLIC_R2_BUCKET:-airingcal-staging-public}"
+          if ! printf '%s' "$worker_name" | grep -Eq '^[a-z0-9][a-z0-9-]{0,61}[a-z0-9]$'; then
             echo "::error::AIRINGCAL_STAGING_WORKER_NAME must be a lowercase Worker name"
             exit 1
           fi
+          if [ "$worker_name" = "airing-cal-frontend" ]; then
+            echo "::error::Staging deploy must never overwrite production worker airing-cal-frontend"
+            exit 1
+          fi
+          if [ "$public_bucket" = "airing-cal-public" ]; then
+            echo "::error::Staging deploy must never bind to production bucket airing-cal-public"
+            exit 1
+          fi
+          {
+            echo "worker_name=$worker_name"
+            echo "public_r2_bucket=$public_bucket"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         uses: actions/checkout@v5
@@ -78,7 +91,7 @@ jobs:
 
       - name: Materialize staging Wrangler config
         env:
-          AIRINGCAL_STAGING_PUBLIC_R2_BUCKET: ${{ vars.AIRINGCAL_STAGING_PUBLIC_R2_BUCKET }}
+          AIRINGCAL_STAGING_PUBLIC_R2_BUCKET: ${{ steps.config.outputs.public_r2_bucket }}
           AIRINGCAL_STAGING_PUBLIC_BASE_URL: ${{ vars.AIRINGCAL_STAGING_PUBLIC_BASE_URL }}
           BANGUMI_GIT_COMMIT_SHA: ${{ github.sha }}
         run: |
@@ -89,8 +102,8 @@ jobs:
       - name: Deploy staging read worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.AIRINGCAL_STAGING_CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID }}
-          AIRINGCAL_STAGING_WORKER_NAME: ${{ vars.AIRINGCAL_STAGING_WORKER_NAME }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID }}
+          AIRINGCAL_STAGING_WORKER_NAME: ${{ steps.config.outputs.worker_name }}
           WRANGLER_LOG_PATH: ${{ runner.temp }}/wrangler-v3-read-staging.log
         run: |
           pnpm exec wrangler deploy \
