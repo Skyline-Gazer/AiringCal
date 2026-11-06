@@ -12,7 +12,8 @@ import {
   SqliteBuilderStateStore,
   SyncRunStore,
 } from '@airing-cal/v3-builder'
-import { FilesystemPublicStore, V2_CACHE_CONTROL } from '@airing-cal/v3-core'
+import { FilesystemPublicStore, MemoryPublicStore, V2_CACHE_CONTROL } from '@airing-cal/v3-core'
+import type { PublicStore } from '@airing-cal/v3-core/ports'
 import { handlePortableReadRequest } from './portable-read-handler.ts'
 import { readPortableCronStatus } from './portable-builder-cron.ts'
 
@@ -177,4 +178,49 @@ test('image route redirects to the public base URL only for objects that exist (
   const served = await handlePortableReadRequest(imageRequest('/thumb'), { publicStore })
   assert.equal(served.status, 200)
   assert.equal(await served.text(), 'thumb-v2')
+})
+
+test('image proxy honors Content-Type from store headObject', async () => {
+  const inner = new MemoryPublicStore()
+  const db = openBuilderDatabase(':memory:')
+  const state = new SqliteBuilderStateStore(db)
+  const runs = new SyncRunStore(db)
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-proxy-mime',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => emptyFetch(),
+    now: () => 1_700_000_000_000,
+  })
+  await publishBuilderCheckpoint({
+    state,
+    publicStore: inner,
+    manifestMetadata: { source_observed_at: '2026-01-01T00:00:00.000Z', git_sha: 'e'.repeat(40) },
+  })
+  db.close()
+
+  const hash = 'e'.repeat(64)
+  const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00])
+  await inner.putImmutableObject(imageOriginalKey(hash), pngBytes, 'image/png')
+
+  const publicStore: PublicStore = {
+    getCurrentRelease: () => inner.getCurrentRelease(),
+    getSnapshotBytes: (ref) => inner.getSnapshotBytes(ref),
+    putImmutableObject: (key, body, contentType) => inner.putImmutableObject(key, body, contentType),
+    commitRelease: (expected, next) => inner.commitRelease(expected, next),
+    async headObject(key) {
+      const head = await inner.headObject(key)
+      return head ? { ...head, contentType: 'image/png' } : null
+    },
+  }
+
+  const response = await handlePortableReadRequest(
+    new Request(`https://local/image/${hash}`),
+    { publicStore },
+  )
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('Content-Type'), 'image/png')
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), pngBytes)
 })

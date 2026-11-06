@@ -28,7 +28,7 @@ const QUOTED_ETAG = /^".*"$/
  * local R2 emulation; see `docs/v3/cloudflare-read-worker.md`.
  */
 export class MemoryR2Bucket implements CloudflareR2BucketBinding {
-  objects = new Map<string, { bytes: Uint8Array; etag: string }>()
+  objects = new Map<string, { bytes: Uint8Array; etag: string; contentType?: string }>()
   private etagCounter = 0
 
   async get(key: string): Promise<CloudflareR2ObjectBody | null> {
@@ -39,7 +39,12 @@ export class MemoryR2Bucket implements CloudflareR2BucketBinding {
   async head(key: string): Promise<CloudflareR2HeadResult | null> {
     const entry = this.objects.get(key)
     return entry
-      ? { etag: entry.etag, httpEtag: `"${entry.etag}"`, size: entry.bytes.byteLength }
+      ? {
+          etag: entry.etag,
+          httpEtag: `"${entry.etag}"`,
+          size: entry.bytes.byteLength,
+          httpMetadata: entry.contentType ? { contentType: entry.contentType } : undefined,
+        }
       : null
   }
 
@@ -72,6 +77,10 @@ export class MemoryR2Bucket implements CloudflareR2BucketBinding {
       bytes = new Uint8Array(value)
     }
     this.etagCounter += 1
-    this.objects.set(key, { bytes: new Uint8Array(bytes), etag: `etag-${this.etagCounter}` })
+    this.objects.set(key, {
+      bytes: new Uint8Array(bytes),
+      etag: `etag-${this.etagCounter}`,
+      contentType: options?.httpMetadata?.contentType,
+    })
   }
 }

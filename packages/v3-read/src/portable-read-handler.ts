@@ -2,6 +2,7 @@ import {
   imageOriginalKey,
   imageThumbV1Key,
   imageThumbV2Key,
+  sniffImage,
   type PublicSnapshotV1,
 } from '@airing-cal/storage'
 import { V2_CACHE_CONTROL } from '@airing-cal/v3-core/read-contract'
@@ -167,7 +168,7 @@ async function handleImage(
       { key: imageThumbV2Key(hash), contentType: 'image/webp' },
       { key: imageThumbV1Key(hash), contentType: 'image/webp' },
     ]
-    : [{ key: imageOriginalKey(hash), contentType: 'image/jpeg' }]
+    : [{ key: imageOriginalKey(hash), contentType: 'application/octet-stream' }]
   for (const candidate of candidates) {
     const redirectTo = resolvePublicObjectUrl(publicBaseUrl, candidate.key)
     if (redirectTo) {
@@ -178,13 +179,18 @@ async function handleImage(
       if (exists) return publicImageRedirectResponse(redirectTo)
       continue
     }
+    const head = publicStore.headObject ? await publicStore.headObject(candidate.key) : null
     const bytes = await publicStore.getSnapshotBytes(candidate.key)
     if (!bytes) continue
+    const contentType =
+      (head?.contentType && head.contentType.trim() !== '' ? head.contentType : null)
+      ?? sniffImage(bytes)
+      ?? candidate.contentType
     return new Response(new Uint8Array(bytes), {
       headers: {
         'Cache-Control': V2_CACHE_CONTROL.image,
         'CDN-Cache-Control': V2_CACHE_CONTROL.imageCdn,
-        'Content-Type': candidate.contentType,
+        'Content-Type': contentType,
       },
     })
   }

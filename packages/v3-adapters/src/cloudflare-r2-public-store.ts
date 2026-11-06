@@ -21,6 +21,7 @@ export interface CloudflareR2HeadResult {
   etag: string
   httpEtag: string
   size?: number
+  httpMetadata?: { contentType?: string }
 }
 
 export interface CloudflareR2PutOptions {
@@ -70,11 +71,15 @@ export class CloudflareR2PublicStore implements PublicStore {
    * is present before pointing a client at the CDN. `size` is populated only when
    * the binding exposes it; readers treat a non-null result as "exists".
    */
-  async headObject(key: string): Promise<{ size: number; etag: string | null } | null> {
+  async headObject(key: string): Promise<{ size: number; etag: string | null; contentType?: string | null } | null> {
     assertSafeObjectKey(key)
     const head = await this.bucket.head(key)
     if (!head) return null
-    return { size: head.size ?? 0, etag: head.etag ?? null }
+    return {
+      size: head.size ?? 0,
+      etag: head.etag ?? null,
+      contentType: head.httpMetadata?.contentType ?? null,
+    }
   }
 
   async putImmutableObject(key: string, body: Uint8Array, contentType: string): Promise<void> {

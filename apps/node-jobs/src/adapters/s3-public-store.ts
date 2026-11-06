@@ -36,11 +36,11 @@ export class S3CompatiblePublicStore implements PublicStore {
     const object = await this.objects.get(artifactRef)
     return object ? object.body : null
   }
-  async headObject(key: string): Promise<{ size: number; etag: string | null } | null> {
+  async headObject(key: string): Promise<{ size: number; etag: string | null; contentType?: string | null } | null> {
     assertSafeObjectKey(key)
     const head = await this.objects.head(key)
     if (!head) return null
-    return { size: head.size ?? 0, etag: head.etag }
+    return { size: head.size ?? 0, etag: head.etag, contentType: head.contentType ?? null }
   }
 
   async putImmutableObject(key: string, body: Uint8Array, contentType: string): Promise<void> {
