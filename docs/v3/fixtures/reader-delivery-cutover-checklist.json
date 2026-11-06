@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "kind": "reader_delivery_cutover_checklist",
+  "generated_by": "PR-D Task 4.4 (docs/v3/reader-delivery-cutover.md)",
+  "status": "pending_owner",
+  "executed_by_agent": false,
+  "environment_reason": "missing-owner-credentials",
+  "tried": "No Owner DNS control for test.air.teijp.cn, no AIRINGCAL_CLOUDFLARE_API_TOKEN, no AIRINGCAL_EDGEONE_API_TOKEN in the implementing environment; deploy-env --apply returns owner-gated exit 2 and DNS/live mutation is prohibited for this slice.",
+  "policy": {
+    "neverFakeReceipts": true,
+    "doNotDeleteStagingBuckets": true,
+    "doNotDeleteOldEdgeOneProject": true,
+    "dualBucketFallbackOnIsolationFailure": false
+  },
+  "items": [
+    {
+      "id": "development-single-bucket-apply",
+      "title": "AIRINGCAL_ENV=development deploy-env --apply built airingcal-development with isolation.ok=true",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "Cloudflare API token (R2 admin, Workers write) + AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes",
+      "evidence": null,
+      "command": "AIRINGCAL_ENV=development AIRINGCAL_DEPLOY_TARGET=both node scripts/deploy-env.mjs --apply",
+      "gate": "exit 0 AND result.isolation.ok === true (else abort; no dual-bucket fallback)"
+    },
+    {
+      "id": "cf-eo-overseas-parity-pre",
+      "title": "CF staging vs EdgeOne overseas preview share publish.generation + content_hash before CNAME",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "AIRINGCAL_EDGEONE_OVERSEAS_PREVIEW_HOST reachable (access-protected *.edgeone.cool needs bound host or eo_token/eo_time)",
+      "evidence": null,
+      "command": "node scripts/reader-delivery-bench.mjs --hosts https://airing-cal-v3-read-staging.r7a.workers.dev,$AIRINGCAL_EDGEONE_OVERSEAS_PREVIEW_HOST --out docs/v3/fixtures/reader-delivery-cutover-parity-pre.json",
+      "gate": "receipt.cf_vs_eo.equal === true"
+    },
+    {
+      "id": "cname-test-air-to-overseas-eo",
+      "title": "test.air.teijp.cn CNAME points to airingcal-edgeone-read-overseas; old airingcal-edgeone-read kept alive",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "DNS account control for teijp.cn + EdgeOne console domain binding",
+      "evidence": null,
+      "rollback": "Repoint the test CNAME back to airingcal-edgeone-read (still deployed) with reduced TTL."
+    },
+    {
+      "id": "cf-eo-parity-post",
+      "title": "CF staging vs test.air.teijp.cn (now overseas) share publish.generation + content_hash after CNAME",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "CNAME propagated",
+      "evidence": null,
+      "command": "node scripts/reader-delivery-bench.mjs --hosts https://airing-cal-v3-read-staging.r7a.workers.dev,https://test.air.teijp.cn --out docs/v3/fixtures/reader-delivery-cutover-parity-post.json",
+      "gate": "receipt.cf_vs_eo.equal === true"
+    },
+    {
+      "id": "disable-r2-dev-after-parity",
+      "title": "r2.dev disabled on the development bucket after custom-domain HEAD/GET parity for pointer + one image",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "Cloudflare token with R2 bucket-admin",
+      "evidence": null,
+      "command": "wrangler r2 bucket dev-url disable airingcal-development",
+      "gate": "curl -sfI $AIRINGCAL_PUBLIC_BASE_URL/public/current-release.json (200, no-cache) AND curl -sfI $AIRINGCAL_PUBLIC_BASE_URL/images/<hash>/original (200, Content-Type image/*)"
+    },
+    {
+      "id": "keep-staging-buckets",
+      "title": "airingcal-staging-checkpoint and airingcal-staging-public are NOT deleted in this change",
+      "kind": "guard",
+      "status": "pending_owner",
+      "requiresOwner": "Confirm at acceptance; prune only in a separate change",
+      "evidence": null,
+      "enforced_by": "policy.doNotDeleteStagingBuckets"
+    },
+    {
+      "id": "keep-old-edgeone-project",
+      "title": "airingcal-edgeone-read (global) remains deployed as rollback until domain cutover acceptance",
+      "kind": "guard",
+      "status": "pending_owner",
+      "requiresOwner": "Confirm at acceptance",
+      "evidence": null,
+      "enforced_by": "deploy-env plan edgeone.keepOldProject; policy.doNotDeleteOldEdgeOneProject"
+    }
+  ]
+}

@@ -127,3 +127,8 @@ key on every public entrypoint must return 403/404 (`r2.dev` disabled). Any
 failure **aborts cutover** — no silent dual-bucket fallback; staging readers and
 writer freeze remain in place until isolation is proven.
 
+**Domain cutover:** the manual parity → CNAME → `r2.dev`-disable sequence that
+promotes `test.air.teijp.cn` to `airingcal-edgeone-read-overseas` (keeping
+`airingcal-edgeone-read` as rollback) is in
+[`reader-delivery-cutover.md`](./reader-delivery-cutover.md).
+

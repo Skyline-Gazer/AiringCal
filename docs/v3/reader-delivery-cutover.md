@@ -1,0 +1,124 @@
+# Reader delivery domain cutover runbook (PR-D / P4 Task 4.4)
+
+Owner-approved, **manual** sequence that moves the Development reader domain
+`test.air.teijp.cn` from the global EdgeOne project to the new **overseas**
+EdgeOne project and retires `r2.dev` as the public base. Like
+[`cutover-rollback.md`](./cutover-rollback.md), **CI never runs any step here**:
+no DNS record, live deploy apply, or `r2.dev` toggle is created, changed, or
+deleted by a merge.
+
+> **STATUS — pending owner DNS / live apply.** The implementing agent does not
+> hold Owner DNS control for `test.air.teijp.cn`, a Cloudflare API token, or an
+> EdgeOne Makers token. **No live CNAME, deploy `--apply`, or `r2.dev` disable
+> was executed, and no cutover receipt is claimed.** This document lands the
+> executable sequence; the machine-readable status lives in
+> [`fixtures/reader-delivery-cutover-checklist.json`](./fixtures/reader-delivery-cutover-checklist.json),
+> which the acceptance script (`scripts/reader-delivery-accept.mjs`, Task 5.2)
+> reads and prints any `pending_owner` item separately.
+
+## Preconditions (all must hold before Step 1)
+
+| Gate | How to check |
+|---|---|
+| Single-bucket `airingcal-development` built + isolation proven | `AIRINGCAL_ENV=development AIRINGCAL_DEPLOY_TARGET=both AIRINGCAL_CLOUDFLARE_API_TOKEN=… AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes node scripts/deploy-env.mjs --apply` exits **0** with `isolation.ok: true` (see [deploy contract](./gha-portable-writer.md#development-single-bucket-cutover-airingcal_envdevelopment)). A non-zero abort with `aborted: true` means checkpoints were **not** copied — fix WAF/`r2.dev` and re-run; never fall back to dual buckets. |
+| One effective writer only | Staging `portable-writer.yml` dispatch is blocked for the cutover window; `AIRINGCAL_WRITER_ENABLED` remains unset/false (Production gate); the Development writer test is the only `target=development` run. |
+| Image CDN decision locked | `AIRINGCAL_IMAGE_BASE_URL` unset (reuse public base) **or** an Owner-supplied validated https host with origin Host/SNI = public R2 host and a loop check passing. Default is **off**. |
+
+**Keep-alive guardrail:** do **not** delete `airingcal-staging-checkpoint`,
+`airingcal-staging-public`, or the old `airingcal-edgeone-read` project in this
+change — they are the rollback path until acceptance.
+
+## Step 1 — Prove CF ↔ EdgeOne-overseas parity (before the CNAME)
+
+Compare the reader surface of the Cloudflare staging host against the overseas
+EdgeOne **preview** host (Owner supplies `AIRINGCAL_EDGEONE_OVERSEAS_PREVIEW_HOST`;
+the preset `*.edgeone.cool` domain is access-protected, so preview through the
+bound host or a valid `eo_token`/`eo_time` pair).
+
+```bash
+node scripts/reader-delivery-bench.mjs \
+  --hosts https://airing-cal-v3-read-staging.r7a.workers.dev,${AIRINGCAL_EDGEONE_OVERSEAS_PREVIEW_HOST} \
+  --out docs/v3/fixtures/reader-delivery-cutover-parity-pre.json
+```
+
+Gate: the receipt's `cf_vs_eo.equal` is **`true`** and the recorded
+`publish.generation` + `content_hash` match on both hosts. If they differ, the
+overseas project is serving a different Release — stop; re-check its
+`AIRINGCAL_PUBLIC_BASE_URL` project variable and pointer freshness before
+touching DNS.
+
+## Step 2 — Point `test.air.teijp.cn` to the overseas project
+
+Owner DNS account action:
+
+1. In the EdgeOne console, bind `test.air.teijp.cn` to
+   `airingcal-edgeone-read-overseas` and copy the target CNAME value.
+2. At the DNS provider, repoint the `test` record's CNAME to that overseas
+   target. Lower the record TTL first so rollback is fast.
+3. **Leave `airingcal-edgeone-read` (global) deployed and unbound** — it is the
+   immediate rollback if the overseas route misbehaves.
+
+Then re-run Step 1 with `test.air.teijp.cn` in place of the preview host and
+confirm `cf_vs_eo.equal` stays **`true`**:
+
+```bash
+node scripts/reader-delivery-bench.mjs \
+  --hosts https://airing-cal-v3-read-staging.r7a.workers.dev,https://test.air.teijp.cn \
+  --out docs/v3/fixtures/reader-delivery-cutover-parity-post.json
+```
+
+## Step 3 — Confirm the custom domain (not `r2.dev`) serves the public base
+
+`deploy-env --apply` already disables `r2.dev` on `airingcal-development` as the
+isolation precondition. This step is the reader-facing **confirmation** that, for
+whatever bucket currently backs `AIRINGCAL_PUBLIC_BASE_URL`, the custom domain —
+not `r2.dev` — now serves the pointer **and** one image correctly before reads
+are trusted on it. If the public base was left pointing at `r2.dev` (operator set
+`AIRINGCAL_PUBLIC_BASE_URL` empty to "keep the currently verified host"),
+re-point it to the custom-domain CDN host and disable `r2.dev` here.
+
+```bash
+# Pointer parity (Cache-Control must be no-cache / max-age=0, not a long TTL)
+curl -sfI "$AIRINGCAL_PUBLIC_BASE_URL/public/current-release.json"
+
+# One image parity — Content-Type must be image/* (P0/P1), not application/octet-stream
+curl -sfI "$AIRINGCAL_PUBLIC_BASE_URL/images/<hash>/original"
+
+# Both 200 with the expected headers → disable the public r2.dev URL
+wrangler r2 bucket dev-url disable airingcal-development
+```
+
+The `<hash>` is any `images/<64-hex>/original` key referenced by the current
+pointer (`portable-image-mime-repair` dry-run lists originals and their
+Content-Type). If a public image still returns `application/octet-stream`
+through the CDN, run the MIME repair apply and purge/refresh before declaring
+parity — see [`cutover-rollback.md`](./cutover-rollback.md) for the publish/
+rollback toolchain.
+
+## Step 4 — Do **not** delete staging buckets or the old EdgeOne project
+
+Retain `airingcal-staging-checkpoint`, `airingcal-staging-public`, and
+`airingcal-edgeone-read` untouched through acceptance. Old resources are pruned
+in a **separate** change after Development acceptance passes, never here.
+
+## Rollback
+
+| What regressed | Action |
+|---|---|
+| Overseas EdgeOne route (after the CNAME) | Repoint the `test` CNAME back to `airingcal-edgeone-read`; the old project is still live and serves the same Release. |
+| Reader serving a bad Release | Follow pointer rollback in [`cutover-rollback.md`](./cutover-rollback.md); readers follow the pointer within the ≤ 60 s identity budget (see [`edgeone-store.md`](./edgeone-store.md)). |
+| Bucket / base URL | Readers → previous staging public base. `r2.dev` can be re-enabled only as an emergency path, then re-disabled after parity. |
+| Writer | Staging dispatch stays blocked until the Owner re-opens it; never run two writers during rollback. |
+
+No Production resources are created or mutated by this runbook.
+
+## Checklist hook (Task 5.2)
+
+`scripts/reader-delivery-accept.mjs` MUST read
+[`fixtures/reader-delivery-cutover-checklist.json`](./fixtures/reader-delivery-cutover-checklist.json)
+and print every item whose `status` is not `done` under "Pending Owner items"
+alongside its existing `mainland: pending_owner_node`, ICP-CDN, and
+Production-apply items. The agent that performs Steps 1–3 sets each item's
+`status` to `done` and fills `evidence` (bench receipt path / `cf_vs_eo`
+generation+hash / `r2.dev` disable output) **only after executing it live**; an
+unexecuted step stays `pending_owner`. Do not pre-mark items as done.

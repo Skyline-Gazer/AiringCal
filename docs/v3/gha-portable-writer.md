@@ -114,3 +114,9 @@ Workflow `inputs.target` gains `development` (Environment `development` +
 `AIRINGCAL_DEVELOPMENT_*`). Until isolation+copy succeed, the development writer
 job stays disabled so only one effective writer can run.
 
+Reader-domain cutover (parity → CNAME `test.air.teijp.cn` → disable `r2.dev`) is
+the Owner-executed follow-on to the `--apply` above:
+[`reader-delivery-cutover.md`](./reader-delivery-cutover.md). Until its checklist
+reaches `done`, the overseas EdgeOne project is live only as a preview and
+`test.air.teijp.cn` still serves the global project.
+
