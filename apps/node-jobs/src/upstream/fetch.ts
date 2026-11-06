@@ -58,9 +58,31 @@ function isCollection(value: unknown): value is BgmCollection {
     && (subject === undefined || isSlimSubject(subject))
 }
 
+/**
+ * Real bgm.tv pages encode unset optional fields as `null` while the OpenAPI
+ * schema marks them optional strings. Drop those nulls at the boundary so the
+ * strict contract and the typed domain keep treating them as absent.
+ */
+function withAbsentNulls(entry: unknown): unknown {
+  if (!isRecord(entry)) return entry
+  let next: Record<string, unknown> | null = null
+  if (entry.comment === null) {
+    next = { ...entry }
+    delete next.comment
+  }
+  const subject = (next ?? entry).subject
+  if (isRecord(subject) && subject.date === null) {
+    next ??= { ...entry }
+    next.subject = { ...subject }
+    delete (next.subject as Record<string, unknown>).date
+  }
+  return next ?? entry
+}
+
 function parseCollectionPage(value: unknown, expectedOffset: number, expectedLimit: number, expectedTotal?: number): { total: number; data: BgmCollection[] } {
   if (!isRecord(value)) throw contract('collections')
-  const { total, offset, limit, data } = value
+  const { total, offset, limit, data: rawData } = value
+  const data = Array.isArray(rawData) ? rawData.map(withAbsentNulls) : rawData
   if (!isSafeInteger(total) || total < 0 || offset !== expectedOffset || limit !== expectedLimit || !Array.isArray(data) || !data.every(isCollection)) {
     throw contract('collections')
   }
