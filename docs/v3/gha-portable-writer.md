@@ -44,6 +44,7 @@ Production uses the corresponding `AIRINGCAL_PRODUCTION_*` names in the `product
 
 ### One-shot Staging initialization (local `.env` driven)
 
+> Note: `.env.example` now documents the unified `AIRINGCAL_ENV` deploy contract (see `scripts/deploy-env.mjs`). For the one-shot staging flow below, add the `AIRINGCAL_STAGING_*` keys by hand; they remain valid and are listed as backward aliases at the bottom of `.env.example`.
 Copy `.env.example` to `.env` (git-ignored) and fill in the 4 required keys (`AIRINGCAL_STAGING_BANGUMI_TOKEN`, `AIRINGCAL_STAGING_PRIMARY_USER_ID`, `AIRINGCAL_STAGING_S3_ACCESS_KEY_ID`, `AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY`), then run:
 
 ```bash
