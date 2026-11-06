@@ -85,7 +85,7 @@ curl -sfI "$AIRINGCAL_PUBLIC_BASE_URL/public/current-release.json"
 curl -sfI "$AIRINGCAL_PUBLIC_BASE_URL/images/<hash>/original"
 
 # Both 200 with the expected headers → disable the public r2.dev URL
-wrangler r2 bucket dev-url disable airingcal-development
+wrangler r2 bucket dev-url disable airingcal-development -y --env-file /dev/null
 ```
 
 The `<hash>` is any `images/<64-hex>/original` key referenced by the current

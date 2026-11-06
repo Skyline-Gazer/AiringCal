@@ -20,7 +20,7 @@
       "status": "pending_owner",
       "requiresOwner": "Cloudflare API token (R2 admin, Workers write) + AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes",
       "evidence": null,
-      "command": "AIRINGCAL_ENV=development AIRINGCAL_DEPLOY_TARGET=both node scripts/deploy-env.mjs --apply",
+      "command": "AIRINGCAL_ENV=development AIRINGCAL_DEPLOY_TARGET=both AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes node scripts/deploy-env.mjs --apply",
       "gate": "exit 0 AND result.isolation.ok === true (else abort; no dual-bucket fallback)"
     },
     {
@@ -59,7 +59,7 @@
       "status": "pending_owner",
       "requiresOwner": "Cloudflare token with R2 bucket-admin",
       "evidence": null,
-      "command": "wrangler r2 bucket dev-url disable airingcal-development",
+      "command": "wrangler r2 bucket dev-url disable airingcal-development -y --env-file /dev/null",
       "gate": "curl -sfI $AIRINGCAL_PUBLIC_BASE_URL/public/current-release.json (200, no-cache) AND curl -sfI $AIRINGCAL_PUBLIC_BASE_URL/images/<hash>/original (200, Content-Type image/*)"
     },
     {
