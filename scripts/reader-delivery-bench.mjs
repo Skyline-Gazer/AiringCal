@@ -274,16 +274,48 @@ async function timedFetch(fetchImpl, url, init = {}, options = {}) {
   }
 }
 
+function isSuccessfulRun(run) {
+  return Boolean(run) && !run.error && run.status != null
+}
+
+function countOkRuns(runs) {
+  return runs.filter(isSuccessfulRun).length
+}
+
+function sampleMeetsRunQuota(sample, runs) {
+  return Boolean(sample) && Number(sample.n_ok) >= runs
+}
+
+function pathSamplesComplete(pathMeasured, runs) {
+  const samples = pathMeasured?.samples
+  if (!samples) return false
+  return (
+    sampleMeetsRunQuota(samples.first_after_deploy, runs)
+    && sampleMeetsRunQuota(samples.repeat_same_isolate, runs)
+    && sampleMeetsRunQuota(samples.cdn_shared_hit, runs)
+  )
+}
+
+function hostSamplesComplete(paths, runs) {
+  if (!paths) return false
+  return API_PATHS.every((pathSpec) => pathSamplesComplete(paths[pathSpec.key], runs))
+}
+
 function aggregateSample(runs, {
   sampleName,
   sampleLabel,
   claimsColdIsolate,
+  extraErrors = [],
 }) {
-  const okRuns = runs.filter((r) => !r.error && r.status != null)
+  const okRuns = runs.filter(isSuccessfulRun)
   const timings = okRuns.map((r) => r.ttfb_ms)
   const cacheStatuses = okRuns.map((r) => r.cache_status).filter(Boolean)
   const ages = okRuns.map((r) => r.age).filter((v) => v != null)
   const identities = okRuns.map((r) => r.identity).filter(Boolean)
+  const errors = [
+    ...runs.filter((r) => r.error).map((r) => r.error),
+    ...extraErrors,
+  ]
   return {
     sample_name: sampleName,
     sample_label: sampleLabel,
@@ -294,9 +326,9 @@ function aggregateSample(runs, {
     age_samples: ages,
     identities,
     http_statuses: okRuns.map((r) => r.status),
-    errors: runs.filter((r) => r.error).map((r) => r.error),
+    errors,
     n_ok: okRuns.length,
-    n_attempted: runs.length,
+    n_attempted: okRuns.length + extraErrors.length,
   }
 }
 
@@ -329,29 +361,37 @@ async function measurePathSamples({
   const claimsCold = Boolean(isolateRecycleAvailable)
   const readBody = pathSpec.key === 'health'
 
+  // Per-trial pairing: request A (unique URL) then immediate request B on the
+  // exact same URL within soft TTL. Do not batch all firsts then all repeats.
   const firstRuns = []
-  for (let i = 0; i < runs; i++) {
-    const url = withQuery(base, { bench_bust: `${now()}-${i}` })
-    const result = await timedFetch(fetchImpl, url, {}, { readBody })
-    firstRuns.push({
-      ...result,
-      identity: extractPublishIdentity(result.bodyJson),
-      request_url: url,
-    })
-    await sleep(10)
-  }
-
-  // Immediate repeats on the same URL (no bust) within soft TTL window.
-  const repeatUrl = base
-  await timedFetch(fetchImpl, withQuery(base, { bench_bust: `prime-${now()}` }), {}, { readBody: false })
   const repeatRuns = []
-  for (let i = 0; i < runs; i++) {
-    const result = await timedFetch(fetchImpl, repeatUrl, {}, { readBody })
-    repeatRuns.push({
-      ...result,
-      identity: extractPublishIdentity(result.bodyJson),
-      request_url: repeatUrl,
-    })
+  const pairErrors = []
+  const maxPairAttempts = runs * 3
+  let pairAttempt = 0
+  while (firstRuns.length < runs && pairAttempt < maxPairAttempts) {
+    pairAttempt++
+    const timeoutMs = pairAttempt <= runs ? DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS * 2
+    const url = withQuery(base, { bench_bust: `${now()}-${pairAttempt}` })
+    const first = await timedFetch(fetchImpl, url, {}, { readBody, timeoutMs })
+    const second = await timedFetch(fetchImpl, url, {}, { readBody, timeoutMs })
+    if (isSuccessfulRun(first) && isSuccessfulRun(second)) {
+      firstRuns.push({
+        ...first,
+        identity: extractPublishIdentity(first.bodyJson),
+        request_url: url,
+      })
+      repeatRuns.push({
+        ...second,
+        identity: extractPublishIdentity(second.bodyJson),
+        request_url: url,
+      })
+    } else {
+      if (first.error) pairErrors.push(`first: ${first.error}`)
+      else if (!isSuccessfulRun(first)) pairErrors.push(`first: HTTP ${first.status}`)
+      if (second.error) pairErrors.push(`repeat: ${second.error}`)
+      else if (!isSuccessfulRun(second)) pairErrors.push(`repeat: HTTP ${second.status}`)
+    }
+    await sleep(10)
   }
 
   // Warm the unbusted URL until HIT (or give up). Query-busting here would
@@ -370,37 +410,56 @@ async function measurePathSamples({
   }
 
   const cdnRuns = []
-  for (let i = 0; i < runs; i++) {
-    const result = await timedFetch(fetchImpl, base, {}, { readBody })
-    cdnRuns.push({
-      ...result,
-      identity: extractPublishIdentity(result.bodyJson),
-      request_url: base,
-    })
+  const cdnErrors = []
+  const maxCdnAttempts = runs * 3
+  let cdnAttempt = 0
+  while (cdnRuns.length < runs && cdnAttempt < maxCdnAttempts) {
+    cdnAttempt++
+    const timeoutMs = cdnAttempt <= runs ? DEFAULT_TIMEOUT_MS : DEFAULT_TIMEOUT_MS * 2
+    const result = await timedFetch(fetchImpl, base, {}, { readBody, timeoutMs })
+    if (isSuccessfulRun(result)) {
+      cdnRuns.push({
+        ...result,
+        identity: extractPublishIdentity(result.bodyJson),
+        request_url: base,
+      })
+    } else if (result.error) {
+      cdnErrors.push(result.error)
+    } else {
+      cdnErrors.push(`HTTP ${result.status}`)
+    }
+    await sleep(10)
+  }
+
+  const firstSample = aggregateSample(firstRuns, {
+    sampleName: 'first_after_deploy',
+    sampleLabel: firstLabel,
+    claimsColdIsolate: claimsCold,
+    extraErrors: pairErrors,
+  })
+  const repeatSample = aggregateSample(repeatRuns, {
+    sampleName: 'repeat_same_isolate',
+    sampleLabel: 'repeat_same_isolate',
+    claimsColdIsolate: false,
+    extraErrors: pairErrors,
+  })
+  const cdnSample = {
+    ...aggregateSample(cdnRuns, {
+      sampleName: 'cdn_shared_hit',
+      sampleLabel: warmed ? 'cdn_shared_hit' : 'cdn_shared_attempted',
+      claimsColdIsolate: false,
+      extraErrors: cdnErrors,
+    }),
+    warmed,
+    warm_attempts: warmAttempts,
   }
 
   return {
     path: pathSpec.path,
     samples: {
-      first_after_deploy: aggregateSample(firstRuns, {
-        sampleName: 'first_after_deploy',
-        sampleLabel: firstLabel,
-        claimsColdIsolate: claimsCold,
-      }),
-      repeat_same_isolate: aggregateSample(repeatRuns, {
-        sampleName: 'repeat_same_isolate',
-        sampleLabel: 'repeat_same_isolate',
-        claimsColdIsolate: false,
-      }),
-      cdn_shared_hit: {
-        ...aggregateSample(cdnRuns, {
-          sampleName: 'cdn_shared_hit',
-          sampleLabel: warmed ? 'cdn_shared_hit' : 'cdn_shared_attempted',
-          claimsColdIsolate: false,
-        }),
-        warmed,
-        warm_attempts: warmAttempts,
-      },
+      first_after_deploy: firstSample,
+      repeat_same_isolate: repeatSample,
+      cdn_shared_hit: cdnSample,
     },
   }
 }
@@ -545,10 +604,13 @@ async function benchHost({
 
     const image = await probeImage({ baseUrl, hash: discoveredHash, fetchImpl })
 
+    const complete = hostSamplesComplete(paths, runs)
     return {
       host: baseUrl,
-      status: 'ok',
-      error: null,
+      status: complete ? 'ok' : 'incomplete',
+      error: complete
+        ? null
+        : `one or more samples have n_ok < ${runs} after bounded retries`,
       identity,
       paths,
       image,
@@ -595,7 +657,7 @@ export async function runBench({
     protocol: {
       runs_per_sample: runs,
       sample_names: ['first_after_deploy', 'repeat_same_isolate', 'cdn_shared_hit'],
-      note: 'Query busting is not labeled cold-isolate; first_observed used when isolate recycle unavailable',
+      note: 'Query busting is not labeled cold-isolate; first_observed used when isolate recycle unavailable; repeat_same_isolate is immediate second request on the same URL per trial',
       isolate_recycle_available: isolateRecycleAvailable,
     },
     hosts: hostResults,
@@ -603,6 +665,9 @@ export async function runBench({
     widget: buildWidgetReceipt({ browserAvailable }),
     mainland: buildMainlandReceipt(env),
   }
+  receipt.status = hostResults.every((h) => h.status === 'ok')
+    ? 'ok'
+    : (hostResults.some((h) => h.status === 'error') ? 'failed' : 'incomplete')
 
   if (out) {
     const abs = resolve(out)
@@ -636,7 +701,7 @@ async function main(argv = process.argv) {
     runs: parsed.runs,
   })
   console.log(JSON.stringify({
-    status: 'ok',
+    status: receipt.status,
     stage: 'reader_delivery_bench',
     out: parsed.out,
     hosts: receipt.hosts.map((h) => ({ host: h.host, status: h.status, error: h.error ?? null })),

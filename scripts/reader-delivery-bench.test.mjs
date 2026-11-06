@@ -287,6 +287,120 @@ test('runBench writes fixture with named samples, no threshold gating, honest ho
   }
 })
 
+test('measurePathSamples pairs first→second on the same URL per trial before CDN warm', async () => {
+  const healthCalls = []
+  const fetchImpl = async (input) => {
+    const url = String(input)
+    if (url.includes('/api/health')) healthCalls.push(url)
+    return new Response(JSON.stringify({ ok: true, data: { publish: { generation: 1, content_hash: 'x' } } }), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        'cf-cache-status': url.includes('bench_bust=') ? 'MISS' : 'HIT',
+      },
+    })
+  }
+
+  const dir = mkdtempSync(join(tmpdir(), 'reader-delivery-bench-pair-'))
+  const out = join(dir, 'out.json')
+  try {
+    await runBench({
+      hosts: ['https://pair.example'],
+      out,
+      runs: 3,
+      fetchImpl,
+      now: (() => {
+        let t = 1_700_000_000_000
+        return () => ++t
+      })(),
+      env: {},
+      browserAvailable: false,
+      isolateRecycleAvailable: false,
+      sleep: async () => {},
+    })
+
+    // Drop the initial health probe from benchHost; keep measurePathSamples traffic.
+    const measured = healthCalls.slice(1)
+    assert.ok(measured.length >= 6, `expected at least 3 paired trials, got ${measured.length}`)
+
+    for (let i = 0; i < 3; i++) {
+      const first = measured[i * 2]
+      const second = measured[i * 2 + 1]
+      assert.ok(first.includes('bench_bust='), `trial ${i} first request should be busted: ${first}`)
+      assert.equal(
+        second,
+        first,
+        `trial ${i} repeat must reuse the exact same URL as its paired first (isolate affinity)`,
+      )
+    }
+
+    // CDN warm/hit phase starts only after all first→second pairs.
+    const afterPairs = measured.slice(6)
+    assert.ok(afterPairs.length >= 1)
+    assert.equal(
+      afterPairs.every((u) => !u.includes('bench_bust=')),
+      true,
+      'CDN warm/hit requests must use the unbusted URL after pairing',
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('runBench marks host incomplete when a sample stays below N after retries', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'reader-delivery-bench-incomplete-'))
+  const out = join(dir, 'out.json')
+  let healthGets = 0
+  const fetchImpl = async (input, init = {}) => {
+    const url = String(input)
+    if (url.includes('/api/health')) {
+      healthGets++
+      // After the initial benchHost probe, fail enough timed samples so retries cannot fill N=3.
+      // Probe + pairs use GET; fail every request after a few successes.
+      if (healthGets > 3) {
+        throw new Error('timeout after 20000ms')
+      }
+      return new Response(
+        JSON.stringify({ ok: true, data: { publish: { generation: 1, content_hash: 'y'.repeat(64) } } }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json', 'cf-cache-status': 'DYNAMIC' },
+        },
+      )
+    }
+    if (url.includes('/api/collections') || url.includes('/api/calendar')) {
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json', 'cf-cache-status': 'HIT' },
+      })
+    }
+    return new Response('missing', { status: 404 })
+  }
+
+  try {
+    const receipt = await runBench({
+      hosts: ['https://thin.example'],
+      out,
+      runs: 3,
+      fetchImpl,
+      now: () => 1_700_000_000_000,
+      env: {},
+      browserAvailable: false,
+      isolateRecycleAvailable: false,
+      sleep: async () => {},
+    })
+    const host = receipt.hosts[0]
+    assert.equal(host.status, 'incomplete')
+    assert.match(host.error, /n_ok < 3/)
+    assert.equal(receipt.status, 'incomplete')
+    assert.ok(host.paths.health.samples.first_after_deploy.n_ok < 3)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+
+
 test('importing the CLI module as a library does not auto-run main', async () => {
   assert.equal(typeof runBench, 'function')
   assert.equal(typeof parseBenchArgs, 'function')
