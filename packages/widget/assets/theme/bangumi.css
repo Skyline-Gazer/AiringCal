@@ -77,7 +77,6 @@ body {
 
 .bgm-card-skeleton {
   pointer-events: none;
-  aspect-ratio: 3/4;
   background: var(--nb-surface);
   border: var(--nb-border);
   box-shadow: var(--nb-shadow);

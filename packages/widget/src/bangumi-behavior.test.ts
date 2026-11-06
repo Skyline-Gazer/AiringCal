@@ -110,9 +110,10 @@ test('pagination buttons mark the active page with aria-current', () => {
   assert.match(widgetJs, /buildPaginationWindow\(/)
 })
 
-test('widgetCss reserves skeleton card aspect-ratio and status/grid min-height', () => {
+test('widgetCss reserves skeleton cover aspect-ratio and status/grid min-height', () => {
   assert.match(widgetCss, /\.bgm-card-skeleton/)
-  assert.match(widgetCss, /\.bgm-card-skeleton[^{]*\{[^}]*aspect-ratio:\s*3\s*\/\s*4/)
+  assert.match(widgetCss, /\.bgm-card-skeleton\s+\.bgm-card-cover\s*\{[^}]*aspect-ratio:\s*3\s*\/\s*4/)
+  assert.doesNotMatch(widgetCss, /\.bgm-card-skeleton\s*\{[^}]*aspect-ratio:\s*3\s*\/\s*4/)
   assert.match(widgetCss, /\.bgm-status-bar/)
   assert.match(widgetCss, /\.bgm-status-bar[^{]*\{[^}]*min-height/)
   assert.match(widgetCss, /\.bgm-grid[^{]*\{[^}]*min-height|\.bgm-grid\.bgm-grid-skeleton/)
