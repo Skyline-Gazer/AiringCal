@@ -20,10 +20,25 @@ import {
   acquireCheckpointLease,
 } from '../adapters/s3-checkpoint-store.ts'
 import {
+  assertReceiptWritable,
   buildRollbackPointer,
   rollbackReleasePointer,
   resolveRollbackTarget,
 } from './portable-release-rollback.ts'
+
+test('assertReceiptWritable rejects a receipt path whose directory is missing', () => {
+  assert.throws(() => assertReceiptWritable('/definitely/missing/dir/receipt.json'), /--receipt directory does not exist/)
+})
+
+test('assertReceiptWritable resolves an existing receipt directory to an absolute path', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-receipt-'))
+  try {
+    assert.equal(assertReceiptWritable(join(dir, 'receipt.json')), join(dir, 'receipt.json'))
+    assert.equal(assertReceiptWritable(null), null)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 const GIT_SHA = 'a'.repeat(40)
 
