@@ -52,6 +52,10 @@ bash scripts/setup-staging.sh
 
 `scripts/setup-staging.sh` safely parses `.env` without shell evaluation, queries the Bangumi API (`/v0/users/{username}` with `/v0/me` fallback) to resolve the real `userId` and `username` into `AIRINGCAL_STAGING_USERS_JSON`, verifies that `airingcal-staging-checkpoint` has `r2.dev` public access disabled, enables `r2.dev` HTTPS on `airingcal-staging-public`, syncs GitHub `staging` Variables/Secrets, and deploys `airing-cal-v3-read-staging` with `--env-file /dev/null`.
 
+Wrangler authentication (`AIRINGCAL_STAGING_CLOUDFLARE_API_TOKEN` in `.env`, shell `CLOUDFLARE_API_TOKEN`, or `wrangler login`) must permit bucket administration and Worker deployment on the target account. The setup requires `Workers R2 Storage Write` to create buckets and change `r2.dev` access, plus `Workers Scripts Write` for deployment. The writer's scoped S3 credentials need Object Read & Write on both staging buckets; these object permissions alone do not authorize the Cloudflare REST bucket-management API. See [R2 authentication and permissions](https://developers.cloudflare.com/r2/api/tokens/).
+
+If authentication succeeds but the R2 preflight reports `Authentication error [code: 10000]`, check the token's R2 management permission and account scope before retrying. A successful `whoami` does not prove R2 authorization. All setup Wrangler calls place `--env-file /dev/null` after the subcommand (for example, `wrangler whoami --json --env-file /dev/null`); placing it before the subcommand caused `Unknown argument: json` with Wrangler 4.100.0.
+
 ### Local / non-Actions runtime env (`node-jobs` internal contract)
 
 `.github/workflows/portable-writer.yml` maps the Environment secrets/variables above to the existing `node-jobs` runtime env (`BGM_TOKEN`, `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `AIRINGCAL_CHECKPOINT_S3_*`, `AIRINGCAL_PUBLIC_S3_*`, `AIRINGCAL_PUBLIC_BASE_URL`). Local CLI defaults:
