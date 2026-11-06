@@ -599,10 +599,12 @@
     view.appendChild(cal)
 
     var loaded = false
+    var lastCalendarDays = null
     // bgm.tv weekday.id: 1=周一 ... 7=周日；JS getDay(): 0=周日
     var todayId = (new Date().getDay() === 0) ? 7 : new Date().getDay()
 
     function renderCalendar(days) {
+      lastCalendarDays = days
       if (calendarLazyObserver) {
         calendarLazyObserver.disconnect()
         calendarLazyObserver = null
@@ -617,13 +619,14 @@
         var day = days[i]
         var wd = day.weekday || {}
         var items = day.items || []
+        var visibleCount = entriesVisibleUnderGate(nsfwGate, items).length
         var isToday = wd.id === todayId
         var section = document.createElement('section')
         section.className = 'bgm-weekday' + (isToday ? ' is-today' : '')
         section.innerHTML = '<div class="bgm-weekday-head">' +
           '<span class="cn">' + escapeHtml(wd.cn || '') + '</span>' +
           '<span class="en">' + escapeHtml(wd.en || '') + '</span>' +
-          '<span class="count">' + items.length + '</span>' +
+          '<span class="count">' + visibleCount + '</span>' +
         '</div>'
         var grid = document.createElement('div')
         grid.className = 'bgm-grid bgm-grid-pending'
@@ -662,6 +665,15 @@
         }
       }
     }
+
+    function refreshCalendarFromGate() {
+      if (!lastCalendarDays) return
+      renderCalendar(lastCalendarDays)
+    }
+
+    onNsfwGateChange(function () {
+      refreshCalendarFromGate()
+    })
 
     return {
       el: view,

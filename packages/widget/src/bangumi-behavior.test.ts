@@ -200,6 +200,24 @@ test('bgmConfirmAge reveals gated cards without full reload', () => {
   assert.match(widgetJs, /bgm-age-confirmed/)
   assert.match(widgetJs, /onNsfwGateChange|nsfwGateListeners|revealNsfw|repaintCollection|refreshVisibleCards/)
 })
+test('calendar refreshes from last days when NSFW gate changes', () => {
+  const calendarViewFn = extractFunction(widgetJs, 'buildCalendarView')
+  assert.match(calendarViewFn, /onNsfwGateChange\s*\(/)
+  assert.match(calendarViewFn, /lastCalendarDays|lastLoadedCalendarDays|lastCalendarData/)
+  assert.match(
+    calendarViewFn,
+    /renderCalendar\s*\(\s*lastCalendar(?:Days|Data)\s*\)|refreshCalendar(?:FromGate|Grids)?\s*\(/,
+  )
+  assert.match(
+    calendarViewFn,
+    /entriesVisibleUnderGate\s*\(\s*nsfwGate\s*,\s*(?:items|day\.items|[^)]+)\s*\)[\s\S]{0,120}\.length/,
+  )
+  assert.doesNotMatch(
+    calendarViewFn,
+    /class=["']count["'][\s\S]{0,40}items\.length/,
+  )
+})
+
 
 test('first two first-paint cards use fetchpriority high and eager loading', () => {
   const paintFn = extractFunction(widgetJs, 'paintCollectionData')
