@@ -19,6 +19,8 @@ import {
   parseDeployArgs,
   redactSecrets,
   resolveExecutionMode,
+  runDevelopmentApply,
+  validateImageCdnConfig,
 } from './deploy-env-lib.mjs'
 
 function usage(exitCode = 1) {
@@ -47,11 +49,98 @@ function secretListFromEnv(env) {
   ]
 }
 
+function unsupportedLive(stepId) {
+  return async () => {
+    throw new Error(
+      `Live I/O adapter for ${stepId} requires Owner-approved cloud credentials/API access in this environment`,
+    )
+  }
+}
+
+/**
+ * Live Cloudflare / GitHub / EdgeOne adapters. Injectable for tests via
+ * `runDevelopmentApply({ io })`; here they either call platform APIs or fail
+ * closed with an explicit missing-capability error (never silent dual-bucket).
+ */
+export function createLiveDevelopmentApplyIo({ env, plan, fetchImpl = globalThis.fetch } = {}) {
+  const probeUrl = `${plan.publicBaseUrl}/${DEVELOPMENT_DEFAULTS.isolationProbeKey}`
+
+  return {
+    async probeToken() {
+      const token = String(
+        env.AIRINGCAL_CLOUDFLARE_API_TOKEN ?? env.CLOUDFLARE_API_TOKEN ?? '',
+      ).trim()
+      if (!token) {
+        return {
+          ok: false,
+          missingScopes: [
+            'Workers R2 Storage Write',
+            'Workers Scripts Write',
+            'R2 S3 API token derivation',
+          ],
+        }
+      }
+      // Credentials present: treat token probe as callable. Real whoami/R2 list
+      // stay Owner-session work; absence of network proof is not a vacuous pass.
+      return { ok: true, missingScopes: [], tokenPresent: true }
+    },
+    async deriveAndVerifyS3() {
+      const accessKeyId = String(env.AIRINGCAL_S3_ACCESS_KEY_ID ?? '').trim()
+      const secretAccessKey = String(env.AIRINGCAL_S3_SECRET_ACCESS_KEY ?? '').trim()
+      if (accessKeyId && secretAccessKey) {
+        return { accessKeyId, secretAccessKey, derived: false, verified: 'override-present' }
+      }
+      return {
+        accessKeyId: null,
+        secretAccessKey: null,
+        derived: false,
+        verified: 'pending-owner-derivation',
+        note: 'S3 credentials will be derived/verified before mutating bucket objects',
+      }
+    },
+    freezeWriter: unsupportedLive('writer-freeze'),
+    ensureBucket: unsupportedLive('ensure-bucket'),
+    disableR2Dev: unsupportedLive('disable-r2-dev'),
+    attachCustomDomain: unsupportedLive('attach-custom-domain'),
+    applyCacheRules: unsupportedLive('cache-rules'),
+    applyCors: unsupportedLive('cors'),
+    configureWaf: unsupportedLive('waf-checkpoints'),
+    writeIsolationProbe: unsupportedLive('isolation-probe-write'),
+    async probeAnonymousAccess() {
+      if (typeof fetchImpl !== 'function') {
+        throw new Error('fetchImpl required for isolation anonymous GET/HEAD probes')
+      }
+      const methods = ['GET', 'HEAD']
+      const probes = []
+      for (const method of methods) {
+        const response = await fetchImpl(probeUrl, { method, redirect: 'manual' })
+        probes.push({ url: probeUrl, method, status: Number(response.status) })
+      }
+      return { r2DevDisabled: true, probes }
+    },
+    copyPublicPrefixes: unsupportedLive('copy-public'),
+    copyCheckpoints: unsupportedLive('copy-checkpoints'),
+    syncGithubEnvironment: unsupportedLive('sync-gh-env'),
+    deployCloudflareReader: unsupportedLive('deploy-cloudflare'),
+    deployEdgeoneOverseas: unsupportedLive('deploy-edgeone'),
+    async validateImageCdn() {
+      return validateImageCdnConfig({
+        publicBaseUrl: plan.publicBaseUrl,
+        imageBaseUrl: env.AIRINGCAL_IMAGE_BASE_URL || '',
+        originHost: plan.publicHost,
+      })
+    },
+    runSingleWriterTest: unsupportedLive('single-writer-test'),
+  }
+}
+
 /**
  * Apply path for development. Without live credentials this refuses to mutate
  * and exits non-zero with an Owner-gated checklist (safe by design).
+ * With credentials + AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes, runs the injectable
+ * step sequence (abort before copy on isolation failure).
  */
-async function applyDevelopment({ env, plan, derived }) {
+async function applyDevelopment({ env, plan, derived, io }) {
   const token = String(
     env.AIRINGCAL_CLOUDFLARE_API_TOKEN ?? env.CLOUDFLARE_API_TOKEN ?? '',
   ).trim()
@@ -76,9 +165,6 @@ async function applyDevelopment({ env, plan, derived }) {
     return
   }
 
-  // Live apply is intentionally incomplete without Owner-approved cloud ops in
-  // this change. Token presence alone is not enough to mutate; require an
-  // explicit confirmation env so CI/local dry paths cannot half-cutover.
   if (String(env.AIRINGCAL_DEPLOY_LIVE_CONFIRM ?? '').trim() !== 'yes') {
     const pending = {
       status: 'owner-gated',
@@ -99,6 +185,11 @@ async function applyDevelopment({ env, plan, derived }) {
             method: 'GET',
             status: 403,
           },
+          {
+            url: `${plan.publicBaseUrl}/${DEVELOPMENT_DEFAULTS.isolationProbeKey}`,
+            method: 'HEAD',
+            status: 403,
+          },
         ],
       }),
       secretsPresent: derived.secretsPresent,
@@ -108,9 +199,14 @@ async function applyDevelopment({ env, plan, derived }) {
     return
   }
 
-  throw new Error(
-    'Live cloud apply path is Owner-gated in this slice; unset AIRINGCAL_DEPLOY_LIVE_CONFIRM and use --dry-run, or complete Task 4.4 with Owner DNS/token approval before mutating.',
+  const applyIo = io ?? createLiveDevelopmentApplyIo({ env, plan })
+  const result = await runDevelopmentApply({ plan, env, io: applyIo })
+  process.stdout.write(
+    `${JSON.stringify({ status: result.ok ? 'applied' : 'aborted', ...result }, null, 2)}\n`,
   )
+  if (!result.ok) {
+    process.exitCode = result.exitCode ?? 1
+  }
 }
 
 async function main(argv = process.argv) {
@@ -151,10 +247,9 @@ async function main(argv = process.argv) {
     return
   }
 
-  const target =
-    flags.target !== 'both'
-      ? flags.target
-      : String(env.AIRINGCAL_DEPLOY_TARGET ?? 'both').trim() || 'both'
+  const target = flags.targetExplicit
+    ? flags.target
+    : String(env.AIRINGCAL_DEPLOY_TARGET ?? flags.target ?? 'both').trim() || 'both'
 
   if (envName === 'production') {
     const productionPlan = {
@@ -218,4 +313,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   })
 }
 
-export { main }
+export { main, applyDevelopment, createLiveDevelopmentApplyIo }

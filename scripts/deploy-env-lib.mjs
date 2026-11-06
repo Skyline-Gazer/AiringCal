@@ -73,6 +73,7 @@ export function parseDeployArgs(argv = process.argv) {
   let dryRun = false
   let apply = false
   let target = 'both'
+  let targetExplicit = false
   let forceProduction = false
 
   for (let i = 0; i < args.length; i += 1) {
@@ -95,6 +96,7 @@ export function parseDeployArgs(argv = process.argv) {
         throw new Error(`--target must be cloudflare|edgeone|both (got "${value}")`)
       }
       target = value
+      targetExplicit = true
       continue
     }
     if (arg.startsWith('--target=')) {
@@ -103,12 +105,13 @@ export function parseDeployArgs(argv = process.argv) {
         throw new Error(`--target must be cloudflare|edgeone|both (got "${value}")`)
       }
       target = value
+      targetExplicit = true
       continue
     }
     throw new Error(`Unknown argument: ${arg}`)
   }
 
-  return { dryRun, apply, target, forceProduction }
+  return { dryRun, apply, target, targetExplicit, forceProduction }
 }
 
 /**
@@ -414,9 +417,36 @@ export function evaluateIsolationProbe({ r2DevDisabled, probes = [] }) {
     }
   }
 
+  const list = Array.isArray(probes) ? probes : []
+  if (list.length === 0) {
+    return {
+      ok: false,
+      abortCutover: true,
+      dualBucketFallback: false,
+      reason: 'isolation failed: empty probes (need anonymous GET and HEAD)',
+      probes: list,
+    }
+  }
+
+  const methods = new Set(
+    list.map((probe) => String(probe?.method ?? '').trim().toUpperCase()).filter(Boolean),
+  )
+  const missingMethods = []
+  if (!methods.has('GET')) missingMethods.push('GET')
+  if (!methods.has('HEAD')) missingMethods.push('HEAD')
+  if (missingMethods.length > 0) {
+    return {
+      ok: false,
+      abortCutover: true,
+      dualBucketFallback: false,
+      reason: `isolation failed: missing ${missingMethods.join(' and ')} probe(s)`,
+      probes: list,
+    }
+  }
+
   const allowedDenied = new Set([403, 404])
   const failures = []
-  for (const probe of probes) {
+  for (const probe of list) {
     const status = Number(probe.status)
     if (!allowedDenied.has(status)) {
       failures.push({
@@ -437,7 +467,7 @@ export function evaluateIsolationProbe({ r2DevDisabled, probes = [] }) {
         .map((f) => `${f.method} ${f.url} -> ${f.status}`)
         .join('; ')})`,
       failures,
-      probes,
+      probes: list,
     }
   }
 
@@ -446,7 +476,7 @@ export function evaluateIsolationProbe({ r2DevDisabled, probes = [] }) {
     abortCutover: false,
     dualBucketFallback: false,
     reason: 'isolation proven: anonymous GET/HEAD denied and r2.dev disabled',
-    probes,
+    probes: list,
   }
 }
 
@@ -504,7 +534,7 @@ export function validateImageCdnConfig({ publicBaseUrl, imageBaseUrl = '', origi
  * @param {Record<string, string | undefined>} rawEnv
  * @param {{ target?: string, mode?: 'dry-run'|'apply' }} opts
  */
-export function deriveDevelopmentConfig(rawEnv = {}, { target = 'both', mode = 'dry-run' } = {}) {
+export function deriveDevelopmentConfig(rawEnv = {}, { target, mode = 'dry-run' } = {}) {
   const { env, warnings } = applyStagingAliases(rawEnv)
   const airingEnv = String(env.AIRINGCAL_ENV ?? 'development').trim().toLowerCase()
   if (airingEnv !== 'development') {
@@ -530,7 +560,8 @@ export function deriveDevelopmentConfig(rawEnv = {}, { target = 'both', mode = '
     throw new Error('AIRINGCAL_PUBLIC_BASE_URL is required')
   }
 
-  const deployTarget = String(env.AIRINGCAL_DEPLOY_TARGET ?? target ?? 'both').trim() || target
+  // Explicit CLI `--target` (passed via opts.target) wins over env.
+  const deployTarget = String(target ?? env.AIRINGCAL_DEPLOY_TARGET ?? 'both').trim() || 'both'
   if (!ALLOWED_TARGETS.has(deployTarget)) {
     throw new Error(`AIRINGCAL_DEPLOY_TARGET must be cloudflare|edgeone|both (got "${deployTarget}")`)
   }
@@ -574,4 +605,161 @@ export function deriveDevelopmentConfig(rawEnv = {}, { target = 'both', mode = '
 export function missingScopeExitMessage(missingScopes = []) {
   const list = missingScopes.length > 0 ? missingScopes.join(', ') : 'unknown'
   return `Cloudflare token missing required scopes: ${list} (exit 2)`
+}
+
+/**
+ * @typedef {object} DevelopmentApplyIo
+ * @property {(ctx: object) => Promise<{ ok: boolean, missingScopes?: string[] }>} probeToken
+ * @property {(ctx: object) => Promise<object>} deriveAndVerifyS3
+ * @property {(ctx: object) => Promise<object>} freezeWriter
+ * @property {(ctx: object) => Promise<object>} ensureBucket
+ * @property {(ctx: object) => Promise<object>} disableR2Dev
+ * @property {(ctx: object) => Promise<object>} attachCustomDomain
+ * @property {(ctx: object) => Promise<object>} applyCacheRules
+ * @property {(ctx: object) => Promise<object>} applyCors
+ * @property {(ctx: object) => Promise<object>} configureWaf
+ * @property {(ctx: object) => Promise<object>} writeIsolationProbe
+ * @property {(ctx: object) => Promise<{ r2DevDisabled: boolean, probes: Array<{url:string,method:string,status:number}> }>} probeAnonymousAccess
+ * @property {(ctx: object) => Promise<object>} copyPublicPrefixes
+ * @property {(ctx: object) => Promise<object>} copyCheckpoints
+ * @property {(ctx: object) => Promise<object>} syncGithubEnvironment
+ * @property {(ctx: object) => Promise<object>} [deployCloudflareReader]
+ * @property {(ctx: object) => Promise<object>} [deployEdgeoneOverseas]
+ * @property {(ctx: object) => Promise<object>} validateImageCdn
+ * @property {(ctx: object) => Promise<object>} runSingleWriterTest
+ */
+
+function requireIoMethod(io, name) {
+  const fn = io?.[name]
+  if (typeof fn !== 'function') {
+    throw new Error(`runDevelopmentApply missing injectable I/O method: ${name}`)
+  }
+  return fn
+}
+
+/**
+ * Execute the development cutover sequence with injectable I/O.
+ * Isolation failure aborts before any copy / sync / deploy / writer steps.
+ *
+ * @param {{
+ *   plan: ReturnType<typeof buildDevelopmentDeployPlan>,
+ *   env?: Record<string, string | undefined>,
+ *   io: DevelopmentApplyIo,
+ * }}
+ */
+export async function runDevelopmentApply({ plan, env = {}, io }) {
+  if (!plan || plan.env !== 'development') {
+    throw new Error('runDevelopmentApply requires a development plan')
+  }
+  if (!io || typeof io !== 'object') {
+    throw new Error('runDevelopmentApply requires injectable io adapters')
+  }
+
+  /** @type {string[]} */
+  const completed = []
+  const ctx = { plan, env, completed }
+
+  const tokenResult = await requireIoMethod(io, 'probeToken')(ctx)
+  completed.push('token-probe')
+  if (tokenResult && tokenResult.ok === false) {
+    const missing = tokenResult.missingScopes ?? []
+    return {
+      ok: false,
+      aborted: true,
+      abortCutover: true,
+      dualBucketFallback: false,
+      developmentWriterEnabled: false,
+      exitCode: 2,
+      reason: missingScopeExitMessage(missing),
+      completed,
+      missingScopes: missing,
+    }
+  }
+
+  await requireIoMethod(io, 'deriveAndVerifyS3')(ctx)
+  completed.push('derive-s3')
+
+  await requireIoMethod(io, 'freezeWriter')(ctx)
+  completed.push('writer-freeze')
+
+  await requireIoMethod(io, 'ensureBucket')(ctx)
+  completed.push('ensure-bucket')
+
+  await requireIoMethod(io, 'disableR2Dev')(ctx)
+  completed.push('disable-r2-dev')
+
+  await requireIoMethod(io, 'attachCustomDomain')(ctx)
+  completed.push('attach-custom-domain')
+
+  await requireIoMethod(io, 'applyCacheRules')(ctx)
+  completed.push('cache-rules')
+
+  await requireIoMethod(io, 'applyCors')(ctx)
+  completed.push('cors')
+
+  await requireIoMethod(io, 'configureWaf')(ctx)
+  completed.push('waf-checkpoints')
+
+  await requireIoMethod(io, 'writeIsolationProbe')(ctx)
+  completed.push('isolation-probe-write')
+
+  const probeResult = await requireIoMethod(io, 'probeAnonymousAccess')(ctx)
+  completed.push('isolation-probe-check')
+  const isolation = evaluateIsolationProbe({
+    r2DevDisabled: Boolean(probeResult?.r2DevDisabled),
+    probes: probeResult?.probes ?? [],
+  })
+
+  if (!isolation.ok) {
+    return {
+      ok: false,
+      aborted: true,
+      abortCutover: true,
+      dualBucketFallback: false,
+      developmentWriterEnabled: false,
+      exitCode: 1,
+      reason: isolation.reason,
+      isolation,
+      completed,
+    }
+  }
+
+  await requireIoMethod(io, 'copyPublicPrefixes')(ctx)
+  completed.push('copy-public')
+
+  await requireIoMethod(io, 'copyCheckpoints')(ctx)
+  completed.push('copy-checkpoints')
+
+  await requireIoMethod(io, 'syncGithubEnvironment')(ctx)
+  completed.push('sync-gh-env')
+
+  if (plan.target === 'cloudflare' || plan.target === 'both') {
+    await requireIoMethod(io, 'deployCloudflareReader')(ctx)
+    completed.push('deploy-cloudflare')
+  }
+  if (plan.target === 'edgeone' || plan.target === 'both') {
+    await requireIoMethod(io, 'deployEdgeoneOverseas')(ctx)
+    completed.push('deploy-edgeone')
+  }
+
+  await requireIoMethod(io, 'validateImageCdn')(ctx)
+  completed.push('image-cdn-validate')
+
+  // Writer stays disabled until isolation+copy pass; the I/O adapter may
+  // still record a controlled dispatch, but the runner never flips the flag.
+  await requireIoMethod(io, 'runSingleWriterTest')({
+    ...ctx,
+    developmentWriterEnabled: false,
+  })
+  completed.push('single-writer-test')
+
+  return {
+    ok: true,
+    aborted: false,
+    abortCutover: false,
+    dualBucketFallback: false,
+    developmentWriterEnabled: false,
+    isolation,
+    completed,
+  }
 }
