@@ -230,6 +230,94 @@
     gridEl.removeAttribute('data-bgm-pending')
   }
 
+  let loadAbort = null
+  let loadSeq = 0
+  var PAGE_LIMIT = 24
+  var PREFETCH_CAP = 8
+
+  function skeletonCardsHtml(count) {
+    var n = Math.max(0, Math.trunc(Number(count) || 0))
+    var html = ''
+    for (var i = 0; i < n; i++) {
+      html += '<div class="bgm-card bgm-card-skeleton" aria-hidden="true"><div class="bgm-card-cover"></div><div class="bgm-card-info"><h3>&nbsp;</h3></div></div>'
+    }
+    return html
+  }
+
+  function createPrefetchCache(cap) {
+    var max = Math.max(1, Math.trunc(Number(cap) || PREFETCH_CAP))
+    var map = new Map()
+    function key(type, page) {
+      return String(type) + ':' + String(page)
+    }
+    return {
+      get: function (type, page) {
+        var k = key(type, page)
+        if (!map.has(k)) return null
+        var value = map.get(k)
+        map.delete(k)
+        map.set(k, value)
+        return value
+      },
+      set: function (type, page, data) {
+        var k = key(type, page)
+        if (map.has(k)) map.delete(k)
+        map.set(k, data)
+        while (map.size > max) {
+          var oldest = map.keys().next().value
+          map.delete(oldest)
+        }
+      },
+      size: function () {
+        return map.size
+      },
+    }
+  }
+
+  var prefetchCache = createPrefetchCache(PREFETCH_CAP)
+
+  function buildPaginationWindow(current, totalPages) {
+    var total = Math.max(0, Math.trunc(Number(totalPages) || 0))
+    var cur = Math.min(Math.max(1, Math.trunc(Number(current) || 1)), Math.max(1, total))
+    if (total <= 0) return []
+    if (total <= 7) {
+      var all = []
+      for (var i = 1; i <= total; i++) all.push(i)
+      return all
+    }
+    if (cur <= 4) return [1, 2, 3, 4, 5, '…', total]
+    if (cur >= total - 3) return [1, '…', total - 4, total - 3, total - 2, total - 1, total]
+    return [1, '…', cur - 1, cur, cur + 1, '…', total]
+  }
+
+  function renderPaginationControls(paginationEl, page, totalPages, onSelect) {
+    paginationEl.innerHTML = ''
+    var windowItems = buildPaginationWindow(page, totalPages)
+    for (var i = 0; i < windowItems.length; i++) {
+      var item = windowItems[i]
+      if (item === '…') {
+        var dots = document.createElement('span')
+        dots.className = 'bgm-pagination-ellipsis'
+        dots.textContent = '…'
+        dots.setAttribute('aria-hidden', 'true')
+        paginationEl.appendChild(dots)
+        continue
+      }
+      var btn = document.createElement('button')
+      btn.type = 'button'
+      btn.textContent = String(item)
+      if (item === page) {
+        btn.classList.add('active')
+        btn.setAttribute('aria-current', 'page')
+      }
+      ;(function (p) {
+        btn.addEventListener('click', function () { onSelect(p) })
+      })(item)
+      paginationEl.appendChild(btn)
+    }
+  }
+
+
   // ---------------------------------------------------------------
   // 收藏视图（原 render 逻辑，封装进一个容器）
   // ---------------------------------------------------------------
@@ -261,33 +349,77 @@
     var loaded = false
 
     async function load(type, page) {
+      if (loadAbort) {
+        try { loadAbort.abort() } catch (_) {}
+      }
+      loadAbort = typeof AbortController !== 'undefined' ? new AbortController() : null
+      var seq = ++loadSeq
+      var signal = loadAbort ? loadAbort.signal : undefined
+
+      if (grid.childElementCount > 0) {
+        grid.style.minHeight = grid.offsetHeight + 'px'
+      }
+      grid.classList.add('bgm-grid-skeleton')
+      grid.innerHTML = skeletonCardsHtml(PAGE_LIMIT)
+
       try {
-        var res = await fetch(API + '/api/collections?type=' + type + '&page=' + page + '&limit=24')
-        if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText)
-        var data = await res.json()
+        var data = prefetchCache.get(type, page)
+        if (!data) {
+          var fetchOpts = signal ? { signal: signal } : {}
+          var res = await fetch(API + '/api/collections?type=' + type + '&page=' + page + '&limit=' + PAGE_LIMIT, fetchOpts)
+          if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText)
+          data = await res.json()
+        }
+        if (seq !== loadSeq) return
+
         if (data.total === 0) {
           grid.innerHTML = '<p class="bgm-empty">暂无数据 — 同步可能尚未执行，数据尚未发布，请稍后再试</p>'
           pagination.innerHTML = ''
+          grid.classList.remove('bgm-grid-skeleton')
+          grid.style.minHeight = ''
           return
         }
+
         var cardsHtml = ''
         for (var i = 0; i < data.data.length; i++) {
           cardsHtml += renderCard(data.data[i], i < 8 ? { priority: true } : null)
         }
         grid.innerHTML = cardsHtml
+        grid.classList.remove('bgm-grid-skeleton')
+        grid.style.minHeight = ''
 
-        var totalPages = Math.ceil(data.total / 24)
-        pagination.innerHTML = ''
-        for (var i = 1; i <= totalPages; i++) {
-          var btn = document.createElement('button')
-          btn.textContent = i
-          if (i === page) btn.classList.add('active')
-          ;(function(p) { btn.addEventListener('click', function() { currentPage = p; load(currentType, p) }) })(i)
-          pagination.appendChild(btn)
-        }
+        var totalPages = Math.ceil(data.total / PAGE_LIMIT)
+        renderPaginationControls(pagination, page, totalPages, function (p) {
+          currentPage = p
+          load(currentType, p)
+        })
+
+        prefetchNextPage(type, page, totalPages)
       } catch (e) {
+        if (seq !== loadSeq) return
+        if (e && (e.name === 'AbortError' || e.code === 20)) return
         grid.innerHTML = '<p class="bgm-error">加载失败: ' + escapeHtml(e.message || '未知错误') + '<br><small>API: ' + escapeHtml(API) + '</small></p>'
+        pagination.innerHTML = ''
+        grid.classList.remove('bgm-grid-skeleton')
+        grid.style.minHeight = ''
       }
+    }
+
+    function prefetchNextPage(type, page, totalPages) {
+      var next = page + 1
+      if (next > totalPages) return
+      if (prefetchCache.get(type, next)) return
+      var controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+      var opts = controller ? { signal: controller.signal } : {}
+      fetch(API + '/api/collections?type=' + type + '&page=' + next + '&limit=' + PAGE_LIMIT, opts)
+        .then(function (res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status)
+          return res.json()
+        })
+        .then(function (data) {
+          prefetchCache.set(type, next, data)
+        })
+        .catch(function () {})
     }
 
     nav.addEventListener('click', function(e) {
@@ -309,7 +441,7 @@
         if (loaded) return
         loaded = true
         var statusBar = document.createElement('div')
-        statusBar.className = 'bgm-status'
+        statusBar.className = 'bgm-status bgm-status-bar'
         statusBar.innerHTML = '<p>正在连接...</p>'
         view.insertBefore(statusBar, nav)
         load(currentType, 1)

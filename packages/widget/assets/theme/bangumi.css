@@ -67,10 +67,29 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 18px;
+  min-height: 0;
 }
 
-.bgm-grid.bgm-grid-pending {
-  min-height: 120px;
+.bgm-grid.bgm-grid-pending,
+.bgm-grid.bgm-grid-skeleton {
+  min-height: 480px;
+}
+
+.bgm-card-skeleton {
+  pointer-events: none;
+  aspect-ratio: 3/4;
+  background: var(--nb-surface);
+  border: var(--nb-border);
+  box-shadow: var(--nb-shadow);
+}
+.bgm-card-skeleton .bgm-card-cover {
+  aspect-ratio: 3/4;
+  background: linear-gradient(90deg, #f3f3f3 25%, #ececec 37%, #f3f3f3 63%);
+  background-size: 400% 100%;
+}
+.bgm-card-skeleton .bgm-card-info h3 {
+  background: #ececec;
+  color: transparent;
 }
 
 /* ---------- 卡片 ---------- */
@@ -385,6 +404,9 @@ body {
 .bgm-status span {
   margin: 0;
   font-weight: 800;
+}
+.bgm-status-bar {
+  min-height: 44px;
 }
 .bgm-status-warn {
   color: var(--nb-ink);
