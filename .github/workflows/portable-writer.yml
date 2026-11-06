@@ -31,7 +31,9 @@ jobs:
   staging:
     if: ${{ github.event_name == 'workflow_dispatch' && (inputs.target || 'staging') != 'production' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    # A first publish mirrors ~1.4k image objects; keep headroom above the
+    # observed duration (40 minutes was not enough for a sequential upload).
+    timeout-minutes: 90
     environment: staging
     steps:
       - name: Validate required staging config
