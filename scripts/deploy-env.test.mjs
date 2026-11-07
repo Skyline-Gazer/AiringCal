@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, resolve, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
@@ -30,6 +31,95 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = resolve(ROOT, 'scripts', 'deploy-env.mjs')
+
+// ---------------------------------------------------------------------------
+// Hermetic `edgeone makers` CLI double for deployEdgeoneOverseas tests.
+// Models the project's env-var store and reproduces the file side effects of
+// `link` / `env set` / `env rm` / `env pull` / `deploy --json`, so the adapter
+// can be exercised without network or a real Makers project. `env pull -f`
+// writes the accumulated project env to `<dist>/.env` exactly as the real CLI
+// does; the adapter reads that file back and fails closed on missing keys.
+// ---------------------------------------------------------------------------
+function createFakeEdgeone({
+  log = [],
+  initialEnv = {},
+  deployOutput = '{"status":"success","url":"https://eo.example","deploymentId":"d1"}',
+  pullOmitKeys = [],
+  rmOutcome = null,
+  onDeploy = null,
+} = {}) {
+  const projectEnv = new Map(Object.entries(initialEnv))
+  const state = {
+    projectEnv,
+    cwds: [],
+    linkCwd: null,
+    deployCalls: 0,
+    distEnvAtDeploy: null,
+    pullTarget: null,
+    calls: [],
+  }
+  const spawn = (cmd, args, opts = {}) => {
+    const argList = Array.isArray(args) ? args : []
+    const joined = argList.join(' ')
+    state.calls.push({ cmd, args: argList, cwd: opts?.cwd ?? null })
+    log.push(`${cmd} ${joined}`)
+    if (opts?.cwd) state.cwds.push(opts.cwd)
+    if (cmd === 'edgeone') {
+      const sub = argList[1]
+      if (sub === 'link') {
+        state.linkCwd = opts?.cwd ?? null
+      } else if (sub === 'env' && argList[2] === 'set') {
+        projectEnv.set(argList[3], argList[4])
+      } else if (sub === 'env' && argList[2] === 'rm') {
+        projectEnv.delete(argList[3])
+        return rmOutcome ? rmOutcome() : { status: 0, stdout: '', stderr: '', error: null }
+      } else if (sub === 'env' && argList[2] === 'pull') {
+        const f = argList.indexOf('-f')
+        const target = f >= 0 ? argList[f + 1] : null
+        state.pullTarget = target
+        if (target) {
+          const lines = []
+          for (const [k, v] of projectEnv) {
+            if (pullOmitKeys.includes(k)) continue
+            lines.push(`${k}=${v}`)
+          }
+          mkdirSync(dirname(target), { recursive: true })
+          writeFileSync(target, lines.join('\n') + '\n')
+        }
+      } else if (sub === 'deploy') {
+        state.deployCalls += 1
+        const envFile = join(argList[2], '.env')
+        const envExists = existsSync(envFile)
+        state.distEnvAtDeploy = {
+          envFile,
+          exists: envExists,
+          content: envExists ? readFileSync(envFile, 'utf8') : null,
+        }
+        if (onDeploy) onDeploy(state.distEnvAtDeploy)
+      }
+    }
+    return { status: 0, stdout: cmd === 'edgeone' && argList[1] === 'deploy' ? deployOutput : '', stderr: '', error: null }
+  }
+  return { spawn, state, log }
+}
+
+function makeEdgeoneIo(fake, { env = {}, imageBaseUrl, target = 'edgeone', publicBaseUrl = 'https://dev-cdn.example.test' } = {}) {
+  return import('./deploy-env.mjs').then(({ createLiveDevelopmentApplyIo }) =>
+    createLiveDevelopmentApplyIo({
+      env: {
+        AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+        AIRINGCAL_EDGEONE_API_TOKEN: 'eo-tok',
+        ...(imageBaseUrl ? { AIRINGCAL_IMAGE_BASE_URL: imageBaseUrl } : {}),
+        ...env,
+      },
+      plan: buildDevelopmentDeployPlan({ target, publicBaseUrl, mode: 'apply' }),
+      spawnSyncImpl: fake.spawn,
+      fetchImpl: async () => {
+        throw new Error('no fetch expected')
+      },
+    }),
+  )
+}
 
 test('parseDeployArgs defaults target to both and apply false', () => {
   assert.deepEqual(parseDeployArgs(['node', 'deploy-env.mjs']), {
@@ -1112,6 +1202,9 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
   })
   const liveImageHash = 'b'.repeat(64)
   const spawnLog = []
+  // 'deployed' has no URL / JSON so readerUrl stays null and verifyImageRouting
+  // falls back to AIRINGCAL_EDGEONE_READER_URL, preserving the original receipt.
+  const eoFake = createFakeEdgeone({ deployOutput: 'deployed' })
   const materializeEnvs = []
   let ghRunListCount = 0
   const whoamiJson = JSON.stringify({
@@ -1155,7 +1248,7 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
         return { status: 0, stdout: '', stderr: '', error: null }
       }
       if (cmd === 'edgeone') {
-        return { status: 0, stdout: 'deployed', stderr: '', error: null }
+        return eoFake.spawn(cmd, args, opts)
       }
       if (joined.includes('deploy') && joined.includes('--config')) {
         return {
@@ -2991,137 +3084,141 @@ test('deployCloudflareReader forwards the trimmed AIRINGCAL_IMAGE_BASE_URL to th
 })
 
 test('deployEdgeoneOverseas sets the image base env pair only when configured and exposes readerUrl', async () => {
-  const buildEdgeoneIo = (imageBaseUrl, spawnLog, rmOutcome = null) =>
-    import('./deploy-env.mjs').then(({ createLiveDevelopmentApplyIo }) =>
-      createLiveDevelopmentApplyIo({
-        env: {
-          AIRINGCAL_CLOUDFLARE_API_TOKEN: 'routing-token',
-          AIRINGCAL_EDGEONE_API_TOKEN: 'eo-tok',
-          ...(imageBaseUrl ? { AIRINGCAL_IMAGE_BASE_URL: imageBaseUrl } : {}),
-        },
-        plan: buildDevelopmentDeployPlan({
-          target: 'edgeone',
-          publicBaseUrl: 'https://dev-cdn.example.test',
-          mode: 'apply',
-        }),
-        spawnSyncImpl: (cmd, args) => {
-          const joined = args.join(' ')
-          spawnLog.push(`${cmd} ${joined}`)
-          if (rmOutcome && cmd === 'edgeone' && joined.includes('env rm')) return rmOutcome()
-          return {
-            status: 0,
-            stdout: cmd === 'edgeone' && joined.includes('deploy') ? 'Deployed at https://preview.edgeone.cool' : '',
-            stderr: '',
-            error: null,
-          }
-        },
-        fetchImpl: async () => {
-          throw new Error('no fetch expected')
-        },
-      }),
-    )
-
-  const withImage = []
-  const ioWith = await buildEdgeoneIo('https://img.example.test', withImage)
+  // Plain-URL stdout (not --json) exercises the readerUrl regex fallback.
+  const fakeWith = createFakeEdgeone({ deployOutput: 'Deployed at https://preview.edgeone.cool' })
+  const ioWith = await makeEdgeoneIo(fakeWith, { imageBaseUrl: 'https://img.example.test' })
   const resultWith = await ioWith.deployEdgeoneOverseas()
   assert.ok(
-    withImage.some((l) => l.includes('env set AIRINGCAL_IMAGE_BASE_URL https://img.example.test')),
-    withImage.join(' | '),
+    fakeWith.log.some((l) => l.includes('env set AIRINGCAL_IMAGE_BASE_URL https://img.example.test')),
+    fakeWith.log.join(' | '),
   )
   assert.ok(
-    !withImage.some((l) => l.includes('env rm AIRINGCAL_IMAGE_BASE_URL')),
-    `configured image base must not be cleared: ${withImage.join(' | ')}`,
+    !fakeWith.log.some((l) => l.includes('env rm AIRINGCAL_IMAGE_BASE_URL')),
+    `configured image base must not be cleared: ${fakeWith.log.join(' | ')}`,
   )
+  assert.match(String(fakeWith.state.distEnvAtDeploy?.content ?? ''), /AIRINGCAL_IMAGE_BASE_URL=https:\/\/img\.example\.test/)
   assert.equal(resultWith.readerUrl, 'https://preview.edgeone.cool')
   assert.equal(resultWith.imageBaseUrlPersisted, true)
   assert.equal(resultWith.imageBaseUrlCleared, false)
+  assert.equal(existsSync(fakeWith.state.distEnvAtDeploy.envFile), false)
 
-  const withoutImage = []
-  const ioWithout = await buildEdgeoneIo('', withoutImage)
+  const fakeWithout = createFakeEdgeone({ deployOutput: 'Deployed at https://preview.edgeone.cool' })
+  const ioWithout = await makeEdgeoneIo(fakeWithout)
   const resultWithout = await ioWithout.deployEdgeoneOverseas()
   assert.ok(
-    !withoutImage.some((l) => l.includes('env set AIRINGCAL_IMAGE_BASE_URL')),
-    `unset must never re-set a sticky image base: ${withoutImage.join(' | ')}`,
+    !fakeWithout.log.some((l) => l.includes('env set AIRINGCAL_IMAGE_BASE_URL')),
+    `unset must never re-set a sticky image base: ${fakeWithout.log.join(' | ')}`,
   )
   assert.ok(
-    withoutImage.some(
+    fakeWithout.log.some(
       (l) =>
         l.includes('env rm AIRINGCAL_IMAGE_BASE_URL') &&
         l.includes('-e production') &&
         l.includes('-t eo-tok'),
     ),
-    `unset must clear the persisted EdgeOne image base: ${withoutImage.join(' | ')}`,
+    `unset must clear the persisted EdgeOne image base: ${fakeWithout.log.join(' | ')}`,
   )
   assert.equal(resultWithout.imageBaseUrlCleared, true)
   assert.equal(resultWithout.imageBaseUrlPersisted, false)
 })
 
 test('deployEdgeoneOverseas tolerates env rm "not found" output as an already-cleared base', async () => {
-  const log = []
-  const io = await import('./deploy-env.mjs').then(({ createLiveDevelopmentApplyIo }) =>
-    createLiveDevelopmentApplyIo({
-      env: {
-        AIRINGCAL_CLOUDFLARE_API_TOKEN: 'routing-token',
-        AIRINGCAL_EDGEONE_API_TOKEN: 'eo-tok',
-      },
-      plan: buildDevelopmentDeployPlan({
-        target: 'edgeone',
-        publicBaseUrl: 'https://dev-cdn.example.test',
-        mode: 'apply',
-      }),
-      spawnSyncImpl: (cmd, args) => {
-        const joined = args.join(' ')
-        log.push(`${cmd} ${joined}`)
-        if (cmd === 'edgeone' && joined.includes('env rm')) {
-          return { status: 1, stdout: '', stderr: 'variable AIRINGCAL_IMAGE_BASE_URL not found', error: null }
-        }
-        return {
-          status: 0,
-          stdout: cmd === 'edgeone' && joined.includes('deploy') ? 'Deployed at https://preview.edgeone.cool' : '',
-          stderr: '',
-          error: null,
-        }
-      },
-      fetchImpl: async () => {
-        throw new Error('no fetch expected')
-      },
-    }),
-  )
+  const fake = createFakeEdgeone({
+    rmOutcome: () => ({ status: 1, stdout: '', stderr: 'variable AIRINGCAL_IMAGE_BASE_URL not found', error: null }),
+  })
+  const io = await makeEdgeoneIo(fake)
   const result = await io.deployEdgeoneOverseas()
   assert.equal(result.imageBaseUrlCleared, true)
-  assert.ok(log.some((l) => l.includes('env rm AIRINGCAL_IMAGE_BASE_URL')))
+  assert.ok(fake.log.some((l) => l.includes('env rm AIRINGCAL_IMAGE_BASE_URL')))
+  assert.equal(fake.state.deployCalls, 1, 'not-found env rm must not abort the deploy')
 })
 
 test('deployEdgeoneOverseas fails closed on a real env rm error (auth)', async () => {
-  const io = await import('./deploy-env.mjs').then(({ createLiveDevelopmentApplyIo }) =>
-    createLiveDevelopmentApplyIo({
-      env: {
-        AIRINGCAL_CLOUDFLARE_API_TOKEN: 'routing-token',
-        AIRINGCAL_EDGEONE_API_TOKEN: 'eo-tok',
-      },
-      plan: buildDevelopmentDeployPlan({
-        target: 'edgeone',
-        publicBaseUrl: 'https://dev-cdn.example.test',
-        mode: 'apply',
-      }),
-      spawnSyncImpl: (cmd, args) => {
-        const joined = args.join(' ')
-        if (cmd === 'edgeone' && joined.includes('env rm')) {
-          return { status: 1, stdout: '', stderr: '401 Unauthorized: invalid api token', error: null }
-        }
-        return {
-          status: 0,
-          stdout: cmd === 'edgeone' && joined.includes('deploy') ? 'Deployed at https://preview.edgeone.cool' : '',
-          stderr: '',
-          error: null,
-        }
-      },
-      fetchImpl: async () => {
-        throw new Error('no fetch expected')
-      },
-    }),
-  )
+  const fake = createFakeEdgeone({
+    rmOutcome: () => ({ status: 1, stdout: '', stderr: '401 Unauthorized: invalid api token', error: null }),
+  })
+  const io = await makeEdgeoneIo(fake)
   await assert.rejects(io.deployEdgeoneOverseas(), /env rm AIRINGCAL_IMAGE_BASE_URL failed \(exit 1\).*Unauthorized/i)
+  assert.equal(fake.state.deployCalls, 0, 'must not deploy after a real env rm error')
+})
+
+test('deployEdgeoneOverseas links, pulls env into dist/.env, deploys with --json in order, then cleans up', async () => {
+  const fake = createFakeEdgeone({
+    deployOutput: '{"status":"success","url":"https://eo.example","deploymentId":"d1"}',
+  })
+  const io = await makeEdgeoneIo(fake, { imageBaseUrl: 'https://img.example.test' })
+  const result = await io.deployEdgeoneOverseas()
+  const order = fake.log
+  const linkIdx = order.findIndex((l) => l.includes('makers link'))
+  const firstSetIdx = order.findIndex((l) => l.includes('env set'))
+  const pullIdx = order.findIndex((l) => l.includes('env pull'))
+  const deployIdx = order.findIndex((l) => l.includes('makers deploy'))
+  assert.ok(linkIdx >= 0, `link must run: ${order.join(' | ')}`)
+  assert.ok(firstSetIdx > linkIdx, `link must precede every env set: ${order.join(' | ')}`)
+  assert.ok(pullIdx > firstSetIdx, `env pull must follow env mutations: ${order.join(' | ')}`)
+  assert.ok(deployIdx > pullIdx, `deploy must follow env pull: ${order.join(' | ')}`)
+  const linkCall = fake.state.calls.find((c) => c.cmd === 'edgeone' && c.args[1] === 'link')
+  assert.deepEqual(linkCall.args, ['makers', 'link', '-n', 'airingcal-edgeone-read-overseas', '-a', 'overseas', '-t', 'eo-tok'])
+  const pullCall = fake.state.calls.find((c) => c.cmd === 'edgeone' && c.args[2] === 'pull')
+  assert.deepEqual(pullCall.args.slice(0, 7), ['makers', 'env', 'pull', '-e', 'production', '-t', 'eo-tok'])
+  assert.equal(pullCall.args[7], '-f')
+  assert.match(pullCall.args[8], /\/\.env$/)
+  const deployCall = fake.state.calls.find((c) => c.cmd === 'edgeone' && c.args[1] === 'deploy')
+  const distDir = fake.state.distEnvAtDeploy.envFile.replace(/\/\.env$/, '')
+  assert.deepEqual(deployCall.args.slice(1), ['deploy', distDir, '-n', 'airingcal-edgeone-read-overseas', '-a', 'overseas', '-t', 'eo-tok', '-e', 'production', '--json'])
+  // link / set / rm / pull / deploy all run from the same linked temp cwd.
+  const edgeoneCwds = fake.state.calls.filter((c) => c.cmd === 'edgeone').map((c) => c.cwd)
+  assert.ok(edgeoneCwds.every((c) => c && c === edgeoneCwds[0]), 'all edgeone calls must share the linked temp cwd')
+  assert.equal(fake.state.distEnvAtDeploy.exists, true, 'dist/.env must be bundled at deploy time')
+  const envContent = String(fake.state.distEnvAtDeploy.content ?? '')
+  assert.match(envContent, /AIRINGCAL_PUBLIC_BASE_URL=https:\/\/dev-cdn\.example\.test/)
+  assert.match(envContent, /NSFW_SHOW=false/)
+  assert.match(envContent, /AIRINGCAL_IMAGE_BASE_URL=https:\/\/img\.example\.test/)
+  assert.equal(existsSync(fake.state.distEnvAtDeploy.envFile), false, 'dist/.env must be removed after deploy')
+  assert.ok(fake.state.linkCwd && fake.state.linkCwd.startsWith(tmpdir()), `link cwd must be a temp dir: ${fake.state.linkCwd}`)
+  assert.equal(existsSync(fake.state.linkCwd), false, 'linked temp dir must be cleaned up')
+  assert.equal(fake.state.deployCalls, 1)
+  assert.equal(result.deployed, true)
+  assert.equal(result.project, 'airingcal-edgeone-read-overseas')
+  assert.equal(result.region, 'overseas')
+})
+
+test('deployEdgeoneOverseas takes readerUrl from --json url and falls back to a stdout URL', async () => {
+  const jsonFake = createFakeEdgeone({ deployOutput: '{"status":"success","url":"https://eo.example","deploymentId":"d1"}' })
+  const jsonResult = await (await makeEdgeoneIo(jsonFake)).deployEdgeoneOverseas()
+  assert.equal(jsonResult.readerUrl, 'https://eo.example')
+  const regexFake = createFakeEdgeone({ deployOutput: 'Deployed at https://preview.edgeone.cool' })
+  const regexResult = await (await makeEdgeoneIo(regexFake)).deployEdgeoneOverseas()
+  assert.equal(regexResult.readerUrl, 'https://preview.edgeone.cool')
+})
+
+test('deployEdgeoneOverseas clears a sticky image base on unset and keeps it when set', async () => {
+  const unsetFake = createFakeEdgeone({ initialEnv: { AIRINGCAL_IMAGE_BASE_URL: 'https://sticky.example.test' } })
+  const unsetRes = await (await makeEdgeoneIo(unsetFake)).deployEdgeoneOverseas()
+  assert.ok(
+    unsetFake.log.some((l) => l.includes('env rm AIRINGCAL_IMAGE_BASE_URL') && l.includes('-e production') && l.includes('-t eo-tok')),
+    unsetFake.log.join(' | '),
+  )
+  assert.equal(unsetRes.imageBaseUrlCleared, true)
+  assert.equal(unsetRes.imageBaseUrlPersisted, false)
+  assert.equal(unsetFake.state.projectEnv.has('AIRINGCAL_IMAGE_BASE_URL'), false, 'env rm must clear the sticky project var')
+  assert.ok(!String(unsetFake.state.distEnvAtDeploy.content ?? '').includes('AIRINGCAL_IMAGE_BASE_URL'), `pulled .env must not contain a stale image base: ${unsetFake.state.distEnvAtDeploy.content}`)
+  assert.equal(existsSync(unsetFake.state.distEnvAtDeploy.envFile), false)
+
+  const setFake = createFakeEdgeone()
+  const setRes = await (await makeEdgeoneIo(setFake, { imageBaseUrl: 'https://img.example.test' })).deployEdgeoneOverseas()
+  assert.equal(setRes.imageBaseUrlPersisted, true)
+  assert.ok(!setFake.log.some((l) => l.includes('env rm AIRINGCAL_IMAGE_BASE_URL')))
+  assert.match(String(setFake.state.distEnvAtDeploy.content ?? ''), /AIRINGCAL_IMAGE_BASE_URL=https:\/\/img\.example\.test/)
+})
+
+test('deployEdgeoneOverseas fails closed when the pulled .env is missing a required key (no deploy)', async () => {
+  const fake = createFakeEdgeone({ pullOmitKeys: ['AIRINGCAL_PUBLIC_BASE_URL'] })
+  const io = await makeEdgeoneIo(fake, { imageBaseUrl: 'https://img.example.test' })
+  await assert.rejects(io.deployEdgeoneOverseas(), /AIRINGCAL_PUBLIC_BASE_URL|refusing|missing/i)
+  assert.equal(fake.state.deployCalls, 0, 'must not deploy when the bundled .env is incomplete')
+  assert.ok(fake.state.pullTarget && !existsSync(fake.state.pullTarget), 'dist/.env must be cleaned up on failure')
+  assert.ok(fake.state.linkCwd && !existsSync(fake.state.linkCwd), 'linked temp dir must be cleaned on failure')
 })
 
 
