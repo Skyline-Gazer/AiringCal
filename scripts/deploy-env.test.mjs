@@ -1912,6 +1912,170 @@ test('applyCacheRules + configureWaf refuse when plan.publicHost is missing', as
   await assert.rejects(() => io.configureWaf({}), /plan\.publicHost/)
 })
 
+// --- zone-scoped 10000 auth errors: actionable missing-capability messages ----
+
+/**
+ * Reproduce the response a token with Zone:Edit but no fine-grained Cache
+ * Rules / WAF Custom Rules / DNS scopes gets on a /zones/... request:
+ * HTTP 403 { success:false, errors:[{ code:10000, message:'Authentication error' }] }.
+ */
+function zoneScopeAuthFetchDouble(calls = []) {
+  return async (url, init = {}) => {
+    calls.push({ url: String(url), method: String(init.method ?? 'GET') })
+    return {
+      ok: false,
+      status: 403,
+      async json() {
+        return { success: false, errors: [{ code: 10000, message: 'Authentication error' }] }
+      },
+    }
+  }
+}
+
+const ZONE_SCOPE_MESSAGE_RE = /zone-scoped Cache Rules \/ WAF Custom Rules \/ DNS Edit permissions/
+const PROFILE_HINT_RE = /dash\.cloudflare\.com\/profile\/api-tokens/
+
+function zoneScopeLiveIo(fetchImpl) {
+  return import('./deploy-env.mjs').then(({ createLiveDevelopmentApplyIo }) =>
+    createLiveDevelopmentApplyIo({
+      env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok', AIRINGCAL_ZONE_ID: 'zone123' },
+      plan: buildDevelopmentDeployPlan({
+        target: 'both',
+        publicBaseUrl: 'https://dev-cdn.example.test',
+        mode: 'apply',
+      }),
+      spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
+      fetchImpl,
+    }),
+  )
+}
+
+test('applyCacheRules turns a Cloudflare 10000 auth error into an actionable missing-capability', async () => {
+  const calls = []
+  const io = await zoneScopeLiveIo(zoneScopeAuthFetchDouble(calls))
+  await assert.rejects(
+    () => io.applyCacheRules({}),
+    (error) => {
+      assert.equal(error.name, 'MissingCapabilityError')
+      assert.match(String(error.message), /missing capability: cache-rules/)
+      assert.match(String(error.message), ZONE_SCOPE_MESSAGE_RE)
+      assert.match(String(error.message), PROFILE_HINT_RE)
+      return true
+    },
+  )
+  assert.equal(
+    calls.filter((c) => c.method === 'POST').length,
+    0,
+    'no ruleset POST attempted on 10000 auth error',
+  )
+})
+
+test('configureWaf turns a Cloudflare 10000 auth error into an actionable missing-capability', async () => {
+  const calls = []
+  const io = await zoneScopeLiveIo(zoneScopeAuthFetchDouble(calls))
+  await assert.rejects(
+    () => io.configureWaf({}),
+    (error) => {
+      assert.equal(error.name, 'MissingCapabilityError')
+      assert.match(String(error.message), /missing capability: waf-checkpoints/)
+      assert.match(String(error.message), ZONE_SCOPE_MESSAGE_RE)
+      assert.match(String(error.message), PROFILE_HINT_RE)
+      return true
+    },
+  )
+  assert.equal(
+    calls.filter((c) => c.method === 'POST').length,
+    0,
+    'no ruleset POST attempted on 10000 auth error',
+  )
+})
+
+test('runner aborts cutover (no dual-bucket fallback) when applyCacheRules hits a zone-scope 10000 error', async () => {
+  const realIo = await zoneScopeLiveIo(zoneScopeAuthFetchDouble([]))
+  const io = createRecordingApplyIo({
+    applyCacheRules: () => realIo.applyCacheRules({}),
+  })
+  const plan = buildDevelopmentDeployPlan({
+    target: 'both',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const result = await runDevelopmentApply({
+    plan,
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes',
+    },
+    io,
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.aborted, true)
+  assert.equal(result.abortCutover, true)
+  assert.equal(result.dualBucketFallback, false)
+  assert.equal(result.exitCode, 2)
+  assert.equal(result.status, 'missing-capability')
+  assert.match(String(result.reason), ZONE_SCOPE_MESSAGE_RE)
+  assert.ok(!io.calls.includes('copy-public'))
+  assert.ok(!io.calls.includes('copy-checkpoints'))
+})
+
+test('isZoneScopeError matches only Cloudflare 10000 auth errors from zone requests', async () => {
+  const { isZoneScopeError } = await import('./deploy-env-live-io.mjs')
+  const zoneErr = Object.assign(new Error('10000 Authentication error'), {
+    errors: [{ code: 10000, message: 'Authentication error' }],
+    zoneScopeHint: true,
+    path: '/zones/z/rulesets',
+  })
+  assert.equal(isZoneScopeError(zoneErr), true)
+  // Flattened message form (structured errors absent).
+  assert.equal(
+    isZoneScopeError(Object.assign(new Error('10000 Authentication error'), { zoneScopeHint: true })),
+    true,
+  )
+  // Wrong code, wrong message, non-zone path, and network errors never match.
+  assert.equal(
+    isZoneScopeError(Object.assign(new Error('9106 Invalid API Token scopes'), {
+      errors: [{ code: 9106, message: 'Invalid API Token scopes' }],
+      path: '/user/tokens/verify',
+    })),
+    false,
+  )
+  assert.equal(
+    isZoneScopeError(Object.assign(new Error('10000 not found'), {
+      errors: [{ code: 10000, message: 'not found' }],
+      path: '/zones/z/rulesets',
+    })),
+    false,
+  )
+  assert.equal(
+    isZoneScopeError(Object.assign(new Error('10000 Authentication error'), {
+      errors: [{ code: 10000, message: 'Authentication error' }],
+      path: '/user/tokens/verify',
+    })),
+    false,
+    'zone-scope message must not apply to other endpoints',
+  )
+  assert.equal(isZoneScopeError(new TypeError('fetch failed')), false)
+  assert.equal(isZoneScopeError(null), false)
+})
+
+test('cfApi marks /zones/ 10000 failures with a zoneScopeHint', async () => {
+  const fetchImpl = async () => ({
+    ok: false,
+    status: 403,
+    async json() {
+      return { success: false, errors: [{ code: 10000, message: 'Authentication error' }] }
+    },
+  })
+  await assert.rejects(
+    cfApi(fetchImpl, 'tok', '/zones/z/rulesets', {}, { sleep: async () => {} }),
+    (error) => {
+      assert.ok(error.zoneScopeHint, 'zoneScopeHint set on /zones/ 10000 failure')
+      return true
+    },
+  )
+})
+
 const VERIFY_TOKEN_ID = 'ed17574386854bf78a67040be0a770b0'
 
 test('deriveAndVerifyS3 derives S3 creds from the management token without creating any token', async () => {
