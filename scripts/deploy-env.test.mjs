@@ -19,6 +19,12 @@ import {
   runDevelopmentApply,
   validateImageCdnConfig,
 } from './deploy-env-lib.mjs'
+import {
+  cfApi,
+  runGh,
+  runWrangler,
+  withNetworkRetry,
+} from './deploy-env-live-io.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CLI = resolve(ROOT, 'scripts', 'deploy-env.mjs')
@@ -2167,6 +2173,7 @@ function buildRoutingIo(fetchImpl, extraEnv = {}, target = 'both') {
       spawnSyncImpl: () => {
         throw new Error('spawn must not be used by verifyImageRouting')
       },
+      sleepImpl: async () => {},
       fetchImpl,
     }),
   )
@@ -2616,3 +2623,405 @@ test('deployEdgeoneOverseas fails closed on a real env rm error (auth)', async (
   await assert.rejects(io.deployEdgeoneOverseas(), /env rm AIRINGCAL_IMAGE_BASE_URL failed \(exit 1\).*Unauthorized/i)
 })
 
+
+// ---------------------------------------------------------------------------
+// netretry: transient Cloudflare network failures must be retried (bounded)
+// and never misclassified as missing scopes.
+// ---------------------------------------------------------------------------
+
+const TRANSIENT_NOTE_RE = /transient Cloudflare network failure \(retried; re-run apply if it persists\)/
+
+test('withNetworkRetry retries retriable failures then succeeds (sleeps 500 then 2000)', async () => {
+  const sleeps = []
+  let calls = 0
+  const result = await withNetworkRetry(
+    async () => {
+      calls += 1
+      if (calls < 3) {
+        const err = new TypeError('fetch failed')
+        throw err
+      }
+      return 'ok'
+    },
+    {
+      isRetriable: (error) => error instanceof TypeError,
+      sleep: (ms) => {
+        sleeps.push(ms)
+        return Promise.resolve()
+      },
+    },
+  )
+  assert.equal(result, 'ok')
+  assert.equal(calls, 3)
+  assert.deepEqual(sleeps, [500, 2000])
+})
+
+test('withNetworkRetry rethrows non-retriable errors immediately (1 attempt, no sleep)', async () => {
+  let calls = 0
+  await assert.rejects(
+    withNetworkRetry(
+      async () => {
+        calls += 1
+        const err = new Error('403 Forbidden')
+        err.status = 403
+        throw err
+      },
+      {
+        isRetriable: () => false,
+        sleep: () => {
+          throw new Error('must not sleep for non-retriable errors')
+        },
+      },
+    ),
+    /403 Forbidden/,
+  )
+  assert.equal(calls, 1)
+})
+
+test('withNetworkRetry backoff is bounded at the last delay', async () => {
+  const sleeps = []
+  let calls = 0
+  await assert.rejects(
+    withNetworkRetry(
+      async () => {
+        calls += 1
+        throw new Error('fetch failed')
+      },
+      {
+        attempts: 4,
+        isRetriable: (error) => /fetch failed/.test(error.message),
+        sleep: (ms) => {
+          sleeps.push(ms)
+          return Promise.resolve()
+        },
+      },
+    ),
+    /fetch failed/,
+  )
+  assert.equal(calls, 4)
+  assert.deepEqual(sleeps, [500, 2000, 2000])
+})
+
+test('cfApi retries transient fetch throws and succeeds on the third call', async () => {
+  const sleeps = []
+  let calls = 0
+  const fetchImpl = async () => {
+    calls += 1
+    if (calls < 3) throw new TypeError('fetch failed')
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return { success: true, result: { id: 'ACCOUNT_TOKEN_ID' } }
+      },
+    }
+  }
+  const body = await cfApi(fetchImpl, 'tok', '/user/tokens/verify', {}, {
+    sleep: (ms) => {
+      sleeps.push(ms)
+      return Promise.resolve()
+    },
+  })
+  assert.equal(calls, 3)
+  assert.deepEqual(sleeps, [500, 2000])
+  assert.equal(body.result.id, 'ACCOUNT_TOKEN_ID')
+})
+
+test('cfApi does not retry 403 auth/business failures', async () => {
+  let calls = 0
+  const fetchImpl = async () => {
+    calls += 1
+    return {
+      ok: false,
+      status: 403,
+      async json() {
+        return { success: false, errors: [{ code: 9106, message: 'Invalid API Token scopes' }] }
+      },
+    }
+  }
+  await assert.rejects(
+    cfApi(fetchImpl, 'tok', '/user/tokens/verify', {}, { sleep: () => { throw new Error('must not sleep') } }),
+    /9106.*Invalid API Token scopes/,
+  )
+  assert.equal(calls, 1)
+})
+
+test('cfApi does not retry 404 responses', async () => {
+  let calls = 0
+  const fetchImpl = async () => {
+    calls += 1
+    return { ok: false, status: 404, async json() { return { success: false, errors: [] } } }
+  }
+  await assert.rejects(
+    cfApi(fetchImpl, 'tok', '/zones/z/rulesets/phases/p/entrypoint', {}, { sleep: async () => {} }),
+    /404/,
+  )
+  assert.equal(calls, 1)
+})
+
+test('cfApi retries 429/5xx HTTP statuses', async () => {
+  const statuses = [429, 503]
+  let calls = 0
+  const fetchImpl = async () => {
+    const status = statuses[calls]
+    calls += 1
+    if (status) {
+      return { ok: false, status, async json() { return { success: false, errors: [] } } }
+    }
+    return { ok: true, status: 200, async json() { return { success: true, result: 'done' } } }
+  }
+  const body = await cfApi(fetchImpl, 'tok', '/zones/z', {}, { sleep: async () => {} })
+  assert.equal(calls, 3)
+  assert.equal(body.result, 'done')
+})
+
+test('runWrangler retries network-ish spawn failures and succeeds', async () => {
+  const calls = []
+  const sleeps = []
+  const result = await runWrangler(
+    (cmd, args) => {
+      calls.push([cmd, ...args].join(' '))
+      if (calls.length === 1) {
+        return { status: 1, stdout: '', stderr: 'fetch failed', error: null }
+      }
+      return { status: 0, stdout: '[{"name":"airingcal-development"}]', stderr: '', error: null }
+    },
+    ['r2', 'bucket', 'list'],
+    { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok' },
+    {
+      sleep: (ms) => {
+        sleeps.push(ms)
+        return Promise.resolve()
+      },
+    },
+  )
+  assert.equal(result.status, 0)
+  assert.equal(calls.length, 2)
+  assert.deepEqual(sleeps, [1000])
+})
+
+test('runWrangler does not retry real permission failures', async () => {
+  let calls = 0
+  await assert.rejects(
+    runWrangler(
+      () => {
+        calls += 1
+        return { status: 1, stdout: '', stderr: 'not enough permissions to list buckets', error: null }
+      },
+      ['r2', 'bucket', 'list'],
+      {},
+      {
+        sleep: () => {
+          throw new Error('must not sleep for permission failures')
+        },
+      },
+    ),
+    /not enough permissions/,
+  )
+  assert.equal(calls, 1)
+})
+
+test('runGh retries network-ish spawn failures (sleeps 1000 then 3000)', async () => {
+  const calls = []
+  const sleeps = []
+  const result = await runGh(
+    (cmd, args) => {
+      calls.push(args.join(' '))
+      if (calls.length < 3) {
+        return { status: 1, stdout: '', stderr: 'read ECONNRESET', error: null }
+      }
+      return { status: 0, stdout: '[]', stderr: '', error: null }
+    },
+    ['run', 'list', '--repo', 'x/y', '--json', 'databaseId'],
+    {},
+    {
+      sleep: (ms) => {
+        sleeps.push(ms)
+        return Promise.resolve()
+      },
+    },
+  )
+  assert.equal(result.status, 0)
+  assert.equal(calls.length, 3)
+  assert.deepEqual(sleeps, [1000, 3000])
+})
+
+test('probeToken reports transient network failure instead of a missing-scope claim', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const calls = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+    },
+    plan,
+    spawnSyncImpl: (cmd, args) => {
+      const joined = args.join(' ')
+      calls.push(joined)
+      return {
+        status: 1,
+        stdout: '',
+        stderr: joined.includes('whoami') ? 'connection reset by peer' : 'fetch failed',
+        error: null,
+      }
+    },
+    sleepImpl: async () => {},
+    fetchImpl: async () => {
+      throw new Error('fetch must not be used by probeToken')
+    },
+  })
+  const result = await io.probeToken({})
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.missingScopes.some((s) => TRANSIENT_NOTE_RE.test(s)),
+    `expected transient network note, got ${JSON.stringify(result.missingScopes)}`,
+  )
+  assert.ok(
+    result.missingScopes.every((s) => TRANSIENT_NOTE_RE.test(s)),
+    `no scopes claim allowed for pure network failure, got ${JSON.stringify(result.missingScopes)}`,
+  )
+  // Both probes retried (initial + 2 retries) and still failed → fail-closed.
+  assert.equal(calls.filter((c) => c.includes('whoami')).length, 3)
+  assert.equal(calls.filter((c) => c.includes('r2 bucket list')).length, 3)
+})
+
+test('probeToken keeps real permission failures labeled as scopes', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+    },
+    plan,
+    spawnSyncImpl: (cmd, args) => ({
+      status: 1,
+      stdout: '',
+      stderr: args.join(' ').includes('whoami') ? 'Unauthorized: not authenticated' : 'fetch failed',
+      error: null,
+    }),
+    sleepImpl: async () => {},
+    fetchImpl: async () => ({ status: 403 }),
+  })
+  const result = await io.probeToken({})
+  assert.equal(result.ok, false)
+  assert.ok(
+    result.missingScopes.some((s) => /Cloudflare API token authentication/.test(s)),
+    JSON.stringify(result.missingScopes),
+  )
+  assert.ok(result.missingScopes.some((s) => TRANSIENT_NOTE_RE.test(s)))
+})
+
+test('probeAnonymousAccess retries a transient fetch failure and records definitive statuses', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const queue = [
+    () => {
+      const err = new Error('connect ECONNRESET 104.16.0.1:443')
+      err.errno = 'ECONNRESET'
+      err.code = 'ECONNRESET'
+      throw err
+    },
+    () => ({ status: 403 }),
+    () => ({ status: 404 }),
+  ]
+  let calls = 0
+  const io = createLiveDevelopmentApplyIo({
+    env: {},
+    plan,
+    sleepImpl: async () => {},
+    fetchImpl: async () => {
+      const step = queue[Math.min(calls, queue.length - 1)]
+      calls += 1
+      return step()
+    },
+  })
+  const result = await io.probeAnonymousAccess({})
+  assert.equal(calls, 3)
+  assert.deepEqual(
+    result.probes.map((p) => p.status),
+    [403, 404],
+  )
+})
+
+test('probeAnonymousAccess does not retry definitive HTTP statuses', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  let calls = 0
+  const io = createLiveDevelopmentApplyIo({
+    env: {},
+    plan,
+    sleepImpl: async () => {
+      throw new Error('must not sleep for definitive statuses')
+    },
+    fetchImpl: async () => {
+      calls += 1
+      return { status: 200 }
+    },
+  })
+  const result = await io.probeAnonymousAccess({})
+  assert.equal(calls, 2)
+  assert.deepEqual(
+    result.probes.map((p) => p.status),
+    [200, 200],
+  )
+})
+
+test('probeAnonymousAccess still fails closed when the network never recovers', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  let calls = 0
+  const io = createLiveDevelopmentApplyIo({
+    env: {},
+    plan,
+    sleepImpl: async () => {},
+    fetchImpl: async () => {
+      calls += 1
+      throw new TypeError('fetch failed')
+    },
+  })
+  await assert.rejects(io.probeAnonymousAccess({}), /fetch failed/)
+  assert.equal(calls, 3)
+})
+
+test('verifyImageRouting retries transient pointer fetch failures', async () => {
+  const calls = []
+  let pointerAttempts = 0
+  const inner = routingFetchDouble({
+    location: `https://dev-cdn.example.test/images/${ROUTE_HASH}/original`,
+    calls,
+  })
+  const io = await buildRoutingIo(async (url, init) => {
+    if (String(url).endsWith('/public/current-release.json')) pointerAttempts += 1
+    if (String(url).endsWith('/public/current-release.json') && pointerAttempts === 1) {
+      throw new TypeError('fetch failed')
+    }
+    return inner(url, init)
+  })
+  const receipt = await io.verifyImageRouting(routingCtx())
+  assert.equal(receipt.hash, ROUTE_HASH)
+  assert.equal(pointerAttempts, 2, 'pointer retried once after transient failure')
+  const pointerCalls = calls.filter(([u]) => u.endsWith('/public/current-release.json'))
+  assert.equal(pointerCalls.length, 1, 'definitive statuses are never retried')
+})

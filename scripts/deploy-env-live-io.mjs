@@ -232,37 +232,155 @@ function assertEdgeoneEnvRmOk(result, label, secrets = []) {
   return assertSpawnOk(result, label, secrets)
 }
 
-export function runWrangler(spawnSyncImpl, subArgs, env, opts = {}) {
+/**
+ * Transient-network retry hardening. This machine ↔ Cloudflare intermittently
+ * resets connections; a single failed verify / `wrangler r2 bucket list` /
+ * isolation probe must not fall through to the scoped-token path nor get
+ * misclassified as a missing scope. Retries are bounded (500ms, 2000ms for
+ * API/fetch; 1s, 3s for CLI spawns) and ONLY apply to network-ish failures —
+ * auth/scope/business errors keep failing immediately and fail-closed.
+ */
+const NETWORK_RETRY_BACKOFF_MS = [500, 2000]
+const SPAWN_RETRY_BACKOFF_MS = [1000, 3000]
+const RETRIABLE_CF_STATUSES = new Set([429, 500, 502, 503, 504])
+
+/** Messages emitted by wrangler/gh when their own fetch layer hit the network. */
+const TRANSIENT_NETWORK_RE =
+  /fetch failed|ECONNRESET|ETIMEDOUT|ECONNREFUSED|socket hang up|could not resolve|connectivity|TLS|network|ENOTFOUND|EAI_AGAIN|connection/i
+
+/** probeToken label for exhausted-but-transient failures (never a scope claim). */
+const TRANSIENT_NETWORK_NOTE =
+  'transient Cloudflare network failure (retried; re-run apply if it persists)'
+
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** A thrown (not HTTP-answered) failure that looks like connectivity, not policy. */
+function isThrownNetworkError(error) {
+  const name = String(error?.name ?? '')
+  if (name === 'TypeError' || name === 'AbortError' || name === 'TimeoutError') return true
+  const code = String(error?.code ?? '')
+  if (
+    code === 'ABORT_ERR' ||
+    code === 'ETIMEDOUT' ||
+    code === 'ECONNRESET' ||
+    code === 'ECONNREFUSED' ||
+    code === 'UND_ERR_CONNECT_TIMEOUT' ||
+    code === 'UND_ERR_SOCKET'
+  ) {
+    return true
+  }
+  const msg = error instanceof Error ? error.message : String(error ?? '')
+  return /timed out|timeout|aborted|fetch failed|socket hang up/i.test(msg) || TRANSIENT_NETWORK_RE.test(msg)
+}
+
+/** cfApi classifier: thrown network OR 429/5xx; auth/404/business never. */
+function isRetriableCfApiError(error) {
+  const status = Number(error?.status)
+  if (Number.isFinite(status)) return RETRIABLE_CF_STATUSES.has(status)
+  return isThrownNetworkError(error)
+}
+
+function isTransientSpawnFailure(error) {
+  return (
+    Boolean(error?.transientNetwork) ||
+    TRANSIENT_NETWORK_RE.test(String(error?.message ?? error ?? ''))
+  )
+}
+
+async function retryWithBackoff(fn, { attempts, isRetriable, sleep, delaysMs }) {
+  for (let i = 0; ; i += 1) {
+    try {
+      return await fn()
+    } catch (error) {
+      if (i + 1 >= attempts || !isRetriable(error)) throw error
+      await sleep(delaysMs[Math.min(i, delaysMs.length - 1)])
+    }
+  }
+}
+
+/**
+ * Run `fn` up to `attempts` times, sleeping 500ms then 2000ms (bounded)
+ * between retriable failures. Non-retriable errors rethrow immediately.
+ * Callers MUST pass an `isRetriable` predicate; without one nothing retries.
+ */
+export async function withNetworkRetry(
+  fn,
+  { attempts = 3, isRetriable = () => false, sleep = defaultSleep } = {},
+) {
+  return retryWithBackoff(fn, {
+    attempts,
+    isRetriable,
+    sleep,
+    delaysMs: NETWORK_RETRY_BACKOFF_MS,
+  })
+}
+
+async function spawnWithNetworkRetry(spawnOnce, label, secrets, opts = {}) {
+  return retryWithBackoff(
+    async () => {
+      const result = await spawnOnce()
+      if (result && result.status !== 0 && !result.error) {
+        const out = `${result.stderr || ''}\n${result.stdout || ''}`.trim()
+        if (TRANSIENT_NETWORK_RE.test(out)) {
+          const err = new Error(
+            `${label} failed (exit ${result.status}): ${redactSecrets(out, secrets) || '(no output)'}`,
+          )
+          err.transientNetwork = true
+          throw err
+        }
+      }
+      return assertSpawnOk(result, label, secrets)
+    },
+    {
+      attempts: 3,
+      isRetriable: (error) => Boolean(error?.transientNetwork),
+      sleep: opts.sleep ?? defaultSleep,
+      delaysMs: SPAWN_RETRY_BACKOFF_MS,
+    },
+  )
+}
+
+export async function runWrangler(spawnSyncImpl, subArgs, env, opts = {}) {
   const secrets = secretList(env)
   const args = [...WRANGLER.slice(1), ...subArgs, ...ENV_FILE_NULL]
-  const result = spawnSyncImpl(WRANGLER[0], args, {
-    encoding: 'utf8',
-    cwd: opts.cwd ?? ROOT,
-    env: {
-      ...process.env,
-      ...env,
-      CLOUDFLARE_API_TOKEN: tokenFromEnv(env) || process.env.CLOUDFLARE_API_TOKEN,
-      CLOUDFLARE_ACCOUNT_ID: accountIdFrom(env) || process.env.CLOUDFLARE_ACCOUNT_ID,
-    },
-    input: opts.input,
-  })
-  assertSpawnOk(result, `wrangler ${subArgs.join(' ')}`, secrets)
-  return result
+  return spawnWithNetworkRetry(
+    () =>
+      spawnSyncImpl(WRANGLER[0], args, {
+        encoding: 'utf8',
+        cwd: opts.cwd ?? ROOT,
+        env: {
+          ...process.env,
+          ...env,
+          CLOUDFLARE_API_TOKEN: tokenFromEnv(env) || process.env.CLOUDFLARE_API_TOKEN,
+          CLOUDFLARE_ACCOUNT_ID: accountIdFrom(env) || process.env.CLOUDFLARE_ACCOUNT_ID,
+        },
+        input: opts.input,
+      }),
+    `wrangler ${subArgs.join(' ')}`,
+    secrets,
+    opts,
+  )
 }
 
-export function runGh(spawnSyncImpl, args, env, opts = {}) {
+export async function runGh(spawnSyncImpl, args, env, opts = {}) {
   const secrets = secretList(env)
-  const result = spawnSyncImpl('gh', args, {
-    encoding: 'utf8',
-    cwd: opts.cwd ?? ROOT,
-    env: { ...process.env, ...env },
-    input: opts.input,
-  })
-  assertSpawnOk(result, `gh ${args.join(' ')}`, secrets)
-  return result
+  return spawnWithNetworkRetry(
+    () =>
+      spawnSyncImpl('gh', args, {
+        encoding: 'utf8',
+        cwd: opts.cwd ?? ROOT,
+        env: { ...process.env, ...env },
+        input: opts.input,
+      }),
+    `gh ${args.join(' ')}`,
+    secrets,
+    opts,
+  )
 }
 
-export async function cfApi(fetchImpl, token, path, init = {}) {
+async function cfApiOnce(fetchImpl, token, path, init) {
   const response = await fetchImpl(`${CF_API}${path}`, {
     ...init,
     signal: init.signal ?? AbortSignal.timeout(API_TIMEOUT_MS),
@@ -284,6 +402,13 @@ export async function cfApi(fetchImpl, token, path, init = {}) {
     throw err
   }
   return body
+}
+
+export async function cfApi(fetchImpl, token, path, init = {}, retryOpts = {}) {
+  return withNetworkRetry(() => cfApiOnce(fetchImpl, token, path, init), {
+    isRetriable: isRetriableCfApiError,
+    ...retryOpts,
+  })
 }
 
 function sha256Hex(value) {
@@ -646,11 +771,15 @@ export function createLiveDevelopmentApplyIo({
       }
 
       const missingScopes = []
+      const pushTransient = () => {
+        if (!missingScopes.includes(TRANSIENT_NETWORK_NOTE)) missingScopes.push(TRANSIENT_NETWORK_NOTE)
+      }
       try {
-        const whoami = runWrangler(
+        const whoami = await runWrangler(
           spawnSyncImpl,
           ['whoami', '--json'],
           { ...env, CLOUDFLARE_API_TOKEN: token },
+          { sleep: sleepImpl },
         )
         const accountId = parseWranglerWhoamiJson(whoami.stdout)
         ctx.accountId = accountId
@@ -659,7 +788,9 @@ export function createLiveDevelopmentApplyIo({
         }
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
-        if (/not authenticated|Unauthorized|403|401|login/i.test(msg)) {
+        if (isTransientSpawnFailure(error)) {
+          pushTransient()
+        } else if (/not authenticated|Unauthorized|403|401|login/i.test(msg)) {
           missingScopes.push('Cloudflare API token authentication (wrangler whoami)')
         } else {
           missingScopes.push(`wrangler whoami: ${redactSecrets(msg, secrets)}`)
@@ -667,17 +798,23 @@ export function createLiveDevelopmentApplyIo({
       }
 
       try {
-        runWrangler(spawnSyncImpl, ['r2', 'bucket', 'list'], {
-          ...env,
-          CLOUDFLARE_API_TOKEN: token,
-        })
+        await runWrangler(
+          spawnSyncImpl,
+          ['r2', 'bucket', 'list'],
+          { ...env, CLOUDFLARE_API_TOKEN: token },
+          { sleep: sleepImpl },
+        )
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
-        missingScopes.push(
-          /403|401|permission|scope|auth/i.test(msg)
-            ? 'Workers R2 Storage Write (wrangler r2 bucket list)'
-            : `wrangler r2 bucket list: ${redactSecrets(msg, secrets)}`,
-        )
+        if (isTransientSpawnFailure(error)) {
+          pushTransient()
+        } else {
+          missingScopes.push(
+            /403|401|permission|scope|auth/i.test(msg)
+              ? 'Workers R2 Storage Write (wrangler r2 bucket list)'
+              : `wrangler r2 bucket list: ${redactSecrets(msg, secrets)}`,
+          )
+        }
       }
 
       if (missingScopes.length > 0) {
@@ -922,12 +1059,12 @@ export function createLiveDevelopmentApplyIo({
 
     async freezeWriter(ctx = {}) {
       const workflow = plan.writerFreeze?.workflow || 'portable-writer.yml'
-      runGh(spawnSyncImpl, ['workflow', 'disable', workflow, '--repo', repo], env)
+      await runGh(spawnSyncImpl, ['workflow', 'disable', workflow, '--repo', repo], env)
 
       const deadline = nowImpl() + 15 * 60_000
       let inProgress = -1
       while (nowImpl() < deadline) {
-        const listed = runGh(
+        const listed = await runGh(
           spawnSyncImpl,
           [
             'run',
@@ -985,7 +1122,7 @@ export function createLiveDevelopmentApplyIo({
       )
       let created = false
       if (info.status !== 0) {
-        runWrangler(spawnSyncImpl, ['r2', 'bucket', 'create', bucket], env)
+        await runWrangler(spawnSyncImpl, ['r2', 'bucket', 'create', bucket], env)
         created = true
       }
       if (s3Creds) {
@@ -995,8 +1132,8 @@ export function createLiveDevelopmentApplyIo({
     },
 
     async disableR2Dev() {
-      runWrangler(spawnSyncImpl, ['r2', 'bucket', 'dev-url', 'disable', bucket, '-y'], env)
-      const got = runWrangler(spawnSyncImpl, ['r2', 'bucket', 'dev-url', 'get', bucket], env)
+      await runWrangler(spawnSyncImpl, ['r2', 'bucket', 'dev-url', 'disable', bucket, '-y'], env)
+      const got = await runWrangler(spawnSyncImpl, ['r2', 'bucket', 'dev-url', 'get', bucket], env)
       assertCheckpointBucketPrivate(got.stdout, bucket)
       return { disabled: true, bucket }
     },
@@ -1014,12 +1151,12 @@ export function createLiveDevelopmentApplyIo({
         throw new Error('plan.publicHost required to attach custom domain')
       }
 
-      const listed = runWrangler(spawnSyncImpl, ['r2', 'bucket', 'domain', 'list', bucket], env)
+      const listed = await runWrangler(spawnSyncImpl, ['r2', 'bucket', 'domain', 'list', bucket], env)
       if (listed.stdout && listed.stdout.includes(domain)) {
         return { attached: true, domain, reused: true }
       }
 
-      runWrangler(
+      await runWrangler(
         spawnSyncImpl,
         [
           'r2',
@@ -1111,7 +1248,7 @@ export function createLiveDevelopmentApplyIo({
       const file = join(dir, 'cors.json')
       try {
         writeFileSync(file, `${JSON.stringify(corsConfig, null, 2)}\n`, 'utf8')
-        runWrangler(
+        await runWrangler(
           spawnSyncImpl,
           ['r2', 'bucket', 'cors', 'set', bucket, '--file', file, '-y'],
           env,
@@ -1171,7 +1308,12 @@ export function createLiveDevelopmentApplyIo({
       }
       const probes = []
       for (const method of ['GET', 'HEAD']) {
-        const response = await fetchImpl(probeUrl, { method, redirect: 'manual' })
+        // Retriable = thrown network error only; any HTTP status is a
+        // definitive answer (403 is the wanted evidence) and is never retried.
+        const response = await withNetworkRetry(
+          () => fetchImpl(probeUrl, { method, redirect: 'manual' }),
+          { isRetriable: isThrownNetworkError, sleep: sleepImpl },
+        )
         probes.push({ url: probeUrl, method, status: Number(response.status) })
       }
       return { r2DevDisabled: Boolean(ctx?.r2DevDisabled), probes }
@@ -1207,7 +1349,7 @@ export function createLiveDevelopmentApplyIo({
 
     async syncGithubEnvironment(ctx = {}) {
       const envName = 'development'
-      runGh(spawnSyncImpl, ['api', '--method', 'PUT', `repos/${repo}/environments/${envName}`], env)
+      await runGh(spawnSyncImpl, ['api', '--method', 'PUT', `repos/${repo}/environments/${envName}`], env)
 
       const accountId = accountIdFrom(env, plan) || ctx.accountId || ''
       const variables = {
@@ -1234,7 +1376,7 @@ export function createLiveDevelopmentApplyIo({
           continue
         }
         if (!value && name !== 'AIRINGCAL_DEVELOPMENT_WRITER_ENABLED') continue
-        runGh(
+        await runGh(
           spawnSyncImpl,
           ['variable', 'set', name, '--env', envName, '--repo', repo, '--body', String(value)],
           env,
@@ -1242,7 +1384,7 @@ export function createLiveDevelopmentApplyIo({
         syncedVars.push(name)
       }
 
-      const listRes = runGh(
+      const listRes = await runGh(
         spawnSyncImpl,
         ['secret', 'list', '--env', envName, '--repo', repo, '--json', 'name', '--jq', '.[].name'],
         env,
@@ -1265,7 +1407,7 @@ export function createLiveDevelopmentApplyIo({
       for (const [name, value] of Object.entries(secretMap)) {
         if (!DEVELOPMENT_SECRET_KEYS.includes(name)) continue
         if (value) {
-          runGh(
+          await runGh(
             spawnSyncImpl,
             ['secret', 'set', name, '--env', envName, '--repo', repo],
             env,
@@ -1328,7 +1470,7 @@ export function createLiveDevelopmentApplyIo({
         )
         assertSpawnOk(mat, 'materialize-v3-read-staging-config', secrets)
 
-        const deploy = runWrangler(
+        const deploy = await runWrangler(
           spawnSyncImpl,
           ['deploy', '--config', outToml, '--name', workerName],
           env,
@@ -1457,10 +1599,14 @@ export function createLiveDevelopmentApplyIo({
       // any reader-host gating, so a missing EdgeOne host must never mask the
       // legitimate `skipped-no-images` outcome.
       const pointerUrl = `${publicBase}/public/current-release.json`
-      const pointerResponse = await fetchImpl(pointerUrl, {
-        headers: { 'cache-control': 'no-cache' },
-        redirect: 'manual',
-      })
+      const pointerResponse = await withNetworkRetry(
+        () =>
+          fetchImpl(pointerUrl, {
+            headers: { 'cache-control': 'no-cache' },
+            redirect: 'manual',
+          }),
+        { isRetriable: isThrownNetworkError, sleep: sleepImpl },
+      )
       if (!isOkResponse(pointerResponse)) {
         throw new Error(
           `image routing verification failed: pointer fetch ${pointerUrl} -> ${pointerResponse?.status ?? 'no response'}`,
@@ -1477,10 +1623,14 @@ export function createLiveDevelopmentApplyIo({
       const snapshotUrl = /^https?:\/\//i.test(artifactRef)
         ? artifactRef
         : `${publicBase}/${artifactRef.replace(/^\/+/, '')}`
-      const snapshotResponse = await fetchImpl(snapshotUrl, {
-        headers: { 'cache-control': 'no-cache' },
-        redirect: 'manual',
-      })
+      const snapshotResponse = await withNetworkRetry(
+        () =>
+          fetchImpl(snapshotUrl, {
+            headers: { 'cache-control': 'no-cache' },
+            redirect: 'manual',
+          }),
+        { isRetriable: isThrownNetworkError, sleep: sleepImpl },
+      )
       if (!isOkResponse(snapshotResponse)) {
         throw new Error(
           `image routing verification failed: snapshot fetch ${snapshotUrl} -> ${snapshotResponse?.status ?? 'no response'}`,
@@ -1531,7 +1681,10 @@ export function createLiveDevelopmentApplyIo({
         const imageUrl = `${reader.base}/image/${hash}`
         let response
         try {
-          response = await fetchImpl(imageUrl, { redirect: 'manual' })
+          response = await withNetworkRetry(
+            () => fetchImpl(imageUrl, { redirect: 'manual' }),
+            { isRetriable: isThrownNetworkError, sleep: sleepImpl },
+          )
         } catch (error) {
           throw new Error(
             `image routing verification failed: ${reader.label} GET ${imageUrl} errored: ${error?.message ?? error}`,
@@ -1588,11 +1741,11 @@ export function createLiveDevelopmentApplyIo({
       let receipt = null
       const restoreFailures = []
       try {
-        runGh(spawnSyncImpl, ['workflow', 'enable', workflow, '--repo', repo], env)
+        await runGh(spawnSyncImpl, ['workflow', 'enable', workflow, '--repo', repo], env)
 
         // Job-level `if` reads repo-level `vars.` (environment-scoped vars are
         // not reliably visible there), so the gate is a repository variable.
-        runGh(
+        await runGh(
           spawnSyncImpl,
           [
             'variable',
@@ -1607,7 +1760,7 @@ export function createLiveDevelopmentApplyIo({
         )
 
         const before = parseGhJson(
-          runGh(
+          await runGh(
             spawnSyncImpl,
             [
               'run',
@@ -1629,7 +1782,7 @@ export function createLiveDevelopmentApplyIo({
         const previousRunId =
           Array.isArray(before) && before.length > 0 ? String(before[0].databaseId) : null
 
-        runGh(
+        await runGh(
           spawnSyncImpl,
           ['workflow', 'run', workflow, '--repo', repo, '-f', 'target=development'],
           env,
@@ -1644,7 +1797,7 @@ export function createLiveDevelopmentApplyIo({
             )
           }
           const listed = parseGhJson(
-            runGh(
+            await runGh(
               spawnSyncImpl,
               [
                 'run',
@@ -1675,7 +1828,7 @@ export function createLiveDevelopmentApplyIo({
         let view = null
         for (;;) {
           view = parseGhJson(
-            runGh(
+            await runGh(
               spawnSyncImpl,
               ['run', 'view', runId, '--repo', repo, '--json', 'status,conclusion,jobs'],
               env,
@@ -1725,7 +1878,7 @@ export function createLiveDevelopmentApplyIo({
           ['workflow', 'disable', workflow, '--repo', repo],
         ]) {
           try {
-            runGh(spawnSyncImpl, args, env)
+            await runGh(spawnSyncImpl, args, env)
           } catch (error) {
             restoreFailures.push(error instanceof Error ? error.message : String(error))
           }
