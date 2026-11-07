@@ -1374,13 +1374,6 @@ export function createLiveDevelopmentApplyIo({
           description: 'airingcal-deny-checkpoints',
           expression: `(http.host eq "${host}" and starts_with(http.request.uri.path, "/checkpoints/"))`,
           action: 'block',
-          actionParameters: {
-            response: {
-              status_code: 403,
-              content: 'Forbidden',
-              content_type: 'text/plain',
-            },
-          },
         })
         return { ok: true, zoneId, host, rule }
       } catch (error) {
