@@ -246,7 +246,7 @@ const RETRIABLE_CF_STATUSES = new Set([429, 500, 502, 503, 504])
 
 /** Messages emitted by wrangler/gh when their own fetch layer hit the network. */
 const TRANSIENT_NETWORK_RE =
-  /fetch failed|ECONNRESET|ETIMEDOUT|ECONNREFUSED|socket hang up|could not resolve|connectivity|TLS|network|ENOTFOUND|EAI_AGAIN|connection/i
+  /fetch failed|ECONNRESET|ETIMEDOUT|ECONNREFUSED|socket hang up|could not resolve|connectivity|TLS|network|ENOTFOUND|EAI_AGAIN|connection|(?:^|\s|:)EOF(?:\s|$|:)|unexpected EOF/i
 
 /** probeToken label for exhausted-but-transient failures (never a scope claim). */
 const TRANSIENT_NETWORK_NOTE =

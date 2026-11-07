@@ -3347,6 +3347,29 @@ test('runGh retries network-ish spawn failures (sleeps 1000 then 3000)', async (
   assert.deepEqual(sleeps, [1000, 3000])
 })
 
+test('runGh retries GitHub API EOF failures', async () => {
+  const calls = []
+  const result = await runGh(
+    (cmd, args) => {
+      calls.push(args.join(' '))
+      if (calls.length < 3) {
+        return {
+          status: 1,
+          stdout: '',
+          stderr: 'failed to get secrets: Get "https://api.github.com/repos/x/y/environments/development/secrets?per_page=100": EOF',
+          error: null,
+        }
+      }
+      return { status: 0, stdout: '[]', stderr: '', error: null }
+    },
+    ['secret', 'list', '--env', 'development', '--repo', 'x/y'],
+    {},
+    { sleep: () => Promise.resolve() },
+  )
+  assert.equal(result.status, 0)
+  assert.equal(calls.length, 3)
+})
+
 test('probeToken reports transient network failure instead of a missing-scope claim', async () => {
   const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
   const plan = buildDevelopmentDeployPlan({
