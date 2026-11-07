@@ -27,6 +27,8 @@ export interface WebReadModeEnv {
   AIRINGCAL_READ_MODE?: string
   /** Verified public CDN/S3 base URL (C6): absolute https, placeholder rejected. */
   AIRINGCAL_PUBLIC_BASE_URL?: string
+  /** Optional Image CDN base; unset keeps `/image/*` on `AIRINGCAL_PUBLIC_BASE_URL`. */
+  AIRINGCAL_IMAGE_BASE_URL?: string
   /** R2 binding holding the v3 public Release (`airing-cal-public` layout). */
   AIRINGCAL_PUBLIC_R2?: CloudflareR2BucketBinding
   NSFW_SHOW?: 'true' | 'false'
@@ -35,7 +37,7 @@ export interface WebReadModeEnv {
 
 export type WebReadModeConfig =
   | { mode: 'legacy' }
-  | { mode: 'v3-release'; publicBaseUrl?: string }
+  | { mode: 'v3-release'; publicBaseUrl?: string; imageBaseUrl?: string }
 
 export class InvalidReadModeError extends Error {
   readonly code = 'INVALID_READ_MODE'
@@ -63,6 +65,56 @@ export function isV3ReleaseReadPath(pathname: string): boolean {
 
 const validatePublicBaseUrl = createPublicBaseUrlValidator()
 
+type CloudflareReadHandler = (request: Request) => Promise<Response>
+
+/** Isolate-lifetime handler: rebuilt only when binding/config fingerprint changes. */
+let cachedV3Handler: {
+  fingerprint: string
+  binding: CloudflareR2BucketBinding
+  handler: CloudflareReadHandler
+} | null = null
+
+function v3HandlerFingerprint(
+  env: WebReadModeEnv,
+  publicBaseUrl?: string,
+  imageBaseUrl?: string,
+): string {
+  return [
+    publicBaseUrl ?? '',
+    imageBaseUrl ?? '',
+    String(resolveNsfwShow(env.NSFW_SHOW)),
+    env.PACKAGE_VERSION ?? '',
+  ].join('|')
+}
+
+function readHandlerFor(
+  env: WebReadModeEnv,
+  publicBaseUrl?: string,
+  imageBaseUrl?: string,
+): CloudflareReadHandler {
+  const binding = env.AIRINGCAL_PUBLIC_R2
+  if (!binding) {
+    throw new Error('AIRINGCAL_PUBLIC_R2 binding is required')
+  }
+  const fingerprint = v3HandlerFingerprint(env, publicBaseUrl, imageBaseUrl)
+  if (
+    cachedV3Handler
+    && cachedV3Handler.binding === binding
+    && cachedV3Handler.fingerprint === fingerprint
+  ) {
+    return cachedV3Handler.handler
+  }
+  const handler = createCloudflareReadHandler({
+    publicR2: binding,
+    publicBaseUrl,
+    imageBaseUrl,
+    nsfwShow: resolveNsfwShow(env.NSFW_SHOW),
+    packageVersion: env.PACKAGE_VERSION,
+  })
+  cachedV3Handler = { fingerprint, binding, handler }
+  return handler
+}
+
 /**
  * Resolves the read-mode configuration (C6/C7).
  *
@@ -76,6 +128,7 @@ export function resolveReadModeConfig(env: WebReadModeEnv): WebReadModeConfig {
   return {
     mode,
     publicBaseUrl: validatePublicBaseUrl(env.AIRINGCAL_PUBLIC_BASE_URL) ?? undefined,
+    imageBaseUrl: validatePublicBaseUrl(env.AIRINGCAL_IMAGE_BASE_URL) ?? undefined,
   }
 }
 
@@ -100,10 +153,9 @@ export async function handleV3ReleaseReadRequest(
       },
     }, { status: 503, headers: { 'Cache-Control': V2_CACHE_CONTROL.error } })
   }
-  return createCloudflareReadHandler({
-    publicR2: env.AIRINGCAL_PUBLIC_R2,
-    publicBaseUrl: config.mode === 'v3-release' ? config.publicBaseUrl : undefined,
-    nsfwShow: resolveNsfwShow(env.NSFW_SHOW),
-    packageVersion: env.PACKAGE_VERSION,
-  })(request)
+  return readHandlerFor(
+    env,
+    config.mode === 'v3-release' ? config.publicBaseUrl : undefined,
+    config.mode === 'v3-release' ? config.imageBaseUrl : undefined,
+  )(request)
 }

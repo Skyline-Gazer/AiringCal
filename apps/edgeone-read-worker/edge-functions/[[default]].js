@@ -16,18 +16,28 @@
 import { createEdgeOneReadHandler } from '@airing-cal/v3-read/edgeone-read-handler'
 import { resolveNsfwShow } from '@airing-cal/v3-read/read-config'
 
-/** Isolate-local handler: built (and configuration-validated) on first use. */
-let cached = { baseUrl: '', handler: null }
+/** Isolate-local handler: rebuilt only when config fingerprint changes. */
+let cached = { fingerprint: '', handler: null }
+
+function handlerFingerprint(env) {
+  return [
+    env.AIRINGCAL_PUBLIC_BASE_URL ?? '',
+    env.AIRINGCAL_IMAGE_BASE_URL ?? '',
+    String(resolveNsfwShow(env.NSFW_SHOW)),
+    env.PACKAGE_VERSION ?? '',
+  ].join('|')
+}
 
 function readHandlerFor(env) {
-  const baseUrl = env.AIRINGCAL_PUBLIC_BASE_URL
-  if (cached.handler && cached.baseUrl === baseUrl) return cached.handler
+  const fingerprint = handlerFingerprint(env)
+  if (cached.handler && cached.fingerprint === fingerprint) return cached.handler
   const handler = createEdgeOneReadHandler({
-    publicBaseUrl: baseUrl,
+    publicBaseUrl: env.AIRINGCAL_PUBLIC_BASE_URL,
+    imageBaseUrl: env.AIRINGCAL_IMAGE_BASE_URL,
     nsfwShow: resolveNsfwShow(env.NSFW_SHOW),
     packageVersion: env.PACKAGE_VERSION,
   })
-  cached = { baseUrl, handler }
+  cached = { fingerprint, handler }
   return handler
 }
 

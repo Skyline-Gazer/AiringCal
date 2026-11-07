@@ -1,5 +1,7 @@
-# ADR 0003 — portable writer (GitHub Actions one-shot), staging/production isolated (C3).
+# ADR 0003 — portable writer (GitHub Actions one-shot), staging/development/production isolated (C3).
 # Schedule: 04:00 Asia/Shanghai == 20:00 UTC — production only, gated by vars.AIRINGCAL_WRITER_ENABLED.
+# Development writer uses Environment `development` + single bucket `airingcal-development`;
+# it stays gated by vars.AIRINGCAL_DEVELOPMENT_WRITER_ENABLED until isolation+copy pass.
 name: Portable writer (GHA)
 
 on:
@@ -8,12 +10,13 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: Publish target. Staging unless production is explicitly selected.
+        description: Publish target. Staging unless development/production is explicitly selected.
         required: false
         default: staging
         type: choice
         options:
           - staging
+          - development
           - production
       force_mode:
         description: Optional override (incremental|full). Empty = checkpoint self-judge.
@@ -29,7 +32,7 @@ permissions:
 
 jobs:
   staging:
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.target || 'staging') != 'production' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.target || 'staging') == 'staging' }}
     runs-on: ubuntu-latest
     # A first publish mirrors ~1.4k image objects; keep headroom above the
     # observed duration (40 minutes was not enough for a sequential upload).
@@ -88,8 +91,8 @@ jobs:
           fi
           for b in "$checkpoint_bucket" "$public_bucket"; do
             case "$b" in
-              airing-cal-public|airing-cal-images|airing-cal-data|airing-cal-checkpoint)
-                echo "::error::Staging job must never target production bucket: $b"
+              airing-cal-public|airing-cal-images|airing-cal-data|airing-cal-checkpoint|airingcal-development)
+                echo "::error::Staging job must never target production/development bucket: $b"
                 exit 1
                 ;;
             esac
@@ -146,6 +149,121 @@ jobs:
           AIRINGCAL_PUBLIC_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_STAGING_S3_ACCESS_KEY_ID }}
           AIRINGCAL_PUBLIC_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY }}
           AIRINGCAL_PUBLIC_BASE_URL: ${{ vars.AIRINGCAL_STAGING_PUBLIC_BASE_URL }}
+        run: bash scripts/gha-portable-writer.sh
+
+  development:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.target == 'development' && vars.AIRINGCAL_DEVELOPMENT_WRITER_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment: development
+    steps:
+      - name: Validate required development config
+        id: config
+        env:
+          AIRINGCAL_DEVELOPMENT_BANGUMI_TOKEN: ${{ secrets.AIRINGCAL_DEVELOPMENT_BANGUMI_TOKEN }}
+          AIRINGCAL_DEVELOPMENT_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_DEVELOPMENT_S3_ACCESS_KEY_ID }}
+          AIRINGCAL_DEVELOPMENT_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_DEVELOPMENT_S3_SECRET_ACCESS_KEY }}
+          AIRINGCAL_DEVELOPMENT_USERS_JSON: ${{ vars.AIRINGCAL_DEVELOPMENT_USERS_JSON }}
+          AIRINGCAL_DEVELOPMENT_PRIMARY_USER_ID: ${{ vars.AIRINGCAL_DEVELOPMENT_PRIMARY_USER_ID }}
+          AIRINGCAL_DEVELOPMENT_CLOUDFLARE_ACCOUNT_ID: ${{ vars.AIRINGCAL_DEVELOPMENT_CLOUDFLARE_ACCOUNT_ID }}
+          AIRINGCAL_DEVELOPMENT_S3_ENDPOINT: ${{ vars.AIRINGCAL_DEVELOPMENT_S3_ENDPOINT }}
+          AIRINGCAL_DEVELOPMENT_S3_REGION: ${{ vars.AIRINGCAL_DEVELOPMENT_S3_REGION }}
+          AIRINGCAL_DEVELOPMENT_R2_BUCKET: ${{ vars.AIRINGCAL_DEVELOPMENT_R2_BUCKET }}
+          AIRINGCAL_DEVELOPMENT_PUBLIC_BASE_URL: ${{ vars.AIRINGCAL_DEVELOPMENT_PUBLIC_BASE_URL }}
+        run: |
+          set -u
+          missing=0
+          for var in \
+            AIRINGCAL_DEVELOPMENT_BANGUMI_TOKEN \
+            AIRINGCAL_DEVELOPMENT_USERS_JSON \
+            AIRINGCAL_DEVELOPMENT_PRIMARY_USER_ID \
+            AIRINGCAL_DEVELOPMENT_S3_ACCESS_KEY_ID \
+            AIRINGCAL_DEVELOPMENT_S3_SECRET_ACCESS_KEY \
+            AIRINGCAL_DEVELOPMENT_PUBLIC_BASE_URL
+          do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::Missing required development config: ${var}"
+              missing=1
+            fi
+          done
+          s3_endpoint="${AIRINGCAL_DEVELOPMENT_S3_ENDPOINT:-}"
+          if [ -z "$s3_endpoint" ]; then
+            if [ -z "${AIRINGCAL_DEVELOPMENT_CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+              echo "::error::Missing required development config: set AIRINGCAL_DEVELOPMENT_CLOUDFLARE_ACCOUNT_ID or AIRINGCAL_DEVELOPMENT_S3_ENDPOINT"
+              missing=1
+            elif ! printf '%s' "$AIRINGCAL_DEVELOPMENT_CLOUDFLARE_ACCOUNT_ID" | grep -Eq '^[0-9a-fA-F]{32}$'; then
+              echo "::error::AIRINGCAL_DEVELOPMENT_CLOUDFLARE_ACCOUNT_ID must be a 32 character Cloudflare account id"
+              missing=1
+            else
+              s3_endpoint="https://${AIRINGCAL_DEVELOPMENT_CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
+            fi
+          fi
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+          s3_region="${AIRINGCAL_DEVELOPMENT_S3_REGION:-auto}"
+          # Single-bucket layout: checkpoint + public share airingcal-development with key prefixes.
+          bucket="${AIRINGCAL_DEVELOPMENT_R2_BUCKET:-airingcal-development}"
+          case "$bucket" in
+            airing-cal-public|airing-cal-images|airing-cal-data|airing-cal-checkpoint|airingcal-staging-checkpoint|airingcal-staging-public)
+              echo "::error::Development job must never target staging/production legacy bucket: $bucket"
+              exit 1
+              ;;
+          esac
+          if [ "$bucket" != "airingcal-development" ]; then
+            echo "::error::Development job must target airingcal-development (got $bucket)"
+            exit 1
+          fi
+          {
+            echo "s3_endpoint=$s3_endpoint"
+            echo "s3_region=$s3_region"
+            echo "checkpoint_bucket=$bucket"
+            echo "public_bucket=$bucket"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 9.15.9
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build portable bundle
+        run: pnpm -F @airing-cal/node-jobs build
+
+      - name: Run portable writer
+        env:
+          AIRINGCAL_BUILDER: portable
+          AIRINGCAL_BUILDER_SQLITE_PATH: /tmp/airingcal-builder.sqlite
+          AIRINGCAL_BUILDER_IMAGE_DIR: /tmp/airingcal-images
+          AIRINGCAL_BUILDER_PUBLISH: 'true'
+          AIRINGCAL_BUILDER_MEDIA_REFRESH: refresh
+          AIRINGCAL_FULL_EVERY_DAYS: '7'
+          AIRINGCAL_BUILDER_MODE: ${{ github.event.inputs.force_mode || '' }}
+          BGM_TOKEN: ${{ secrets.AIRINGCAL_DEVELOPMENT_BANGUMI_TOKEN }}
+          AIRINGCAL_USERS_JSON: ${{ vars.AIRINGCAL_DEVELOPMENT_USERS_JSON }}
+          AIRINGCAL_PRIMARY_USER_ID: ${{ vars.AIRINGCAL_DEVELOPMENT_PRIMARY_USER_ID }}
+          BANGUMI_GIT_COMMIT_SHA: ${{ github.sha }}
+          BARK_URL: ${{ secrets.AIRINGCAL_DEVELOPMENT_BARK_URL }}
+          AIRINGCAL_CHECKPOINT_S3_ENDPOINT: ${{ steps.config.outputs.s3_endpoint }}
+          AIRINGCAL_CHECKPOINT_S3_REGION: ${{ steps.config.outputs.s3_region }}
+          AIRINGCAL_CHECKPOINT_S3_BUCKET: ${{ steps.config.outputs.checkpoint_bucket }}
+          AIRINGCAL_CHECKPOINT_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_DEVELOPMENT_S3_ACCESS_KEY_ID }}
+          AIRINGCAL_CHECKPOINT_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_DEVELOPMENT_S3_SECRET_ACCESS_KEY }}
+          AIRINGCAL_PUBLIC_S3_ENDPOINT: ${{ steps.config.outputs.s3_endpoint }}
+          AIRINGCAL_PUBLIC_S3_REGION: ${{ steps.config.outputs.s3_region }}
+          AIRINGCAL_PUBLIC_S3_BUCKET: ${{ steps.config.outputs.public_bucket }}
+          AIRINGCAL_PUBLIC_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_DEVELOPMENT_S3_ACCESS_KEY_ID }}
+          AIRINGCAL_PUBLIC_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_DEVELOPMENT_S3_SECRET_ACCESS_KEY }}
+          AIRINGCAL_PUBLIC_BASE_URL: ${{ vars.AIRINGCAL_DEVELOPMENT_PUBLIC_BASE_URL }}
         run: bash scripts/gha-portable-writer.sh
 
   production:
@@ -206,8 +324,8 @@ jobs:
           fi
           for b in "$checkpoint_bucket" "$public_bucket"; do
             case "$b" in
-              airingcal-staging-checkpoint|airingcal-staging-public)
-                echo "::error::Production job must never target staging bucket: $b"
+              airingcal-staging-checkpoint|airingcal-staging-public|airingcal-development)
+                echo "::error::Production job must never target staging/development bucket: $b"
                 exit 1
                 ;;
             esac

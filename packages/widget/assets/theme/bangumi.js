@@ -8,6 +8,7 @@
 
   var healthFlight = null
   var calendarLazyObserver = null
+  var calendarIdleHandles = []
   var HEALTH_TTL_MS = 15000
 
   function fetchHealthJson(force) {
@@ -94,28 +95,119 @@
   ]
 
   // ---------------------------------------------------------------
-  // NSFW 年龄确认（保持原逻辑不变）
+  // NSFW gate: server policy + ageConfirmed + configStatus
   // ---------------------------------------------------------------
-  async function checkNSFW() {
+  var nsfwGate = null
+  var nsfwGateListeners = []
+
+  function createNsfwGate() {
+    var confirmed = false
     try {
-      const res = await fetch(API + '/api/config?key=nsfw')
-      const data = await res.json()
-      if (data.nsfw && !sessionStorage.getItem('bgm-age-confirmed')) {
-        document.getElementById('bgm-age-modal').style.display = 'block'
-      } else if (!data.nsfw) {
-        sessionStorage.removeItem('bgm-age-confirmed')
+      if (typeof sessionStorage !== 'undefined' && sessionStorage) {
+        confirmed = !!sessionStorage.getItem('bgm-age-confirmed')
       }
-    } catch (e) {}
+    } catch (_) {}
+    return {
+      configStatus: 'pending',
+      nsfwAllowed: false,
+      ageConfirmed: confirmed,
+    }
+  }
+
+  function entriesVisibleUnderGate(gate, entries) {
+    var list = entries || []
+    var out = []
+    for (var i = 0; i < list.length; i++) {
+      var entry = list[i]
+      if (entry && entry.nsfw) {
+        if (gate.configStatus !== 'ok' || !gate.nsfwAllowed || !gate.ageConfirmed) continue
+      }
+      out.push(entry)
+    }
+    return out
+  }
+
+  function applyNsfwConfigResult(gate, result, storage) {
+    var store = storage || sessionStorage
+    if (!result || !result.ok) {
+      gate.configStatus = 'error'
+      gate.nsfwAllowed = false
+      return
+    }
+    gate.configStatus = 'ok'
+    gate.nsfwAllowed = result.nsfw === true
+    if (!gate.nsfwAllowed) {
+      store.removeItem('bgm-age-confirmed')
+      gate.ageConfirmed = false
+      return
+    }
+    gate.ageConfirmed = !!store.getItem('bgm-age-confirmed')
+  }
+
+  function setAgeModalVisible(visible) {
+    var modal = document.getElementById('bgm-age-modal')
+    if (!modal) return
+    modal.style.display = visible ? 'block' : 'none'
+  }
+
+  function syncAgeModalFromGate(gate) {
+    var show = gate.configStatus === 'ok' && gate.nsfwAllowed && !gate.ageConfirmed
+    setAgeModalVisible(show)
+  }
+
+  function notifyNsfwGateChange() {
+    for (var i = 0; i < nsfwGateListeners.length; i++) {
+      try { nsfwGateListeners[i](nsfwGate) } catch (_) {}
+    }
+  }
+
+  function onNsfwGateChange(listener) {
+    nsfwGateListeners.push(listener)
+  }
+
+  nsfwGate = createNsfwGate()
+
+  async function loadNsfwConfig() {
+    try {
+      var res = await fetch(API + '/api/config?key=nsfw')
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      var data = await res.json()
+      applyNsfwConfigResult(nsfwGate, { ok: true, nsfw: !!data.nsfw }, sessionStorage)
+    } catch (e) {
+      applyNsfwConfigResult(nsfwGate, { ok: false }, sessionStorage)
+    }
+    syncAgeModalFromGate(nsfwGate)
+    notifyNsfwGateChange()
+    return nsfwGate
   }
 
   window.bgmConfirmAge = function () {
     sessionStorage.setItem('bgm-age-confirmed', '1')
-    document.getElementById('bgm-age-modal').style.display = 'none'
+    nsfwGate.ageConfirmed = true
+    setAgeModalVisible(false)
+    notifyNsfwGateChange()
   }
 
   window.bgmLeaveAge = function () {
     window.location.href = 'https://www.google.com'
   }
+
+  document.addEventListener('click', function (event) {
+    var target = event.target
+    if (!target || !target.closest) return
+    var button = target.closest('[data-bgm-age]')
+    if (!button) return
+    var action = button.getAttribute('data-bgm-age')
+    if (action === 'confirm') {
+      event.preventDefault()
+      window.bgmConfirmAge()
+      return
+    }
+    if (action === 'deny') {
+      event.preventDefault()
+      window.bgmLeaveAge()
+    }
+  })
 
   function subjectImageRef(images) {
     return images?.large?.uri ? images.large : images?.common
@@ -156,8 +248,13 @@
         dataAttrs += ' data-fallback-common="' + escapeAttribute(commonUrl) + '"'
       }
     }
-    var imgAttrs = attrs || 'width="300" height="400" loading="lazy" decoding="async"'
-    if (coverOpts && coverOpts.priority) imgAttrs += ' fetchpriority="high"'
+    var loading = coverOpts && coverOpts.priority ? 'eager' : 'lazy'
+    var imgAttrs = attrs || ('width="300" height="400" loading="' + loading + '" decoding="async"')
+    if (coverOpts && coverOpts.priority) {
+      if (imgAttrs.indexOf('loading=') === -1) imgAttrs += ' loading="eager"'
+      else imgAttrs = imgAttrs.replace(/loading="(?:lazy|eager)"/, 'loading="eager"')
+      if (imgAttrs.indexOf('fetchpriority=') === -1) imgAttrs += ' fetchpriority="high"'
+    }
     return '<img class="bgm-cover-img" src="' + escapeAttribute(imgUrl) + '"' + dataAttrs + ' alt="' + escapeAttribute(alt) + '" ' + imgAttrs + '>'
   }
 
@@ -167,7 +264,7 @@
     if (card.nsfw) html += ' bgm-nsfw'
     html += '">' +
       '<div class="bgm-card-cover">' +
-        renderCover(card.images, card.imageStatus, card.name, 'width="300" height="400" loading="lazy" decoding="async"', coverOpts)
+        renderCover(card.images, card.imageStatus, card.name, null, coverOpts)
     if (card.nsfw) html += '<button type="button" class="bgm-nsfw-overlay">R18</button>'
     html += '</div>' +
       '<div class="bgm-card-info">' +
@@ -220,15 +317,128 @@
 
   function fillWeekdayGrid(gridEl, items, coverOpts) {
     if (!gridEl) return
+    var visible = entriesVisibleUnderGate(nsfwGate, items || [])
     var html = ''
-    for (var j = 0; j < items.length; j++) {
-      var priority = coverOpts && coverOpts.priorityFirst && j < 6
-      html += renderCalendarCard(items[j], priority ? { priority: true } : null)
+    for (var j = 0; j < visible.length; j++) {
+      var priority = coverOpts && coverOpts.priorityFirst && j < 2
+      html += renderCalendarCard(visible[j], priority ? { priority: true } : null)
     }
     gridEl.innerHTML = html
     gridEl.classList.remove('bgm-grid-pending')
     gridEl.removeAttribute('data-bgm-pending')
   }
+
+  function runWhenIdle(cb) {
+    if (typeof requestIdleCallback === 'function') {
+      return { kind: 'idle', id: requestIdleCallback(cb) }
+    }
+    return { kind: 'timeout', id: setTimeout(cb, 0) }
+  }
+
+  function cancelWhenIdle(handle) {
+    if (!handle) return
+    if (handle.kind === 'idle' && typeof cancelIdleCallback === 'function') {
+      cancelIdleCallback(handle.id)
+      return
+    }
+    clearTimeout(handle.id)
+  }
+
+  function clearCalendarIdleHandles() {
+    for (var i = 0; i < calendarIdleHandles.length; i++) {
+      cancelWhenIdle(calendarIdleHandles[i])
+    }
+    calendarIdleHandles = []
+  }
+
+
+  let loadAbort = null
+  let loadSeq = 0
+  var PAGE_LIMIT = 24
+  var PREFETCH_CAP = 8
+
+  function skeletonCardsHtml(count) {
+    var n = Math.max(0, Math.trunc(Number(count) || 0))
+    var html = ''
+    for (var i = 0; i < n; i++) {
+      html += '<div class="bgm-card bgm-card-skeleton" aria-hidden="true"><div class="bgm-card-cover"></div><div class="bgm-card-info"><h3>&nbsp;</h3></div></div>'
+    }
+    return html
+  }
+
+  function createPrefetchCache(cap) {
+    var max = Math.max(1, Math.trunc(Number(cap) || PREFETCH_CAP))
+    var map = new Map()
+    function key(type, page) {
+      return String(type) + ':' + String(page)
+    }
+    return {
+      get: function (type, page) {
+        var k = key(type, page)
+        if (!map.has(k)) return null
+        var value = map.get(k)
+        map.delete(k)
+        map.set(k, value)
+        return value
+      },
+      set: function (type, page, data) {
+        var k = key(type, page)
+        if (map.has(k)) map.delete(k)
+        map.set(k, data)
+        while (map.size > max) {
+          var oldest = map.keys().next().value
+          map.delete(oldest)
+        }
+      },
+      size: function () {
+        return map.size
+      },
+    }
+  }
+
+  var prefetchCache = createPrefetchCache(PREFETCH_CAP)
+
+  function buildPaginationWindow(current, totalPages) {
+    var total = Math.max(0, Math.trunc(Number(totalPages) || 0))
+    var cur = Math.min(Math.max(1, Math.trunc(Number(current) || 1)), Math.max(1, total))
+    if (total <= 0) return []
+    if (total <= 7) {
+      var all = []
+      for (var i = 1; i <= total; i++) all.push(i)
+      return all
+    }
+    if (cur <= 4) return [1, 2, 3, 4, 5, '…', total]
+    if (cur >= total - 3) return [1, '…', total - 4, total - 3, total - 2, total - 1, total]
+    return [1, '…', cur - 1, cur, cur + 1, '…', total]
+  }
+
+  function renderPaginationControls(paginationEl, page, totalPages, onSelect) {
+    paginationEl.innerHTML = ''
+    var windowItems = buildPaginationWindow(page, totalPages)
+    for (var i = 0; i < windowItems.length; i++) {
+      var item = windowItems[i]
+      if (item === '…') {
+        var dots = document.createElement('span')
+        dots.className = 'bgm-pagination-ellipsis'
+        dots.textContent = '…'
+        dots.setAttribute('aria-hidden', 'true')
+        paginationEl.appendChild(dots)
+        continue
+      }
+      var btn = document.createElement('button')
+      btn.type = 'button'
+      btn.textContent = String(item)
+      if (item === page) {
+        btn.classList.add('active')
+        btn.setAttribute('aria-current', 'page')
+      }
+      ;(function (p) {
+        btn.addEventListener('click', function () { onSelect(p) })
+      })(item)
+      paginationEl.appendChild(btn)
+    }
+  }
+
 
   // ---------------------------------------------------------------
   // 收藏视图（原 render 逻辑，封装进一个容器）
@@ -259,35 +469,122 @@
     var currentType = 'watching'
     var currentPage = 1
     var loaded = false
+    var lastLoadedData = null
+    var loadInFlight = false
+    var statusBarEl = null
+
+    function paintCollectionData(data, seq) {
+      if (seq != null && seq !== loadSeq) return
+      lastLoadedData = {
+        data: data,
+        type: currentType,
+        page: currentPage,
+      }
+      if (!data || data.total === 0) {
+        grid.innerHTML = '<p class="bgm-empty">暂无数据 — 同步可能尚未执行，数据尚未发布，请稍后再试</p>'
+        pagination.innerHTML = ''
+        grid.classList.remove('bgm-grid-skeleton')
+        grid.style.minHeight = ''
+        return
+      }
+
+      var visible = entriesVisibleUnderGate(nsfwGate, data.data || [])
+      var cardsHtml = ''
+      for (var i = 0; i < visible.length; i++) {
+        cardsHtml += renderCard(visible[i], i < 2 ? { priority: true } : null)
+      }
+      grid.innerHTML = cardsHtml
+      grid.classList.remove('bgm-grid-skeleton')
+      grid.style.minHeight = ''
+
+      var totalPages = Math.ceil(data.total / PAGE_LIMIT)
+      renderPaginationControls(pagination, currentPage, totalPages, function (p) {
+        currentPage = p
+        load(currentType, p)
+      })
+    }
+
+    function refreshVisibleCards() {
+      if (!lastLoadedData) return
+      if (loadInFlight) return
+      if (lastLoadedData.type !== currentType || lastLoadedData.page !== currentPage) return
+      if (grid.childElementCount > 0) {
+        grid.style.minHeight = grid.offsetHeight + 'px'
+      }
+      paintCollectionData(lastLoadedData.data, null)
+    }
+
+    function noteConfigDenied() {
+      if (!statusBarEl) return
+      if (nsfwGate.configStatus !== 'error') return
+      var note = document.createElement('p')
+      note.className = 'bgm-status-warn'
+      note.setAttribute('data-bgm-config-note', '1')
+      note.textContent = 'NSFW 配置不可用，已隐藏受限内容'
+      var existing = statusBarEl.querySelector('[data-bgm-config-note]')
+      if (existing) existing.remove()
+      statusBarEl.appendChild(note)
+      statusBarEl.style.opacity = '1'
+    }
 
     async function load(type, page) {
-      try {
-        var res = await fetch(API + '/api/collections?type=' + type + '&page=' + page + '&limit=24')
-        if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText)
-        var data = await res.json()
-        if (data.total === 0) {
-          grid.innerHTML = '<p class="bgm-empty">暂无数据 — 同步可能尚未执行，数据尚未发布，请稍后再试</p>'
-          pagination.innerHTML = ''
-          return
-        }
-        var cardsHtml = ''
-        for (var i = 0; i < data.data.length; i++) {
-          cardsHtml += renderCard(data.data[i], i < 8 ? { priority: true } : null)
-        }
-        grid.innerHTML = cardsHtml
-
-        var totalPages = Math.ceil(data.total / 24)
-        pagination.innerHTML = ''
-        for (var i = 1; i <= totalPages; i++) {
-          var btn = document.createElement('button')
-          btn.textContent = i
-          if (i === page) btn.classList.add('active')
-          ;(function(p) { btn.addEventListener('click', function() { currentPage = p; load(currentType, p) }) })(i)
-          pagination.appendChild(btn)
-        }
-      } catch (e) {
-        grid.innerHTML = '<p class="bgm-error">加载失败: ' + escapeHtml(e.message || '未知错误') + '<br><small>API: ' + escapeHtml(API) + '</small></p>'
+      if (loadAbort) {
+        try { loadAbort.abort() } catch (_) {}
       }
+      loadAbort = typeof AbortController !== 'undefined' ? new AbortController() : null
+      var seq = ++loadSeq
+      var signal = loadAbort ? loadAbort.signal : undefined
+      loadInFlight = true
+
+      if (grid.childElementCount > 0) {
+        grid.style.minHeight = grid.offsetHeight + 'px'
+      }
+      grid.classList.add('bgm-grid-skeleton')
+      grid.innerHTML = skeletonCardsHtml(PAGE_LIMIT)
+
+      try {
+        var data = prefetchCache.get(type, page)
+        if (!data) {
+          var fetchOpts = signal ? { signal: signal } : {}
+          var res = await fetch(API + '/api/collections?type=' + type + '&page=' + page + '&limit=' + PAGE_LIMIT, fetchOpts)
+          if (!res.ok) throw new Error('HTTP ' + res.status + ' ' + res.statusText)
+          data = await res.json()
+        }
+        if (seq !== loadSeq) return
+
+        paintCollectionData(data, seq)
+        if (seq !== loadSeq) return
+
+        var totalPages = Math.ceil((data.total || 0) / PAGE_LIMIT)
+        prefetchNextPage(type, page, totalPages)
+      } catch (e) {
+        if (seq !== loadSeq) return
+        if (e && (e.name === 'AbortError' || e.code === 20)) return
+        lastLoadedData = null
+        grid.innerHTML = '<p class="bgm-error">加载失败: ' + escapeHtml(e.message || '未知错误') + '<br><small>API: ' + escapeHtml(API) + '</small></p>'
+        pagination.innerHTML = ''
+        grid.classList.remove('bgm-grid-skeleton')
+        grid.style.minHeight = ''
+      } finally {
+        if (seq === loadSeq) loadInFlight = false
+      }
+    }
+
+    function prefetchNextPage(type, page, totalPages) {
+      var next = page + 1
+      if (next > totalPages) return
+      if (prefetchCache.get(type, next)) return
+      var controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+      var opts = controller ? { signal: controller.signal } : {}
+      fetch(API + '/api/collections?type=' + type + '&page=' + next + '&limit=' + PAGE_LIMIT, opts)
+        .then(function (res) {
+          if (!res.ok) throw new Error('HTTP ' + res.status)
+          return res.json()
+        })
+        .then(function (data) {
+          prefetchCache.set(type, next, data)
+        })
+        .catch(function () {})
     }
 
     nav.addEventListener('click', function(e) {
@@ -302,32 +599,42 @@
       }
     })
 
+    onNsfwGateChange(function () {
+      noteConfigDenied()
+      refreshVisibleCards()
+      syncAgeModalFromGate(nsfwGate)
+    })
+
     return {
       el: view,
+      refreshVisibleCards: refreshVisibleCards,
       // 首次切换到该视图时再加载（含健康检查）
       async activate() {
         if (loaded) return
         loaded = true
-        var statusBar = document.createElement('div')
-        statusBar.className = 'bgm-status'
-        statusBar.innerHTML = '<p>正在连接...</p>'
-        view.insertBefore(statusBar, nav)
+        statusBarEl = document.createElement('div')
+        statusBarEl.className = 'bgm-status bgm-status-bar'
+        statusBarEl.innerHTML = '<p>正在连接...</p>'
+        view.insertBefore(statusBarEl, nav)
         load(currentType, 1)
+        noteConfigDenied()
         fetchHealthJson(false).then(function (health) {
           if (health.ok && health.data && health.data.collections) {
             var c = health.data.collections
-            statusBar.innerHTML = '<p>已连接 | 条目 ' + safeNumber(c.types && c.types._total, 0) + ' | 更新于 ' + escapeHtml((c.updated_at || '?').slice(0, 10)) + '</p>'
+            statusBarEl.innerHTML = '<p>已连接 | 条目 ' + safeNumber(c.types && c.types._total, 0) + ' | 更新于 ' + escapeHtml((c.updated_at || '?').slice(0, 10)) + '</p>'
           } else if (health.ok) {
             var hint = '数据尚未发布，请稍后再试'
             if (health.data && health.data.last_error) hint += '<br>上次同步错误: ' + escapeHtml(health.data.last_error)
-            statusBar.innerHTML = '<p class="bgm-status-warn">已连接，但 KV 无数据。' + hint + '</p>'
+            statusBarEl.innerHTML = '<p class="bgm-status-warn">已连接，但 KV 无数据。' + hint + '</p>'
           } else {
-            statusBar.innerHTML = '<p class="bgm-status-warn">健康检查失败: ' + escapeHtml(health.error || '') + '</p>'
+            statusBarEl.innerHTML = '<p class="bgm-status-warn">健康检查失败: ' + escapeHtml(health.error || '') + '</p>'
           }
+          noteConfigDenied()
         }).catch(function (e) {
-          statusBar.innerHTML = '<p class="bgm-status-warn">无法连接 Worker: ' + escapeHtml(e.message || '') + '</p>'
+          statusBarEl.innerHTML = '<p class="bgm-status-warn">无法连接 Worker: ' + escapeHtml(e.message || '') + '</p>'
+          noteConfigDenied()
         })
-        setTimeout(function () { statusBar.style.opacity = '0.4' }, 3000)
+        setTimeout(function () { if (statusBarEl) statusBarEl.style.opacity = '0.4' }, 3000)
       },
     }
   }
@@ -344,10 +651,13 @@
     view.appendChild(cal)
 
     var loaded = false
+    var lastCalendarDays = null
     // bgm.tv weekday.id: 1=周一 ... 7=周日；JS getDay(): 0=周日
     var todayId = (new Date().getDay() === 0) ? 7 : new Date().getDay()
 
     function renderCalendar(days) {
+      lastCalendarDays = days
+      clearCalendarIdleHandles()
       if (calendarLazyObserver) {
         calendarLazyObserver.disconnect()
         calendarLazyObserver = null
@@ -362,13 +672,14 @@
         var day = days[i]
         var wd = day.weekday || {}
         var items = day.items || []
+        var visibleCount = entriesVisibleUnderGate(nsfwGate, items).length
         var isToday = wd.id === todayId
         var section = document.createElement('section')
         section.className = 'bgm-weekday' + (isToday ? ' is-today' : '')
         section.innerHTML = '<div class="bgm-weekday-head">' +
           '<span class="cn">' + escapeHtml(wd.cn || '') + '</span>' +
           '<span class="en">' + escapeHtml(wd.en || '') + '</span>' +
-          '<span class="count">' + items.length + '</span>' +
+          '<span class="count">' + visibleCount + '</span>' +
         '</div>'
         var grid = document.createElement('div')
         grid.className = 'bgm-grid bgm-grid-pending'
@@ -384,6 +695,17 @@
           grid.removeAttribute('data-bgm-pending')
         }
       }
+      for (var f = 0; f < pendingGrids.length; f++) {
+        ;(function (pending) {
+          pending.grid.__bgmWeekdayItems = pending.items
+          calendarIdleHandles.push(runWhenIdle(function () {
+            if (!pending.grid.getAttribute('data-bgm-pending')) return
+            fillWeekdayGrid(pending.grid, pending.items, null)
+            pending.grid.__bgmWeekdayItems = null
+            if (calendarLazyObserver) calendarLazyObserver.unobserve(pending.grid)
+          }))
+        })(pendingGrids[f])
+      }
       if (pendingGrids.length && typeof IntersectionObserver === 'function') {
         calendarLazyObserver = new IntersectionObserver(function (entries) {
           for (var e = 0; e < entries.length; e++) {
@@ -398,15 +720,19 @@
           }
         }, { root: null, rootMargin: '240px 0px', threshold: 0.01 })
         for (var p = 0; p < pendingGrids.length; p++) {
-          pendingGrids[p].grid.__bgmWeekdayItems = pendingGrids[p].items
           calendarLazyObserver.observe(pendingGrids[p].grid)
-        }
-      } else {
-        for (var f = 0; f < pendingGrids.length; f++) {
-          fillWeekdayGrid(pendingGrids[f].grid, pendingGrids[f].items, null)
         }
       }
     }
+
+    function refreshCalendarFromGate() {
+      if (!lastCalendarDays) return
+      renderCalendar(lastCalendarDays)
+    }
+
+    onNsfwGateChange(function () {
+      refreshCalendarFromGate()
+    })
 
     return {
       el: view,
@@ -469,7 +795,8 @@ function statusBadgeColor(s) {
       if (e.target.tagName === 'BUTTON') activate(e.target.dataset.view)
     })
 
-    await checkNSFW()
+    // Concurrent: /api/config + first collections (activate starts load)
+    loadNsfwConfig()
     activate('collection')
   }
 

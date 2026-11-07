@@ -24,7 +24,7 @@ export interface PublicStore {
    * downloading the body (C5 bounded mirror). Stores without it fall back to a
    * full `getSnapshotBytes` existence check.
    */
-  headObject?(key: string): Promise<{ size: number; etag: string | null } | null>
+  headObject?(key: string): Promise<{ size: number; etag: string | null; contentType?: string | null } | null>
   getCurrentRelease(): Promise<PublicReleasePointer | null>
   getSnapshotBytes(artifactRef: string): Promise<Uint8Array | null>
   putImmutableObject(key: string, body: Uint8Array, contentType: string): Promise<void>

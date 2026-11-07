@@ -2,6 +2,7 @@ import {
   imageOriginalKey,
   imageThumbV1Key,
   imageThumbV2Key,
+  sniffImage,
   type PublicSnapshotV1,
 } from '@airing-cal/storage'
 import { V2_CACHE_CONTROL } from '@airing-cal/v3-core/read-contract'
@@ -13,6 +14,7 @@ import {
 import { loadVerifiedPublicSnapshot, type VerifiedPublicSnapshot } from './load-public-snapshot.ts'
 import { resolveRuntimePlatformIdFromEnv } from '@airing-cal/v3-adapters/platform-id'
 import type { PortableCronStatus } from './portable-builder-cron.ts'
+import type { VerifiedSnapshotCache } from './verified-snapshot-cache.ts'
 
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
 
@@ -26,6 +28,12 @@ export interface PortableReadEnv {
    * here; per-request parsing is not part of the contract.
    */
   publicBaseUrl?: string
+  /**
+   * Optional Image CDN base (`AIRINGCAL_IMAGE_BASE_URL`). When set, `/image/*`
+   * redirects use this host; when unset, redirects fall back to `publicBaseUrl`
+   * (Image CDN off by default).
+   */
+  imageBaseUrl?: string
   /** Platform label for `/version`; e.g. `{ AIRINGCAL_PLATFORM: 'cloudflare' }` in the Workers gateway. */
   processEnv?: Record<string, string | undefined>
   /**
@@ -33,6 +41,11 @@ export interface PortableReadEnv {
    * gateways without local SQLite omit it. Injected (not imported) so Workers bundles stay free of `node:sqlite`.
    */
   cronStatus?: () => PortableCronStatus
+  /**
+   * Isolate-lifetime verified-snapshot cache. Factories construct one instance;
+   * tests inject a fresh cache. When omitted, each request loads through the pure loader.
+   */
+  snapshotCache?: VerifiedSnapshotCache
 }
 
 class InvalidQueryError extends Error {}
@@ -157,6 +170,7 @@ async function handleImage(
   pathname: string,
   publicStore: PublicStore,
   publicBaseUrl?: string,
+  imageBaseUrl?: string,
 ): Promise<Response> {
   const match = pathname.match(/^\/image\/([0-9a-f]{64})(?:\/(thumb))?\/?$/i)
   if (!match?.[1]) return new Response('Invalid hash', { status: 400 })
@@ -167,9 +181,9 @@ async function handleImage(
       { key: imageThumbV2Key(hash), contentType: 'image/webp' },
       { key: imageThumbV1Key(hash), contentType: 'image/webp' },
     ]
-    : [{ key: imageOriginalKey(hash), contentType: 'image/jpeg' }]
+    : [{ key: imageOriginalKey(hash), contentType: 'application/octet-stream' }]
   for (const candidate of candidates) {
-    const redirectTo = resolvePublicObjectUrl(publicBaseUrl, candidate.key)
+    const redirectTo = resolvePublicObjectUrl(imageBaseUrl ?? publicBaseUrl, candidate.key)
     if (redirectTo) {
       // Existence probe only: HEAD when the store supports it (C5 port), else a body read.
       const exists = publicStore.headObject
@@ -178,13 +192,20 @@ async function handleImage(
       if (exists) return publicImageRedirectResponse(redirectTo)
       continue
     }
+    const head = publicStore.headObject ? await publicStore.headObject(candidate.key) : null
     const bytes = await publicStore.getSnapshotBytes(candidate.key)
     if (!bytes) continue
+    const storedType = head?.contentType?.trim() || ''
+    const storedIsImage = storedType.toLowerCase().startsWith('image/')
+    const sniffed = sniffImage(bytes)
+    const contentType = !storedIsImage
+      ? (sniffed ?? candidate.contentType)
+      : storedType
     return new Response(new Uint8Array(bytes), {
       headers: {
         'Cache-Control': V2_CACHE_CONTROL.image,
         'CDN-Cache-Control': V2_CACHE_CONTROL.imageCdn,
-        'Content-Type': candidate.contentType,
+        'Content-Type': contentType,
       },
     })
   }
@@ -248,7 +269,30 @@ export async function handlePortableReadRequest(
         ...(platform ? { platform } : {}),
       }, { headers: { 'Cache-Control': V2_CACHE_CONTROL.version } })
     }
-    const loaded = await loadVerifiedPublicSnapshot(env.publicStore)
+    // Image routes never pay the verified-snapshot load (CPU / origin).
+    if (path.startsWith('/image/')) {
+      return await handleImage(path, env.publicStore, env.publicBaseUrl, env.imageBaseUrl)
+    }
+    let loaded
+    try {
+      loaded = env.snapshotCache
+        ? await env.snapshotCache.load(env.publicStore)
+        : await loadVerifiedPublicSnapshot(env.publicStore)
+    } catch (error) {
+      if (error instanceof Error) {
+        return json({
+          ok: false,
+          error: {
+            code: 'RELEASE_INVALID',
+            message: error.message || 'Verified public release is invalid',
+          },
+        }, {
+          status: 503,
+          headers: { 'Cache-Control': V2_CACHE_CONTROL.error },
+        })
+      }
+      throw error
+    }
     if (!loaded && path !== '/health') {
       return json({ ok: false, error: { code: 'NO_RELEASE', message: 'No verified public release' } }, {
         status: 503,
@@ -268,7 +312,6 @@ export async function handlePortableReadRequest(
     if (path === '/collections') return handleCollections(url, snapshot)
     if (path === '/calendar') return handleCalendar(snapshot)
     if (path === '/cache') return handleCache(snapshot, url)
-    if (path.startsWith('/image/')) return handleImage(path, env.publicStore, env.publicBaseUrl)
     return new Response('Not found', { status: 404 })
   } catch (error) {
     if (error instanceof InvalidQueryError) {

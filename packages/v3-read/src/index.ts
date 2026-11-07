@@ -1,5 +1,10 @@
 export { loadVerifiedPublicSnapshot, type VerifiedPublicSnapshot } from './load-public-snapshot.ts'
 export {
+  createVerifiedSnapshotCache,
+  type VerifiedSnapshotCache,
+  type VerifiedSnapshotCacheOptions,
+} from './verified-snapshot-cache.ts'
+export {
   handlePortableReadRequest,
   normalizePortableReadPath,
   type PortableReadEnv,

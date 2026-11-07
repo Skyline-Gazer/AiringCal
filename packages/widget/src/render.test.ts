@@ -45,6 +45,8 @@ function loadWidgetProductionRenderers() {
     'safeUrl',
     'safeNumber',
     'safeScore',
+    'createNsfwGate',
+    'entriesVisibleUnderGate',
     'subjectImageRef',
     'subjectImageUrl',
     'subjectImageThumbUrl',
@@ -59,7 +61,29 @@ function loadWidgetProductionRenderers() {
     'location',
     `var API = location.origin
     var calendarLazyObserver = null
+    var calendarIdleHandles = []
+    function runWhenIdle(cb) {
+      if (typeof requestIdleCallback === 'function') {
+        return { kind: 'idle', id: requestIdleCallback(cb) }
+      }
+      return { kind: 'timeout', id: setTimeout(cb, 0) }
+    }
+    function cancelWhenIdle(handle) {
+      if (!handle) return
+      if (handle.kind === 'idle' && typeof cancelIdleCallback === 'function') {
+        cancelIdleCallback(handle.id)
+        return
+      }
+      clearTimeout(handle.id)
+    }
+    function clearCalendarIdleHandles() {
+      for (var i = 0; i < calendarIdleHandles.length; i++) {
+        cancelWhenIdle(calendarIdleHandles[i])
+      }
+      calendarIdleHandles = []
+    }
     ${source}
+    var nsfwGate = createNsfwGate()
     function mockElement() {
       var el = {
         className: '',
@@ -71,6 +95,7 @@ function loadWidgetProductionRenderers() {
         },
         setAttribute: function () {},
         removeAttribute: function () {},
+        getAttribute: function () { return null },
         appendChild: function (child) {
           el.children.push(child)
           return child
@@ -149,6 +174,17 @@ test('public pages reuse the exact shared footer output', () => {
   const footer = renderFooter(build)
 
   assert.equal(renderIndexPage({ build }).includes(footer), true)
+})
+
+test('renderIndexPage emits hidden #bgm-age-modal without inline onclick handlers', () => {
+  const html = renderIndexPage()
+  assert.match(html, /id="bgm-age-modal"/)
+  assert.match(html, /id="bgm-age-modal"[^>]*(hidden|style="[^"]*display:\s*none)/)
+  assert.doesNotMatch(html, /\sonclick\s*=/i)
+  assert.match(html, /data-bgm-age="confirm"/)
+  assert.match(html, /data-bgm-age="deny"/)
+  assert.match(html, /确认已满18岁|我已满18岁/)
+  assert.match(html, /退出|离开/)
 })
 
 test('renderFooter exposes an inline runtime status slot without cache loading copy', () => {

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { PublicSnapshotV1 } from '@airing-cal/storage'
-import { imageOriginalKey, imageThumbV2Key } from '@airing-cal/storage'
+import { imageOriginalKey, imageThumbV2Key, sniffImage } from '@airing-cal/storage'
 import { collectReferencedImageHashes, type PublicStore } from '@airing-cal/v3-core'
 import { emitProgress, emitStage } from './sync-progress.ts'
 
@@ -16,10 +16,28 @@ function clampConcurrency(value: number): number {
   return Math.min(MAX_CONCURRENCY, Math.max(1, Math.floor(value)))
 }
 
-export function contentTypeForKey(key: string): string {
+export class UnrecognizedImageContentTypeError extends Error {
+  constructor(readonly key: string) {
+    super(`Unrecognized image bytes for ${key}; refusing application/octet-stream`)
+    this.name = 'UnrecognizedImageContentTypeError'
+  }
+}
+
+export function contentTypeForKey(key: string, bytes?: Uint8Array): string {
   if (key.endsWith('.webp')) return 'image/webp'
   if (key.endsWith('.png')) return 'image/png'
   if (key.endsWith('.json')) return 'application/json'
+  // Extensionless originals (images/<hash>/original): sniff or fail closed.
+  if (/(?:^|\/)images\/[0-9a-f]{64}\/original$/.test(key)) {
+    const sniffed = bytes ? sniffImage(bytes) : null
+    if (!sniffed) throw new UnrecognizedImageContentTypeError(key)
+    return sniffed
+  }
+  if (bytes) {
+    const sniffed = sniffImage(bytes)
+    if (sniffed) return sniffed
+  }
+  // Non-image objects only (never an original image key).
   return 'application/octet-stream'
 }
 
@@ -202,7 +220,7 @@ async function processObject(
     )
   }
   if (local) {
-    await options.publicStore.putImmutableObject(key, local.bytes, contentTypeForKey(key))
+    await options.publicStore.putImmutableObject(key, local.bytes, contentTypeForKey(key, local.bytes))
     return 'uploaded'
   }
   if (key === imageThumbV2Key(hash)) return 'missing_thumb'

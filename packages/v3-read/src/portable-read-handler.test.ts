@@ -12,9 +12,11 @@ import {
   SqliteBuilderStateStore,
   SyncRunStore,
 } from '@airing-cal/v3-builder'
-import { FilesystemPublicStore, V2_CACHE_CONTROL } from '@airing-cal/v3-core'
+import { FilesystemPublicStore, MemoryPublicStore, V2_CACHE_CONTROL } from '@airing-cal/v3-core'
+import type { PublicReleasePointer, PublicStore } from '@airing-cal/v3-core/ports'
 import { handlePortableReadRequest } from './portable-read-handler.ts'
 import { readPortableCronStatus } from './portable-builder-cron.ts'
+import { createVerifiedSnapshotCache } from './verified-snapshot-cache.ts'
 
 function emptyFetch() {
   return assembleFullFetch(
@@ -177,4 +179,235 @@ test('image route redirects to the public base URL only for objects that exist (
   const served = await handlePortableReadRequest(imageRequest('/thumb'), { publicStore })
   assert.equal(served.status, 200)
   assert.equal(await served.text(), 'thumb-v2')
+})
+
+test('image redirect prefers imageBaseUrl over publicBaseUrl when set', async () => {
+  const publicStore = new MemoryPublicStore()
+  const hash = 'd'.repeat(64)
+  await publicStore.putImmutableObject(imageOriginalKey(hash), new TextEncoder().encode('original'), 'image/jpeg')
+  const publicBase = 'https://cdn.example.com'
+  const imageBase = 'https://img.cdn.example.com'
+
+  const preferred = await handlePortableReadRequest(
+    new Request(`https://local/image/${hash}`),
+    { publicStore, publicBaseUrl: publicBase, imageBaseUrl: imageBase },
+  )
+  assert.equal(preferred.status, 302)
+  assert.equal(preferred.headers.get('Location'), `${imageBase}/${imageOriginalKey(hash)}`)
+
+  const fallback = await handlePortableReadRequest(
+    new Request(`https://local/image/${hash}`),
+    { publicStore, publicBaseUrl: publicBase },
+  )
+  assert.equal(fallback.status, 302)
+  assert.equal(fallback.headers.get('Location'), `${publicBase}/${imageOriginalKey(hash)}`)
+})
+
+
+test('image proxy honors Content-Type from store headObject', async () => {
+  const inner = new MemoryPublicStore()
+  const db = openBuilderDatabase(':memory:')
+  const state = new SqliteBuilderStateStore(db)
+  const runs = new SyncRunStore(db)
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-proxy-mime',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => emptyFetch(),
+    now: () => 1_700_000_000_000,
+  })
+  await publishBuilderCheckpoint({
+    state,
+    publicStore: inner,
+    manifestMetadata: { source_observed_at: '2026-01-01T00:00:00.000Z', git_sha: 'e'.repeat(40) },
+  })
+  db.close()
+
+  const hash = 'e'.repeat(64)
+  const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00])
+  await inner.putImmutableObject(imageOriginalKey(hash), pngBytes, 'image/png')
+
+  const publicStore: PublicStore = {
+    getCurrentRelease: () => inner.getCurrentRelease(),
+    getSnapshotBytes: (ref) => inner.getSnapshotBytes(ref),
+    putImmutableObject: (key, body, contentType) => inner.putImmutableObject(key, body, contentType),
+    commitRelease: (expected, next) => inner.commitRelease(expected, next),
+    async headObject(key) {
+      const head = await inner.headObject(key)
+      return head ? { ...head, contentType: 'image/png' } : null
+    },
+  }
+
+  const response = await handlePortableReadRequest(
+    new Request(`https://local/image/${hash}`),
+    { publicStore },
+  )
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('Content-Type'), 'image/png')
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), pngBytes)
+})
+
+test('image proxy sniffs bytes when HEAD Content-Type is missing or non-image', async () => {
+  const inner = new MemoryPublicStore()
+  await publishEmptyRelease(inner)
+  const hash = 'c'.repeat(64)
+  const jpegBytes = Uint8Array.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10])
+  await inner.putImmutableObject(imageOriginalKey(hash), jpegBytes, 'application/octet-stream')
+
+  const publicStore: PublicStore = {
+    getCurrentRelease: () => inner.getCurrentRelease(),
+    getSnapshotBytes: (ref) => inner.getSnapshotBytes(ref),
+    putImmutableObject: (key, body, contentType) => inner.putImmutableObject(key, body, contentType),
+    commitRelease: (expected, next) => inner.commitRelease(expected, next),
+    async headObject(key) {
+      const head = await inner.headObject(key)
+      return head ? { ...head, contentType: 'application/octet-stream' } : null
+    },
+  }
+
+  const response = await handlePortableReadRequest(
+    new Request(`https://local/image/${hash}`),
+    { publicStore },
+  )
+  assert.equal(response.status, 200)
+  assert.equal(response.headers.get('Content-Type'), 'image/jpeg')
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), jpegBytes)
+})
+
+
+function countingPublicStore(inner: MemoryPublicStore): PublicStore & {
+  pointerReads: number
+  byteReads: number
+  resetCounts(): void
+} {
+  const store = {
+    pointerReads: 0,
+    byteReads: 0,
+    resetCounts() {
+      store.pointerReads = 0
+      store.byteReads = 0
+    },
+    async getCurrentRelease() {
+      store.pointerReads++
+      return inner.getCurrentRelease()
+    },
+    async getSnapshotBytes(artifactRef: string) {
+      store.byteReads++
+      return inner.getSnapshotBytes(artifactRef)
+    },
+    putImmutableObject: (key: string, body: Uint8Array, contentType: string) =>
+      inner.putImmutableObject(key, body, contentType),
+    commitRelease: (expected: PublicReleasePointer | null, next: PublicReleasePointer) =>
+      inner.commitRelease(expected, next),
+    headObject: (key: string) => inner.headObject(key),
+  }
+  return store
+}
+
+async function publishEmptyRelease(publicStore: MemoryPublicStore): Promise<void> {
+  const db = openBuilderDatabase(':memory:')
+  const state = new SqliteBuilderStateStore(db)
+  const runs = new SyncRunStore(db)
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-cache',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => emptyFetch(),
+    now: () => 1_700_000_000_000,
+  })
+  await publishBuilderCheckpoint({
+    state,
+    publicStore,
+    manifestMetadata: { source_observed_at: '2026-01-01T00:00:00.000Z', git_sha: 'f'.repeat(40) },
+  })
+  db.close()
+}
+
+test('two sequential /api/collections with shared snapshotCache hit origin once', async () => {
+  const inner = new MemoryPublicStore()
+  await publishEmptyRelease(inner)
+  const publicStore = countingPublicStore(inner)
+  const snapshotCache = createVerifiedSnapshotCache({ softTtlMs: 60_000, now: () => 1_000 })
+  const env = { publicStore, snapshotCache, nsfwShow: false }
+
+  const first = await handlePortableReadRequest(
+    new Request('https://local/api/collections?type=watching&page=1&limit=24'),
+    env,
+  )
+  assert.equal(first.status, 200)
+  assert.equal(publicStore.pointerReads, 1)
+  assert.equal(publicStore.byteReads, 2)
+
+  publicStore.resetCounts()
+  const second = await handlePortableReadRequest(
+    new Request('https://local/api/collections?type=watching&page=1&limit=24'),
+    env,
+  )
+  assert.equal(second.status, 200)
+  assert.equal(publicStore.pointerReads, 0)
+  assert.equal(publicStore.byteReads, 0)
+})
+
+test('/image/:hash never loads the verified snapshot', async () => {
+  const inner = new MemoryPublicStore()
+  await publishEmptyRelease(inner)
+  const hash = 'c'.repeat(64)
+  await inner.putImmutableObject(imageOriginalKey(hash), new TextEncoder().encode('img'), 'image/jpeg')
+  const publicStore = countingPublicStore(inner)
+  const snapshotCache = createVerifiedSnapshotCache({ softTtlMs: 60_000, now: () => 1_000 })
+
+  const response = await handlePortableReadRequest(
+    new Request(`https://local/image/${hash}`),
+    { publicStore, snapshotCache },
+  )
+  assert.equal(response.status, 200)
+  assert.equal(publicStore.pointerReads, 0)
+  assert.equal(publicStore.byteReads, 1, 'only the image object is fetched')
+})
+
+test('loader Error maps to 503 RELEASE_INVALID with no-store', async () => {
+  const publicStore = new MemoryPublicStore()
+  const snapshotCache = {
+    async load() {
+      throw new Error('Missing manifest object for current release: manifests/v1/x')
+    },
+    clear() {},
+  }
+  const response = await handlePortableReadRequest(
+    new Request('https://local/api/collections?type=watching'),
+    { publicStore, snapshotCache },
+  )
+  assert.equal(response.status, 503)
+  assert.equal(response.headers.get('Cache-Control'), V2_CACHE_CONTROL.error)
+  const body = await response.json() as { ok: boolean; error: { code: string } }
+  assert.equal(body.ok, false)
+  assert.equal(body.error.code, 'RELEASE_INVALID')
+})
+
+test('image existence probe Error is not RELEASE_INVALID', async () => {
+  const hash = 'a'.repeat(64)
+  const publicStore = {
+    async getCurrentRelease() {
+      return null
+    },
+    async getSnapshotBytes() {
+      throw new Error('R2 head failed')
+    },
+    async putImmutableObject() {},
+    async headObject() {
+      throw new Error('R2 head failed')
+    },
+  } as unknown as PublicStore
+
+  await assert.rejects(
+    () => handlePortableReadRequest(
+      new Request(`https://local/image/${hash}`),
+      { publicStore, publicBaseUrl: 'https://cdn.example' },
+    ),
+    (error: unknown) => error instanceof Error && error.message === 'R2 head failed',
+  )
 })

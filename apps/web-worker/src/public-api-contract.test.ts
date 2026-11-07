@@ -117,7 +117,7 @@ const PUBLIC_API_CONTRACT: ContractCase[] = [
     name: 'collections query shape',
     path: '/api/collections?type=watching&page=1&limit=24',
     expectStatus: 200,
-    cachePattern: /s-maxage=300/,
+    cachePattern: /s-maxage=60/,
     assertJson: (body) => {
       const json = body as { data: unknown[]; total: number; page: number; limit: number }
       assert.ok(Array.isArray(json.data))
@@ -130,7 +130,7 @@ const PUBLIC_API_CONTRACT: ContractCase[] = [
     name: 'calendar json array',
     path: '/api/calendar',
     expectStatus: 200,
-    cachePattern: /s-maxage=600/,
+    cachePattern: /s-maxage=60/,
     assertJson: (body) => {
       assert.ok(Array.isArray(body))
     },

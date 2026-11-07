@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type { CompleteFullFetch } from '@airing-cal/bgm-api'
 import { imageRef, type SubjectImageMap } from '@airing-cal/domain'
 import type { SubjectMediaPublishHint } from '@airing-cal/v3-core'
+import { sniffImage } from '@airing-cal/storage'
 import { SUBJECT_MEDIA_COALESCE_UPSERT } from '@airing-cal/v3-builder'
 import type { CloudflareD1Client } from '../adapters/cloudflare-d1.ts'
 import type { R2Store } from '../adapters/r2-store.ts'
@@ -90,22 +91,6 @@ export interface SubjectMediaRefreshDeps {
 
 function sha256(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex')
-}
-
-function textAt(bytes: Uint8Array, offset: number, length: number): string {
-  return String.fromCharCode(...bytes.subarray(offset, offset + length))
-}
-
-function sniffImage(bytes: Uint8Array): string | null {
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg'
-  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png'
-  if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return 'image/gif'
-  if (bytes.length >= 12 && textAt(bytes, 0, 4) === 'RIFF' && textAt(bytes, 8, 4) === 'WEBP') return 'image/webp'
-  if (bytes.length >= 12 && textAt(bytes, 4, 4) === 'ftyp') {
-    const brand = textAt(bytes, 8, 4)
-    if (brand === 'avif' || brand === 'avis') return 'image/avif'
-  }
-  return null
 }
 
 export type BangumiImageSizes = {

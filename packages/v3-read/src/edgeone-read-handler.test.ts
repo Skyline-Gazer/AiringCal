@@ -166,6 +166,40 @@ test('EdgeOne read gateway serves the v2 surface from the public Release over HT
   assert.ok(requests.includes(`${BASE_URL}/public/current-release.json`))
 })
 
+test('EdgeOne handler reuses isolate snapshot cache across sequential collections', async () => {
+  const { store } = await publishedBucket()
+  const { impl, requests } = cdnFetch(store)
+  const handle = createEdgeOneReadHandler({
+    publicBaseUrl: BASE_URL,
+    nsfwShow: false,
+    packageVersion: '3.0.0-alpha.0',
+    fetch: impl,
+  })
+
+  const first = await handle(
+    new Request('https://edgeone.example/api/collections?type=watching&page=1&limit=24'),
+  )
+  assert.equal(first.status, 200)
+  const afterFirst = requests.length
+  assert.ok(afterFirst >= 3, 'cold load fetches pointer + snapshot + manifest')
+
+  const second = await handle(
+    new Request('https://edgeone.example/api/collections?type=watching&page=1&limit=24'),
+  )
+  assert.equal(second.status, 200)
+  assert.equal(requests.length, afterFirst, 'hot hit must not re-fetch Release objects')
+
+  const beforeImage = requests.length
+  const image = await handle(new Request(`https://edgeone.example/image/${IMAGE_HASH}`))
+  assert.equal(image.status, 302)
+  const imageRequests = requests.slice(beforeImage)
+  assert.ok(imageRequests.length >= 1, 'image existence probe still runs')
+  assert.ok(
+    imageRequests.every((url) => url.includes(`/images/${IMAGE_HASH}/`)),
+    `image route must not load Release objects, got ${imageRequests.join(',')}`,
+  )
+})
+
 test('EdgeOne gateway and Cloudflare gateway serve the same Release consistently', async () => {
   const { bucket, store } = await publishedBucket()
   const { impl } = cdnFetch(store)
@@ -220,3 +254,25 @@ test('EdgeOne read configuration rejects missing, non-https and placeholder base
     /must use https/,
   )
 })
+
+test('EdgeOne read handler redirects images via imageBaseUrl when provided', async () => {
+  const { store } = await publishedBucket()
+  const { impl } = cdnFetch(store)
+  const imageBase = 'https://img.cdn.example.com'
+  const handle = createEdgeOneReadHandler({
+    publicBaseUrl: BASE_URL,
+    imageBaseUrl: `${imageBase}/`,
+    fetch: impl,
+  })
+  const preferred = await handle(new Request(`https://edgeone.example/image/${IMAGE_HASH}`))
+  assert.equal(preferred.status, 302)
+  assert.equal(preferred.headers.get('Location'), `${imageBase}/images/${IMAGE_HASH}/original`)
+
+  const fallback = createEdgeOneReadHandler({
+    publicBaseUrl: BASE_URL,
+    fetch: impl,
+  })
+  const without = await fallback(new Request(`https://edgeone.example/image/${IMAGE_HASH}`))
+  assert.equal(without.headers.get('Location'), `${BASE_URL}/images/${IMAGE_HASH}/original`)
+})
+

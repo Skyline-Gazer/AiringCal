@@ -3,6 +3,7 @@ import type { PublicReleasePointer, PublicStore } from './ports.ts'
 export class MemoryPublicStore implements PublicStore {
   current: PublicReleasePointer | null = null
   objects = new Map<string, Uint8Array>()
+  contentTypes = new Map<string, string>()
   casSupported = true
 
   async getCurrentRelease(): Promise<PublicReleasePointer | null> {
@@ -13,13 +14,20 @@ export class MemoryPublicStore implements PublicStore {
     const value = this.objects.get(artifactRef)
     return value ? new Uint8Array(value) : null
   }
-  async headObject(key: string): Promise<{ size: number; etag: string | null } | null> {
+
+  async headObject(key: string): Promise<{ size: number; etag: string | null; contentType?: string | null } | null> {
     const value = this.objects.get(key)
-    return value ? { size: value.byteLength, etag: null } : null
+    if (!value) return null
+    return {
+      size: value.byteLength,
+      etag: null,
+      contentType: this.contentTypes.get(key) ?? null,
+    }
   }
 
-  async putImmutableObject(key: string, body: Uint8Array, _contentType: string): Promise<void> {
+  async putImmutableObject(key: string, body: Uint8Array, contentType: string): Promise<void> {
     this.objects.set(key, new Uint8Array(body))
+    this.contentTypes.set(key, contentType)
   }
 
   async commitRelease(

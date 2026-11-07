@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "kind": "reader_delivery_cutover_checklist",
+  "generated_by": "PR-D Task 4.4 (docs/v3/reader-delivery-cutover.md)",
+  "status": "pending_owner",
+  "executed_by_agent": false,
+  "environment_reason": "live-adapters-ready-awaiting-owner-credentials-dns",
+  "tried": "Live Wrangler/gh/EdgeOne/CF REST adapters landed (unit-tested with spawn/fetch doubles). No Owner DNS for test.air.teijp.cn and no live CF/EO tokens in this implementing environment; Staging Accepted apply+DNS not executed.",
+  "code_status": "live_deployment_ready",
+  "staging_accepted": false,
+  "policy": {
+    "neverFakeReceipts": true,
+    "doNotDeleteStagingBuckets": true,
+    "doNotDeleteOldEdgeOneProject": true,
+    "dualBucketFallbackOnIsolationFailure": false
+  },
+  "items": [
+    {
+      "id": "development-single-bucket-apply",
+      "title": "AIRINGCAL_ENV=development deploy-env --apply built airingcal-development with isolation.ok=true",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "Implemented live I/O adapters + Cloudflare API token (R2 admin, Workers write) + AIRINGCAL_ZONE_ID (host-scoped cache/WAF rules) + AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes",
+      "evidence": null,
+      "command": "AIRINGCAL_ENV=development AIRINGCAL_DEPLOY_TARGET=both AIRINGCAL_ZONE_ID=$AIRINGCAL_ZONE_ID AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes node scripts/deploy-env.mjs --apply",
+      "gate": "exit 0 AND result.isolation.ok === true; missing-capability / owner-gated / aborted exit is NOT Staging Accepted (else abort; no dual-bucket fallback)"
+    },
+    {
+      "id": "cf-eo-overseas-parity-pre",
+      "title": "CF staging vs EdgeOne overseas preview share publish.generation + content_hash before CNAME",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "AIRINGCAL_EDGEONE_OVERSEAS_PREVIEW_HOST reachable (access-protected *.edgeone.cool needs bound host or eo_token/eo_time)",
+      "evidence": null,
+      "command": "node scripts/reader-delivery-bench.mjs --hosts https://airing-cal-v3-read-staging.r7a.workers.dev,$AIRINGCAL_EDGEONE_OVERSEAS_PREVIEW_HOST --out docs/v3/fixtures/reader-delivery-cutover-parity-pre.json",
+      "gate": "receipt.cf_vs_eo.equal === true"
+    },
+    {
+      "id": "cname-test-air-to-overseas-eo",
+      "title": "test.air.teijp.cn CNAME points to airingcal-edgeone-read-overseas; old airingcal-edgeone-read kept alive",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "DNS account control for teijp.cn + EdgeOne console domain binding",
+      "evidence": null,
+      "rollback": "Repoint the test CNAME back to airingcal-edgeone-read (still deployed) with reduced TTL."
+    },
+    {
+      "id": "cf-eo-parity-post",
+      "title": "CF staging vs test.air.teijp.cn (now overseas) share publish.generation + content_hash after CNAME",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "CNAME propagated",
+      "evidence": null,
+      "command": "node scripts/reader-delivery-bench.mjs --hosts https://airing-cal-v3-read-staging.r7a.workers.dev,https://test.air.teijp.cn --out docs/v3/fixtures/reader-delivery-cutover-parity-post.json",
+      "gate": "receipt.cf_vs_eo.equal === true"
+    },
+    {
+      "id": "disable-r2-dev-after-parity",
+      "title": "r2.dev disabled on the development bucket after custom-domain HEAD/GET parity for pointer + one image",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "Cloudflare token with R2 bucket-admin",
+      "evidence": null,
+      "command": "wrangler r2 bucket dev-url disable airingcal-development -y --env-file /dev/null",
+      "gate": "curl -sfI $AIRINGCAL_PUBLIC_BASE_URL/public/current-release.json (200, no-cache) AND curl -sfI $AIRINGCAL_PUBLIC_BASE_URL/images/<hash>/original (200, Content-Type image/*)"
+    },
+    {
+      "id": "single-writer-development-test",
+      "title": "One controlled target=development dispatch passed (development job conclusion success, not skipped)",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "Opt-in AIRINGCAL_DEPLOY_WRITER_TEST=yes after isolation+copy; gh auth with Actions write on Skyline-Gazer/AiringCal",
+      "evidence": null,
+      "gate": "run conclusion success AND development job conclusion success; skipped development job = hard failure (writer gate not visible), never a pass; deploy-env restores the freeze (repo var AIRINGCAL_DEVELOPMENT_WRITER_ENABLED=false + workflow disable) in a finally path — the enable→dispatch→verify→re-disable window is the ONLY time the workflow may be enabled"
+    },
+    {
+      "id": "keep-staging-buckets",
+      "title": "airingcal-staging-checkpoint and airingcal-staging-public are NOT deleted in this change",
+      "kind": "guard",
+      "status": "pending_owner",
+      "requiresOwner": "Confirm at acceptance; prune only in a separate change",
+      "evidence": null,
+      "enforced_by": "policy.doNotDeleteStagingBuckets"
+    },
+    {
+      "id": "keep-old-edgeone-project",
+      "title": "airingcal-edgeone-read (global) remains deployed as rollback until domain cutover acceptance",
+      "kind": "guard",
+      "status": "pending_owner",
+      "requiresOwner": "Confirm at acceptance",
+      "evidence": null,
+      "enforced_by": "deploy-env plan edgeone.keepOldProject; policy.doNotDeleteOldEdgeOneProject"
+    }
+  ]
+}

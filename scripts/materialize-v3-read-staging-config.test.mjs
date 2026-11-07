@@ -35,6 +35,7 @@ function expectFailure(args, env, pattern) {
 const VALID_ENV = {
   AIRINGCAL_STAGING_PUBLIC_R2_BUCKET: 'airing-cal-public-staging',
   AIRINGCAL_STAGING_PUBLIC_BASE_URL: 'https://staging-cdn.example.com',
+  AIRINGCAL_IMAGE_BASE_URL: '',
   BANGUMI_GIT_COMMIT_SHA: GIT_SHA,
 }
 
@@ -99,6 +100,57 @@ test('staging config materializer refuses production or invalid values', () => {
     /without query or fragment/,
   )
   expectFailure([source, target], { ...VALID_ENV, BANGUMI_GIT_COMMIT_SHA: 'abc' }, /40 character git sha/)
+})
+
+test('staging config materializer omits AIRINGCAL_IMAGE_BASE_URL when unset', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airing-cal-v3-staging-'))
+  const source = join(dir, 'wrangler.toml')
+  const target = join(dir, 'out', 'wrangler.toml')
+  writeFileSync(source, readFileSync(REPO_SOURCE, 'utf8'))
+
+  run([source, target], { ...VALID_ENV, AIRINGCAL_IMAGE_BASE_URL: '' })
+
+  const materialized = readFileSync(target, 'utf8')
+  assert.doesNotMatch(
+    materialized,
+    /AIRINGCAL_IMAGE_BASE_URL/,
+    'image base defaults off: reader reuses public base',
+  )
+  assert.match(materialized, /\[vars\]/)
+})
+
+test('staging config materializer injects AIRINGCAL_IMAGE_BASE_URL into [vars] when set', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airing-cal-v3-staging-'))
+  const source = join(dir, 'wrangler.toml')
+  const target = join(dir, 'out', 'wrangler.toml')
+  writeFileSync(source, readFileSync(REPO_SOURCE, 'utf8'))
+
+  run([source, target], { ...VALID_ENV, AIRINGCAL_IMAGE_BASE_URL: 'https://img-cdn.example.com' })
+
+  const materialized = readFileSync(target, 'utf8')
+  assert.match(
+    materialized,
+    /AIRINGCAL_IMAGE_BASE_URL = "https:\/\/img-cdn\.example\.com"/,
+  )
+  assert.doesNotMatch(materialized, /^\[env\./m, 'no [env.*] tables are emitted')
+})
+
+test('staging config materializer fails closed on an invalid AIRINGCAL_IMAGE_BASE_URL', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airing-cal-v3-staging-'))
+  const source = join(dir, 'wrangler.toml')
+  const target = join(dir, 'out', 'wrangler.toml')
+  writeFileSync(source, readFileSync(REPO_SOURCE, 'utf8'))
+
+  expectFailure(
+    [source, target],
+    { ...VALID_ENV, AIRINGCAL_IMAGE_BASE_URL: 'http://img-cdn.example.com' },
+    /AIRINGCAL_IMAGE_BASE_URL/,
+  )
+  expectFailure(
+    [source, target],
+    { ...VALID_ENV, AIRINGCAL_IMAGE_BASE_URL: 'https://img-cdn.example.com/?x=1' },
+    /AIRINGCAL_IMAGE_BASE_URL/,
+  )
 })
 
 test('staging config materializer rejects sources that already declare vars or envs', () => {

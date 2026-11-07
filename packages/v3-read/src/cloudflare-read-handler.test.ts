@@ -97,6 +97,36 @@ test('cloudflare read handler redirects images through a validated public base U
   assert.equal(v2Thumb.headers.get('Location'), `https://cdn.example.com/images/${hash}/thumb.v2.webp`)
 })
 
+test('cloudflare read handler redirects images via imageBaseUrl when provided', async () => {
+  const bucket = await publishedBucket()
+  const store = new CloudflareR2PublicStore(bucket)
+  const hash = 'b'.repeat(64)
+  await store.putImmutableObject(`images/${hash}/original`, new Uint8Array([9]), 'image/jpeg')
+
+  const withImageBase = createCloudflareReadHandler({
+    publicR2: bucket,
+    publicBaseUrl: 'https://cdn.example.com/',
+    imageBaseUrl: 'https://img.cdn.example.com/',
+  })
+  const preferred = await withImageBase(new Request(`https://worker.example/image/${hash}`))
+  assert.equal(preferred.status, 302)
+  assert.equal(
+    preferred.headers.get('Location'),
+    `https://img.cdn.example.com/images/${hash}/original`,
+  )
+
+  const withoutImageBase = createCloudflareReadHandler({
+    publicR2: bucket,
+    publicBaseUrl: 'https://cdn.example.com/',
+  })
+  const fallback = await withoutImageBase(new Request(`https://worker.example/image/${hash}`))
+  assert.equal(
+    fallback.headers.get('Location'),
+    `https://cdn.example.com/images/${hash}/original`,
+  )
+})
+
+
 test('cloudflare read handler rejects a placeholder base URL at config time', async () => {
   const bucket = await publishedBucket()
   assert.throws(

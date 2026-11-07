@@ -73,6 +73,47 @@ test('worker serves v2 read routes from the R2 public store', async () => {
   assert.equal(versionBody.platform, 'cloudflare')
 })
 
+test('worker reuses isolate handler/cache for sequential collections and skips snapshot on /image', async () => {
+  const bucket = await publishedBucket()
+  const calls: string[] = []
+  const originalGet = bucket.get.bind(bucket)
+  const originalHead = bucket.head.bind(bucket)
+  bucket.get = async (key: string) => {
+    calls.push(`get:${key}`)
+    return originalGet(key)
+  }
+  bucket.head = async (key: string) => {
+    calls.push(`head:${key}`)
+    return originalHead(key)
+  }
+  const env = { AIRINGCAL_PUBLIC_R2: bucket, PACKAGE_VERSION: '3.0.0-test' }
+
+  const first = await handleReadWorkerRequest(
+    new Request('https://worker.example/api/collections?type=watching&page=1&limit=24'),
+    env,
+  )
+  assert.equal(first.status, 200)
+  const firstSnapshotGets = calls.filter((key) => key.startsWith('get:snapshots/')).length
+  assert.equal(firstSnapshotGets, 1)
+  const afterFirst = calls.length
+
+  const second = await handleReadWorkerRequest(
+    new Request('https://worker.example/api/collections?type=watching&page=1&limit=24'),
+    env,
+  )
+  assert.equal(second.status, 200)
+  assert.equal(calls.length, afterFirst)
+
+  const hash = 'a'.repeat(64)
+  bucket.objects.set(`images/${hash}/original`, { bytes: new TextEncoder().encode('image-bytes'), etag: 'seeded' })
+  const beforeImage = calls.length
+  const image = await handleReadWorkerRequest(new Request(`https://worker.example/image/${hash}`), env)
+  assert.equal(image.status, 200)
+  const imageKeys = calls.slice(beforeImage)
+  assert.ok(imageKeys.every((key) => key.includes('images/')), `unexpected image keys: ${imageKeys.join(',')}`)
+  assert.equal(imageKeys.some((key) => key.includes('snapshots/')), false)
+})
+
 test('worker serves widget assets, 410 sync routes, and R2 images', async () => {
   const bucket = await publishedBucket()
   const env = { AIRINGCAL_PUBLIC_R2: bucket, BANGUMI_GIT_COMMIT_SHA: 'e'.repeat(40) }

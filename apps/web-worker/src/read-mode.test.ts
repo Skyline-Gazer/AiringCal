@@ -199,7 +199,7 @@ test('default read mode keeps the legacy path and never reads the public Release
   const body = await collections.json() as { data: Array<{ subject_id: number }>; types: Record<string, number> }
   assert.deepEqual(body.data.map((item) => item.subject_id), [11], 'legacy KV data is served')
   assert.deepEqual(body.types, { watching: 1, _total: 1 })
-  assert.equal(collections.headers.get('Cache-Control'), 'public, max-age=30, s-maxage=300, stale-while-revalidate=120')
+  assert.equal(collections.headers.get('Cache-Control'), 'public, max-age=30, s-maxage=60, stale-while-revalidate=30')
   assert.deepEqual(releaseCalls, [], 'the public Release store must stay untouched in legacy mode')
 
   const config = await worker.fetch(new Request('https://read.local/api/config'), env as never)
@@ -275,7 +275,7 @@ test('v3-release mode serves catalog, health and images from the current Release
   const missingImage = await worker.fetch(new Request(`https://read.local/image/${'b'.repeat(64)}`), env as never)
   assert.equal(missingImage.status, 404)
 
-  // A new Release generation must be served without a redeploy: same pointer, new data.
+  // Soft TTL still holds: isolate cache must keep serving gen-1 until soft revalidate.
   const secondGeneration = await release.builder.publish(release.store, {
     runId: 'gen-2',
     subjectId: 8,
@@ -285,16 +285,69 @@ test('v3-release mode serves catalog, health and images from the current Release
   release.builder.close()
   assert.equal(secondGeneration, firstGeneration + 1)
 
-  const advanced = await worker.fetch(new Request('https://read.local/api/health'), env as never)
-  const advancedHealth = await advanced.json() as { data: { publish: { generation: number } } }
-  assert.equal(advancedHealth.data.publish.generation, secondGeneration)
+  const sticky = await worker.fetch(new Request('https://read.local/api/health'), env as never)
+  const stickyHealth = await sticky.json() as { data: { publish: { generation: number } } }
+  assert.equal(
+    stickyHealth.data.publish.generation,
+    firstGeneration,
+    'within soft TTL the isolate keeps the previously verified generation',
+  )
 
-  const advancedCollections = await worker.fetch(
+  const stickyCollections = await worker.fetch(
     new Request('https://read.local/api/collections?type=watching'),
     env as never,
   )
-  const advancedBody = await advancedCollections.json() as { data: Array<{ subject_id: number }> }
-  assert.deepEqual(advancedBody.data.map((item) => item.subject_id), [8], 'reads follow the current pointer generation')
+  const stickyBody = await stickyCollections.json() as { data: Array<{ subject_id: number }> }
+  assert.deepEqual(stickyBody.data.map((item) => item.subject_id), [7])
+})
+
+test('v3-release mode reuses isolate handler/cache across sequential collections', async () => {
+  const release = publishedRelease()
+  await release.builder.publish(release.store, {
+    runId: 'reuse-run',
+    subjectId: 7,
+    title: 'release-subject',
+    now: 1_700_000_000_000,
+  })
+  release.builder.close()
+  const calls = countingBucket(release.bucket)
+  const env = {
+    ...legacyEnv(),
+    AIRINGCAL_READ_MODE: 'v3-release',
+    AIRINGCAL_PUBLIC_R2: release.bucket,
+    NSFW_SHOW: 'false',
+    PACKAGE_VERSION: '3.0.0-test',
+  }
+
+  const first = await worker.fetch(
+    new Request('https://read.local/api/collections?type=watching&page=1&limit=24'),
+    env as never,
+  )
+  assert.equal(first.status, 200)
+  const firstSnapshotGets = calls.filter((key) => key.startsWith('snapshots/')).length
+  assert.equal(firstSnapshotGets, 1)
+  const afterFirst = calls.length
+
+  const second = await worker.fetch(
+    new Request('https://read.local/api/collections?type=watching&page=1&limit=24'),
+    env as never,
+  )
+  assert.equal(second.status, 200)
+  assert.equal(calls.length, afterFirst, 'second collections request must reuse isolate snapshot cache')
+
+  const imageCallsBefore = calls.length
+  await release.store.putImmutableObject(
+    `images/${IMAGE_HASH}/original`,
+    new TextEncoder().encode('image-bytes'),
+    'image/jpeg',
+  )
+  const image = await worker.fetch(new Request(`https://read.local/image/${IMAGE_HASH}`), env as never)
+  assert.equal(image.status, 200)
+  const imageKeys = calls.slice(imageCallsBefore)
+  assert.ok(
+    imageKeys.every((key) => key.startsWith('images/')),
+    `image route must not load snapshot, got ${imageKeys.join(',')}`,
+  )
 })
 
 test('v3-release mode redirects images to a validated public base URL only when the object exists', async () => {
@@ -401,14 +454,19 @@ test('read mode parsing accepts only documented values', () => {
   assert.deepEqual(resolveReadModeConfig({}), { mode: 'legacy' })
   assert.deepEqual(
     resolveReadModeConfig({ AIRINGCAL_READ_MODE: 'v3-release' }),
-    { mode: 'v3-release', publicBaseUrl: undefined },
+    { mode: 'v3-release', publicBaseUrl: undefined, imageBaseUrl: undefined },
   )
   assert.deepEqual(
     resolveReadModeConfig({
       AIRINGCAL_READ_MODE: 'v3-release',
       AIRINGCAL_PUBLIC_BASE_URL: 'https://cdn.example.com/airingcal/',
+      AIRINGCAL_IMAGE_BASE_URL: 'https://img.cdn.example.com/',
     }),
-    { mode: 'v3-release', publicBaseUrl: 'https://cdn.example.com/airingcal' },
+    {
+      mode: 'v3-release',
+      publicBaseUrl: 'https://cdn.example.com/airingcal',
+      imageBaseUrl: 'https://img.cdn.example.com',
+    },
   )
   assert.equal(isV3ReleaseReadPath('/api/collections'), true)
   assert.equal(isV3ReleaseReadPath(`/image/${'a'.repeat(64)}`), true)

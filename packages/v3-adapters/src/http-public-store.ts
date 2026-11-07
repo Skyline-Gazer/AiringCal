@@ -24,6 +24,8 @@ export interface HttpPublicStoreOptions {
 export class HttpPublicStore implements PublicStore {
   private readonly baseUrl: string
   private readonly fetchImpl: typeof fetch
+  /** Isolate-lifetime memo: once HEAD is 405/501, skip HEAD and use GET. */
+  private headSupported: boolean | null = null
 
   constructor(
     publicBaseUrl: string,
@@ -54,6 +56,60 @@ export class HttpPublicStore implements PublicStore {
     }
     const bytes = new Uint8Array(await response.arrayBuffer())
     return { bytes, text: new TextDecoder().decode(bytes) }
+  }
+
+  private headFromResponse(response: Response, key: string): {
+    size: number
+    etag: string | null
+    contentType?: string | null
+  } {
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} heading public object ${key}`)
+    }
+    const lengthHeader = response.headers.get('content-length')
+    const size = lengthHeader != null && lengthHeader !== '' ? Number(lengthHeader) : 0
+    return {
+      size: Number.isFinite(size) ? size : 0,
+      etag: response.headers.get('etag'),
+      contentType: response.headers.get('content-type'),
+    }
+  }
+
+  private async headViaGet(key: string): Promise<{
+    size: number
+    etag: string | null
+    contentType?: string | null
+  } | null> {
+    const response = await this.fetchImpl(this.objectUrl(key), {
+      method: 'GET',
+      headers: { 'cache-control': 'no-cache' },
+    })
+    if (response.status === 404) return null
+    // Drain body so the underlying connection can be reused; existence/metadata only.
+    await response.arrayBuffer().catch(() => undefined)
+    return this.headFromResponse(response, key)
+  }
+
+  async headObject(
+    key: string,
+  ): Promise<{ size: number; etag: string | null; contentType?: string | null } | null> {
+    if (this.headSupported === false) {
+      return this.headViaGet(key)
+    }
+
+    const response = await this.fetchImpl(this.objectUrl(key), {
+      method: 'HEAD',
+      headers: { 'cache-control': 'no-cache' },
+    })
+
+    if (response.status === 405 || response.status === 501) {
+      this.headSupported = false
+      return this.headViaGet(key)
+    }
+
+    this.headSupported = true
+    if (response.status === 404) return null
+    return this.headFromResponse(response, key)
   }
 
   async getCurrentRelease(): Promise<PublicReleasePointer | null> {

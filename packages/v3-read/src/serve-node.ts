@@ -6,6 +6,7 @@ import { handlePortableReadRequest } from './portable-read-handler.ts'
 import { readPortableCronStatus } from './portable-builder-cron.ts'
 import { resolveNsfwShow } from './read-config.ts'
 import { handlePortableStaticRequest } from './portable-static-handler.ts'
+import { createVerifiedSnapshotCache } from './verified-snapshot-cache.ts'
 
 async function writeNodeResponse(res: import('node:http').ServerResponse, response: Response): Promise<void> {
   const headers: Record<string, string> = {}
@@ -36,12 +37,15 @@ export function startPortableReadServer(options: {
   packageVersion?: string
   gitSha?: string
   publicBaseUrl?: string
+  imageBaseUrl?: string
 } = {}) {
   const publicDir = options.publicDir ?? readPublicDir()
   const port = options.port ?? Number(process.env.PORT ?? 8787)
   // C6: validate once at startup, not per request; placeholder values throw here.
   const publicBaseUrl = parsePublicBaseUrl(options.publicBaseUrl ?? process.env.AIRINGCAL_PUBLIC_BASE_URL) ?? undefined
+  const imageBaseUrl = parsePublicBaseUrl(options.imageBaseUrl ?? process.env.AIRINGCAL_IMAGE_BASE_URL) ?? undefined
   const publicStore = new FilesystemPublicStore(publicDir)
+  const snapshotCache = createVerifiedSnapshotCache()
   const server = createServer(async (req, res) => {
     try {
       const host = req.headers.host ?? '127.0.0.1'
@@ -56,10 +60,12 @@ export function startPortableReadServer(options: {
         nsfwShow: options.nsfwShow ?? resolveNsfwShow(process.env.NSFW_SHOW),
         packageVersion: options.packageVersion ?? process.env.npm_package_version,
         publicBaseUrl,
+        imageBaseUrl,
         processEnv: process.env,
         cronStatus: process.env.AIRINGCAL_BUILDER_SQLITE_PATH
           ? () => readPortableCronStatus(process.env)
           : undefined,
+        snapshotCache,
       })
       await writeNodeResponse(res, response)
     } catch (error) {

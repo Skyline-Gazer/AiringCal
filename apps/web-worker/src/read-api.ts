@@ -5,6 +5,7 @@ import {
   publicImageRedirectResponse,
   resolvePublicImageRedirect,
 } from '@airing-cal/v3-core/public-image-url'
+import { V2_CACHE_CONTROL } from '@airing-cal/v3-core/read-contract'
 import { isConfirmedNotFoundSubjectMeta, type SubjectMeta } from '@airing-cal/domain'
 import { sanitizeErrorMessage } from '@airing-cal/worker-common'
 import {
@@ -37,10 +38,10 @@ interface ReadEnv {
 const COLLECTION_TYPES = ['want', 'watched', 'watching', 'on_hold', 'dropped'] as const
 const CRON_HOUR_UTC = 20
 const HYDRATION_CONCURRENCY = 12
-const CALENDAR_CACHE_CONTROL = 'public, max-age=60, s-maxage=600, stale-while-revalidate=300'
-const COLLECTIONS_CACHE_CONTROL = 'public, max-age=30, s-maxage=300, stale-while-revalidate=120'
-const IMAGE_CACHE_CONTROL = 'public, max-age=31536000, immutable'
-const IMAGE_CDN_CACHE_CONTROL = 'max-age=31536000'
+const CALENDAR_CACHE_CONTROL = V2_CACHE_CONTROL.calendar
+const COLLECTIONS_CACHE_CONTROL = V2_CACHE_CONTROL.collections
+const IMAGE_CACHE_CONTROL = V2_CACHE_CONTROL.image
+const IMAGE_CDN_CACHE_CONTROL = V2_CACHE_CONTROL.imageCdn
 const WORKFLOW_STALE_SECONDS = 20 * 60
 const MAX_CURSOR_LENGTH = 1024
 
