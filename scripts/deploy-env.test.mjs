@@ -367,6 +367,16 @@ function createRecordingApplyIo(overrides = {}) {
     syncGithubEnvironment: record('sync-gh-env', async () => ({ environment: 'development' })),
     deployCloudflareReader: record('deploy-cloudflare', async () => ({ deployed: true })),
     deployEdgeoneOverseas: record('deploy-edgeone', async () => ({ deployed: true })),
+    verifyImageRouting: record('image-routing-verify', async () => ({
+      hash: 'a'.repeat(64),
+      readers: [
+        {
+          base: 'https://cf-reader.example.test',
+          location: `https://dev-cdn.example.test/images/${'a'.repeat(64)}/original`,
+          originMatches: true,
+        },
+      ],
+    })),
     validateImageCdn: record('image-cdn-validate', async () => ({ enabled: false })),
     runSingleWriterTest: record('single-writer-test', async () => ({ dispatched: false })),
     ...overrides,
@@ -393,6 +403,7 @@ function createRecordingApplyIo(overrides = {}) {
         syncGithubEnvironment: 'sync-gh-env',
         deployCloudflareReader: 'deploy-cloudflare',
         deployEdgeoneOverseas: 'deploy-edgeone',
+        verifyImageRouting: 'image-routing-verify',
         validateImageCdn: 'image-cdn-validate',
         runSingleWriterTest: 'single-writer-test',
       }[name] ?? name
@@ -438,6 +449,7 @@ test('runDevelopmentApply executes ordered steps with injectable I/O', async () 
     'sync-gh-env',
     'deploy-cloudflare',
     'deploy-edgeone',
+    'image-routing-verify',
     'image-cdn-validate',
     'single-writer-test',
   ])
@@ -819,7 +831,9 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
     publicBaseUrl: 'https://dev-cdn.example.test',
     mode: 'apply',
   })
+  const liveImageHash = 'b'.repeat(64)
   const spawnLog = []
+  const materializeEnvs = []
   let ghRunListCount = 0
   const whoamiJson = JSON.stringify({
     loggedIn: true,
@@ -835,10 +849,12 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
       AIRINGCAL_BANGUMI_TOKEN: 'bgm',
       AIRINGCAL_PRIMARY_USER_ID: '1',
       AIRINGCAL_EDGEONE_API_TOKEN: 'eo-tok',
+      AIRINGCAL_EDGEONE_READER_URL: 'https://eo-reader.example.test',
+      AIRINGCAL_IMAGE_BASE_URL: 'https://img.example.test',
       AIRINGCAL_DEPLOY_WRITER_TEST: 'yes',
     },
     plan,
-    spawnSyncImpl: (cmd, args) => {
+    spawnSyncImpl: (cmd, args, opts) => {
       spawnLog.push([cmd, args.join(' ')])
       const joined = args.join(' ')
       if (joined.includes('whoami')) {
@@ -853,6 +869,7 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
         }
       }
       if (joined.includes('materialize-v3-read-staging-config')) {
+        materializeEnvs.push({ ...(opts?.env ?? {}) })
         return { status: 0, stdout: '', stderr: 'wrote', error: null }
       }
       if (cmd === 'pnpm' && joined.includes('build:edgeone-read')) {
@@ -920,6 +937,42 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
       if (u.includes('checkpoints/_isolation-probe')) {
         return { status: 403, ok: false, async json() { return {} } }
       }
+      if (u.endsWith('/public/current-release.json')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { artifact_ref: 'snapshots/v1/7-abc.json' }
+          },
+        }
+      }
+      if (u.includes('/snapshots/v1/')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              collections: { watching: [{ images: { large: { hash: liveImageHash } } }] },
+              calendar: [],
+            }
+          },
+        }
+      }
+      if (u.includes('/image/')) {
+        return {
+          ok: false,
+          status: 302,
+          headers: {
+            get: (name) =>
+              String(name).toLowerCase() === 'location'
+                ? `https://img.example.test/images/${liveImageHash}/original`
+                : null,
+          },
+          async json() {
+            return {}
+          },
+        }
+      }
       return {
         ok: true,
         status: 200,
@@ -974,6 +1027,34 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
   assert.ok(result.completed.includes('copy-checkpoints'))
   assert.ok(result.completed.includes('deploy-cloudflare'))
   assert.ok(result.completed.includes('deploy-edgeone'))
+  assert.ok(result.completed.includes('image-routing-verify'))
+  assert.ok(
+    result.completed.indexOf('image-routing-verify') > result.completed.indexOf('deploy-edgeone'),
+    'routing verify must run after deploys',
+  )
+  assert.ok(
+    result.completed.indexOf('image-routing-verify') <
+      result.completed.indexOf('image-cdn-validate'),
+    'routing verify must run before validateImageCdn',
+  )
+  assert.equal(result.imageRouting?.hash, liveImageHash)
+  assert.deepEqual(
+    (result.imageRouting?.readers ?? []).map((r) => r.base).sort(),
+    ['https://airing-cal-v3-read-staging.r7a.workers.dev', 'https://eo-reader.example.test'],
+  )
+  assert.ok(result.imageRouting.readers.every((r) => r.originMatches === true))
+  // Gap A: the materialize child env receives AIRINGCAL_IMAGE_BASE_URL explicitly.
+  assert.ok(materializeEnvs.length > 0, 'materialize must run')
+  assert.equal(materializeEnvs[0].AIRINGCAL_IMAGE_BASE_URL, 'https://img.example.test')
+  // Gap B: EdgeOne env pairs include the image base when configured.
+  assert.ok(
+    spawnLog.some(
+      ([cmd, args]) =>
+        cmd === 'edgeone' &&
+        args.includes('env set AIRINGCAL_IMAGE_BASE_URL https://img.example.test'),
+    ),
+    `edgeone env set missing image base: ${spawnLog.map(([c, a]) => `${c} ${a}`).join(' | ')}`,
+  )
   assert.ok(spawnLog.some(([cmd, args]) => cmd === 'gh' && args.includes('workflow disable')))
   assert.ok(spawnLog.some(([cmd, args]) => cmd === 'pnpm' && args.includes('cors set')))
   assert.ok(spawnLog.some(([cmd]) => cmd === 'edgeone'))
@@ -1820,4 +1901,370 @@ test('CLI production --apply without force exits non-zero with no mutations', ()
   assert.notEqual(result.status, 0)
   assert.match(`${result.stderr}
 ${result.stdout}`, /production|--i-am-sure-production/i)
+})
+
+// ---------------------------------------------------------------------------
+// Review item 5 (cluster 2): AIRINGCAL_IMAGE_BASE_URL must flow to readers
+// and apply must verify the real 302 Location routing evidence.
+// ---------------------------------------------------------------------------
+
+const ROUTE_HASH = 'c'.repeat(64)
+
+function routingSnapshotWithImage(hash) {
+  return {
+    collections: { watching: [{ images: { large: { hash } } }], want: [] },
+    calendar: [{ items: [{ images: { large: null } }] }],
+  }
+}
+
+function buildRoutingIo(fetchImpl, extraEnv = {}, target = 'both') {
+  return import('./deploy-env.mjs').then(({ createLiveDevelopmentApplyIo }) =>
+    createLiveDevelopmentApplyIo({
+      env: {
+        AIRINGCAL_CLOUDFLARE_API_TOKEN: 'routing-token',
+        AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+        ...extraEnv,
+      },
+      plan: buildDevelopmentDeployPlan({
+        target,
+        publicBaseUrl: 'https://dev-cdn.example.test',
+        mode: 'apply',
+      }),
+      spawnSyncImpl: () => {
+        throw new Error('spawn must not be used by verifyImageRouting')
+      },
+      fetchImpl,
+    }),
+  )
+}
+
+function routingFetchDouble({ location, imageStatus = 302, snapshot, calls = [] }) {
+  return async (url, init = {}) => {
+    const u = String(url)
+    calls.push([u, init])
+    if (u.endsWith('/public/current-release.json')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { artifact_ref: 'snapshots/v1/9-abc.json' }
+        },
+      }
+    }
+    if (u.includes('/snapshots/v1/')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return snapshot ?? routingSnapshotWithImage(ROUTE_HASH)
+        },
+      }
+    }
+    if (u.includes('/image/')) {
+      return {
+        ok: imageStatus >= 200 && imageStatus < 300,
+        status: imageStatus,
+        headers: {
+          get: (name) =>
+            String(name).toLowerCase() === 'location' && typeof location === 'string'
+              ? location
+              : null,
+        },
+        async json() {
+          return {}
+        },
+      }
+    }
+    throw new Error(`verifyImageRouting: unexpected fetch ${u}`)
+  }
+}
+
+function routingCtx(extra = {}) {
+  return {
+    cloudflareDeploy: { deployed: true, workerUrl: 'https://cf-reader.example.workers.dev' },
+    edgeoneDeploy: { deployed: true, readerUrl: 'https://preview.edgeone.cool' },
+    ...extra,
+  }
+}
+
+test('verifyImageRouting passes when CF + EO 302 Location origins match AIRINGCAL_IMAGE_BASE_URL', async () => {
+  const calls = []
+  const io = await buildRoutingIo(
+    routingFetchDouble({ location: `https://img.example.test/images/${ROUTE_HASH}/original`, calls }),
+    { AIRINGCAL_IMAGE_BASE_URL: 'https://img.example.test' },
+  )
+  const receipt = await io.verifyImageRouting(routingCtx())
+  assert.equal(receipt.hash, ROUTE_HASH)
+  assert.deepEqual(
+    receipt.readers.map((r) => r.base).sort(),
+    ['https://cf-reader.example.workers.dev', 'https://preview.edgeone.cool'],
+  )
+  assert.ok(receipt.readers.every((r) => r.originMatches === true))
+  assert.ok(receipt.readers.every((r) => r.location === `https://img.example.test/images/${ROUTE_HASH}/original`))
+  const imageCalls = calls.filter(([u]) => u.includes('/image/'))
+  assert.equal(imageCalls.length, 2)
+  assert.ok(imageCalls.every(([, init]) => init.redirect === 'manual'))
+  const pointerCall = calls.find(([u]) => u.endsWith('/public/current-release.json'))
+  assert.match(String(pointerCall[1].headers?.['cache-control'] ?? ''), /no-cache/)
+})
+
+test('verifyImageRouting fails closed when readers redirect to the public host while image base is set', async () => {
+  const io = await buildRoutingIo(
+    routingFetchDouble({ location: `https://dev-cdn.example.test/images/${ROUTE_HASH}/original` }),
+    { AIRINGCAL_IMAGE_BASE_URL: 'https://img.example.test' },
+  )
+  await assert.rejects(
+    io.verifyImageRouting(routingCtx()),
+    /image routing verification failed.*img\.example\.test/i,
+  )
+})
+
+test('verifyImageRouting expects the public origin when AIRINGCAL_IMAGE_BASE_URL is unset', async () => {
+  const io = await buildRoutingIo(
+    routingFetchDouble({ location: `https://dev-cdn.example.test/images/${ROUTE_HASH}/original` }),
+  )
+  const receipt = await io.verifyImageRouting(routingCtx())
+  assert.equal(receipt.hash, ROUTE_HASH)
+  assert.ok(receipt.readers.every((r) => r.originMatches === true))
+})
+
+test('verifyImageRouting fails closed on non-302 reader responses', async () => {
+  const io = await buildRoutingIo(
+    routingFetchDouble({ location: undefined, imageStatus: 404 }),
+    { AIRINGCAL_IMAGE_BASE_URL: 'https://img.example.test' },
+  )
+  await assert.rejects(io.verifyImageRouting(routingCtx()), /image routing verification failed/)
+})
+
+test('verifyImageRouting skips (not passes) when the published release has no images', async () => {
+  const calls = []
+  const io = await buildRoutingIo(
+    routingFetchDouble({
+      calls,
+      snapshot: { collections: {}, calendar: [] },
+    }),
+    { AIRINGCAL_IMAGE_BASE_URL: 'https://img.example.test' },
+  )
+  const result = await io.verifyImageRouting(routingCtx())
+  assert.equal(result.status, 'skipped-no-images')
+  assert.ok(typeof result.reason === 'string' && result.reason.length > 0)
+  assert.ok(!calls.some(([u]) => u.includes('/image/')), 'readers must not be probed')
+})
+
+test('verifyImageRouting refuses with an explicit error when the EdgeOne host is unknown', async () => {
+  const io = await buildRoutingIo(
+    routingFetchDouble({ location: `https://dev-cdn.example.test/images/${ROUTE_HASH}/original` }),
+  )
+  await assert.rejects(
+    io.verifyImageRouting({
+      cloudflareDeploy: { deployed: true, workerUrl: 'https://cf-reader.example.workers.dev' },
+      edgeoneDeploy: { deployed: true },
+    }),
+    /edgeone reader host unknown; set AIRINGCAL_EDGEONE_READER_URL for routing verification/,
+  )
+})
+
+test('verifyImageRouting honours the AIRINGCAL_EDGEONE_READER_URL fallback when the deploy stdout has no URL', async () => {
+  const io = await buildRoutingIo(
+    routingFetchDouble({ location: `https://dev-cdn.example.test/images/${ROUTE_HASH}/original` }),
+    { AIRINGCAL_EDGEONE_READER_URL: 'https://test.air.teijp.cn' },
+  )
+  const receipt = await io.verifyImageRouting({
+    cloudflareDeploy: { deployed: true, workerUrl: 'https://cf-reader.example.workers.dev' },
+    edgeoneDeploy: { deployed: true, readerUrl: null },
+  })
+  assert.ok(receipt.readers.some((r) => r.base === 'https://test.air.teijp.cn'))
+})
+
+test('verifyImageRouting propagates fetch errors fail-closed', async () => {
+  const io = await buildRoutingIo(async (url) => {
+    if (String(url).includes('/image/')) throw new Error('ECONNREFUSED')
+    return {
+      ok: true,
+      status: 200,
+      async json() {
+        return String(url).includes('/snapshots/')
+          ? routingSnapshotWithImage(ROUTE_HASH)
+          : { artifact_ref: 'snapshots/v1/9-abc.json' }
+      },
+    }
+  })
+  await assert.rejects(io.verifyImageRouting(routingCtx()), /image routing verification failed/)
+})
+
+test('runDevelopmentApply captures deploy receipts into ctx for verifyImageRouting', async () => {
+  const plan = buildDevelopmentDeployPlan({
+    target: 'both',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  let seen = null
+  const io = createRecordingApplyIo({
+    deployCloudflareReader: async () => ({ deployed: true, workerUrl: 'https://cf-worker.example.test' }),
+    deployEdgeoneOverseas: async () => ({ deployed: true, readerUrl: 'https://eo-reader.example.test' }),
+    verifyImageRouting: (ctx) => {
+      seen = { cf: ctx.cloudflareDeploy, eo: ctx.edgeoneDeploy }
+      return { hash: 'd'.repeat(64), readers: [] }
+    },
+  })
+  const result = await runDevelopmentApply({
+    plan,
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'routing-token',
+      AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes',
+    },
+    io,
+  })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(seen?.cf?.workerUrl, 'https://cf-worker.example.test')
+  assert.equal(seen?.eo?.readerUrl, 'https://eo-reader.example.test')
+  assert.ok(result.completed.includes('image-routing-verify'))
+})
+
+test('runDevelopmentApply records skipped-no-images without completing the routing step', async () => {
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const io = createRecordingApplyIo({
+    verifyImageRouting: async () => ({
+      status: 'skipped-no-images',
+      reason: 'current snapshot contains no image hashes',
+    }),
+  })
+  const result = await runDevelopmentApply({
+    plan,
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'routing-token',
+      AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes',
+    },
+    io,
+  })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.ok(!result.completed.includes('image-routing-verify'), 'skipped is not a pass')
+  assert.ok(result.completed.includes('image-cdn-validate'))
+  assert.equal(result.imageRouting?.status, 'skipped-no-images')
+})
+
+test('runDevelopmentApply propagates image routing verification failures', async () => {
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const io = createRecordingApplyIo({
+    verifyImageRouting: async () => {
+      throw new Error('image routing verification failed: CF 302 pointed at the public host')
+    },
+  })
+  await assert.rejects(
+    runDevelopmentApply({
+      plan,
+      env: {
+        AIRINGCAL_CLOUDFLARE_API_TOKEN: 'routing-token',
+        AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes',
+      },
+      io,
+    }),
+    /image routing verification failed/,
+  )
+})
+
+test('deployCloudflareReader forwards the trimmed AIRINGCAL_IMAGE_BASE_URL to the materialize child env', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const runs = []
+  const spawnSyncImpl = (cmd, args, opts) => {
+    const joined = args.join(' ')
+    if (joined.includes('materialize-v3-read-staging-config')) {
+      runs.push({ ...(opts?.env ?? {}) })
+      return { status: 0, stdout: '', stderr: 'wrote', error: null }
+    }
+    if (joined.includes('deploy') && joined.includes('--config')) {
+      return { status: 0, stdout: 'Published https://reader.r7a.workers.dev', stderr: '', error: null }
+    }
+    return { status: 0, stdout: 'ok', stderr: '', error: null }
+  }
+
+  const ioSet = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'routing-token',
+      AIRINGCAL_IMAGE_BASE_URL: '  https://img.example.test  ',
+    },
+    plan,
+    spawnSyncImpl,
+    fetchImpl: async () => {
+      throw new Error('no fetch expected')
+    },
+  })
+  const deployed = await ioSet.deployCloudflareReader()
+  assert.equal(deployed.workerUrl, 'https://reader.r7a.workers.dev')
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0].AIRINGCAL_IMAGE_BASE_URL, 'https://img.example.test')
+
+  runs.length = 0
+  const ioUnset = createLiveDevelopmentApplyIo({
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'routing-token' },
+    plan,
+    spawnSyncImpl,
+    fetchImpl: async () => {
+      throw new Error('no fetch expected')
+    },
+  })
+  await ioUnset.deployCloudflareReader()
+  assert.equal(runs.length, 1)
+  assert.equal(runs[0].AIRINGCAL_IMAGE_BASE_URL, '', 'unset must be explicit empty; never leak process.env')
+})
+
+test('deployEdgeoneOverseas sets the image base env pair only when configured and exposes readerUrl', async () => {
+  const buildEdgeoneIo = (imageBaseUrl, spawnLog) =>
+    import('./deploy-env.mjs').then(({ createLiveDevelopmentApplyIo }) =>
+      createLiveDevelopmentApplyIo({
+        env: {
+          AIRINGCAL_CLOUDFLARE_API_TOKEN: 'routing-token',
+          AIRINGCAL_EDGEONE_API_TOKEN: 'eo-tok',
+          ...(imageBaseUrl ? { AIRINGCAL_IMAGE_BASE_URL: imageBaseUrl } : {}),
+        },
+        plan: buildDevelopmentDeployPlan({
+          target: 'edgeone',
+          publicBaseUrl: 'https://dev-cdn.example.test',
+          mode: 'apply',
+        }),
+        spawnSyncImpl: (cmd, args) => {
+          const joined = args.join(' ')
+          spawnLog.push(`${cmd} ${joined}`)
+          return {
+            status: 0,
+            stdout: cmd === 'edgeone' && joined.includes('deploy') ? 'Deployed at https://preview.edgeone.cool' : '',
+            stderr: '',
+            error: null,
+          }
+        },
+        fetchImpl: async () => {
+          throw new Error('no fetch expected')
+        },
+      }),
+    )
+
+  const withImage = []
+  const ioWith = await buildEdgeoneIo('https://img.example.test', withImage)
+  const resultWith = await ioWith.deployEdgeoneOverseas()
+  assert.ok(
+    withImage.some((l) => l.includes('env set AIRINGCAL_IMAGE_BASE_URL https://img.example.test')),
+    withImage.join(' | '),
+  )
+  assert.equal(resultWith.readerUrl, 'https://preview.edgeone.cool')
+
+  const withoutImage = []
+  const ioWithout = await buildEdgeoneIo('', withoutImage)
+  await ioWithout.deployEdgeoneOverseas()
+  assert.ok(
+    !withoutImage.some((l) => l.includes('AIRINGCAL_IMAGE_BASE_URL')),
+    `image base must stay unset on EdgeOne when not configured: ${withoutImage.join(' | ')}`,
+  )
 })

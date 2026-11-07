@@ -114,6 +114,48 @@ function publicHostForRules(plan) {
   return host
 }
 
+function isOkResponse(response) {
+  if (!response) return false
+  if (typeof response.ok === 'boolean') return response.ok
+  const status = Number(response.status ?? 0)
+  return status >= 200 && status < 300
+}
+
+function headerValue(response, name) {
+  const headers = response?.headers
+  if (!headers) return null
+  if (typeof headers.get === 'function') return headers.get(name)
+  const direct = headers[name] ?? headers[String(name).toLowerCase()]
+  return typeof direct === 'string' ? direct : null
+}
+
+const RELEASE_IMAGE_HASH_RE = /^[0-9a-f]{64}$/
+
+/**
+ * Walk the published snapshot for real original-image hashes:
+ * collections.*[].images.large.hash and calendar[].items[].images.large.hash.
+ */
+function collectReleaseImageHashes(snapshot) {
+  const hashes = []
+  const pushHash = (item) => {
+    const hash = item?.images?.large?.hash
+    if (typeof hash === 'string' && RELEASE_IMAGE_HASH_RE.test(hash)) hashes.push(hash)
+  }
+  const collections = snapshot?.collections
+  if (collections && typeof collections === 'object') {
+    for (const items of Object.values(collections)) {
+      if (Array.isArray(items)) for (const item of items) pushHash(item)
+    }
+  }
+  const calendar = snapshot?.calendar
+  if (Array.isArray(calendar)) {
+    for (const day of calendar) {
+      if (Array.isArray(day?.items)) for (const item of day.items) pushHash(item)
+    }
+  }
+  return hashes
+}
+
 export class MissingCapabilityError extends Error {
   /**
    * @param {string} capability
@@ -1232,6 +1274,9 @@ export function createLiveDevelopmentApplyIo({
               ...env,
               AIRINGCAL_STAGING_PUBLIC_R2_BUCKET: bucket,
               AIRINGCAL_STAGING_PUBLIC_BASE_URL: plan.publicBaseUrl,
+              // Explicit (empty when unset) so process.env can never leak an
+              // image base into a deploy where the caller did not configure one.
+              AIRINGCAL_IMAGE_BASE_URL: String(env.AIRINGCAL_IMAGE_BASE_URL ?? '').trim(),
               BANGUMI_GIT_COMMIT_SHA: gitSha,
               PACKAGE_VERSION: String(env.PACKAGE_VERSION ?? '').trim(),
             },
@@ -1302,6 +1347,12 @@ export function createLiveDevelopmentApplyIo({
       if (env.PACKAGE_VERSION) {
         envPairs.push(['PACKAGE_VERSION', String(env.PACKAGE_VERSION)])
       }
+      // Image CDN default off: unset stays unset (the EO reader then reuses
+      // the public base); only an explicitly configured base is propagated.
+      const edgeoneImageBaseUrl = String(env.AIRINGCAL_IMAGE_BASE_URL ?? '').trim()
+      if (edgeoneImageBaseUrl) {
+        envPairs.push(['AIRINGCAL_IMAGE_BASE_URL', edgeoneImageBaseUrl])
+      }
       for (const [key, value] of envPairs) {
         const setRes = spawnSyncImpl(
           'edgeone',
@@ -1311,7 +1362,132 @@ export function createLiveDevelopmentApplyIo({
         assertSpawnOk(setRes, `edgeone makers env set ${key}`, secrets)
       }
 
-      return { deployed: true, project, region, createdViaDeploy: true }
+      const readerUrlMatch = String(deploy.stdout || '').match(/https:\/\/\S*edgeone\S*/i)
+      return {
+        deployed: true,
+        project,
+        region,
+        createdViaDeploy: true,
+        readerUrl: readerUrlMatch ? readerUrlMatch[0].replace(/[.,;)]+$/, '') : null,
+      }
+    },
+
+    /**
+     * Real routing evidence for the image base (review item 5): discover an
+     * image hash from the published release, then require every reader
+     * deployed in this run to answer `GET /image/{hash}` with a 302 whose
+     * Location origin equals `(imageBaseUrl ?? publicBaseUrl)` origin.
+     * Mismatch / fetch failure throws (fail closed); a release with zero
+     * image hashes returns `skipped-no-images`, which the runner records but
+     * never counts as a completed pass.
+     */
+    async verifyImageRouting(ctx = {}) {
+      if (typeof fetchImpl !== 'function') {
+        throw new Error('image routing verification failed: fetchImpl required')
+      }
+      const publicBase = String(plan.publicBaseUrl).replace(/\/+$/, '')
+      const imageBase = String(env.AIRINGCAL_IMAGE_BASE_URL ?? '').trim()
+      const expectedOrigin = new URL(imageBase || publicBase).origin
+
+      const readers = []
+      if (plan.target === 'cloudflare' || plan.target === 'both') {
+        const workerUrl = String(ctx.cloudflareDeploy?.workerUrl ?? '').trim()
+        if (!workerUrl) {
+          throw new Error(
+            'image routing verification failed: cloudflare worker URL missing from the deploy receipt',
+          )
+        }
+        readers.push({ label: 'cloudflare', base: workerUrl.replace(/\/+$/, '') })
+      }
+      if (plan.target === 'edgeone' || plan.target === 'both') {
+        const eoBase =
+          String(ctx.edgeoneDeploy?.readerUrl ?? '').trim() ||
+          String(env.AIRINGCAL_EDGEONE_READER_URL ?? '').trim()
+        if (!eoBase) {
+          throw new Error(
+            'image routing verification failed: edgeone reader host unknown; set AIRINGCAL_EDGEONE_READER_URL for routing verification',
+          )
+        }
+        readers.push({ label: 'edgeone', base: eoBase.replace(/\/+$/, '') })
+      }
+
+      const pointerUrl = `${publicBase}/public/current-release.json`
+      const pointerResponse = await fetchImpl(pointerUrl, {
+        headers: { 'cache-control': 'no-cache' },
+        redirect: 'manual',
+      })
+      if (!isOkResponse(pointerResponse)) {
+        throw new Error(
+          `image routing verification failed: pointer fetch ${pointerUrl} -> ${pointerResponse?.status ?? 'no response'}`,
+        )
+      }
+      const pointer = await pointerResponse.json()
+      const artifactRef = String(pointer?.artifact_ref ?? '').trim()
+      if (!artifactRef) {
+        throw new Error(
+          'image routing verification failed: current-release.json has no artifact_ref',
+        )
+      }
+
+      const snapshotUrl = /^https?:\/\//i.test(artifactRef)
+        ? artifactRef
+        : `${publicBase}/${artifactRef.replace(/^\/+/, '')}`
+      const snapshotResponse = await fetchImpl(snapshotUrl, {
+        headers: { 'cache-control': 'no-cache' },
+        redirect: 'manual',
+      })
+      if (!isOkResponse(snapshotResponse)) {
+        throw new Error(
+          `image routing verification failed: snapshot fetch ${snapshotUrl} -> ${snapshotResponse?.status ?? 'no response'}`,
+        )
+      }
+      let snapshot
+      try {
+        snapshot = await snapshotResponse.json()
+      } catch (error) {
+        throw new Error(
+          `image routing verification failed: snapshot JSON invalid: ${error?.message ?? error}`,
+        )
+      }
+
+      const hashes = collectReleaseImageHashes(snapshot)
+      if (hashes.length === 0) {
+        return {
+          status: 'skipped-no-images',
+          reason: `published release ${artifactRef} references no images/<64-hex>/original hashes; nothing to probe`,
+        }
+      }
+      const hash = hashes[0]
+
+      const receipts = []
+      for (const reader of readers) {
+        const imageUrl = `${reader.base}/image/${hash}`
+        let response
+        try {
+          response = await fetchImpl(imageUrl, { redirect: 'manual' })
+        } catch (error) {
+          throw new Error(
+            `image routing verification failed: ${reader.label} GET ${imageUrl} errored: ${error?.message ?? error}`,
+          )
+        }
+        const status = Number(response?.status ?? 0)
+        const location = headerValue(response, 'location')
+        let locationOrigin = null
+        if (location) {
+          try {
+            locationOrigin = new URL(location, reader.base).origin
+          } catch {
+            locationOrigin = null
+          }
+        }
+        if (status !== 302 || !location || locationOrigin !== expectedOrigin) {
+          throw new Error(
+            `image routing verification failed: ${reader.label} GET ${imageUrl} -> ${status || 'no response'} location=${location ?? '(none)'}; expected 302 to origin ${expectedOrigin}`,
+          )
+        }
+        receipts.push({ base: reader.base, location, originMatches: true })
+      }
+      return { hash, readers: receipts }
     },
 
     async validateImageCdn() {

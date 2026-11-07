@@ -10,6 +10,7 @@
  * Usage:
  *   AIRINGCAL_STAGING_PUBLIC_R2_BUCKET=... \
  *   AIRINGCAL_STAGING_PUBLIC_BASE_URL=https://... \
+ *   AIRINGCAL_IMAGE_BASE_URL=https://... (optional; unset keeps images on the public base) \
  *   BANGUMI_GIT_COMMIT_SHA=<40 hex> \
  *   PACKAGE_VERSION=<semver> \
  *   node scripts/materialize-v3-read-staging-config.mjs <source> <output>
@@ -29,6 +30,7 @@ if (!sourcePath || !outputPath) {
 
 const BUCKET = process.env.AIRINGCAL_STAGING_PUBLIC_R2_BUCKET?.trim() ?? ''
 const PUBLIC_BASE_URL = process.env.AIRINGCAL_STAGING_PUBLIC_BASE_URL?.trim() ?? ''
+const IMAGE_BASE_URL = process.env.AIRINGCAL_IMAGE_BASE_URL?.trim() ?? ''
 const GIT_SHA = process.env.BANGUMI_GIT_COMMIT_SHA?.trim() ?? ''
 const PACKAGE_VERSION = process.env.PACKAGE_VERSION?.trim() ?? ''
 
@@ -37,22 +39,41 @@ function fail(message) {
   process.exit(1)
 }
 
+/**
+ * Shared https/placeholder validation for public base URLs. Returns the
+ * parsed URL; every problem exits 1 with the env-var label in the message.
+ */
+function parseBaseUrl(value, label, placeholderHint) {
+  if (/placeholder/i.test(value)) fail(`${label} is a placeholder value; ${placeholderHint}`)
+  let url
+  try {
+    url = new URL(value)
+  } catch {
+    fail(`${label} must be an absolute https URL`)
+  }
+  if (url.protocol !== 'https:' || url.search !== '' || url.hash !== '') {
+    fail(`${label} must be an absolute https URL without query or fragment`)
+  }
+  return url
+}
+
 if (!BUCKET) fail('AIRINGCAL_STAGING_PUBLIC_R2_BUCKET is required')
 if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(BUCKET)) {
   fail('AIRINGCAL_STAGING_PUBLIC_R2_BUCKET must be a valid R2 bucket name (3-63 lowercase chars)')
 }
 if (!PUBLIC_BASE_URL) fail('AIRINGCAL_STAGING_PUBLIC_BASE_URL is required')
-if (/placeholder/i.test(PUBLIC_BASE_URL)) {
-  fail('AIRINGCAL_STAGING_PUBLIC_BASE_URL is a placeholder value; configure the verified staging CDN host')
-}
-let publicBaseUrl
-try {
-  publicBaseUrl = new URL(PUBLIC_BASE_URL)
-} catch {
-  fail('AIRINGCAL_STAGING_PUBLIC_BASE_URL must be an absolute https URL')
-}
-if (publicBaseUrl.protocol !== 'https:' || publicBaseUrl.search !== '' || publicBaseUrl.hash !== '') {
-  fail('AIRINGCAL_STAGING_PUBLIC_BASE_URL must be an absolute https URL without query or fragment')
+parseBaseUrl(
+  PUBLIC_BASE_URL,
+  'AIRINGCAL_STAGING_PUBLIC_BASE_URL',
+  'configure the verified staging CDN host',
+)
+if (IMAGE_BASE_URL) {
+  // Image CDN stays OFF by default: unset → the reader reuses the public base.
+  parseBaseUrl(
+    IMAGE_BASE_URL,
+    'AIRINGCAL_IMAGE_BASE_URL',
+    'configure a validated image CDN host or unset it to reuse the public base',
+  )
 }
 if (!/^[0-9a-f]{40}$/i.test(GIT_SHA)) fail('BANGUMI_GIT_COMMIT_SHA must be a 40 character git sha')
 if (PACKAGE_VERSION && !/^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/.test(PACKAGE_VERSION)) {
@@ -116,6 +137,7 @@ const vars = [
   `BANGUMI_GIT_COMMIT_SHA = ${JSON.stringify(GIT_SHA.toLowerCase())}`,
 ]
 if (PACKAGE_VERSION) vars.push(`PACKAGE_VERSION = ${JSON.stringify(PACKAGE_VERSION)}`)
+if (IMAGE_BASE_URL) vars.push(`AIRINGCAL_IMAGE_BASE_URL = ${JSON.stringify(IMAGE_BASE_URL)}`)
 
 await mkdir(targetDir, { recursive: true })
 await writeFile(target, `${lines.join('\n').replace(/\s*$/, '')}\n${vars.join('\n')}\n`, 'utf8')

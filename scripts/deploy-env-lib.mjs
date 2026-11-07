@@ -665,6 +665,7 @@ export function missingScopeExitMessage(missingScopes = []) {
  * @property {(ctx: object) => Promise<object>} syncGithubEnvironment
  * @property {(ctx: object) => Promise<object>} [deployCloudflareReader]
  * @property {(ctx: object) => Promise<object>} [deployEdgeoneOverseas]
+ * @property {(ctx: object) => Promise<{ hash: string, readers: Array<object> } | { status: 'skipped-no-images', reason: string }>} verifyImageRouting
  * @property {(ctx: object) => Promise<object>} validateImageCdn
  * @property {(ctx: object) => Promise<object>} runSingleWriterTest
  */
@@ -796,13 +797,21 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
     completed.push('sync-gh-env')
 
     if (plan.target === 'cloudflare' || plan.target === 'both') {
-      await requireIoMethod(io, 'deployCloudflareReader')(ctx)
+      ctx.cloudflareDeploy = await requireIoMethod(io, 'deployCloudflareReader')(ctx)
       completed.push('deploy-cloudflare')
     }
     if (plan.target === 'edgeone' || plan.target === 'both') {
-      await requireIoMethod(io, 'deployEdgeoneOverseas')(ctx)
+      ctx.edgeoneDeploy = await requireIoMethod(io, 'deployEdgeoneOverseas')(ctx)
       completed.push('deploy-edgeone')
     }
+
+    // Routing evidence (review item 5): a real /image/{hash} 302 from every
+    // deployed reader must land on the configured image origin (or the
+    // public base when the Image CDN is off). `skipped-no-images` is recorded
+    // but never counted as a completed pass; mismatches throw (abort).
+    const imageRouting = await requireIoMethod(io, 'verifyImageRouting')(ctx)
+    const imageRoutingSkipped = imageRouting?.status === 'skipped-no-images'
+    if (!imageRoutingSkipped) completed.push('image-routing-verify')
 
     await requireIoMethod(io, 'validateImageCdn')(ctx)
     completed.push('image-cdn-validate')
@@ -826,6 +835,7 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
       dualBucketFallback: false,
       developmentWriterEnabled: false,
       isolation,
+      imageRouting,
       singleWriterTest: writerTestPending
         ? {
             status: 'pending-not-opt-in',
