@@ -421,6 +421,15 @@ async function cfApiOnce(fetchImpl, token, path, init) {
     const err = new Error(message)
     err.status = response.status
     err.errors = errors
+    err.path = path
+    // A `10000` on a `/zones/...` request is the shape a token produces when
+    // it can read the zone but lacks the fine-grained Cache Rules / WAF Custom
+    // Rules / DNS Edit scopes. Mark it so callers can surface an actionable
+    // missing-capability message instead of the opaque Cloudflare code.
+    if (path.startsWith('/zones/') && errors.some((e) => Number(e?.code) === 10000)) {
+      err.zoneScopeHint =
+        'Cloudflare 10000 on a /zones/... request: token likely lacks Cache Rules / WAF Custom Rules / DNS Edit scopes'
+    }
     throw err
   }
   return body
@@ -431,6 +440,34 @@ export async function cfApi(fetchImpl, token, path, init = {}, retryOpts = {}) {
     isRetriable: isRetriableCfApiError,
     ...retryOpts,
   })
+}
+
+/** Actionable detail shared by the zone-ruleset adapters when scopes are missing. */
+export const ZONE_SCOPE_CAPABILITY_MESSAGE =
+  'Cloudflare token lacks zone-scoped Cache Rules / WAF Custom Rules / DNS Edit permissions (add them in dash.cloudflare.com/profile/api-tokens, then re-run apply; already-created bucket and custom domain are reused)'
+
+/**
+ * True for the Cloudflare `10000 Authentication error` an API token produces
+ * on a `/zones/...` request it cannot edit (missing fine-grained Cache Rules /
+ * WAF Custom Rules / DNS Edit scopes). `cfApi` marks these with `zoneScopeHint`.
+ * Genuine network failures, other auth 4xx, and isolation aborts are
+ * deliberately NOT matched so retry/fail-closed semantics stay unchanged.
+ */
+export function isZoneScopeError(error) {
+  if (!error || typeof error !== 'object') return false
+  const zoneScoped =
+    Boolean(error.zoneScopeHint) || /^\/zones\//.test(String(error.path ?? ''))
+  if (!zoneScoped) return false
+  const errors = Array.isArray(error.errors) ? error.errors : []
+  const structured = errors.some(
+    (e) =>
+      Number(e?.code) === 10000 &&
+      /authentication error/i.test(String(e?.message ?? '')),
+  )
+  const message = String(error.message ?? '')
+  const flattened =
+    /\b10000\b/.test(message) && /authentication error/i.test(message)
+  return structured || flattened
 }
 
 function sha256Hex(value) {
@@ -1234,34 +1271,41 @@ export function createLiveDevelopmentApplyIo({
       // site in the zone.
       const host = publicHostForRules(plan)
 
-      const immutable = await ensureZonePhaseRule({
-        fetchImpl,
-        token,
-        zoneId,
-        phase: 'http_request_cache_settings',
-        description: 'airingcal-images-snapshots-immutable',
-        expression:
-          `(http.host eq "${host}" and (starts_with(http.request.uri.path, "/images/") or starts_with(http.request.uri.path, "/snapshots/")))`,
-        action: 'set_cache_settings',
-        actionParameters: {
-          cache: true,
-          edge_ttl: { mode: 'override_origin', default: 31536000 },
-          browser_ttl: { mode: 'override_origin', default: 31536000 },
-        },
-      })
-      const pointer = await ensureZonePhaseRule({
-        fetchImpl,
-        token,
-        zoneId,
-        phase: 'http_request_cache_settings',
-        description: 'airingcal-pointer-bypass',
-        expression: `(http.host eq "${host}" and http.request.uri.path eq "/public/current-release.json")`,
-        action: 'set_cache_settings',
-        actionParameters: {
-          cache: false,
-        },
-      })
-      return { ok: true, zoneId, host, immutable, pointer }
+      try {
+        const immutable = await ensureZonePhaseRule({
+          fetchImpl,
+          token,
+          zoneId,
+          phase: 'http_request_cache_settings',
+          description: 'airingcal-images-snapshots-immutable',
+          expression:
+            `(http.host eq "${host}" and (starts_with(http.request.uri.path, "/images/") or starts_with(http.request.uri.path, "/snapshots/")))`,
+          action: 'set_cache_settings',
+          actionParameters: {
+            cache: true,
+            edge_ttl: { mode: 'override_origin', default: 31536000 },
+            browser_ttl: { mode: 'override_origin', default: 31536000 },
+          },
+        })
+        const pointer = await ensureZonePhaseRule({
+          fetchImpl,
+          token,
+          zoneId,
+          phase: 'http_request_cache_settings',
+          description: 'airingcal-pointer-bypass',
+          expression: `(http.host eq "${host}" and http.request.uri.path eq "/public/current-release.json")`,
+          action: 'set_cache_settings',
+          actionParameters: {
+            cache: false,
+          },
+        })
+        return { ok: true, zoneId, host, immutable, pointer }
+      } catch (error) {
+        if (isZoneScopeError(error)) {
+          throw missingCapability('cache-rules', ZONE_SCOPE_CAPABILITY_MESSAGE)
+        }
+        throw error
+      }
     },
 
     async applyCors() {
@@ -1316,23 +1360,30 @@ export function createLiveDevelopmentApplyIo({
       if (!token) throw new Error('Cloudflare API token required for WAF rules')
       const host = publicHostForRules(plan)
 
-      const rule = await ensureZonePhaseRule({
-        fetchImpl,
-        token,
-        zoneId,
-        phase: 'http_request_firewall_custom',
-        description: 'airingcal-deny-checkpoints',
-        expression: `(http.host eq "${host}" and starts_with(http.request.uri.path, "/checkpoints/"))`,
-        action: 'block',
-        actionParameters: {
-          response: {
-            status_code: 403,
-            content: 'Forbidden',
-            content_type: 'text/plain',
+      try {
+        const rule = await ensureZonePhaseRule({
+          fetchImpl,
+          token,
+          zoneId,
+          phase: 'http_request_firewall_custom',
+          description: 'airingcal-deny-checkpoints',
+          expression: `(http.host eq "${host}" and starts_with(http.request.uri.path, "/checkpoints/"))`,
+          action: 'block',
+          actionParameters: {
+            response: {
+              status_code: 403,
+              content: 'Forbidden',
+              content_type: 'text/plain',
+            },
           },
-        },
-      })
-      return { ok: true, zoneId, host, rule }
+        })
+        return { ok: true, zoneId, host, rule }
+      } catch (error) {
+        if (isZoneScopeError(error)) {
+          throw missingCapability('waf-checkpoints', ZONE_SCOPE_CAPABILITY_MESSAGE)
+        }
+        throw error
+      }
     },
 
     async writeIsolationProbe() {
