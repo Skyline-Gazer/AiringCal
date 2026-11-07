@@ -1,0 +1,861 @@
+{
+  "schema_version": 1,
+  "kind": "reader_delivery_bench",
+  "captured_at_unix_ms": 1794074666274,
+  "thresholds_enforced": false,
+  "protocol": {
+    "runs_per_sample": 5,
+    "sample_names": [
+      "first_after_deploy",
+      "repeat_same_isolate",
+      "cdn_shared_hit"
+    ],
+    "note": "Query busting is not labeled cold-isolate; first_observed used when isolate recycle unavailable; repeat_same_isolate is immediate second request on the same URL per trial",
+    "isolate_recycle_available": false
+  },
+  "hosts": [
+    {
+      "host": "https://airing-cal-v3-read-staging.r7a.workers.dev",
+      "status": "ok",
+      "error": null,
+      "identity": {
+        "generation": 4,
+        "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+        "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+      },
+      "paths": {
+        "health": {
+          "path": "/api/health",
+          "samples": {
+            "first_after_deploy": {
+              "sample_name": "first_after_deploy",
+              "sample_label": "first_observed",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 180.59488799999997,
+                "p95_ms": 194.42432999999983,
+                "values_ms": [
+                  172.80819400000019,
+                  176.4039110000001,
+                  180.59488799999997,
+                  190.6009550000001,
+                  194.42432999999983
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                }
+              ],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5
+            },
+            "repeat_same_isolate": {
+              "sample_name": "repeat_same_isolate",
+              "sample_label": "repeat_same_isolate",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 558.4173370000003,
+                "p95_ms": 627.7014369999999,
+                "values_ms": [
+                  174.54893500000026,
+                  195.971407,
+                  558.4173370000003,
+                  590.8859380000004,
+                  627.7014369999999
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                }
+              ],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5
+            },
+            "cdn_shared_hit": {
+              "sample_name": "cdn_shared_hit",
+              "sample_label": "cdn_shared_attempted",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 200.30826100000013,
+                "p95_ms": 1214.6158929999983,
+                "values_ms": [
+                  172.1101350000008,
+                  191.74531600000046,
+                  200.30826100000013,
+                  693.646048999999,
+                  1214.6158929999983
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                }
+              ],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5,
+              "warmed": false,
+              "warm_attempts": 5
+            }
+          }
+        },
+        "collections": {
+          "path": "/api/collections?type=watching&limit=24",
+          "samples": {
+            "first_after_deploy": {
+              "sample_name": "first_after_deploy",
+              "sample_label": "first_observed",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 547.6158340000002,
+                "p95_ms": 604.1480269999993,
+                "values_ms": [
+                  193.28700099999878,
+                  530.7950209999999,
+                  547.6158340000002,
+                  554.9162859999997,
+                  604.1480269999993
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [
+                "repeat: fetch failed"
+              ],
+              "n_ok": 5,
+              "n_attempted": 6
+            },
+            "repeat_same_isolate": {
+              "sample_name": "repeat_same_isolate",
+              "sample_label": "repeat_same_isolate",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 559.4536819999994,
+                "p95_ms": 1069.489950000001,
+                "values_ms": [
+                  553.601154,
+                  556.9908439999999,
+                  559.4536819999994,
+                  791.0593349999999,
+                  1069.489950000001
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [
+                "repeat: fetch failed"
+              ],
+              "n_ok": 5,
+              "n_attempted": 6
+            },
+            "cdn_shared_hit": {
+              "sample_name": "cdn_shared_hit",
+              "sample_label": "cdn_shared_attempted",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 569.7520589999986,
+                "p95_ms": 1050.8561470000022,
+                "values_ms": [
+                  524.2781219999997,
+                  543.3128280000019,
+                  569.7520589999986,
+                  607.1881740000026,
+                  1050.8561470000022
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5,
+              "warmed": false,
+              "warm_attempts": 5
+            }
+          }
+        },
+        "calendar": {
+          "path": "/api/calendar",
+          "samples": {
+            "first_after_deploy": {
+              "sample_name": "first_after_deploy",
+              "sample_label": "first_observed",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 550.0728549999985,
+                "p95_ms": 1231.2755730000026,
+                "values_ms": [
+                  531.9112940000014,
+                  542.6635249999999,
+                  550.0728549999985,
+                  704.6217629999992,
+                  1231.2755730000026
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5
+            },
+            "repeat_same_isolate": {
+              "sample_name": "repeat_same_isolate",
+              "sample_label": "repeat_same_isolate",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 549.2031029999998,
+                "p95_ms": 811.1999719999985,
+                "values_ms": [
+                  524.7200860000012,
+                  533.530533000001,
+                  549.2031029999998,
+                  585.0718570000026,
+                  811.1999719999985
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5
+            },
+            "cdn_shared_hit": {
+              "sample_name": "cdn_shared_hit",
+              "sample_label": "cdn_shared_attempted",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 554.226036,
+                "p95_ms": 788.8770510000031,
+                "values_ms": [
+                  529.7810659999959,
+                  534.9101519999967,
+                  554.226036,
+                  736.707064000002,
+                  788.8770510000031
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5,
+              "warmed": false,
+              "warm_attempts": 5
+            }
+          }
+        }
+      },
+      "image": {
+        "status": "ok",
+        "reason": null,
+        "hash": "5dcf9ed989ce966af51649e5873dc046ffec83e4550d36cabff48fb20ac4f16c",
+        "redirect_count": 1,
+        "reader_status": 302,
+        "cdn_status": 200,
+        "content_type": "image/jpeg",
+        "location": "https://airingcal.223.im/images/5dcf9ed989ce966af51649e5873dc046ffec83e4550d36cabff48fb20ac4f16c/original",
+        "reader_cache_status": null,
+        "cdn_cache_status": "DYNAMIC",
+        "cdn_ttfb_ms": 687.2639320000017
+      }
+    },
+    {
+      "host": "https://airingcal-edgeone-read-overseas.edgeone.dev",
+      "status": "ok",
+      "error": null,
+      "identity": {
+        "generation": 4,
+        "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+        "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+      },
+      "paths": {
+        "health": {
+          "path": "/api/health",
+          "samples": {
+            "first_after_deploy": {
+              "sample_name": "first_after_deploy",
+              "sample_label": "first_observed",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 882.5560880000003,
+                "p95_ms": 1125.801574,
+                "values_ms": [
+                  660.9057589999993,
+                  682.5946650000001,
+                  882.5560880000003,
+                  1093.948819,
+                  1125.801574
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                }
+              ],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5
+            },
+            "repeat_same_isolate": {
+              "sample_name": "repeat_same_isolate",
+              "sample_label": "repeat_same_isolate",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 636.7464959999998,
+                "p95_ms": 877.818151,
+                "values_ms": [
+                  609.6567360000008,
+                  611.9170560000002,
+                  636.7464959999998,
+                  695.711933,
+                  877.818151
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                }
+              ],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5
+            },
+            "cdn_shared_hit": {
+              "sample_name": "cdn_shared_hit",
+              "sample_label": "cdn_shared_attempted",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 621.9699860000001,
+                "p95_ms": 705.3337329999995,
+                "values_ms": [
+                  549.8446609999992,
+                  588.6998929999991,
+                  621.9699860000001,
+                  650.1618770000005,
+                  705.3337329999995
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                },
+                {
+                  "generation": 4,
+                  "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+                  "artifact_ref": "snapshots/v1/4-2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670.json"
+                }
+              ],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5,
+              "warmed": false,
+              "warm_attempts": 5
+            }
+          }
+        },
+        "collections": {
+          "path": "/api/collections?type=watching&limit=24",
+          "samples": {
+            "first_after_deploy": {
+              "sample_name": "first_after_deploy",
+              "sample_label": "first_observed",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 697.132372,
+                "p95_ms": 723.7224050000004,
+                "values_ms": [
+                  611.1149689999984,
+                  684.3629279999986,
+                  697.132372,
+                  713.6364759999997,
+                  723.7224050000004
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5
+            },
+            "repeat_same_isolate": {
+              "sample_name": "repeat_same_isolate",
+              "sample_label": "repeat_same_isolate",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 644.7000249999983,
+                "p95_ms": 1245.3712090000008,
+                "values_ms": [
+                  598.4175430000032,
+                  625.9410050000006,
+                  644.7000249999983,
+                  757.5916209999996,
+                  1245.3712090000008
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5
+            },
+            "cdn_shared_hit": {
+              "sample_name": "cdn_shared_hit",
+              "sample_label": "cdn_shared_attempted",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 1004.3686940000007,
+                "p95_ms": 1467.142818000004,
+                "values_ms": [
+                  921.5568879999992,
+                  982.3895650000013,
+                  1004.3686940000007,
+                  1166.7607010000065,
+                  1467.142818000004
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5,
+              "warmed": false,
+              "warm_attempts": 5
+            }
+          }
+        },
+        "calendar": {
+          "path": "/api/calendar",
+          "samples": {
+            "first_after_deploy": {
+              "sample_name": "first_after_deploy",
+              "sample_label": "first_observed",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 1006.1126770000046,
+                "p95_ms": 1268.7781839999952,
+                "values_ms": [
+                  966.7517179999995,
+                  989.8462619999991,
+                  1006.1126770000046,
+                  1236.238486000002,
+                  1268.7781839999952
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5
+            },
+            "repeat_same_isolate": {
+              "sample_name": "repeat_same_isolate",
+              "sample_label": "repeat_same_isolate",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 957.3436849999998,
+                "p95_ms": 1559.2928380000012,
+                "values_ms": [
+                  926.1929930000042,
+                  946.4263269999938,
+                  957.3436849999998,
+                  1159.9153020000012,
+                  1559.2928380000012
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5
+            },
+            "cdn_shared_hit": {
+              "sample_name": "cdn_shared_hit",
+              "sample_label": "cdn_shared_attempted",
+              "claims_cold_isolate": false,
+              "ttfb_ms": {
+                "n": 5,
+                "median_ms": 1025.4238200000036,
+                "p95_ms": 2042.4008469999972,
+                "values_ms": [
+                  983.5737499999959,
+                  1002.267620000006,
+                  1025.4238200000036,
+                  1081.626145999995,
+                  2042.4008469999972
+                ]
+              },
+              "cache_status_mode": null,
+              "cache_statuses": [],
+              "age_samples": [],
+              "identities": [],
+              "http_statuses": [
+                200,
+                200,
+                200,
+                200,
+                200
+              ],
+              "errors": [],
+              "n_ok": 5,
+              "n_attempted": 5,
+              "warmed": false,
+              "warm_attempts": 5
+            }
+          }
+        }
+      },
+      "image": {
+        "status": "ok",
+        "reason": null,
+        "hash": "5dcf9ed989ce966af51649e5873dc046ffec83e4550d36cabff48fb20ac4f16c",
+        "redirect_count": 1,
+        "reader_status": 302,
+        "cdn_status": 200,
+        "content_type": "image/jpeg",
+        "location": "https://airingcal.223.im/images/5dcf9ed989ce966af51649e5873dc046ffec83e4550d36cabff48fb20ac4f16c/original",
+        "reader_cache_status": null,
+        "cdn_cache_status": "DYNAMIC",
+        "cdn_ttfb_ms": 2416.1457149999987
+      }
+    }
+  ],
+  "cf_vs_eo": {
+    "equal": true,
+    "generation": 4,
+    "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+    "hosts": [
+      {
+        "host": "https://airing-cal-v3-read-staging.r7a.workers.dev",
+        "generation": 4,
+        "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+        "status": "ok"
+      },
+      {
+        "host": "https://airingcal-edgeone-read-overseas.edgeone.dev",
+        "generation": 4,
+        "content_hash": "2613eb5d9a6308c9e4b380937e15e42aa0972768d61f358f1831e80541f16670",
+        "status": "ok"
+      }
+    ],
+    "note": "CF/EO publish generation+content_hash match"
+  },
+  "widget": {
+    "status": "skipped_no_browser",
+    "lcp_ms": null,
+    "cls": null,
+    "inp_ms": null,
+    "pagination_feedback_ms": null
+  },
+  "mainland": {
+    "status": "pending_owner_node",
+    "host": null,
+    "note": "No AIRINGCAL_BENCH_MAINLAND_HOST; do not invent mainland metrics"
+  },
+  "status": "ok"
+}
