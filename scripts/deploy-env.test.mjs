@@ -21,6 +21,8 @@ import {
 } from './deploy-env-lib.mjs'
 import {
   cfApi,
+  copyPrefixes,
+  formatCopyProgress,
   runGh,
   runWrangler,
   withNetworkRetry,
@@ -3523,4 +3525,203 @@ test('verifyImageRouting retries transient pointer fetch failures', async () => 
   assert.equal(pointerAttempts, 2, 'pointer retried once after transient failure')
   const pointerCalls = calls.filter(([u]) => u.endsWith('/public/current-release.json'))
   assert.equal(pointerCalls.length, 1, 'definitive statuses are never retried')
+})
+
+// --- copyPrefixes: bounded-concurrency copy (round 16 timeout fix) ---
+
+/** Deterministic injected object-store doubles; no real S3 / no new deps. */
+function makeCopyDoubles(opts = {}) {
+  const {
+    keys = [],
+    preexisting = new Set(),
+    failPutKey = null,
+    delayMs = 0,
+    missingHeadKeys = new Set(),
+    missingBodyKeys = new Set(),
+    objContentType = 'image/jpeg',
+    headContentType = 'image/png',
+  } = opts
+  const puts = []
+  const closes = []
+  let inflight = 0
+  let maxInflight = 0
+  const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve())
+  const createObjectStore = (config) => {
+    const isDest = config.bucket === 'dest-bucket'
+    return {
+      async list(prefix) {
+        return keys.filter((k) => k.startsWith(prefix))
+      },
+      async head(key) {
+        if (isDest) {
+          return preexisting.has(key)
+            ? { etag: 'W/"same"', size: 4, contentType: headContentType }
+            : null
+        }
+        if (missingHeadKeys.has(key)) return null
+        return { etag: 'same', size: 4, contentType: headContentType }
+      },
+      async get(key) {
+        if (missingBodyKeys.has(key)) return null
+        return {
+          body: new Uint8Array([1, 2, 3, 4]),
+          etag: 'same',
+          contentType: objContentType,
+        }
+      },
+      async put(key, body, options) {
+        inflight += 1
+        maxInflight = Math.max(maxInflight, inflight)
+        try {
+          await sleep(delayMs)
+          if (failPutKey !== null && key === failPutKey) {
+            throw new Error(`S3 put failed for ${key}`)
+          }
+          puts.push({ key, contentType: options?.contentType })
+          return { etag: 'new' }
+        } finally {
+          inflight -= 1
+        }
+      },
+      close() {
+        closes.push(config.bucket)
+      },
+    }
+  }
+  return { createObjectStore, puts, closes, maxInflight: () => maxInflight }
+}
+
+function sampleKeys(count) {
+  return Array.from({ length: count }, (_, i) => `images/hash${String(i).padStart(2, '0')}/original`)
+}
+
+function copyArgs(doubles, extra = {}) {
+  return {
+    createObjectStore: doubles.createObjectStore,
+    s3Creds: { accessKeyId: 'AK', secretAccessKey: 'SK' },
+    sourceBucket: 'source-bucket',
+    destBucket: 'dest-bucket',
+    prefixes: ['images/'],
+    write: () => {},
+    ...extra,
+  }
+}
+
+test('copyPrefixes copies each key once with bounded concurrency 2', async () => {
+  const keys = sampleKeys(20)
+  const doubles = makeCopyDoubles({ keys })
+  const result = await copyPrefixes(copyArgs(doubles, { concurrency: 2 }))
+  assert.equal(result.copied, 20)
+  assert.equal(result.skipped, 0)
+  assert.equal(result.sourceBucket, 'source-bucket')
+  assert.equal(result.destBucket, 'dest-bucket')
+  assert.deepEqual(result.prefixes, ['images/'])
+  assert.equal(doubles.puts.length, 20, 'one put per key')
+  assert.equal(new Set(doubles.puts.map((p) => p.key)).size, 20, 'no duplicate puts')
+  assert.ok(doubles.puts.every((p) => p.contentType === 'image/jpeg'), 'contentType preserved')
+  assert.deepEqual([...doubles.closes].sort(), ['dest-bucket', 'source-bucket'])
+})
+
+test('copyPrefixes bounds in-flight puts by the concurrency limit', async () => {
+  const keys = sampleKeys(20)
+  const doubles = makeCopyDoubles({ keys, delayMs: 5 })
+  await copyPrefixes(copyArgs(doubles, { concurrency: 2 }))
+  assert.ok(doubles.maxInflight() > 1, 'puts overlap (concurrent)')
+  assert.ok(doubles.maxInflight() <= 2, 'never exceeds concurrency 2')
+})
+
+test('copyPrefixes defaults to bounded concurrency 8', async () => {
+  const keys = sampleKeys(20)
+  const doubles = makeCopyDoubles({ keys, delayMs: 5 })
+  const result = await copyPrefixes(copyArgs(doubles))
+  assert.equal(result.copied, 20)
+  assert.ok(doubles.maxInflight() > 1, 'puts overlap (concurrent)')
+  assert.ok(doubles.maxInflight() <= 8, 'never exceeds default concurrency 8')
+})
+
+test('copyPrefixes flattens prefixes and skips identical dest (size + loose etag)', async () => {
+  const keys = [
+    ...sampleKeys(10),
+    ...Array.from({ length: 10 }, (_, i) => `public/item${i}.json`),
+  ]
+  const preexisting = new Set([keys[2], keys[5], 'public/item3.json'])
+  const doubles = makeCopyDoubles({ keys, preexisting })
+  const result = await copyPrefixes(
+    copyArgs(doubles, { prefixes: ['images/', 'public/'], concurrency: 3 }),
+  )
+  assert.equal(result.copied, 17)
+  assert.equal(result.skipped, 3)
+  assert.equal(doubles.puts.length, 17)
+  assert.ok(!doubles.puts.some((p) => preexisting.has(p.key)))
+})
+
+test('copyPrefixes skips trailing-slash keys, missing heads, and missing bodies', async () => {
+  const keys = [
+    'images/a/original',
+    'images/dir/',
+    'images/missing-head/original',
+    'images/missing-body/original',
+  ]
+  const doubles = makeCopyDoubles({
+    keys,
+    missingHeadKeys: new Set(['images/missing-head/original']),
+    missingBodyKeys: new Set(['images/missing-body/original']),
+  })
+  const result = await copyPrefixes(copyArgs(doubles, { concurrency: 2 }))
+  assert.equal(result.copied, 1)
+  assert.equal(result.skipped, 0)
+  assert.deepEqual(doubles.puts.map((p) => p.key), ['images/a/original'])
+})
+
+test('copyPrefixes falls back to srcHead.contentType when body has none', async () => {
+  const doubles = makeCopyDoubles({ keys: ['images/a/original'], objContentType: null })
+  await copyPrefixes(copyArgs(doubles, { concurrency: 2 }))
+  assert.equal(doubles.puts.length, 1)
+  assert.equal(doubles.puts[0].contentType, 'image/png')
+})
+
+test('copyPrefixes rejects on any per-key put error and still closes both stores', async () => {
+  const keys = sampleKeys(20)
+  const doubles = makeCopyDoubles({ keys, failPutKey: keys[7], delayMs: 2 })
+  await assert.rejects(
+    copyPrefixes(copyArgs(doubles, { concurrency: 2 })),
+    /S3 put failed for images\/hash07\/original/,
+  )
+  assert.deepEqual([...doubles.closes].sort(), ['dest-bucket', 'source-bucket'])
+})
+
+test('copyPrefixes emits a progress line at every interval boundary', async () => {
+  const keys = sampleKeys(20)
+  const doubles = makeCopyDoubles({ keys })
+  const lines = []
+  await copyPrefixes(
+    copyArgs(doubles, {
+      concurrency: 2,
+      progressInterval: 5,
+      write: (line) => lines.push(line),
+    }),
+  )
+  assert.equal(lines.length, 4)
+  const parsed = lines.map((line) => {
+    const m = line.match(/^\[deploy-env\] copy ([^:]+): (\d+)\/(\d+) \(copied=(\d+), skipped=(\d+)\)$/)
+    assert.ok(m, `progress line format: ${line}`)
+    assert.equal(m[1], 'source-bucket')
+    assert.equal(Number(m[3]), 20)
+    assert.ok(!line.includes('images/hash') && !line.includes('AK') && !line.includes('SK'))
+    return Number(m[2])
+  })
+  assert.deepEqual(parsed, [5, 10, 15, 20])
+})
+
+test('formatCopyProgress renders the documented shape without leaking keys or secrets', () => {
+  assert.equal(
+    formatCopyProgress({
+      sourceBucket: 'airingcal-staging-public',
+      done: 100,
+      total: 2029,
+      copied: 90,
+      skipped: 10,
+    }),
+    '[deploy-env] copy airingcal-staging-public: 100/2029 (copied=90, skipped=10)',
+  )
 })

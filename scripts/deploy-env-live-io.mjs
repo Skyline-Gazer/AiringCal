@@ -576,35 +576,96 @@ function normalizeLooseEtag(etag) {
     .replaceAll('"', '')
 }
 
-async function copyPrefixes({ createObjectStore, s3Creds, sourceBucket, destBucket, prefixes }) {
+const DEFAULT_COPY_CONCURRENCY = 8
+const COPY_PROGRESS_INTERVAL = 100
+
+/** A progress line carries only counts + the source bucket name — never keys, bodies, or secrets. */
+export function formatCopyProgress({ sourceBucket, done, total, copied, skipped }) {
+  return `[deploy-env] copy ${sourceBucket}: ${done}/${total} (copied=${copied}, skipped=${skipped})`
+}
+
+function defaultCopyProgressWriter(line) {
+  process.stderr.write(`${line}\n`)
+}
+
+/**
+ * Copy every key under `prefixes` from `sourceBucket` to `destBucket` using a
+ * small bounded worker pool (no new dependency). The old fully sequential loop
+ * made 4 S3 calls per object and took >1h for 2029 staging images (round 16
+ * timed out mid-copy). Injectable `createObjectStore` / `write` keep it
+ * unit-testable with deterministic store doubles; no retries beyond the AWS SDK.
+ */
+export async function copyPrefixes({
+  createObjectStore,
+  s3Creds,
+  sourceBucket,
+  destBucket,
+  prefixes,
+  concurrency = DEFAULT_COPY_CONCURRENCY,
+  progressInterval = COPY_PROGRESS_INTERVAL,
+  write = defaultCopyProgressWriter,
+}) {
   const source = createObjectStore({ ...s3Creds, bucket: sourceBucket })
   const dest = createObjectStore({ ...s3Creds, bucket: destBucket })
   let copied = 0
   let skipped = 0
   try {
+    // Flatten all keys across every prefix so one bounded pool covers them all.
+    const keys = []
     for (const prefix of prefixes) {
-      const keys = await source.list(prefix)
-      for (const key of keys) {
-        if (key.endsWith('/')) continue
-        const srcHead = await source.head(key)
-        if (!srcHead) continue
-        const dstHead = await dest.head(key)
-        if (
-          dstHead &&
-          Number(dstHead.size) === Number(srcHead.size) &&
-          normalizeLooseEtag(dstHead.etag) === normalizeLooseEtag(srcHead.etag)
-        ) {
-          skipped += 1
-          continue
+      for (const key of await source.list(prefix)) keys.push(key)
+    }
+    const total = keys.length
+    let done = 0
+    let cursor = 0
+    let aborted = false
+
+    const processKey = async (key) => {
+      if (key.endsWith('/')) return
+      const srcHead = await source.head(key)
+      if (!srcHead) return
+      const dstHead = await dest.head(key)
+      if (
+        dstHead &&
+        Number(dstHead.size) === Number(srcHead.size) &&
+        normalizeLooseEtag(dstHead.etag) === normalizeLooseEtag(srcHead.etag)
+      ) {
+        skipped += 1
+        return
+      }
+      const obj = await source.get(key)
+      if (!obj?.body) return
+      await dest.put(key, obj.body, {
+        contentType: obj.contentType ?? srcHead.contentType ?? undefined,
+      })
+      copied += 1
+    }
+
+    const worker = async () => {
+      while (!aborted) {
+        const index = cursor++
+        if (index >= total) return
+        try {
+          await processKey(keys[index])
+        } catch (error) {
+          // Stop scheduling new keys; in-flight keys still settle through the
+          // Promise.allSettled below. Never silently continue past an error.
+          aborted = true
+          throw error
         }
-        const obj = await source.get(key)
-        if (!obj?.body) continue
-        await dest.put(key, obj.body, {
-          contentType: obj.contentType ?? srcHead.contentType ?? undefined,
-        })
-        copied += 1
+        done += 1
+        if (done % progressInterval === 0) {
+          write(formatCopyProgress({ sourceBucket, done, total, copied, skipped }))
+        }
       }
     }
+
+    const workerCount = Math.max(0, Math.min(concurrency, total))
+    const settled = await Promise.allSettled(
+      Array.from({ length: workerCount }, () => worker()),
+    )
+    const failed = settled.find((result) => result.status === 'rejected')
+    if (failed) throw failed.reason
   } finally {
     source.close?.()
     dest.close?.()
