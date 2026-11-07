@@ -1,4 +1,7 @@
-# EdgeOne public store (#72)
+# EdgeOne read store (#72)
+
+
+> **CURRENT — 2026-11-07.** Existing `airingcal-edgeone-read` is a previously deployed Reader; CF/EO real R2 Release parity is recorded in [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147). **New overseas Makers project and non-ICP Reader domain cutover are NOT yet live accepted**; see [current-state.md](current-state.md) and [reader-delivery-cutover.md](reader-delivery-cutover.md). PR [#164](https://github.com/Skyline-Gazer/AiringCal/pull/164) merged isolate caching, HTTP HEAD, image CDN env forwarding and routing verification; the old performance/"no caching" statements below are historical. R2 remains authoritative; EdgeOne Blob is not a Release store.
 
 Blob is **not** a publish authority: it has no conditional write, so the release
 pointer can never be moved through it safely. EdgeOne readers therefore read the
@@ -29,8 +32,7 @@ it as `onRequest({ request, env })`.
 
 Status: `HttpPublicStore` and the handler are unit-tested against a fake HTTPS
 CDN backed by a real published R2 release, including byte parity with the
-Cloudflare gateway. **No EdgeOne staging run yet**, so #69's capability rows stay
-candidate.
+Cloudflare gateway. **Existing EdgeOne Reader over real R2 staging has been validated**, but **new EdgeOne overseas deployment and custom-domain parity remain pending**. See #147/#72.
 
 
 ## `EdgeOnePublicStore` (Blob adapter, not wired for reads)
@@ -84,9 +86,9 @@ needs `projectId` + API token — that is what a staging/verification run would 
 - `listObjectKeys(prefix)` paginates the Blob cursor for GC/verification and
   rejects a repeated cursor.
 
-## Still open
+## Historical adapter notes and remaining overseas acceptance
 
-- Staging run on an approved EdgeOne account: configure
+- **Historical requirement (already satisfied for legacy Reader):** Staging run on an approved EdgeOne account: configure
   `AIRINGCAL_PUBLIC_BASE_URL` (verified https CDN over the staging public
   bucket), deploy the template, serve reads → then promote the #69 matrix rows.
 - **Deployment template** (staging-verified 2026-11-06 on project
@@ -96,8 +98,7 @@ needs `projectId` + API token — that is what a staging/verification run would 
   `apps/edgeone-read-worker/dist`. Use the documented `[[default]].js` name —
   `functions/[[path]].js` is not registered as a route and 404s every path. The
   edge runtime has **no `Response.json`/`Buffer`/`process`** and a **200 ms CPU
-  budget per invocation** (the read handler re-fetches pointer/snapshot/manifest
-  per request unless a layer caches them).
+  budget per invocation** (the Reader now uses isolate-lifetime verified snapshot cache and pointer soft refresh (PR #164); refer to the code rather than this older CPU note).
 - Read gateway wiring for EdgeOne Edge Functions (Request/Response portability
   limits) — the CF worker entry is not reusable as-is.
 - Image variants/CDN cache behavior on EdgeOne.
