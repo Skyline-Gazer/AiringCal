@@ -1671,6 +1671,16 @@ test('applyCacheRules + configureWaf scope every expression to plan.publicHost v
     waf.rules[0].expression,
     '(http.host eq "dev-cdn.example.test" and starts_with(http.request.uri.path, "/checkpoints/"))',
   )
+  assert.equal(waf.rules[0].action, 'block')
+  assert.ok(
+    !waf.rules[0].action_parameters?.response,
+    'checkpoint deny rule must not request the paid custom response body',
+  )
+  assert.ok(
+    immutable.rules[0].action_parameters,
+    'cache rules keep their allowed action_parameters',
+  )
+  assert.ok(pointer.rules[0].action_parameters)
 })
 
 // --- ensureZonePhaseRule expression reconciliation -------------------------
@@ -1763,9 +1773,10 @@ test('configureWaf PATCHes zone-wide rule when description matches but expressio
   assert.equal(writes[0].body.expression, NEW_HOST_WAF)
   assert.equal(writes[0].body.description, 'airingcal-deny-checkpoints')
   assert.equal(writes[0].body.action, 'block')
-  assert.deepEqual(writes[0].body.action_parameters, {
-    response: { status_code: 403, content: 'Forbidden', content_type: 'text/plain' },
-  })
+  assert.ok(
+    !writes[0].body.action_parameters?.response,
+    'checkpoint deny rule must not request the paid custom response body',
+  )
   assert.equal(writes[0].body.enabled, true)
 })
 
@@ -1905,6 +1916,11 @@ test('ensureZonePhaseRule still creates via POST when entrypoint has no matching
   assert.equal(writes[0].method, 'POST')
   assert.ok(writes[0].url.includes('/zones/zone123/rulesets/rs-waf/rules'))
   assert.equal(writes[0].body.expression, NEW_HOST_WAF)
+  assert.equal(writes[0].body.action, 'block')
+  assert.ok(
+    !writes[0].body.action_parameters?.response,
+    'checkpoint deny rule must not request the paid custom response body',
+  )
 })
 
 test('applyCacheRules + configureWaf refuse when plan.publicHost is missing', async () => {
