@@ -1,10 +1,12 @@
 # GHA portable writer (ADR 0003)
 
-> **Activation gate (2026-11-06):** The default-branch schedule is disabled at the job level unless repository variable `AIRINGCAL_WRITER_ENABLED` is exactly `true`. Do not enable it until real isolated R2 staging, reader parity and owner cutover approval (#147). Manual `workflow_dispatch` is the explicit smoke path; use staging-scoped credentials initialized via `scripts/setup-staging.sh`. `dev` push never deploys the read Worker or applies remote D1 migrations after the PR CI gate change. A real public CDN URL is not configured in `wrangler.toml` by default; the read Worker falls back to its legacy image store until an operator sets and verifies the runtime variable. No Docker/CNB/QingLong delivery. This PR is not proof of production-live sync.
+> **CURRENT — 2026-11-07.** See [current-state.md](current-state.md) and [reader-delivery-cutover.md](reader-delivery-cutover.md). PR #164 merged to `dev`: `portable-writer.yml` now has explicit `staging`, `development`, and `production` dispatch paths. **Legacy two-bucket Staging has real R2 PASS**, but new one-bucket Development `airingcal-development` is **not yet live accepted**. Production stays disabled. Never interpret the older Staging instructions below as the new default bootstrap.
 
-Status: **implemented in repo; not production-live until Secrets/Variables are filled and a successful `workflow_dispatch` is observed.**
+**Recommended Development entry:** ignored root `.env` per [`.env.example`](../../.env.example) → `node scripts/deploy-env.mjs --dry-run --target both` → verify R2 Custom Domain, `AIRINGCAL_ZONE_ID`, account/Token, EdgeOne credentials, Zone ownership and Writer freeze feasibility **before** `--apply`. New bucket must deny `checkpoints/` publicly and have its `r2.dev` disabled before copying real SQLite/lease data; old Staging remains intact for rollback. The live script uses `AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes`, and a controlled Writer dispatch requires its own opt-in; do not run these before governance/preflight is complete.
 
-Decision: [`../plans/adr-0003-gha-portable-write.md`](../plans/adr-0003-gha-portable-write.md).
+**Legacy Staging:** `bash scripts/setup-staging.sh` and `AIRINGCAL_STAGING_*` apply **only** to the existing historical isolated two-bucket environment (`airingcal-staging-checkpoint` + `airingcal-staging-public`). Its real-R2 generations 1–3, CAS/lease, rollback proof are in [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147), not still pending. `AIRINGCAL_WRITER_ENABLED` gates Production; `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED` gates Development, and Staging manual dispatch needs its own real freeze procedure.
+
+Decision: [ADR 0003](../plans/adr-0003-gha-portable-write.md).
 
 ## What runs
 
@@ -21,9 +23,9 @@ Flow (C2/C4): acquire lease → restore SQLite checkpoint from **private** R2 �
 
 ## Unified Environment Configuration (`AIRINGCAL_{ENVIRONMENT}_{SERVICE}_{KEY}`)
 
-All GitHub Actions Environment settings follow `AIRINGCAL_{ENVIRONMENT}_{SERVICE}_{KEY}` (`STAGING` vs `PRODUCTION`). Checkpoint and Public buckets share a single scoped S3 credential pair per environment; non-sensitive infrastructure values (`CLOUDFLARE_ACCOUNT_ID`, `S3_ENDPOINT`, `S3_REGION`, bucket names, Worker name, `PUBLIC_BASE_URL`) are Variables or automatically derived in the workflow — never Secrets.
+All GitHub Actions Environment settings follow `AIRINGCAL_{ENVIRONMENT}_{SERVICE}_{KEY}` (`STAGING` legacy, `DEVELOPMENT` target, `PRODUCTION` gated). Checkpoint and Public buckets share a single scoped S3 credential pair per environment; non-sensitive infrastructure values (`CLOUDFLARE_ACCOUNT_ID`, `S3_ENDPOINT`, `S3_REGION`, bucket names, Worker name, `PUBLIC_BASE_URL`) are Variables or automatically derived in the workflow — never Secrets.
 
-### Staging (`staging` Environment — initialized via `bash scripts/setup-staging.sh`)
+### Legacy Staging (`staging` Environment — historical two-bucket setup; preserve for rollback)
 
 | Name | Type | Purpose / Derivation |
 | --- | --- | --- |
@@ -42,7 +44,7 @@ All GitHub Actions Environment settings follow `AIRINGCAL_{ENVIRONMENT}_{SERVICE
 
 Production uses the corresponding `AIRINGCAL_PRODUCTION_*` names in the `production` Environment (plus repository variable `AIRINGCAL_WRITER_ENABLED=true` only after owner cutover approval).
 
-### One-shot Staging initialization (local `.env` driven)
+### Legacy Staging initialization (historical / rollback only; not new Development)
 
 > Note: `.env.example` now documents the unified `AIRINGCAL_ENV` deploy contract (see `scripts/deploy-env.mjs`). For the one-shot staging flow below, add the `AIRINGCAL_STAGING_*` keys by hand; they remain valid and are listed as backward aliases at the bottom of `.env.example`.
 Copy `.env.example` to `.env` (git-ignored) and fill in the 4 required keys (`AIRINGCAL_STAGING_BANGUMI_TOKEN`, `AIRINGCAL_STAGING_PRIMARY_USER_ID`, `AIRINGCAL_STAGING_S3_ACCESS_KEY_ID`, `AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY`), then run:
