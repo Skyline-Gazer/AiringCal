@@ -117,7 +117,9 @@ existing `airingcal-edgeone-read` project stays as rollback until domain cutover
 acceptance.
 
 **Image CDN:** `AIRINGCAL_IMAGE_BASE_URL` is optional and **off by default**.
-Unset → `/image/*` redirects reuse `AIRINGCAL_PUBLIC_BASE_URL`. When set, the
+Unset → `/image/*` redirects reuse `AIRINGCAL_PUBLIC_BASE_URL`, and the deploy
+clears the persisted EdgeOne project variable (`makers env rm`) so a once-set CDN
+base cannot stay sticky. When set, the
 deploy CLI requires https, a host different from the reader/public base (loop
 rejection), and origin Host/SNI equal to the public R2 host.
 

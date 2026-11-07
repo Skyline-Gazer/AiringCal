@@ -217,6 +217,21 @@ function assertSpawnOk(result, label, secrets = []) {
   return result
 }
 
+/**
+ * `edgeone makers env rm <key>` is idempotent from our point of view: an
+ * absent project variable is the desired end state. Non-zero exits whose
+ * output only says the key was not found are tolerated; spawn failures and
+ * every other error (auth, network, unknown flag) still throw.
+ */
+function assertEdgeoneEnvRmOk(result, label, secrets = []) {
+  if (!result || result.status === 0) return result
+  const out = redactSecrets(`${result.stderr || ''}\n${result.stdout || ''}`.trim(), secrets)
+  if (!result.error && /not\s*found|does\s*not\s*exist|no\s*such|not\s*set|unknown\s*(?:variable|key|name)|not\s*configured/i.test(out)) {
+    return result
+  }
+  return assertSpawnOk(result, label, secrets)
+}
+
 export function runWrangler(spawnSyncImpl, subArgs, env, opts = {}) {
   const secrets = secretList(env)
   const args = [...WRANGLER.slice(1), ...subArgs, ...ENV_FILE_NULL]
@@ -1376,8 +1391,11 @@ export function createLiveDevelopmentApplyIo({
       if (env.PACKAGE_VERSION) {
         envPairs.push(['PACKAGE_VERSION', String(env.PACKAGE_VERSION)])
       }
-      // Image CDN default off: unset stays unset (the EO reader then reuses
-      // the public base); only an explicitly configured base is propagated.
+      // Image CDN default off means an explicitly cleared EdgeOne project
+      // variable: EdgeOne project env persists across deploys, so a previously
+      // configured base would stay sticky (and a later verifyImageRouting
+      // would then abort against the stale CDN origin). Unset/empty therefore
+      // runs `env rm`; a non-empty value is propagated with `env set`.
       const edgeoneImageBaseUrl = String(env.AIRINGCAL_IMAGE_BASE_URL ?? '').trim()
       if (edgeoneImageBaseUrl) {
         envPairs.push(['AIRINGCAL_IMAGE_BASE_URL', edgeoneImageBaseUrl])
@@ -1391,6 +1409,20 @@ export function createLiveDevelopmentApplyIo({
         assertSpawnOk(setRes, `edgeone makers env set ${key}`, secrets)
       }
 
+      let imageBaseUrlCleared = false
+      if (!edgeoneImageBaseUrl) {
+        assertEdgeoneEnvRmOk(
+          spawnSyncImpl(
+            'edgeone',
+            ['makers', 'env', 'rm', 'AIRINGCAL_IMAGE_BASE_URL', '-e', 'production', '-t', token],
+            { encoding: 'utf8', cwd: ROOT, env: { ...process.env, ...env } },
+          ),
+          'edgeone makers env rm AIRINGCAL_IMAGE_BASE_URL',
+          secrets,
+        )
+        imageBaseUrlCleared = true
+      }
+
       const readerUrlMatch = String(deploy.stdout || '').match(/https:\/\/\S*edgeone\S*/i)
       return {
         deployed: true,
@@ -1398,6 +1430,9 @@ export function createLiveDevelopmentApplyIo({
         region,
         createdViaDeploy: true,
         readerUrl: readerUrlMatch ? readerUrlMatch[0].replace(/[.,;)]+$/, '') : null,
+        imageBaseUrl: edgeoneImageBaseUrl || null,
+        imageBaseUrlPersisted: Boolean(edgeoneImageBaseUrl),
+        imageBaseUrlCleared,
       }
     },
 
@@ -1418,28 +1453,9 @@ export function createLiveDevelopmentApplyIo({
       const imageBase = String(env.AIRINGCAL_IMAGE_BASE_URL ?? '').trim()
       const expectedOrigin = new URL(imageBase || publicBase).origin
 
-      const readers = []
-      if (plan.target === 'cloudflare' || plan.target === 'both') {
-        const workerUrl = String(ctx.cloudflareDeploy?.workerUrl ?? '').trim()
-        if (!workerUrl) {
-          throw new Error(
-            'image routing verification failed: cloudflare worker URL missing from the deploy receipt',
-          )
-        }
-        readers.push({ label: 'cloudflare', base: workerUrl.replace(/\/+$/, '') })
-      }
-      if (plan.target === 'edgeone' || plan.target === 'both') {
-        const eoBase =
-          String(ctx.edgeoneDeploy?.readerUrl ?? '').trim() ||
-          String(env.AIRINGCAL_EDGEONE_READER_URL ?? '').trim()
-        if (!eoBase) {
-          throw new Error(
-            'image routing verification failed: edgeone reader host unknown; set AIRINGCAL_EDGEONE_READER_URL for routing verification',
-          )
-        }
-        readers.push({ label: 'edgeone', base: eoBase.replace(/\/+$/, '') })
-      }
-
+      // Discovery first: a release with zero image hashes is skipped before
+      // any reader-host gating, so a missing EdgeOne host must never mask the
+      // legitimate `skipped-no-images` outcome.
       const pointerUrl = `${publicBase}/public/current-release.json`
       const pointerResponse = await fetchImpl(pointerUrl, {
         headers: { 'cache-control': 'no-cache' },
@@ -1487,6 +1503,28 @@ export function createLiveDevelopmentApplyIo({
         }
       }
       const hash = hashes[0]
+
+      const readers = []
+      if (plan.target === 'cloudflare' || plan.target === 'both') {
+        const workerUrl = String(ctx.cloudflareDeploy?.workerUrl ?? '').trim()
+        if (!workerUrl) {
+          throw new Error(
+            'image routing verification failed: cloudflare worker URL missing from the deploy receipt',
+          )
+        }
+        readers.push({ label: 'cloudflare', base: workerUrl.replace(/\/+$/, '') })
+      }
+      if (plan.target === 'edgeone' || plan.target === 'both') {
+        const eoBase =
+          String(ctx.edgeoneDeploy?.readerUrl ?? '').trim() ||
+          String(env.AIRINGCAL_EDGEONE_READER_URL ?? '').trim()
+        if (!eoBase) {
+          throw new Error(
+            'image routing verification failed: edgeone reader host unknown; set AIRINGCAL_EDGEONE_READER_URL for routing verification',
+          )
+        }
+        readers.push({ label: 'edgeone', base: eoBase.replace(/\/+$/, '') })
+      }
 
       const receipts = []
       for (const reader of readers) {

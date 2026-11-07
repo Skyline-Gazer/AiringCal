@@ -2285,6 +2285,33 @@ test('verifyImageRouting skips (not passes) when the published release has no im
   assert.ok(!calls.some(([u]) => u.includes('/image/')), 'readers must not be probed')
 })
 
+test('verifyImageRouting returns skipped-no-images before any reader-host gating when the release has no images', async () => {
+  for (const target of ['edgeone', 'both']) {
+    const io = await buildRoutingIo(
+      routingFetchDouble({ snapshot: { collections: {}, calendar: [] } }),
+      {},
+      target,
+    )
+    const result = await io.verifyImageRouting({
+      cloudflareDeploy: { deployed: true },
+      edgeoneDeploy: { deployed: true },
+    })
+    assert.equal(result.status, 'skipped-no-images', `${target}: zero hashes must skip`)
+  }
+})
+
+test('verifyImageRouting still refuses with an explicit error when hashes exist and the EdgeOne host is unknown for target=edgeone', async () => {
+  const io = await buildRoutingIo(
+    routingFetchDouble({ location: `https://dev-cdn.example.test/images/${ROUTE_HASH}/original` }),
+    {},
+    'edgeone',
+  )
+  await assert.rejects(
+    io.verifyImageRouting({ edgeoneDeploy: { deployed: true } }),
+    /edgeone reader host unknown; set AIRINGCAL_EDGEONE_READER_URL for routing verification/,
+  )
+})
+
 test('verifyImageRouting refuses with an explicit error when the EdgeOne host is unknown', async () => {
   const io = await buildRoutingIo(
     routingFetchDouble({ location: `https://dev-cdn.example.test/images/${ROUTE_HASH}/original` }),
@@ -2456,7 +2483,7 @@ test('deployCloudflareReader forwards the trimmed AIRINGCAL_IMAGE_BASE_URL to th
 })
 
 test('deployEdgeoneOverseas sets the image base env pair only when configured and exposes readerUrl', async () => {
-  const buildEdgeoneIo = (imageBaseUrl, spawnLog) =>
+  const buildEdgeoneIo = (imageBaseUrl, spawnLog, rmOutcome = null) =>
     import('./deploy-env.mjs').then(({ createLiveDevelopmentApplyIo }) =>
       createLiveDevelopmentApplyIo({
         env: {
@@ -2472,6 +2499,7 @@ test('deployEdgeoneOverseas sets the image base env pair only when configured an
         spawnSyncImpl: (cmd, args) => {
           const joined = args.join(' ')
           spawnLog.push(`${cmd} ${joined}`)
+          if (rmOutcome && cmd === 'edgeone' && joined.includes('env rm')) return rmOutcome()
           return {
             status: 0,
             stdout: cmd === 'edgeone' && joined.includes('deploy') ? 'Deployed at https://preview.edgeone.cool' : '',
@@ -2492,13 +2520,99 @@ test('deployEdgeoneOverseas sets the image base env pair only when configured an
     withImage.some((l) => l.includes('env set AIRINGCAL_IMAGE_BASE_URL https://img.example.test')),
     withImage.join(' | '),
   )
+  assert.ok(
+    !withImage.some((l) => l.includes('env rm AIRINGCAL_IMAGE_BASE_URL')),
+    `configured image base must not be cleared: ${withImage.join(' | ')}`,
+  )
   assert.equal(resultWith.readerUrl, 'https://preview.edgeone.cool')
+  assert.equal(resultWith.imageBaseUrlPersisted, true)
+  assert.equal(resultWith.imageBaseUrlCleared, false)
 
   const withoutImage = []
   const ioWithout = await buildEdgeoneIo('', withoutImage)
-  await ioWithout.deployEdgeoneOverseas()
+  const resultWithout = await ioWithout.deployEdgeoneOverseas()
   assert.ok(
-    !withoutImage.some((l) => l.includes('AIRINGCAL_IMAGE_BASE_URL')),
-    `image base must stay unset on EdgeOne when not configured: ${withoutImage.join(' | ')}`,
+    !withoutImage.some((l) => l.includes('env set AIRINGCAL_IMAGE_BASE_URL')),
+    `unset must never re-set a sticky image base: ${withoutImage.join(' | ')}`,
   )
+  assert.ok(
+    withoutImage.some(
+      (l) =>
+        l.includes('env rm AIRINGCAL_IMAGE_BASE_URL') &&
+        l.includes('-e production') &&
+        l.includes('-t eo-tok'),
+    ),
+    `unset must clear the persisted EdgeOne image base: ${withoutImage.join(' | ')}`,
+  )
+  assert.equal(resultWithout.imageBaseUrlCleared, true)
+  assert.equal(resultWithout.imageBaseUrlPersisted, false)
 })
+
+test('deployEdgeoneOverseas tolerates env rm "not found" output as an already-cleared base', async () => {
+  const log = []
+  const io = await import('./deploy-env.mjs').then(({ createLiveDevelopmentApplyIo }) =>
+    createLiveDevelopmentApplyIo({
+      env: {
+        AIRINGCAL_CLOUDFLARE_API_TOKEN: 'routing-token',
+        AIRINGCAL_EDGEONE_API_TOKEN: 'eo-tok',
+      },
+      plan: buildDevelopmentDeployPlan({
+        target: 'edgeone',
+        publicBaseUrl: 'https://dev-cdn.example.test',
+        mode: 'apply',
+      }),
+      spawnSyncImpl: (cmd, args) => {
+        const joined = args.join(' ')
+        log.push(`${cmd} ${joined}`)
+        if (cmd === 'edgeone' && joined.includes('env rm')) {
+          return { status: 1, stdout: '', stderr: 'variable AIRINGCAL_IMAGE_BASE_URL not found', error: null }
+        }
+        return {
+          status: 0,
+          stdout: cmd === 'edgeone' && joined.includes('deploy') ? 'Deployed at https://preview.edgeone.cool' : '',
+          stderr: '',
+          error: null,
+        }
+      },
+      fetchImpl: async () => {
+        throw new Error('no fetch expected')
+      },
+    }),
+  )
+  const result = await io.deployEdgeoneOverseas()
+  assert.equal(result.imageBaseUrlCleared, true)
+  assert.ok(log.some((l) => l.includes('env rm AIRINGCAL_IMAGE_BASE_URL')))
+})
+
+test('deployEdgeoneOverseas fails closed on a real env rm error (auth)', async () => {
+  const io = await import('./deploy-env.mjs').then(({ createLiveDevelopmentApplyIo }) =>
+    createLiveDevelopmentApplyIo({
+      env: {
+        AIRINGCAL_CLOUDFLARE_API_TOKEN: 'routing-token',
+        AIRINGCAL_EDGEONE_API_TOKEN: 'eo-tok',
+      },
+      plan: buildDevelopmentDeployPlan({
+        target: 'edgeone',
+        publicBaseUrl: 'https://dev-cdn.example.test',
+        mode: 'apply',
+      }),
+      spawnSyncImpl: (cmd, args) => {
+        const joined = args.join(' ')
+        if (cmd === 'edgeone' && joined.includes('env rm')) {
+          return { status: 1, stdout: '', stderr: '401 Unauthorized: invalid api token', error: null }
+        }
+        return {
+          status: 0,
+          stdout: cmd === 'edgeone' && joined.includes('deploy') ? 'Deployed at https://preview.edgeone.cool' : '',
+          stderr: '',
+          error: null,
+        }
+      },
+      fetchImpl: async () => {
+        throw new Error('no fetch expected')
+      },
+    }),
+  )
+  await assert.rejects(io.deployEdgeoneOverseas(), /env rm AIRINGCAL_IMAGE_BASE_URL failed \(exit 1\).*Unauthorized/i)
+})
+
