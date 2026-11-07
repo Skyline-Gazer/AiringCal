@@ -1,7 +1,7 @@
 # Development Reader & R2 domain cutover runbook
 
 
-> **GOVERNANCE FIRST — 2026-11-07.** [current-state.md](current-state.md) and Project #7 / Issue #147 must be reconciled with PR #164 before deployment tests. Run **read-only** Zone/domain/Token/CLI preflight before any staging Writer freeze. The new R2 domain is **not yet selected**; `AIRINGCAL_PUBLIC_BASE_URL` must be an actual HTTPS Custom Domain, and `AIRINGCAL_ZONE_ID` must belong to the same Cloudflare account/Zone. Do not infer a custom domain from the Reader domain or copy a legacy `r2.dev` URL. **No Development live apply or overseas CNAME is claimed complete.**
+> **STATUS — 2026-11-08: Development live apply COMPLETE.** [current-state.md](current-state.md) is the authoritative entry. Public R2 custom domain is `airingcal.223.im` (zone `223.im`), r2.dev disabled, host-scoped WAF/cache/CORS applied, isolation proven, data copied, readers deployed, writer test passed, MIME repair/parity/post-bench/accept green. **Only `test.air.teijp.cn` CNAME → overseas EO and post-CNAME parity remain Owner actions; no Production cutover.** Evidence: [`development-live-acceptance.md`](./development-live-acceptance.md).
 
 Owner-approved, **manual** sequence that moves the Development reader domain
 `test.air.teijp.cn` from the global EdgeOne project to the new **overseas**
@@ -10,13 +10,10 @@ EdgeOne project and retires `r2.dev` as the public base. Like
 no DNS record, live deploy apply, or `r2.dev` toggle is created, changed, or
 deleted by a merge.
 
-> **STATUS — Live Deployment Ready / pending Owner credentials + DNS.** Code
-> adapters for Wrangler / `gh` / EdgeOne makers / Cloudflare REST are landed.
-> With valid CF/GH/EO credentials + `AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes`,
-> `--apply` executes real platform mutations (isolation abort still blocks copy).
-> The implementing agent does not hold Owner DNS control for `test.air.teijp.cn`
-> or production secrets in this environment. **No live CNAME or Staging Accepted
-> receipt is claimed here.** Machine-readable status:
+> **REMAINING OWNER ACTION — DNS + post-CNAME parity.** The implementing agent
+> executed `--apply` on Development with real credentials and holds full
+> receipts (see below), but does not hold Owner DNS control for
+> `test.air.teijp.cn`. Machine-readable status:
 > [`fixtures/reader-delivery-cutover-checklist.json`](./fixtures/reader-delivery-cutover-checklist.json).
 
 ## Preconditions (all must hold before Step 1)
