@@ -890,8 +890,74 @@ test('createLiveDevelopmentApplyIo freezeWriter disables workflow and waits for 
   })
   const result = await io.freezeWriter({})
   assert.equal(result.inProgress, 0)
+  assert.equal(result.alreadyFrozen, false)
   assert.ok(ghCalls.some((c) => c.includes('workflow disable')))
   assert.ok(ghCalls.some((c) => c.includes('run list')))
+})
+
+test('freezeWriter treats already-disabled workflow as success and records alreadyFrozen', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const ghCalls = []
+  const io = createLiveDevelopmentApplyIo({
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok' },
+    plan,
+    spawnSyncImpl: (cmd, args) => {
+      if (cmd === 'gh') ghCalls.push(args.join(' '))
+      if (args.includes('workflow') && args.includes('disable')) {
+        return {
+          status: 1,
+          stdout: '',
+          stderr: 'Unable to disable a workflow that is not active (HTTP 403)',
+          error: null,
+        }
+      }
+      if (args.includes('run') && args.includes('list')) {
+        return { status: 0, stdout: '[]', stderr: '', error: null }
+      }
+      return { status: 0, stdout: '', stderr: '', error: null }
+    },
+    fetchImpl: async () => ({ status: 403 }),
+  })
+  const result = await io.freezeWriter({})
+  assert.equal(result.lever, 'workflow-disable')
+  assert.equal(result.alreadyFrozen, true)
+  assert.equal(result.inProgress, 0)
+  assert.ok(
+    ghCalls.some((c) => c.includes('run list')),
+    'already-disabled no-op must still wait for in_progress runs',
+  )
+})
+
+test('freezeWriter fails closed on auth errors from workflow disable', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const ghCalls = []
+  const io = createLiveDevelopmentApplyIo({
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok' },
+    plan,
+    spawnSyncImpl: (cmd, args) => {
+      if (cmd === 'gh') ghCalls.push(args.join(' '))
+      if (args.includes('workflow') && args.includes('disable')) {
+        return { status: 1, stdout: '', stderr: 'gh: Bad credentials (HTTP 401)', error: null }
+      }
+      return { status: 0, stdout: '', stderr: '', error: null }
+    },
+    fetchImpl: async () => ({ status: 403 }),
+  })
+  await assert.rejects(() => io.freezeWriter({}), /Bad credentials/)
+  assert.ok(
+    !ghCalls.some((c) => c.includes('run list')),
+    'fatal disable failure must not proceed to the run-list wait',
+  )
 })
 
 test('createLiveDevelopmentApplyIo attachCustomDomain fails closed without ZONE_ID', async () => {
@@ -1380,6 +1446,54 @@ test('runSingleWriterTest fails with run URL on failed development job, freeze r
   const io = await buildWriterTestIo(spawnSyncImpl)
   await assert.rejects(() => io.runSingleWriterTest({}), /actions\/runs\/101/)
   assert.ok(ghCalls.some((c) => c.includes('workflow disable')))
+})
+
+test('runSingleWriterTest proceeds to dispatch when enable is an already-enabled no-op', async () => {
+  const inner = writerTestSpawnDouble({ jobs: [{ name: 'development', conclusion: 'success' }] })
+  const spawnSyncImpl = (cmd, args) => {
+    const joined = args.join(' ')
+    if (joined.includes('workflow enable')) {
+      inner.ghCalls.push(joined)
+      return {
+        status: 1,
+        stdout: '',
+        stderr: 'Unable to enable a workflow that is not disabled (HTTP 403)',
+        error: null,
+      }
+    }
+    return inner.spawnSyncImpl(cmd, args)
+  }
+  const io = await buildWriterTestIo(spawnSyncImpl)
+  const receipt = await io.runSingleWriterTest({})
+  assert.equal(receipt.dispatched, true)
+  assert.equal(receipt.runId, 101)
+  assert.equal(receipt.restored, true)
+  assert.ok(
+    inner.ghCalls.some((c) => c.includes('workflow enable')),
+    'enable toggle must still be attempted',
+  )
+  assert.ok(inner.ghCalls.some((c) => c.includes('workflow run portable-writer.yml')))
+})
+
+test('runSingleWriterTest restore treats already-disabled workflow as success, not a restore failure', async () => {
+  const inner = writerTestSpawnDouble({ jobs: [{ name: 'development', conclusion: 'success' }] })
+  const spawnSyncImpl = (cmd, args) => {
+    const joined = args.join(' ')
+    if (joined.includes('workflow disable')) {
+      inner.ghCalls.push(joined)
+      return {
+        status: 1,
+        stdout: '',
+        stderr: 'Unable to disable a workflow that is not active (HTTP 403)',
+        error: null,
+      }
+    }
+    return inner.spawnSyncImpl(cmd, args)
+  }
+  const io = await buildWriterTestIo(spawnSyncImpl)
+  const receipt = await io.runSingleWriterTest({})
+  assert.equal(receipt.restored, true)
+  assert.ok(inner.ghCalls.some((c) => c.includes('workflow disable')))
 })
 
 test('runSingleWriterTest refuses when ctx.developmentWriterEnabled is true', async () => {
