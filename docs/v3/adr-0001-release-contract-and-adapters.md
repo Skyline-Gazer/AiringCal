@@ -1,5 +1,8 @@
 # ADR 0001 — v3 release contract, store ports and platform adapters
 
+
+> **HISTORICAL ADR — current contract supplement (2026-11-07):** The original decision text below describes the 2026-10-17 design, not the latest complete schema or operations. **Current** manifest keys are generation-scoped `public/manifests/<generation>-<manifest_content_hash>.json`, recorded by `manifest_ref` in the pointer (PR #146); PR #164 adds verified Snapshot caching, MIME and Reader/CDN routing. Development targets **one R2 bucket per environment**, with WAF-denied `checkpoints/` on the public Custom Domain and `r2.dev` disabled. Read [current-state.md](current-state.md) / code on `dev` first; the old `public/manifest.json`, Docker/Compose, GC quantity and cache-response examples below are preserved for historical reasoning **not deployment instructions**.
+
 Status: Accepted (2026-10-17). Scope: P0 (#69) deliverables — minimum release
 contract, capability matrix rationale, threat model, cache rules. No production
 change is implied by this document.

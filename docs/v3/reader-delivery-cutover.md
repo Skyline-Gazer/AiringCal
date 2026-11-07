@@ -1,4 +1,7 @@
-# Reader delivery domain cutover runbook (PR-D / P4 Task 4.4)
+# Development Reader & R2 domain cutover runbook
+
+
+> **GOVERNANCE FIRST — 2026-11-07.** [current-state.md](current-state.md) and Project #7 / Issue #147 must be reconciled with PR #164 before deployment tests. Run **read-only** Zone/domain/Token/CLI preflight before any staging Writer freeze. The new R2 domain is **not yet selected**; `AIRINGCAL_PUBLIC_BASE_URL` must be an actual HTTPS Custom Domain, and `AIRINGCAL_ZONE_ID` must belong to the same Cloudflare account/Zone. Do not infer a custom domain from the Reader domain or copy a legacy `r2.dev` URL. **No Development live apply or overseas CNAME is claimed complete.**
 
 Owner-approved, **manual** sequence that moves the Development reader domain
 `test.air.teijp.cn` from the global EdgeOne project to the new **overseas**
@@ -74,9 +77,7 @@ node scripts/reader-delivery-bench.mjs \
 isolation precondition. This step is the reader-facing **confirmation** that, for
 whatever bucket currently backs `AIRINGCAL_PUBLIC_BASE_URL`, the custom domain —
 not `r2.dev` — now serves the pointer **and** one image correctly before reads
-are trusted on it. If the public base was left pointing at `r2.dev` (operator set
-`AIRINGCAL_PUBLIC_BASE_URL` empty to "keep the currently verified host"),
-re-point it to the custom-domain CDN host and disable `r2.dev` here.
+are trusted on it. **Do not supply an empty `AIRINGCAL_PUBLIC_BASE_URL` or a legacy `r2.dev` URL.** The deploy CLI requires a real Custom Domain URL. `r2.dev` on the **new Development** Bucket is disabled during secure bootstrap; do not disable the old Staging Public `r2.dev` while it is still the rollback source.
 
 ```bash
 # Pointer parity (Cache-Control must be no-cache / max-age=0, not a long TTL)
@@ -85,8 +86,8 @@ curl -sfI "$AIRINGCAL_PUBLIC_BASE_URL/public/current-release.json"
 # One image parity — Content-Type must be image/* (P0/P1), not application/octet-stream
 curl -sfI "$AIRINGCAL_PUBLIC_BASE_URL/images/<hash>/original"
 
-# Both 200 with the expected headers → disable the public r2.dev URL
-wrangler r2 bucket dev-url disable airingcal-development -y --env-file /dev/null
+# Both 200 with the expected headers → verify NEW development bucket r2.dev remains disabled
+wrangler r2 bucket dev-url get airingcal-development
 ```
 
 The `<hash>` is any `images/<64-hex>/original` key referenced by the current

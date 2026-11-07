@@ -1,34 +1,37 @@
 # Docs index (for AI & operators)
 
-> **Owner-confirmed (2026-11-05):** GitHub-only development; GHA one-shot Portable Builder is sole v3 writer target with private S3 checkpoint, one authoritative public S3 Release/images (R2 first); Cloudflare/EdgeOne stateless read, Netlify/Vercel later. **No CNB, QingLong or Docker/Compose deployment.** The writer implementation is merged into `dev` ([#146](https://github.com/Skyline-Gazer/AiringCal/pull/146), read parity [#148](https://github.com/Skyline-Gazer/AiringCal/pull/148), ops hardening [#149](https://github.com/Skyline-Gazer/AiringCal/pull/149)) but that does **not** mean production-live: real staging, API/image parity and owner cutover are tracked in [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147).
+> **CURRENT — 2026-11-07.** Read [v3/current-state.md](v3/current-state.md) **first**. PR [#164](https://github.com/Skyline-Gazer/AiringCal/pull/164) merged at `a2c0cd67` with green CI. **Old dual-bucket Staging real-R2 proof PASSED** (three generations/CAS/rollback), while **new one-bucket Development Live Acceptance has NOT been performed**. Production remains v2 and is NOT approved for cutover. See [#67](https://github.com/Skyline-Gazer/AiringCal/issues/67) / [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147) / [#72](https://github.com/Skyline-Gazer/AiringCal/issues/72) / [#73](https://github.com/Skyline-Gazer/AiringCal/issues/73).
 >
-> **Reality check:** Existing v2 Worker read APIs still reference legacy D1/KV/R2 data; GHA Reader parity must pass before cutover. This feature PR gates Cloudflare Worker deployment / D1 migration to manual dispatch only.
+> **Approved:** GitHub-only `dev` → `main` release, one-shot GHA Writer, Cloudflare R2 single Bucket **per environment**, direct public Release/images on R2 Custom Domain with host-scoped WAF denying `checkpoints/`. Cloudflare/EdgeOne are stateless readers; EdgeOne Reader `overseas`, optional separate ICP image CDN off by default. **No CNB, QingLong, Docker/Compose deployment.** `CORS` does not protect private objects. `r2.dev` must be disabled for the new mixed bucket, after checking rollback boundaries.
 
 ## Approved v3 target architecture (not production-live)
 
 | Layer | Runtime | Repo path |
 | --- | --- | --- |
-| **Read** | Cloudflare Worker `airing-cal-frontend` (multi-platform adapters follow) | `apps/web-worker` / `packages/v3-read` |
-| **Write** | GitHub Actions one-shot portable builder → S3 (R2 day one) | `.github/workflows/portable-writer.yml`, `apps/node-jobs` |
-| **Retired delivery targets** | QingLong writer, CNB runner, Docker/Compose (read and write), D1/KV as v3 write authority, VPS | historical docs / git history |
+| **Write** | One-shot GitHub Actions Portable Writer; Production schedule OFF | `.github/workflows/portable-writer.yml`, `apps/node-jobs` |
+| **Storage** | Cloudflare R2: `airingcal-development` target (later `airingcal-production`); one bucket with public and denied checkpoint prefixes | `scripts/deploy-env*.mjs`, `packages/storage` |
+| **Read** | Cloudflare Worker + EdgeOne Makers overseas, same verified Release and independently optional image CDN | `packages/v3-read`, `apps/v3-read-worker`, `apps/edgeone-read-worker` |
+| **Retired / historical** | QingLong, CNB, Docker/Compose, v2 D1/KV as v3 write authority | Historical plans / archive |
 
 ```text
-Bangumi → GHA portable writer (node-jobs)
-            → private R2 checkpoint (SQLite) + public R2 Release (+ images)
-            → web-worker /api/* ; GET /image/:hash → 302 public CDN when AIRINGCAL_PUBLIC_BASE_URL set
+Bangumi → GHA Portable Writer
+        → R2 one Bucket per env:
+           checkpoints/ (blocked over public domain)
+           public/ + snapshots/ + images/ (CDN-served)
+        → CF Reader / EdgeOne Overseas Reader → optional ICP image CDN for images
 ```
 
-Decision: [`plans/adr-0003-gha-portable-write.md`](plans/adr-0003-gha-portable-write.md).
-Ops fill-in (placeholders until Secrets set): [`v3/gha-portable-writer.md`](v3/gha-portable-writer.md).
+**Acceptance sequence:** Issue/PR/Project #7 + docs governance → read-only Zone/domain/token preflight → Owner-approved Development live apply → MIME repair + CF/EO parity + post-benchmark → separate future production decision. Contracts: [ADR 0003](plans/adr-0003-gha-portable-write.md); [GHA ops](v3/gha-portable-writer.md).
 
 ## Read order for agents
 
-1. [`../START_HERE_FOR_AI.md`](../START_HERE_FOR_AI.md)
-2. [`plans/phase-0-web-worker.md`](plans/phase-0-web-worker.md) — read Worker
-3. [`plans/phase-1-node-jobs.md`](plans/phase-1-node-jobs.md) — write bundle (**Phase 1 closed**)
-4. [`plans/no-cf-write-path.md`](plans/no-cf-write-path.md) — no CF Cron/Workflow write
-5. [`apps/node-jobs/docs/operator-contract.md`](../apps/node-jobs/docs/operator-contract.md) — env, timeouts, exit codes
-6. GHA writer ops: [`v3/gha-portable-writer.md`](v3/gha-portable-writer.md)
+1. **[`v3/current-state.md`](v3/current-state.md) — authoritative status, gates, deployment architecture**
+2. [`../START_HERE_FOR_AI.md`](../START_HERE_FOR_AI.md)
+3. [`plans/phase-0-web-worker.md`](plans/phase-0-web-worker.md) — read Worker
+4. [`plans/phase-1-node-jobs.md`](plans/phase-1-node-jobs.md) — write bundle (**Phase 1 closed**)
+5. [`plans/no-cf-write-path.md`](plans/no-cf-write-path.md) — no CF Cron/Workflow write
+6. [`apps/node-jobs/docs/operator-contract.md`](../apps/node-jobs/docs/operator-contract.md) — env, timeouts, exit codes
+7. GHA writer ops: [`v3/gha-portable-writer.md`](v3/gha-portable-writer.md)
 
 ## v3 (in progress — parallel to v2 production)
 
@@ -38,7 +41,8 @@ and [Project #7](https://github.com/orgs/Skyline-Gazer/projects/7) (authoritativ
 
 | Doc | Purpose |
 | --- | --- |
-| [`v3/implementation-baseline.md`](v3/implementation-baseline.md) | Confirmed architecture, phases, delivery gates |
+| **[`v3/current-state.md`](v3/current-state.md)** | **Current authoritative architecture, engineering vs live acceptance, operator handoff** |
+| [`v3/implementation-baseline.md`](v3/implementation-baseline.md) | Historical implementation baseline; current status supersedes stale 2026-10 SHA/phase text |
 | [`v3/gha-portable-writer.md`](v3/gha-portable-writer.md) | ADR 0003 GHA writer ops + Secrets fill-in list |
 | [`v3/p0-contract-audit.md`](v3/p0-contract-audit.md) | v2 contract audit + CF/EdgeOne capability matrix (rows stay *candidate* until staging) |
 | [`v3/p0-contract-evidence.md`](v3/p0-contract-evidence.md) | Evidence table: every implemented path with its test/CI guard |
@@ -58,7 +62,7 @@ Code entry points: `apps/web-worker` (CF read), `packages/v3-{core,builder,read,
 ## Plans (`docs/plans/`)
 
 > **Git write origin: GitHub** (`Skyline-Gazer/AiringCal`, `dev`). ADR 0002’s
-> CNB-primary model was not activated; see the
+> CNB-primary model is superseded and must not be used; see the
 > [2026-10-27 amendment](plans/adr-0002-cnb-primary-migration.md#amendment-2026-10-27-github-primary).
 > **Data-plane write:** [ADR 0003](plans/adr-0003-gha-portable-write.md)
 > (GHA portable→S3; **implemented in repo**; not production-live until Secrets +
@@ -80,7 +84,7 @@ Code entry points: `apps/web-worker` (CF read), `packages/v3-{core,builder,read,
 | --- | --- |
 | `m2-read-surface.md` | Deploy web-worker, verify APIs/covers (**homelab M2 done 2026-10-13**) |
 | `migrate-public-reads.md` | KV → R2 read-mode (optional ops) |
-| `cnb-primary-migration.md` | GitHub-primary / CNB historical runbook (#139) |
+| `cnb-primary-migration.md` | **Archived history only** — CNB not approved for current delivery |
 
 Homelab closure (QingLong): [QINGLONG governance](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/governance/2026-10-13-homelab-closure.md)
 

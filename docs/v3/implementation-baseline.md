@@ -1,13 +1,13 @@
 # AiringCal v3 implementation baseline
 
-> **Accepted target, 2026-11-05 (merged, not yet cut over):** GitHub-only development; GitHub Actions scheduled/manual one-shot Portable Builder is the **sole v3 writer**, using ephemeral SQLite and **private S3-compatible durable checkpoint**. One authoritative **public immutable Release/images** on S3-compatible object storage (initially Cloudflare R2) is consumed by stateless Cloudflare/EdgeOne read adapters, followed by Netlify/Vercel. **No QingLong, CNB, Docker or Compose runtime/deployment or CI acceptance** in v3. The writer implementation is merged into `dev` ([PR #146](https://github.com/Skyline-Gazer/AiringCal/pull/146), read parity #148, ops hardening #149); staging acceptance and cutover are tracked in [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147). Legacy v2 read API / D1-KV-R2 paths remain the default until `AIRINGCAL_READ_MODE=v3-release` is enabled; do not claim production cutover.
+> **SUPERSEDED IN PART — 2026-11-07.** This document is maintained as an implementation/historical baseline. For **current deployment target, real R2 evidence, and accepted vs pending gates**, consult [current-state.md](current-state.md). PR #164 merged into `dev` at `a2c0cd67` (CI green), old two-bucket R2 staging was actually accepted (#147); new **single-bucket Development** and **EdgeOne overseas** cutover are pending. Production remains legacy v2; Production Writer off. Earlier fixed branch SHAs, dual-bucket target statements, candidate-only staging claims and retired CNB/Docker/QingLong choices below are historical, **not current operator instructions**.
 
-Status: Working implementation baseline; governed by [Issue #67](https://github.com/Skyline-Gazer/AiringCal/issues/67) and [Skyline-Gazer Project #7](https://github.com/orgs/Skyline-Gazer/projects/7).
+Status: Historical implementation baseline; active status [Issue #67](https://github.com/Skyline-Gazer/AiringCal/issues/67), [Development #147](https://github.com/Skyline-Gazer/AiringCal/issues/147), [Production #73](https://github.com/Skyline-Gazer/AiringCal/issues/73), [Project #7](https://github.com/orgs/Skyline-Gazer/projects/7).
+
 
 ## Authoritative workflow
 
-- `dev` is the integration base. As of 2026-10-31, `origin/dev` is `c9ea158169632b5b51684b6d97d929b4fe675878` (merge of #143, 2026-10-27 17:24 +0800) and `origin/main` is `a4b3b082d15943e11a2d5443077f9ab5f3c175dc` (2026-10-15 19:17 +0800). `main` is an ancestor of `dev` and is 166 commits behind (`git rev-list --count origin/main..origin/dev`). The 2026-10-16 “aligned” sentence is obsolete. Do not fast-forward `main` from a documentation pass. Preserve `archive/main-before-v3-alignment-20261016` (`d10d3c9b6d6ab7b2505b3f8fc01074f1741d2da2`).
-- Work on dedicated feature branches, reviewable PRs targeting `dev`, and child Issues of #67. No direct production modification or deployment during architecture/bootstrap.
+- `dev` is the integration base and `main` remains the protected production/release branch. Do not cherry-pick historical SHA snapshots from this document or auto-advance `main`. Archive refs remain historical evidence, not a current deployment target.\n- Work on dedicated feature branches, reviewable PRs targeting `dev`, and child Issues of #67. No direct production modification or deployment during architecture/bootstrap.
 - Initial development branch `feat/v3.0.0` starts at `3.0.0-alpha.0`; avoid broad implementation commits inside the bootstrap PR. Existing v2 production workflow must not be triggered by feature-branch pushes.
 - GitHub Project #7 is the authoritative task board, projects #5/#6 retired by owner. Project item/status operations must be independently verified.
 - Alibaba OpenCodeReview is the selected AI reviewer, advisory initially; see #74.
@@ -21,17 +21,17 @@ Status: Working implementation baseline; governed by [Issue #67](https://github.
 
 ## Runtime and state
 
-- **ADR 0003 (PR #146)** implements GHA Writer and S3-compatible stores, with manual-only Cloudflare deployment and a scheduler activation gate. R2 staging, reader parity, and owner cutover remain pending #147. Docker/Compose deployment files, scripts and CI are retired.
+- **ADR 0003 (PR #146) and PR #164** implement the GHA Writer and Reader/MIME/CDN/dev deployment path. Old isolated staging R2 was actually accepted (#147), while **single-bucket Development Live Apply and overseas EdgeOne remain pending**; owner Production cutover remains #73.
 
 - **GitHub Actions-only write runner**: one-shot Portable Builder; local SQLite/WAL during the run, restored from a private S3-compatible durable checkpoint and saved conditionally on success. Prevent two authoritative writers publishing one site; cross-runner lease/CAS/fencing and recovery must pass isolated real-R2 staging (#147).
 - **No Docker/Compose deployment or scheduler target**. Remove related build/test/DoD only after retaining portable Builder and HTTP reader contract coverage. CNB and QingLong are historical, not supported delivery platforms.
 - Daily incremental sync and seven-day full reconciliation by default; manual sync supported. Failed core collections/calendar completeness halts publishing; previously verified subject details/images may be reused with explicit stale/partial status.
-- Credential-bearing private checkpoint and published public store are separate. All published content is explicitly public allowlisted data.
+- **Current one-bucket-per-environment target:** the S3 checkpoint remains *logically private* under `checkpoints/` with R2 Custom Domain host-scoped WAF blocking anonymous access and new `r2.dev` disabled. Public `public/`, `snapshots/`, `images/` share the same bucket. CORS is not access control. Legacy Staging used separate private checkpoint and public buckets only as migration/rollback sources.
 
 ## Publication and frontend
 
 - Immutable content-addressed images and versioned Release, pointer updated only after complete verification. Require safe single-publisher coordination supported by chosen backend; otherwise fail closed.
-- Default original + 320x427 WebP quality 78 thumbnail. Future image variants versioned; GC must be reference-aware, dry-run first, keep >=30d and >=5 successful releases and manual pins.
+- Default original + 320x427 WebP quality 78 thumbnail. Future image variants versioned; GC must be reference-aware and dry-run first; **the current implementation retains the current plus two rollback generations**. Do not apply stale 2026-10 historical retention figures to the new workflow without a separately approved policy.
 - Decide single JSON snapshot versus a few modules from measured real v2 payload and frontend read contract, **not** speculative overengineering. Readers pin a version to avoid mixing releases.
 - `airingcal.yaml` with validated schema + environment/platform secret source, `airingcal setup` interactive and noninteractive. Never implicitly create billable services.
 
@@ -46,7 +46,7 @@ Status: Working implementation baseline; governed by [Issue #67](https://github.
 
 Do not mark a gate complete without evidence in Issue/PR and checked CI. No production cutover via merge side effects.
 
-## Advisory reviewer status (2026-10-17)
+## Advisory reviewer status (historical snapshot: 2026-10-17)
 
 The Alibaba OpenCodeReview workflow (`.github/workflows/ocr-review.yml`) is
 **disabled** (`disabled_manually`).
