@@ -643,7 +643,7 @@ test('createLiveDevelopmentApplyIo applyCors writes exact origins file to wrangl
         corsFile = args[fileIdx + 1]
         const raw = readFileSync(corsFile, 'utf8')
         const parsed = JSON.parse(raw)
-        assert.deepEqual(parsed[0].AllowedMethods, ['GET', 'HEAD', 'OPTIONS'])
+        assert.deepEqual(parsed[0].AllowedMethods, ['GET', 'HEAD'])
         assert.ok(parsed[0].AllowedOrigins.includes('http://127.0.0.1:8787'))
         assert.ok(!parsed[0].AllowedOrigins.some((o) => o.includes('*')))
       }
@@ -819,6 +819,7 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
     mode: 'apply',
   })
   const spawnLog = []
+  let ghRunListCount = 0
   const whoamiJson = JSON.stringify({
     loggedIn: true,
     accounts: [{ id: '0123456789abcdef0123456789abcdef' }],
@@ -870,8 +871,31 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
       if (joined.includes('secret list')) {
         return { status: 0, stdout: '', stderr: '', error: null }
       }
-      if (joined.includes('run list')) {
+      if (joined.includes('secret get')) {
+        return { status: 1, stdout: '', stderr: 'gh: secret get unsupported', error: null }
+      }
+      if (joined.includes('--status in_progress')) {
         return { status: 0, stdout: '[]', stderr: '', error: null }
+      }
+      if (joined.includes('run list')) {
+        ghRunListCount += 1
+        const runs =
+          ghRunListCount === 1
+            ? [{ databaseId: 100, createdAt: '2026-11-06T00:00:00Z', status: 'completed' }]
+            : [{ databaseId: 101, createdAt: '2026-11-07T00:00:00Z', status: 'completed' }]
+        return { status: 0, stdout: JSON.stringify(runs), stderr: '', error: null }
+      }
+      if (joined.includes('run view')) {
+        return {
+          status: 0,
+          stdout: JSON.stringify({
+            status: 'completed',
+            conclusion: 'success',
+            jobs: [{ name: 'development', conclusion: 'success' }],
+          }),
+          stderr: '',
+          error: null,
+        }
       }
       return { status: 0, stdout: 'ok', stderr: '', error: null }
     },
@@ -934,6 +958,7 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
       },
       close() {},
     }),
+    sleepImpl: async () => {},
   })
 
   const result = await runDevelopmentApply({
@@ -954,6 +979,545 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
   assert.ok(spawnLog.some(([cmd, args]) => cmd === 'gh' && args.includes('workflow disable')))
   assert.ok(spawnLog.some(([cmd, args]) => cmd === 'pnpm' && args.includes('cors set')))
   assert.ok(spawnLog.some(([cmd]) => cmd === 'edgeone'))
+  const ghJoined = spawnLog.filter(([cmd]) => cmd === 'gh').map(([, args]) => args)
+  assert.ok(ghJoined.some((a) => a.includes('workflow enable')))
+  assert.ok(
+    ghJoined.some(
+      (a) => a.includes('variable set AIRINGCAL_DEVELOPMENT_WRITER_ENABLED') && a.includes('--body true') && !a.includes('--env'),
+    ),
+    `repo-level gate var not set true: ${ghJoined.join(' | ')}`,
+  )
+  assert.ok(
+    ghJoined.some((a) => a.includes('workflow run portable-writer.yml') && a.includes('target=development')),
+  )
+  assert.ok(ghJoined.some((a) => a.includes('run view 101')))
+  assert.ok(
+    ghJoined.some(
+      (a) => a.includes('variable set AIRINGCAL_DEVELOPMENT_WRITER_ENABLED') && a.includes('--body false'),
+    ),
+  )
+  assert.equal(result.singleWriterTest?.runId, 101)
+  assert.equal(result.singleWriterTest?.jobConclusion, 'success')
+  assert.ok(result.completed.includes('single-writer-test'))
+})
+
+function writerTestSpawnDouble({ jobs, conclusion = 'success', status = 'completed' }) {
+  const ghCalls = []
+  let listCount = 0
+  const spawnSyncImpl = (cmd, args) => {
+    const joined = args.join(' ')
+    if (cmd === 'gh') ghCalls.push(joined)
+    if (joined.includes('run list')) {
+      listCount += 1
+      const runs =
+        listCount === 1
+          ? [{ databaseId: 100, createdAt: '2026-11-06T00:00:00Z', status: 'completed' }]
+          : [{ databaseId: 101, createdAt: '2026-11-07T00:00:00Z', status: 'completed' }]
+      return { status: 0, stdout: JSON.stringify(runs), stderr: '', error: null }
+    }
+    if (joined.includes('run view')) {
+      return {
+        status: 0,
+        stdout: JSON.stringify({ status, conclusion, jobs }),
+        stderr: '',
+        error: null,
+      }
+    }
+    return { status: 0, stdout: 'ok', stderr: '', error: null }
+  }
+  return { ghCalls, spawnSyncImpl }
+}
+
+function buildWriterTestIo(spawnSyncImpl, extraEnv = {}) {
+  return import('./deploy-env.mjs').then(({ createLiveDevelopmentApplyIo }) => {
+    const plan = buildDevelopmentDeployPlan({
+      target: 'cloudflare',
+      publicBaseUrl: 'https://dev-cdn.example.test',
+      mode: 'apply',
+    })
+    return createLiveDevelopmentApplyIo({
+      env: {
+        AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+        AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+        AIRINGCAL_DEPLOY_WRITER_TEST: 'yes',
+        ...extraEnv,
+      },
+      plan,
+      spawnSyncImpl,
+      fetchImpl: async () => {
+        throw new Error('fetch must not be used by runSingleWriterTest')
+      },
+      sleepImpl: async () => {},
+    })
+  })
+}
+
+test('runSingleWriterTest success: enable → repo var true → run → poll → repo var false → disable, receipt returned', async () => {
+  const { ghCalls, spawnSyncImpl } = writerTestSpawnDouble({
+    jobs: [{ name: 'development', conclusion: 'success' }],
+  })
+  const io = await buildWriterTestIo(spawnSyncImpl)
+  const receipt = await io.runSingleWriterTest({})
+  assert.equal(receipt.dispatched, true)
+  assert.equal(receipt.runId, 101)
+  assert.equal(receipt.conclusion, 'success')
+  assert.equal(receipt.jobConclusion, 'success')
+  assert.equal(receipt.restored, true)
+  assert.equal(
+    receipt.url,
+    'https://github.com/Skyline-Gazer/AiringCal/actions/runs/101',
+  )
+  const order = ghCalls.map((c) => {
+    if (c.includes('workflow enable')) return 'enable'
+    if (c.includes('--body true')) return 'var-true'
+    if (c.includes('workflow run')) return 'run'
+    if (c.includes('run list')) return 'list'
+    if (c.includes('run view')) return 'view'
+    if (c.includes('--body false')) return 'var-false'
+    if (c.includes('workflow disable')) return 'disable'
+    return 'other'
+  })
+  assert.deepEqual(order, ['enable', 'var-true', 'list', 'run', 'list', 'view', 'var-false', 'disable'])
+  assert.ok(ghCalls.every((c) => c.includes('Skyline-Gazer/AiringCal')))
+})
+
+test('runSingleWriterTest fails closed on skipped development job (skipped ≠ pass) and restores freeze', async () => {
+  const { ghCalls, spawnSyncImpl } = writerTestSpawnDouble({
+    jobs: [
+      { name: 'staging', conclusion: 'skipped' },
+      { name: 'development', conclusion: 'skipped' },
+    ],
+  })
+  const io = await buildWriterTestIo(spawnSyncImpl)
+  await assert.rejects(
+    () => io.runSingleWriterTest({}),
+    /single-writer test skipped \(writer gate not visible\) — not a pass/,
+  )
+  assert.ok(ghCalls.some((c) => c.includes('--body false')))
+  assert.ok(ghCalls.some((c) => c.includes('workflow disable')))
+})
+
+test('runSingleWriterTest fails with run URL on failed development job, freeze restored', async () => {
+  const { ghCalls, spawnSyncImpl } = writerTestSpawnDouble({
+    jobs: [{ name: 'development', conclusion: 'failure' }],
+    conclusion: 'failure',
+  })
+  const io = await buildWriterTestIo(spawnSyncImpl)
+  await assert.rejects(() => io.runSingleWriterTest({}), /actions\/runs\/101/)
+  assert.ok(ghCalls.some((c) => c.includes('workflow disable')))
+})
+
+test('runSingleWriterTest refuses when ctx.developmentWriterEnabled is true', async () => {
+  const { ghCalls, spawnSyncImpl } = writerTestSpawnDouble({
+    jobs: [{ name: 'development', conclusion: 'success' }],
+  })
+  const io = await buildWriterTestIo(spawnSyncImpl)
+  await assert.rejects(
+    () => io.runSingleWriterTest({ developmentWriterEnabled: true }),
+    /developmentWriterEnabled=true/,
+  )
+  assert.equal(ghCalls.length, 0)
+})
+
+test('runSingleWriterTest non-opt-in returns skipped receipt without gh calls', async () => {
+  const { ghCalls, spawnSyncImpl } = writerTestSpawnDouble({
+    jobs: [{ name: 'development', conclusion: 'success' }],
+  })
+  const io = await buildWriterTestIo(spawnSyncImpl, { AIRINGCAL_DEPLOY_WRITER_TEST: '' })
+  const receipt = await io.runSingleWriterTest({})
+  assert.equal(receipt.dispatched, false)
+  assert.equal(receipt.skipped, true)
+  assert.match(receipt.reason, /AIRINGCAL_DEPLOY_WRITER_TEST=yes/)
+  assert.equal(ghCalls.length, 0)
+})
+
+test('runDevelopmentApply keeps skipped single-writer test out of completed and marks it pending', async () => {
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const io = createRecordingApplyIo()
+  const result = await runDevelopmentApply({
+    plan,
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok', AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes' },
+    io,
+  })
+  assert.equal(result.ok, true)
+  assert.ok(!result.completed.includes('single-writer-test'))
+  assert.equal(result.singleWriterTest.status, 'pending-not-opt-in')
+  assert.ok((result.pendingOwnerSteps ?? []).some((s) => s.includes('single-writer-test')))
+})
+
+test('runDevelopmentApply records dispatched single-writer test as completed', async () => {
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const io = createRecordingApplyIo({
+    runSingleWriterTest: async () => ({
+      dispatched: true,
+      runId: 4242,
+      conclusion: 'success',
+      jobConclusion: 'success',
+      restored: true,
+    }),
+  })
+  const result = await runDevelopmentApply({
+    plan,
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok', AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes' },
+    io,
+  })
+  assert.equal(result.ok, true)
+  assert.ok(result.completed.includes('single-writer-test'))
+  assert.equal(result.singleWriterTest.runId, 4242)
+  assert.ok(
+    !(result.pendingOwnerSteps ?? []).some((s) => String(s).includes('single-writer-test')),
+  )
+})
+
+test('buildDevelopmentDeployPlan CORS methods are GET/HEAD only (no OPTIONS)', () => {
+  const plan = buildDevelopmentDeployPlan({
+    target: 'both',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'dry-run',
+  })
+  assert.deepEqual(plan.cors.methods, ['GET', 'HEAD'])
+  const corsStep = plan.steps.find((s) => s.id === 'cors')
+  assert.deepEqual(corsStep.methods, ['GET', 'HEAD'])
+})
+
+test('applyCors throws on OPTIONS in caller-supplied methods without touching wrangler', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = {
+    ...buildDevelopmentDeployPlan({
+      target: 'both',
+      publicBaseUrl: 'https://dev-cdn.example.test',
+      mode: 'apply',
+    }),
+    cors: { allowedOrigins: ['https://dev-cdn.example.test'], methods: ['GET', 'HEAD', 'OPTIONS'] },
+  }
+  const spawnCalls = []
+  const io = createLiveDevelopmentApplyIo({
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok' },
+    plan,
+    spawnSyncImpl: (cmd, args) => {
+      spawnCalls.push([cmd, args.join(' ')])
+      return { status: 0, stdout: '', stderr: '', error: null }
+    },
+    fetchImpl: async () => ({ status: 403 }),
+  })
+  await assert.rejects(() => io.applyCors({}), /OPTIONS/)
+  assert.equal(spawnCalls.length, 0)
+})
+
+test('applyCacheRules + configureWaf scope every expression to plan.publicHost via http.host', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'both',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const rulePosts = []
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    if (u.includes('/rulesets/phases/')) {
+      return { ok: false, status: 404, async json() { return { success: false, errors: [] } } }
+    }
+    if (u.includes('/rulesets') && String(init.method ?? 'GET') === 'POST') {
+      rulePosts.push(JSON.parse(init.body))
+      return {
+        ok: true,
+        status: 200,
+        async json() { return { success: true, result: { id: 'ruleset-new', rules: [] } } },
+      }
+    }
+    return { ok: true, status: 200, async json() { return { success: true, result: {} } } }
+  }
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_ZONE_ID: 'zone123',
+    },
+    plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
+    fetchImpl,
+  })
+
+  await io.applyCacheRules({})
+  await io.configureWaf({})
+
+  assert.equal(rulePosts.length, 3)
+  const immutable = rulePosts.find((p) =>
+    p.rules[0].description.includes('immutable'),
+  )
+  const pointer = rulePosts.find((p) => p.rules[0].description.includes('pointer'))
+  const waf = rulePosts.find((p) => p.rules[0].description.includes('deny-checkpoints'))
+  assert.ok(waf, 'WAF ruleset POST missing')
+  assert.equal(
+    immutable.rules[0].expression,
+    '(http.host eq "dev-cdn.example.test" and (starts_with(http.request.uri.path, "/images/") or starts_with(http.request.uri.path, "/snapshots/")))',
+  )
+  assert.equal(
+    pointer.rules[0].expression,
+    '(http.host eq "dev-cdn.example.test" and http.request.uri.path eq "/public/current-release.json")',
+  )
+  assert.equal(
+    waf.rules[0].expression,
+    '(http.host eq "dev-cdn.example.test" and starts_with(http.request.uri.path, "/checkpoints/"))',
+  )
+})
+
+test('applyCacheRules + configureWaf refuse when plan.publicHost is missing', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = {
+    ...buildDevelopmentDeployPlan({
+      target: 'both',
+      publicBaseUrl: 'https://dev-cdn.example.test',
+      mode: 'apply',
+    }),
+    publicHost: '',
+  }
+  const io = createLiveDevelopmentApplyIo({
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok', AIRINGCAL_ZONE_ID: 'zone123' },
+    plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
+    fetchImpl: async () => ({ ok: true, status: 200, async json() { return { success: true, result: {} } } }),
+  })
+  await assert.rejects(() => io.applyCacheRules({}), /plan\.publicHost/)
+  await assert.rejects(() => io.configureWaf({}), /plan\.publicHost/)
+})
+
+test('deriveAndVerifyS3 reuses GitHub development Environment secrets without POST /user/tokens', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const ghCalls = []
+  const storeBuckets = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+    },
+    plan,
+    spawnSyncImpl: (cmd, args) => {
+      const joined = args.join(' ')
+      if (cmd === 'gh') {
+        ghCalls.push(joined)
+        if (joined.includes('secret get AIRINGCAL_DEVELOPMENT_S3_ACCESS_KEY_ID')) {
+          return { status: 0, stdout: 'AKIAREUSED\n', stderr: '', error: null }
+        }
+        if (joined.includes('secret get AIRINGCAL_DEVELOPMENT_S3_SECRET_ACCESS_KEY')) {
+          return { status: 0, stdout: 'reused-secret\n', stderr: '', error: null }
+        }
+      }
+      return { status: 1, stdout: '', stderr: 'unexpected gh call', error: null }
+    },
+    fetchImpl: async () => {
+      throw new Error('CF API must not be called when GH secret reuse verifies')
+    },
+    createObjectStore: (config) => {
+      storeBuckets.push({ bucket: config.bucket, accessKeyId: config.accessKeyId })
+      return {
+        async list() { return [] },
+        async head() { return null },
+        close() {},
+      }
+    },
+  })
+  const result = await io.deriveAndVerifyS3({})
+  assert.equal(result.derived, false)
+  assert.equal(result.reused, 'github-environment')
+  assert.equal(result.verified, true)
+  assert.equal(result.accessKeyId, 'AKIAREUSED')
+  assert.equal(storeBuckets[0].accessKeyId, 'AKIAREUSED')
+  assert.ok(ghCalls.every((c) => !c.includes('variable set')))
+})
+
+test('deriveAndVerifyS3 falls through to derivation when reused secrets fail verification', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const fetchLog = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+    },
+    plan,
+    spawnSyncImpl: (cmd, args) => {
+      const joined = args.join(' ')
+      if (joined.includes('secret get AIRINGCAL_DEVELOPMENT_S3_ACCESS_KEY_ID')) {
+        return { status: 0, stdout: 'AKIASTALE', stderr: '', error: null }
+      }
+      if (joined.includes('secret get AIRINGCAL_DEVELOPMENT_S3_SECRET_ACCESS_KEY')) {
+        return { status: 0, stdout: 'stale-secret', stderr: '', error: null }
+      }
+      return { status: 0, stdout: '', stderr: '', error: null }
+    },
+    fetchImpl: async (url, init = {}) => {
+      const u = String(url)
+      fetchLog.push([String(init.method ?? 'GET'), u])
+      if (u.endsWith('/user/tokens/permissions')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              success: true,
+              result: { status: 'active', permissions: [{ id: 'p1', name: 'User API Tokens: Edit' }] },
+            }
+          },
+        }
+      }
+      if (u.endsWith('/user/tokens/permission_groups')) {
+        return { ok: true, status: 200, async json() { return { success: true, result: [] } } }
+      }
+      if (u.endsWith('/user/tokens') && String(init.method) === 'POST') {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { success: true, result: { id: 'AKIANEW', value: 'fresh-token-value' } }
+          },
+        }
+      }
+      return { ok: false, status: 404, async json() { return { success: false, errors: [] } } }
+    },
+    createObjectStore: (config) => ({
+      async list() {
+        if (config.accessKeyId === 'AKIASTALE') {
+          const err = new Error('AccessDenied: stale reused key')
+          err.$metadata = { httpStatusCode: 403 }
+          throw err
+        }
+        return []
+      },
+      async head() { return null },
+      close() {},
+    }),
+  })
+  const result = await io.deriveAndVerifyS3({})
+  assert.equal(result.derived, true)
+  assert.equal(result.accessKeyId, 'AKIANEW')
+  const createCall = fetchLog.find(([m, u]) => m === 'POST' && u.endsWith('/user/tokens'))
+  assert.ok(createCall, 'derivation must run after failed reuse verification')
+})
+
+test('deriveAndVerifyS3 probes token-creation permission and exits-2 style on denial without creating', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const fetchLog = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+    },
+    plan,
+    spawnSyncImpl: () => ({ status: 1, stdout: '', stderr: 'secret not found', error: null }),
+    fetchImpl: async (url, init = {}) => {
+      const u = String(url)
+      const method = String(init.method ?? 'GET')
+      fetchLog.push([method, u])
+      if (u.endsWith('/user/tokens/permissions')) {
+        return {
+          ok: false,
+          status: 403,
+          async json() {
+            return { success: false, errors: [{ code: 10000, message: 'Unauthorized to create tokens' }] }
+          },
+        }
+      }
+      return { ok: false, status: 403, async json() { return { success: false, errors: [] } } }
+    },
+    createObjectStore: () => {
+      throw new Error('object store must not be built when permission probe denies')
+    },
+  })
+  await assert.rejects(
+    () => io.deriveAndVerifyS3({}),
+    (error) => {
+      assert.deepEqual(error.missingScopes, ['User API Tokens: Edit (Create tokens via API)'])
+      assert.match(error.message, /User API Tokens: Edit/)
+      return true
+    },
+  )
+  assert.ok(fetchLog.some(([m, u]) => m === 'GET' && u.endsWith('/user/tokens/permissions')))
+  assert.ok(!fetchLog.some(([m, u]) => m === 'POST' && u.endsWith('/user/tokens')))
+})
+
+test('deriveAndVerifyS3 creates stable-named token only after permission probe passes', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  let createBody = null
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+    },
+    plan,
+    spawnSyncImpl: () => ({ status: 1, stdout: '', stderr: 'gh: secret not found', error: null }),
+    fetchImpl: async (url, init = {}) => {
+      const u = String(url)
+      const method = String(init.method ?? 'GET')
+      if (u.endsWith('/user/tokens/permissions')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { success: true, result: { status: 'active', permissions: ['User API Tokens:Edit'] } }
+          },
+        }
+      }
+      if (u.endsWith('/user/tokens/permission_groups')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              success: true,
+              result: [{ id: 'grp-r2w', name: 'Workers R2 Storage Write' }],
+            }
+          },
+        }
+      }
+      if (u.endsWith('/user/tokens') && method === 'POST') {
+        createBody = JSON.parse(init.body)
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { success: true, result: { id: 'AKIASTABLE', value: 'stable-token-value' } }
+          },
+        }
+      }
+      return { ok: false, status: 404, async json() { return { success: false, errors: [] } } }
+    },
+    createObjectStore: () => ({
+      async list() { return [] },
+      async head() { return null },
+      close() {},
+    }),
+  })
+  const result = await io.deriveAndVerifyS3({})
+  assert.equal(result.derived, true)
+  assert.equal(result.accessKeyId, 'AKIASTABLE')
+  assert.equal(createBody.name, 'airingcal-development-s3')
 })
 
 test('validateImageCdnConfig defaults off and rejects loops / non-https / same host', () => {

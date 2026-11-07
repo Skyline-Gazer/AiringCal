@@ -4,7 +4,7 @@
  * Injectable via createLiveDevelopmentApplyIo({ spawnSyncImpl, fetchImpl, … }).
  * Unit tests must not hit live cloud — pass spawn/fetch doubles.
  */
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -16,6 +16,7 @@ import {
   DEVELOPMENT_DEFAULTS,
   DEVELOPMENT_SECRET_KEYS,
   DEVELOPMENT_VARIABLE_KEYS,
+  normalizeCorsAllowedMethods,
   redactSecrets,
   validateImageCdnConfig,
 } from './deploy-env-lib.mjs'
@@ -34,6 +35,82 @@ const ENV_FILE_NULL = ['--env-file', '/dev/null']
 
 /** Workers R2 Storage Write permission group id (Cloudflare tokens API). */
 const PG_R2_WRITE = 'e086da7e5abe4ad98b80f09ab37601ac'
+
+/**
+ * Stable name of the derived R2 S3 token. Creation is guarded by the GitHub
+ * Environment reuse step (the secret pair is only recoverable at creation),
+ * so repeated applies must not mint a new token each run.
+ */
+const DERIVED_S3_TOKEN_NAME = 'airingcal-development-s3'
+
+/** GitHub Environment `development` secrets holding a previously derived pair. */
+const GH_S3_ACCESS_KEY_SECRET = 'AIRINGCAL_DEVELOPMENT_S3_ACCESS_KEY_ID'
+const GH_S3_SECRET_KEY_SECRET = 'AIRINGCAL_DEVELOPMENT_S3_SECRET_ACCESS_KEY'
+
+/** Repository-level gate variable the development writer job `if` reads. */
+const DEVELOPMENT_WRITER_GATE_VAR = 'AIRINGCAL_DEVELOPMENT_WRITER_ENABLED'
+
+/** Missing-scope label when the parent token cannot create child tokens. */
+const TOKEN_CREATE_SCOPE = 'User API Tokens: Edit (Create tokens via API)'
+
+const WRITER_TEST_POLL_MS = 5_000
+const WRITER_TEST_DEADLINE_MS = 30 * 60_000
+
+function tokenCreateDeniedError(detail = '') {
+  const err = new Error(
+    `Cloudflare API token cannot create R2 S3 API tokens${detail ? ` (${detail})` : ''} — missing scope: ${TOKEN_CREATE_SCOPE}`,
+  )
+  err.missingScopes = [TOKEN_CREATE_SCOPE]
+  return err
+}
+
+/**
+ * Classify `GET /user/tokens/permissions` for the ability to create tokens.
+ * CF has returned both object entries ({name,id,description}) and flat strings;
+ * shapes without any API-token entry are inconclusive (the Create Token POST
+ * itself then remains the authoritative enforcement point).
+ *
+ * @returns {'allowed'|'denied'|'unknown'}
+ */
+function classifyTokenCreationPermission(body) {
+  const result = body?.result ?? body ?? {}
+  if (!Array.isArray(result.permissions)) return 'unknown'
+  const entries = result.permissions.map((p) =>
+    typeof p === 'string'
+      ? p
+      : [p?.name, p?.id, p?.description].filter(Boolean).join(' '),
+  )
+  if (entries.length === 0) return 'unknown'
+  const tokenish = entries.filter((e) => /api[ -]?tokens?|create additional tokens/i.test(e))
+  if (tokenish.length === 0) return 'unknown'
+  if (tokenish.some((e) => /edit|write|create/i.test(e))) return 'allowed'
+  return 'denied'
+}
+
+function parseGhJson(result, label) {
+  const out = String(result?.stdout ?? '').trim()
+  try {
+    return out ? JSON.parse(out) : null
+  } catch {
+    throw new Error(`${label}: unexpected gh output: ${out.slice(0, 200) || '(empty)'}`)
+  }
+}
+
+/**
+ * Zone rules must be host-scoped: a bare path expression would deny/cache
+ * requests on every other site hosted in the same Cloudflare zone.
+ */
+function publicHostForRules(plan) {
+  const host = String(plan?.publicHost ?? '')
+    .trim()
+    .replace(/:\d+$/, '')
+  if (!host) {
+    throw new Error(
+      'plan.publicHost is required to scope zone WAF/cache rules to the R2 public host (zone-wide expressions would affect other sites)',
+    )
+  }
+  return host
+}
 
 export class MissingCapabilityError extends Error {
   /**
@@ -466,6 +543,43 @@ export function createLiveDevelopmentApplyIo({
     }
   }
 
+  async function tryGithubSecretReuse(endpoint) {
+    const values = []
+    for (const name of [GH_S3_ACCESS_KEY_SECRET, GH_S3_SECRET_KEY_SECRET]) {
+      let value = ''
+      try {
+        // NOTE: GitHub's API cannot read secret *values* back; `gh secret get`
+        // exists only in some builds. Any failure here (unsupported command,
+        // unset secret, empty output) falls through to derivation — never a
+        // silent pass.
+        const res = runGh(
+          spawnSyncImpl,
+          ['secret', 'get', name, '--env', 'development', '--repo', repo],
+          env,
+        )
+        value = String(res.stdout ?? '').trim()
+      } catch {
+        return null
+      }
+      if (!value) return null
+      values.push(value)
+    }
+    const creds = {
+      accessKeyId: values[0],
+      secretAccessKey: values[1],
+      endpoint,
+      region: String(env.AIRINGCAL_S3_REGION ?? 'auto').trim() || 'auto',
+      derived: false,
+    }
+    try {
+      await verifyS3Access(creds, bucket, { allowMissingBucket: true })
+      return creds
+    } catch {
+      // Stale/denied stored pair → derive fresh credentials instead of passing.
+      return null
+    }
+  }
+
   return {
     async probeToken(ctx = {}) {
       const token = tokenFromEnv(env)
@@ -553,12 +667,53 @@ export function createLiveDevelopmentApplyIo({
         }
       }
 
-      const parentToken = tokenFromEnv(env)
-      if (!parentToken) {
-        throw new Error('Cloudflare API token required to derive R2 S3 credentials')
+      // 2. Reuse the pair previously persisted by syncGithubEnvironment (token
+      //    creation happens once; every later apply reuses + re-verifies).
+      //    Verification failure falls through to derivation, never a pass.
+      const reused = await tryGithubSecretReuse(endpoint)
+      if (reused) {
+        s3Creds = reused
+        ctx.s3 = { accessKeyId: reused.accessKeyId, derived: false, reused: 'github-environment', verified: true }
+        process.stderr.write(
+          `[deploy-env] Reusing R2 S3 Access Key ID ${reused.accessKeyId} from GitHub Environment development\n`,
+        )
+        return {
+          accessKeyId: reused.accessKeyId,
+          secretAccessKey: reused.secretAccessKey,
+          derived: false,
+          reused: 'github-environment',
+          verified: true,
+          keyIdPrinted: reused.accessKeyId,
+        }
       }
 
-      const tokenName = `airingcal-deploy-r2-${randomUUID().slice(0, 8)}`
+      const parentToken = tokenFromEnv(env)
+      if (!parentToken) {
+        throw new Error(
+          'Cloudflare API token required to derive R2 S3 credentials (no AIRINGCAL_S3_* override and no reusable GitHub Environment secret)',
+        )
+      }
+
+      // 3. Probe the parent token's ability to create tokens BEFORE POSTing,
+      //    so a scope-less token fails with the explicit missing-scope message
+      //    instead of an opaque Create Token error.
+      try {
+        const permissionsBody = await cfApi(fetchImpl, parentToken, '/user/tokens/permissions')
+        const verdict = classifyTokenCreationPermission(permissionsBody)
+        if (verdict === 'denied') {
+          throw tokenCreateDeniedError('permission probe shows no edit/create on user API tokens')
+        }
+      } catch (error) {
+        if (error?.missingScopes) throw error
+        const status = Number(error?.status)
+        const msg = error instanceof Error ? error.message : String(error)
+        if (status === 403 || status === 401 || /unauthoriz|forbidden|denied|permission/i.test(msg)) {
+          throw tokenCreateDeniedError(`GET /user/tokens/permissions: ${redactSecrets(msg, secrets)}`)
+        }
+        throw error
+      }
+
+      const tokenName = DERIVED_S3_TOKEN_NAME
       let permissionGroupId = PG_R2_WRITE
       try {
         permissionGroupId = await resolvePermissionGroupId(
@@ -573,23 +728,35 @@ export function createLiveDevelopmentApplyIo({
           throw error
         }
       }
-      const created = await cfApi(fetchImpl, parentToken, '/user/tokens', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: tokenName,
-          policies: [
-            {
-              effect: 'allow',
-              resources: {
-                [`com.cloudflare.api.account.${accountId}`]: {
-                  'com.cloudflare.edge.r2.bucket.*': '*',
+      let created
+      try {
+        created = await cfApi(fetchImpl, parentToken, '/user/tokens', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: tokenName,
+            policies: [
+              {
+                effect: 'allow',
+                resources: {
+                  [`com.cloudflare.api.account.${accountId}`]: {
+                    'com.cloudflare.edge.r2.bucket.*': '*',
+                  },
                 },
+                permission_groups: [{ id: permissionGroupId }],
               },
-              permission_groups: [{ id: permissionGroupId }],
-            },
-          ],
-        }),
-      })
+            ],
+          }),
+        })
+      } catch (error) {
+        // The probe can be inconclusive on unusual response shapes; the POST
+        // itself is the authoritative enforcement point.
+        const status = Number(error?.status)
+        const msg = error instanceof Error ? error.message : String(error)
+        if (status === 403 || status === 401 || /unauthoriz|not authorized|denied/i.test(msg)) {
+          throw tokenCreateDeniedError(`POST /user/tokens: ${redactSecrets(msg, secrets)}`)
+        }
+        throw error
+      }
 
       const result = created.result ?? created
       const accessKeyId = String(result.id ?? '').trim()
@@ -762,6 +929,9 @@ export function createLiveDevelopmentApplyIo({
         )
       }
       if (!token) throw new Error('Cloudflare API token required for cache rules')
+      // Host-scoped: zone-wide expressions would alter caching on every other
+      // site in the zone.
+      const host = publicHostForRules(plan)
 
       const immutable = await ensureZonePhaseRule({
         fetchImpl,
@@ -770,7 +940,7 @@ export function createLiveDevelopmentApplyIo({
         phase: 'http_request_cache_settings',
         description: 'airingcal-images-snapshots-immutable',
         expression:
-          '(starts_with(http.request.uri.path, "/images/") or starts_with(http.request.uri.path, "/snapshots/"))',
+          `(http.host eq "${host}" and (starts_with(http.request.uri.path, "/images/") or starts_with(http.request.uri.path, "/snapshots/")))`,
         action: 'set_cache_settings',
         actionParameters: {
           cache: true,
@@ -784,18 +954,22 @@ export function createLiveDevelopmentApplyIo({
         zoneId,
         phase: 'http_request_cache_settings',
         description: 'airingcal-pointer-bypass',
-        expression: '(http.request.uri.path eq "/public/current-release.json")',
+        expression: `(http.host eq "${host}" and http.request.uri.path eq "/public/current-release.json")`,
         action: 'set_cache_settings',
         actionParameters: {
           cache: false,
         },
       })
-      return { ok: true, zoneId, immutable, pointer }
+      return { ok: true, zoneId, host, immutable, pointer }
     },
 
     async applyCors() {
       const origins = plan.cors?.allowedOrigins ?? []
-      const methods = plan.cors?.methods ?? ['GET', 'HEAD', 'OPTIONS']
+      // R2 AllowedMethods rejects OPTIONS (preflight is answered by the CORS
+      // mechanism itself); normalizeCorsAllowedMethods throws on it.
+      const methods = normalizeCorsAllowedMethods(
+        plan.cors?.methods ?? DEVELOPMENT_DEFAULTS.corsMethods,
+      )
       if (!Array.isArray(origins) || origins.length === 0) {
         throw new Error('CORS AllowedOrigins empty — refusing to apply open CORS')
       }
@@ -839,6 +1013,7 @@ export function createLiveDevelopmentApplyIo({
         )
       }
       if (!token) throw new Error('Cloudflare API token required for WAF rules')
+      const host = publicHostForRules(plan)
 
       const rule = await ensureZonePhaseRule({
         fetchImpl,
@@ -846,7 +1021,7 @@ export function createLiveDevelopmentApplyIo({
         zoneId,
         phase: 'http_request_firewall_custom',
         description: 'airingcal-deny-checkpoints',
-        expression: '(starts_with(http.request.uri.path, "/checkpoints/"))',
+        expression: `(http.host eq "${host}" and starts_with(http.request.uri.path, "/checkpoints/"))`,
         action: 'block',
         actionParameters: {
           response: {
@@ -856,7 +1031,7 @@ export function createLiveDevelopmentApplyIo({
           },
         },
       })
-      return { ok: true, zoneId, rule }
+      return { ok: true, zoneId, host, rule }
     },
 
     async writeIsolationProbe() {
@@ -1125,24 +1300,167 @@ export function createLiveDevelopmentApplyIo({
           dispatched: false,
           skipped: true,
           reason:
-            'Set AIRINGCAL_DEPLOY_WRITER_TEST=yes to dispatch one target=development run after isolation+copy',
+            'set AIRINGCAL_DEPLOY_WRITER_TEST=yes to run one controlled target=development dispatch after isolation+copy',
         }
       }
 
-      runGh(
-        spawnSyncImpl,
-        [
-          'workflow',
-          'run',
-          'portable-writer.yml',
-          '--repo',
-          repo,
-          '-f',
-          'target=development',
-        ],
-        env,
-      )
-      return { dispatched: true, target: 'development', developmentWriterEnabled: false }
+      const workflow = plan.writerFreeze?.workflow || 'portable-writer.yml'
+
+      // The writer freeze is lifted ONLY inside this block
+      // (enable → repo gate true → dispatch → verify → re-disable). A skipped
+      // development job is never accepted as a pass.
+      let receipt = null
+      const restoreFailures = []
+      try {
+        runGh(spawnSyncImpl, ['workflow', 'enable', workflow, '--repo', repo], env)
+
+        // Job-level `if` reads repo-level `vars.` (environment-scoped vars are
+        // not reliably visible there), so the gate is a repository variable.
+        runGh(
+          spawnSyncImpl,
+          [
+            'variable',
+            'set',
+            DEVELOPMENT_WRITER_GATE_VAR,
+            '--repo',
+            repo,
+            '--body',
+            'true',
+          ],
+          env,
+        )
+
+        const before = parseGhJson(
+          runGh(
+            spawnSyncImpl,
+            [
+              'run',
+              'list',
+              `--workflow=${workflow}`,
+              '--repo',
+              repo,
+              '--event',
+              'workflow_dispatch',
+              '--json',
+              'databaseId,createdAt',
+              '--limit',
+              '1',
+            ],
+            env,
+          ),
+          'gh run list (pre-dispatch)',
+        )
+        const previousRunId =
+          Array.isArray(before) && before.length > 0 ? String(before[0].databaseId) : null
+
+        runGh(
+          spawnSyncImpl,
+          ['workflow', 'run', workflow, '--repo', repo, '-f', 'target=development'],
+          env,
+        )
+
+        const deadline = nowImpl() + WRITER_TEST_DEADLINE_MS
+        let runId = null
+        while (runId === null) {
+          if (nowImpl() > deadline) {
+            throw new Error(
+              `single-writer test: dispatched ${workflow} run did not appear before the deadline`,
+            )
+          }
+          const listed = parseGhJson(
+            runGh(
+              spawnSyncImpl,
+              [
+                'run',
+                'list',
+                `--workflow=${workflow}`,
+                '--repo',
+                repo,
+                '--event',
+                'workflow_dispatch',
+                '--json',
+                'databaseId,createdAt,status',
+                '--limit',
+                '5',
+              ],
+              env,
+            ),
+            'gh run list (dispatch discovery)',
+          )
+          const newest = Array.isArray(listed) && listed.length > 0 ? listed[0] : null
+          if (newest && String(newest.databaseId) !== previousRunId) {
+            runId = String(newest.databaseId)
+          } else {
+            await sleepImpl(WRITER_TEST_POLL_MS)
+          }
+        }
+
+        const url = `https://github.com/${repo}/actions/runs/${runId}`
+        let view = null
+        for (;;) {
+          view = parseGhJson(
+            runGh(
+              spawnSyncImpl,
+              ['run', 'view', runId, '--repo', repo, '--json', 'status,conclusion,jobs'],
+              env,
+            ),
+            'gh run view',
+          )
+          if (String(view?.status ?? '') === 'completed') break
+          if (nowImpl() > deadline) {
+            throw new Error(`single-writer test: run ${url} did not complete before the deadline`)
+          }
+          await sleepImpl(WRITER_TEST_POLL_MS)
+        }
+
+        const conclusion = String(view?.conclusion ?? '')
+        const jobs = Array.isArray(view?.jobs) ? view.jobs : []
+        const devJob = jobs.find(
+          (job) => String(job?.name ?? '').trim().toLowerCase() === 'development',
+        )
+        const jobConclusion = devJob ? String(devJob.conclusion ?? '') : null
+
+        if (!devJob) {
+          throw new Error(
+            `single-writer test: development job not found in run ${url} — cannot prove a pass`,
+          )
+        }
+        if (jobConclusion === 'skipped' || jobConclusion === 'neutral') {
+          throw new Error(
+            'single-writer test skipped (writer gate not visible) — not a pass',
+          )
+        }
+        if (conclusion !== 'success' || jobConclusion !== 'success') {
+          throw new Error(
+            `single-writer test failed (run=${conclusion || 'unknown'}, development job=${jobConclusion || 'unknown'}): ${url}`,
+          )
+        }
+        receipt = {
+          dispatched: true,
+          runId: Number(runId),
+          url,
+          conclusion,
+          jobConclusion,
+        }
+      } finally {
+        // Always restore the freeze (gate off + workflow disabled), pass or fail.
+        for (const args of [
+          ['variable', 'set', DEVELOPMENT_WRITER_GATE_VAR, '--repo', repo, '--body', 'false'],
+          ['workflow', 'disable', workflow, '--repo', repo],
+        ]) {
+          try {
+            runGh(spawnSyncImpl, args, env)
+          } catch (error) {
+            restoreFailures.push(error instanceof Error ? error.message : String(error))
+          }
+        }
+      }
+      if (restoreFailures.length > 0) {
+        throw new Error(
+          `single-writer test: writer freeze restore FAILED (${restoreFailures.join('; ')}) — re-disable ${workflow} manually`,
+        )
+      }
+      return { ...receipt, restored: true }
     },
   }
 }

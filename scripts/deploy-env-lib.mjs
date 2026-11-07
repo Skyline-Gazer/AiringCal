@@ -19,6 +19,9 @@ export const DEVELOPMENT_DEFAULTS = Object.freeze({
   edgeoneProject: 'airingcal-edgeone-read-overseas',
   edgeoneRegion: 'overseas',
   s3Region: 'auto',
+  // R2 AllowedMethods supports GET/PUT/POST/DELETE/HEAD only — OPTIONS is
+  // handled by the CORS preflight mechanism itself, never listed here.
+  corsMethods: Object.freeze(['GET', 'HEAD']),
   isolationProbeKey: 'checkpoints/_isolation-probe.txt',
   isolationProbeBody: 'isolation-probe',
   localSmokeOrigins: Object.freeze([
@@ -64,6 +67,43 @@ const ACCOUNT_ID_RE = /^[0-9a-f]{32}$/i
 const BUCKET_NAME_RE = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/
 const ALLOWED_TARGETS = new Set(['cloudflare', 'edgeone', 'both'])
 const ALLOWED_ENVS = new Set(['development', 'production'])
+
+/** Methods R2 CORS `AllowedMethods` actually accepts (OPTIONS is NOT one). */
+export const R2_CORS_ALLOWED_METHODS = Object.freeze(['GET', 'PUT', 'POST', 'DELETE', 'HEAD'])
+
+/**
+ * Validate + normalize a caller-supplied CORS method list for R2.
+ * OPTIONS preflight is answered by the CORS mechanism itself; R2 rejects it in
+ * AllowedMethods, so supplying it is an explicit configuration error.
+ *
+ * @param {string[]} [methods]
+ * @returns {string[]}
+ */
+export function normalizeCorsAllowedMethods(methods) {
+  const list = Array.isArray(methods) ? methods : [...DEVELOPMENT_DEFAULTS.corsMethods]
+  const normalized = []
+  for (const raw of list) {
+    const method = String(raw ?? '').trim().toUpperCase()
+    if (!method) continue
+    if (method === 'OPTIONS') {
+      throw new Error(
+        'R2 CORS AllowedMethods does not support OPTIONS (preflight is handled by the CORS mechanism itself); valid methods: GET, PUT, POST, DELETE, HEAD',
+      )
+    }
+    if (!R2_CORS_ALLOWED_METHODS.includes(method)) {
+      throw new Error(
+        `R2 CORS AllowedMethods unsupported: ${method}; valid methods: GET, PUT, POST, DELETE, HEAD`,
+      )
+    }
+    if (!normalized.includes(method)) normalized.push(method)
+  }
+  if (normalized.length === 0) {
+    throw new Error(
+      'R2 CORS AllowedMethods empty — refusing to apply a CORS config without methods (valid: GET, PUT, POST, DELETE, HEAD)',
+    )
+  }
+  return normalized
+}
 
 /**
  * @param {string[]} argv
@@ -278,7 +318,7 @@ export function buildDevelopmentDeployPlan({
       title: 'Set CORS AllowedOrigins to exact reader + local smoke origins',
       mutates: true,
       allowedOrigins: corsOrigins,
-      methods: ['GET', 'HEAD', 'OPTIONS'],
+      methods: [...DEVELOPMENT_DEFAULTS.corsMethods],
     },
     {
       id: 'waf-checkpoints',
@@ -357,7 +397,7 @@ export function buildDevelopmentDeployPlan({
     imageCdn,
     cors: {
       allowedOrigins: corsOrigins,
-      methods: ['GET', 'HEAD', 'OPTIONS'],
+      methods: [...DEVELOPMENT_DEFAULTS.corsMethods],
     },
     keyLayout: {
       private: ['checkpoints/**'],
@@ -769,11 +809,15 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
 
     // Writer stays disabled until isolation+copy pass; the I/O adapter may
     // still record a controlled dispatch, but the runner never flips the flag.
-    await requireIoMethod(io, 'runSingleWriterTest')({
+    // A skipped test (not opted in / development job skipped) is NOT a pass:
+    // it never enters `completed` and is surfaced as a pending Owner step.
+    const writerTest = await requireIoMethod(io, 'runSingleWriterTest')({
       ...ctx,
       developmentWriterEnabled: false,
     })
-    completed.push('single-writer-test')
+    const writerTestPending =
+      !writerTest || writerTest.dispatched !== true || writerTest.skipped === true
+    if (!writerTestPending) completed.push('single-writer-test')
 
     return {
       ok: true,
@@ -782,6 +826,19 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
       dualBucketFallback: false,
       developmentWriterEnabled: false,
       isolation,
+      singleWriterTest: writerTestPending
+        ? {
+            status: 'pending-not-opt-in',
+            detail: writerTest?.reason ?? 'no dispatch receipt returned',
+          }
+        : writerTest,
+      ...(writerTestPending
+        ? {
+            pendingOwnerSteps: [
+              'single-writer-test: dispatch one controlled target=development run (set AIRINGCAL_DEPLOY_WRITER_TEST=yes) — a skipped development job is not a pass',
+            ],
+          }
+        : {}),
       completed,
     }
   } catch (error) {

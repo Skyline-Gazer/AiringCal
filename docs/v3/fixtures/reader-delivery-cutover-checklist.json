@@ -20,9 +20,9 @@
       "title": "AIRINGCAL_ENV=development deploy-env --apply built airingcal-development with isolation.ok=true",
       "kind": "action",
       "status": "pending_owner",
-      "requiresOwner": "Implemented live I/O adapters + Cloudflare API token (R2 admin, Workers write) + AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes",
+      "requiresOwner": "Implemented live I/O adapters + Cloudflare API token (R2 admin, Workers write) + AIRINGCAL_ZONE_ID (host-scoped cache/WAF rules) + AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes",
       "evidence": null,
-      "command": "AIRINGCAL_ENV=development AIRINGCAL_DEPLOY_TARGET=both AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes node scripts/deploy-env.mjs --apply",
+      "command": "AIRINGCAL_ENV=development AIRINGCAL_DEPLOY_TARGET=both AIRINGCAL_ZONE_ID=$AIRINGCAL_ZONE_ID AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes node scripts/deploy-env.mjs --apply",
       "gate": "exit 0 AND result.isolation.ok === true; missing-capability / owner-gated / aborted exit is NOT Staging Accepted (else abort; no dual-bucket fallback)"
     },
     {
@@ -63,6 +63,15 @@
       "evidence": null,
       "command": "wrangler r2 bucket dev-url disable airingcal-development -y --env-file /dev/null",
       "gate": "curl -sfI $AIRINGCAL_PUBLIC_BASE_URL/public/current-release.json (200, no-cache) AND curl -sfI $AIRINGCAL_PUBLIC_BASE_URL/images/<hash>/original (200, Content-Type image/*)"
+    },
+    {
+      "id": "single-writer-development-test",
+      "title": "One controlled target=development dispatch passed (development job conclusion success, not skipped)",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "Opt-in AIRINGCAL_DEPLOY_WRITER_TEST=yes after isolation+copy; gh auth with Actions write on Skyline-Gazer/AiringCal",
+      "evidence": null,
+      "gate": "run conclusion success AND development job conclusion success; skipped development job = hard failure (writer gate not visible), never a pass; deploy-env restores the freeze (repo var AIRINGCAL_DEVELOPMENT_WRITER_ENABLED=false + workflow disable) in a finally path — the enable→dispatch→verify→re-disable window is the ONLY time the workflow may be enabled"
     },
     {
       "id": "keep-staging-buckets",
