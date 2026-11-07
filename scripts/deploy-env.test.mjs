@@ -635,11 +635,201 @@ test('createLiveDevelopmentApplyIo deriveAndVerifyS3 uses overrides without Crea
       }
     },
   })
-  const derived = await io.deriveAndVerifyS3({})
+  let printed = ''
+  const origWrite = process.stderr.write
+  process.stderr.write = (chunk) => { printed += String(chunk); return true }
+  let derived
+  try {
+    derived = await io.deriveAndVerifyS3({})
+  } finally {
+    process.stderr.write = origWrite
+  }
   assert.equal(derived.accessKeyId, 'AKIA_OVERRIDE')
   assert.equal(derived.derived, false)
   assert.equal(derived.verified, true)
   assert.equal(storeCalls[0]?.accessKeyId, 'AKIA_OVERRIDE')
+  assert.ok(!printed.includes('override rejected'), 'valid override must not announce fall-through')
+})
+
+test('deriveAndVerifyS3 falls through to management-token self-derivation when the S3 override is rejected', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const parentToken = 'mgmt-token-value'
+  const fetchLog = []
+  const triedKeys = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: parentToken,
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'AKIA_STAGING_SCOPED',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'staging-scoped-secret',
+    },
+    plan,
+    spawnSyncImpl: () => {
+      throw new Error('gh/wrangler must not run on the override fall-through path')
+    },
+    fetchImpl: async (url, init = {}) => {
+      const u = String(url)
+      fetchLog.push([String(init.method ?? 'GET'), u])
+      if (u.endsWith('/user/tokens/verify')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() { return { success: true, result: { id: VERIFY_TOKEN_ID, status: 'active' } } },
+        }
+      }
+      return { ok: false, status: 404, async json() { return { success: false, errors: [] } } }
+    },
+    createObjectStore: (config) => ({
+      async list() {
+        triedKeys.push(config.accessKeyId)
+        if (config.accessKeyId === 'AKIA_STAGING_SCOPED') {
+          const err = new Error('AccessDenied: this key cannot access the specified bucket')
+          err.$metadata = { httpStatusCode: 403 }
+          throw err
+        }
+        return []
+      },
+      async head() { return null },
+      close() {},
+    }),
+  })
+  let printed = ''
+  const origWrite = process.stderr.write
+  process.stderr.write = (chunk) => { printed += String(chunk); return true }
+  const ctx = {}
+  let result
+  try {
+    result = await io.deriveAndVerifyS3(ctx)
+  } finally {
+    process.stderr.write = origWrite
+  }
+  assert.equal(result.derived, true)
+  assert.equal(result.source, 'management-token')
+  assert.equal(result.accessKeyId, VERIFY_TOKEN_ID)
+  assert.equal(result.verified, true)
+  assert.ok(
+    printed.includes('AIRINGCAL_S3_* override rejected for airingcal-development; falling through to management-token self-derivation'),
+    'stderr must carry the fall-through notice',
+  )
+  assert.ok(triedKeys[0] === 'AKIA_STAGING_SCOPED', 'override creds are tried first (precedence kept)')
+  assert.ok(triedKeys.includes(VERIFY_TOKEN_ID), 'self-derived creds must be verified')
+  assert.ok(fetchLog.some(([m, u]) => m === 'GET' && u.endsWith('/user/tokens/verify')), 'management-token endpoint must be reached')
+  assert.equal(typeof ctx.s3OverrideRejection, 'string', 'runner needs the rejection note for aggregated abort reasons')
+  assert.ok(!printed.includes(parentToken) && !printed.includes('staging-scoped-secret'), 'secrets must never be printed')
+})
+
+test('deriveAndVerifyS3 rethrows non-credential override failures without falling through', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const fetchLog = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'AKIA_OVERRIDE',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'override-secret',
+    },
+    plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
+    fetchImpl: async (url) => {
+      fetchLog.push(String(url))
+      throw new Error('CF API must not be reached when the override probe fails on transport')
+    },
+    createObjectStore: () => ({
+      async list() {
+        throw new TypeError('fetch failed: ECONNRESET')
+      },
+      async head() { return null },
+      close() {},
+    }),
+  })
+  const ctx = {}
+  await assert.rejects(
+    () => io.deriveAndVerifyS3(ctx),
+    (error) => {
+      assert.ok(error instanceof TypeError, 'network-style error must be rethrown as-is')
+      assert.match(error.message, /ECONNRESET/)
+      return true
+    },
+  )
+  assert.deepEqual(fetchLog, [], 'fail-closed: no fall-through to self-derivation')
+  assert.ok(!('s3OverrideRejection' in ctx))
+})
+
+test('runDevelopmentApply aggregates override rejection + chain failure into the exit-2 abort reason', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'AKIA_STAGING_SCOPED',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'staging-scoped-secret',
+    },
+    plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
+    fetchImpl: async (url) => {
+      const u = String(url)
+      if (u.endsWith('/user/tokens/verify')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() { return { success: true, result: { id: VERIFY_TOKEN_ID, status: 'active' } } },
+        }
+      }
+      if (u.endsWith('/user/tokens/permissions')) {
+        return {
+          ok: false,
+          status: 403,
+          async json() { return { success: false, errors: [{ code: 10000, message: 'Unauthorized to create tokens' }] } },
+        }
+      }
+      return { ok: false, status: 403, async json() { return { success: false, errors: [] } } }
+    },
+    createObjectStore: () => ({
+      async list() {
+        const err = new Error('AccessDenied: scoped key lacks this bucket')
+        err.$metadata = { httpStatusCode: 403 }
+        throw err
+      },
+      async head() { return null },
+      close() {},
+    }),
+  })
+  io.probeToken = async () => ({ ok: true, missingScopes: [] })
+  const origWrite = process.stderr.write
+  process.stderr.write = () => true
+  let result
+  try {
+    result = await runDevelopmentApply({
+      plan,
+      env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok', AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes' },
+      io,
+    })
+  } finally {
+    process.stderr.write = origWrite
+  }
+  assert.equal(result.ok, false)
+  assert.equal(result.aborted, true)
+  assert.equal(result.abortCutover, true)
+  assert.equal(result.dualBucketFallback, false)
+  assert.equal(result.exitCode, 2, 'exit-2 semantics preserved')
+  assert.match(result.reason, /override rejected/, 'abort reason must carry the override story')
+  assert.match(result.reason, /User API Tokens: Edit/, 'abort reason must carry the create-denied scope label')
+  assert.ok(Array.isArray(result.missingScopes) && result.missingScopes.length > 0)
 })
 
 test('createLiveDevelopmentApplyIo applyCors writes exact origins file to wrangler', async () => {

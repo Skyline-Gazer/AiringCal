@@ -724,6 +724,15 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
     } catch (error) {
       if (Array.isArray(error?.missingScopes) && error.missingScopes.length > 0) {
         completed.push('derive-s3')
+        const scopeReason = missingScopeExitMessage(error.missingScopes)
+        // Full story for operators: when an AIRINGCAL_S3_* override was
+        // rejected and the derivation chain then failed too, the abort
+        // reason carries the override-rejection note plus the last-chain
+        // missing scopes.
+        const overrideNote =
+          typeof ctx.s3OverrideRejection === 'string' && ctx.s3OverrideRejection
+            ? `${ctx.s3OverrideRejection}; `
+            : ''
         return {
           ok: false,
           aborted: true,
@@ -731,7 +740,7 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
           dualBucketFallback: false,
           developmentWriterEnabled: false,
           exitCode: 2,
-          reason: missingScopeExitMessage(error.missingScopes),
+          reason: `${overrideNote}${scopeReason}`,
           completed,
           missingScopes: error.missingScopes,
         }

@@ -748,6 +748,11 @@ export function createLiveDevelopmentApplyIo({
           `S3 credentials failed list+head on ${targetBucket}: access denied / missing scopes`,
         )
         err.missingScopes = ['Workers R2 Storage Write', 'R2 S3 API token derivation']
+        // Credential rejection marker (AccessDenied / InvalidAccessKeyId /
+        // SignatureDoesNotMatch and this wrapped variant): lets the override
+        // branch fall through to self-derivation. Network/unknown errors
+        // never carry it and stay fail-closed.
+        err.s3Rejected = true
         throw err
       }
       throw error
@@ -832,6 +837,7 @@ export function createLiveDevelopmentApplyIo({
       const overrideId = String(env.AIRINGCAL_S3_ACCESS_KEY_ID ?? '').trim()
       const overrideSecret = String(env.AIRINGCAL_S3_SECRET_ACCESS_KEY ?? '').trim()
 
+      let overrideRejectionNote = null
       if (overrideId && overrideSecret) {
         const creds = {
           accessKeyId: overrideId,
@@ -840,18 +846,30 @@ export function createLiveDevelopmentApplyIo({
           region: String(env.AIRINGCAL_S3_REGION ?? 'auto').trim() || 'auto',
           derived: false,
         }
-        await verifyS3Access(creds, bucket, { allowMissingBucket: true })
-        s3Creds = creds
-        ctx.s3 = { accessKeyId: overrideId, derived: false, verified: true }
-        process.stderr.write(
-          `[deploy-env] S3 override Access Key ID ${overrideId} verified on ${bucket}\n`,
-        )
-        return {
-          accessKeyId: overrideId,
-          secretAccessKey: overrideSecret,
-          derived: false,
-          verified: true,
-          keyIdPrinted: overrideId,
+        try {
+          await verifyS3Access(creds, bucket, { allowMissingBucket: true })
+          s3Creds = creds
+          ctx.s3 = { accessKeyId: overrideId, derived: false, verified: true }
+          process.stderr.write(
+            `[deploy-env] S3 override Access Key ID ${overrideId} verified on ${bucket}\n`,
+          )
+          return {
+            accessKeyId: overrideId,
+            secretAccessKey: overrideSecret,
+            derived: false,
+            verified: true,
+            keyIdPrinted: overrideId,
+          }
+        } catch (error) {
+          // A rejected override key (e.g. a legacy scoped staging token
+          // aliased into AIRINGCAL_S3_*) must not brick the whole cutover:
+          // notice and continue to management-token self-derivation below.
+          // Any other failure (transport, unknown) stays fail-closed.
+          if (!error?.s3Rejected) throw error
+          overrideRejectionNote =
+            `AIRINGCAL_S3_* override rejected for ${bucket}; falling through to management-token self-derivation`
+          ctx.s3OverrideRejection = overrideRejectionNote
+          process.stderr.write(`[deploy-env] ${overrideRejectionNote}\n`)
         }
       }
 
