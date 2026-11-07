@@ -1348,6 +1348,240 @@ test('applyCacheRules + configureWaf scope every expression to plan.publicHost v
   )
 })
 
+// --- ensureZonePhaseRule expression reconciliation -------------------------
+
+const OLD_ZONE_WIDE_WAF = '(starts_with(http.request.uri.path, "/checkpoints/"))'
+const OLD_ZONE_WIDE_IMMUTABLE =
+  '(starts_with(http.request.uri.path, "/images/") or starts_with(http.request.uri.path, "/snapshots/"))'
+const OLD_ZONE_WIDE_POINTER = '(http.request.uri.path eq "/public/current-release.json")'
+const NEW_HOST_WAF =
+  '(http.host eq "dev-cdn.example.test" and starts_with(http.request.uri.path, "/checkpoints/"))'
+const NEW_HOST_IMMUTABLE =
+  '(http.host eq "dev-cdn.example.test" and (starts_with(http.request.uri.path, "/images/") or starts_with(http.request.uri.path, "/snapshots/")))'
+const NEW_HOST_POINTER =
+  '(http.host eq "dev-cdn.example.test" and http.request.uri.path eq "/public/current-release.json")'
+
+function makeSeededZoneFetch({ cacheRules, wafRules } = {}) {
+  const writes = []
+  const entrypoints = {
+    http_request_cache_settings: cacheRules
+      ? { id: 'rs-cache', phase: 'http_request_cache_settings', rules: cacheRules }
+      : null,
+    http_request_firewall_custom: wafRules
+      ? { id: 'rs-waf', phase: 'http_request_firewall_custom', rules: wafRules }
+      : null,
+  }
+  const fetchImpl = async (url, init = {}) => {
+    const u = String(url)
+    const method = String(init.method ?? 'GET')
+    const phaseMatch = u.match(/\/rulesets\/phases\/([a-z_]+)\/entrypoint/)
+    if (phaseMatch) {
+      const entry = entrypoints[phaseMatch[1]]
+      if (!entry) {
+        return { ok: false, status: 404, async json() { return { success: false, errors: [] } } }
+      }
+      return { ok: true, status: 200, async json() { return { success: true, result: entry } } }
+    }
+    if (method === 'PATCH' && /\/rulesets\/[^/]+\/rules\/[^/]+$/.test(u)) {
+      writes.push({ method, url: u, body: JSON.parse(init.body) })
+      return { ok: true, status: 200, async json() { return { success: true, result: {} } } }
+    }
+    if (method === 'POST' && u.includes('/rulesets')) {
+      writes.push({ method, url: u, body: JSON.parse(init.body) })
+      return {
+        ok: true,
+        status: 200,
+        async json() { return { success: true, result: { id: 'rs-new', rules: [] } } },
+      }
+    }
+    return { ok: true, status: 200, async json() { return { success: true, result: {} } } }
+  }
+  return { writes, fetchImpl }
+}
+
+test('configureWaf PATCHes zone-wide rule when description matches but expression changed', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'both',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const { writes, fetchImpl } = makeSeededZoneFetch({
+    wafRules: [
+      {
+        id: 'rule-deny',
+        description: 'airingcal-deny-checkpoints',
+        expression: OLD_ZONE_WIDE_WAF,
+        action: 'block',
+        enabled: true,
+      },
+    ],
+  })
+  const io = createLiveDevelopmentApplyIo({
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok', AIRINGCAL_ZONE_ID: 'zone123' },
+    plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
+    fetchImpl,
+  })
+
+  const result = await io.configureWaf({})
+
+  assert.equal(result.rule.updated, true)
+  assert.equal(result.rule.reused, undefined)
+  assert.equal(result.rule.created, false)
+  assert.equal(result.rule.reason, 'expression-changed')
+  assert.equal(result.rule.rulesetId, 'rs-waf')
+  assert.equal(result.rule.ruleId, 'rule-deny')
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].method, 'PATCH')
+  assert.ok(writes[0].url.includes('/zones/zone123/rulesets/rs-waf/rules/rule-deny'))
+  assert.equal(writes[0].body.expression, NEW_HOST_WAF)
+  assert.equal(writes[0].body.description, 'airingcal-deny-checkpoints')
+  assert.equal(writes[0].body.action, 'block')
+  assert.deepEqual(writes[0].body.action_parameters, {
+    response: { status_code: 403, content: 'Forbidden', content_type: 'text/plain' },
+  })
+  assert.equal(writes[0].body.enabled, true)
+})
+
+test('applyCacheRules PATCHes both stale cache rules (immutable + pointer) on expression change', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'both',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const { writes, fetchImpl } = makeSeededZoneFetch({
+    cacheRules: [
+      {
+        id: 'rule-imm',
+        description: 'airingcal-images-snapshots-immutable',
+        expression: OLD_ZONE_WIDE_IMMUTABLE,
+        action: 'set_cache_settings',
+        enabled: true,
+      },
+      {
+        id: 'rule-ptr',
+        description: 'airingcal-pointer-bypass',
+        expression: OLD_ZONE_WIDE_POINTER,
+        action: 'set_cache_settings',
+        enabled: true,
+      },
+    ],
+  })
+  const io = createLiveDevelopmentApplyIo({
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok', AIRINGCAL_ZONE_ID: 'zone123' },
+    plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
+    fetchImpl,
+  })
+
+  const result = await io.applyCacheRules({})
+
+  assert.equal(result.immutable.updated, true)
+  assert.equal(result.immutable.reused, undefined)
+  assert.equal(result.immutable.reason, 'expression-changed')
+  assert.equal(result.pointer.updated, true)
+  assert.equal(result.pointer.reused, undefined)
+  assert.equal(result.pointer.reason, 'expression-changed')
+  assert.equal(writes.length, 2)
+  assert.ok(writes.every((w) => w.method === 'PATCH'))
+  const imm = writes.find((w) => w.url.includes('/rules/rule-imm'))
+  const ptr = writes.find((w) => w.url.includes('/rules/rule-ptr'))
+  assert.ok(imm && ptr, 'expected PATCHes keyed to both seeded rule ids')
+  assert.equal(imm.body.expression, NEW_HOST_IMMUTABLE)
+  assert.deepEqual(imm.body.action_parameters, {
+    cache: true,
+    edge_ttl: { mode: 'override_origin', default: 31536000 },
+    browser_ttl: { mode: 'override_origin', default: 31536000 },
+  })
+  assert.equal(ptr.body.expression, NEW_HOST_POINTER)
+  assert.deepEqual(ptr.body.action_parameters, { cache: false })
+})
+
+test('ensureZonePhaseRule reuses with zero writes only when description AND expression match', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'both',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const { writes, fetchImpl } = makeSeededZoneFetch({
+    cacheRules: [
+      {
+        id: 'rule-imm',
+        description: 'airingcal-images-snapshots-immutable',
+        expression: NEW_HOST_IMMUTABLE,
+        action: 'set_cache_settings',
+        enabled: true,
+      },
+      {
+        id: 'rule-ptr',
+        description: 'airingcal-pointer-bypass',
+        expression: NEW_HOST_POINTER,
+        action: 'set_cache_settings',
+        enabled: true,
+      },
+    ],
+    wafRules: [
+      {
+        id: 'rule-deny',
+        description: 'airingcal-deny-checkpoints',
+        expression: NEW_HOST_WAF,
+        action: 'block',
+        enabled: true,
+      },
+    ],
+  })
+  const io = createLiveDevelopmentApplyIo({
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok', AIRINGCAL_ZONE_ID: 'zone123' },
+    plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
+    fetchImpl,
+  })
+
+  const waf = await io.configureWaf({})
+  const cache = await io.applyCacheRules({})
+
+  assert.equal(waf.rule.reused, true)
+  assert.equal(waf.rule.updated, undefined)
+  assert.equal(cache.immutable.reused, true)
+  assert.equal(cache.immutable.updated, undefined)
+  assert.equal(cache.pointer.reused, true)
+  assert.equal(cache.pointer.updated, undefined)
+  assert.equal(writes.length, 0)
+})
+
+test('ensureZonePhaseRule still creates via POST when entrypoint has no matching rule', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'both',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const { writes, fetchImpl } = makeSeededZoneFetch({
+    wafRules: [
+      { id: 'rule-other', description: 'unrelated-rule', expression: 'true', action: 'block', enabled: true },
+    ],
+  })
+  const io = createLiveDevelopmentApplyIo({
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok', AIRINGCAL_ZONE_ID: 'zone123' },
+    plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
+    fetchImpl,
+  })
+
+  const result = await io.configureWaf({})
+
+  assert.equal(result.rule.created, true)
+  assert.equal(result.rule.reused, undefined)
+  assert.equal(result.rule.updated, undefined)
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].method, 'POST')
+  assert.ok(writes[0].url.includes('/zones/zone123/rulesets/rs-waf/rules'))
+  assert.equal(writes[0].body.expression, NEW_HOST_WAF)
+})
+
 test('applyCacheRules + configureWaf refuse when plan.publicHost is missing', async () => {
   const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
   const plan = {

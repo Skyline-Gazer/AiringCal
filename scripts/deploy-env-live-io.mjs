@@ -468,7 +468,36 @@ async function ensureZonePhaseRule({
 
   const existing = matchExisting(entry.rules)
   if (existing) {
-    return { created: false, reused: true, rulesetId: entry.id, ruleId: existing.id }
+    const descriptionMatches = String(existing.description ?? '') === description
+    const expressionMatches = String(existing.expression ?? '') === expression
+    if (descriptionMatches && expressionMatches) {
+      return { created: false, reused: true, rulesetId: entry.id, ruleId: existing.id }
+    }
+    // Description match with a stale expression (e.g. pre-fix zone-wide path
+    // rules) — update the rule in place so a re-apply never leaves the old
+    // expression live. PATCH a single rule per the Cloudflare rulesets API.
+    await cfApi(
+      fetchImpl,
+      token,
+      `/zones/${zoneId}/rulesets/${entry.id}/rules/${encodeURIComponent(String(existing.id))}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          description,
+          expression,
+          action,
+          ...(actionParameters ? { action_parameters: actionParameters } : {}),
+          enabled: true,
+        }),
+      },
+    )
+    return {
+      created: false,
+      updated: true,
+      reason: expressionMatches ? 'description-changed' : 'expression-changed',
+      rulesetId: entry.id,
+      ruleId: existing.id,
+    }
   }
 
   const added = await cfApi(
