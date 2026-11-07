@@ -380,6 +380,28 @@ export async function runGh(spawnSyncImpl, args, env, opts = {}) {
   )
 }
 
+/**
+ * GitHub refuses `gh workflow enable|disable` when the workflow already sits
+ * in the desired state (HTTP 403: "Unable to disable a workflow that is not
+ * active" / "Unable to enable a workflow that is not disabled"). A re-run of
+ * apply while the freeze holds lands in exactly that state, so the refusal IS
+ * success. Only those known state messages count as a no-op; every other
+ * failure — auth, network after runGh's own retries, unknown flags —
+ * rethrows unchanged so freeze/restore stay fail-closed. This wrapper is for
+ * enable/disable call sites ONLY; runGh itself stays strict for everyone.
+ */
+const WORKFLOW_TOGGLE_NOOP_RE = /not active|not disabled|already (?:active|disabled)/i
+
+async function runGhWorkflowToggle(spawnSyncImpl, args, env) {
+  try {
+    await runGh(spawnSyncImpl, args, env)
+    return false
+  } catch (error) {
+    if (WORKFLOW_TOGGLE_NOOP_RE.test(String(error?.message ?? error))) return true
+    throw error
+  }
+}
+
 async function cfApiOnce(fetchImpl, token, path, init) {
   const response = await fetchImpl(`${CF_API}${path}`, {
     ...init,
@@ -1077,7 +1099,11 @@ export function createLiveDevelopmentApplyIo({
 
     async freezeWriter(ctx = {}) {
       const workflow = plan.writerFreeze?.workflow || 'portable-writer.yml'
-      await runGh(spawnSyncImpl, ['workflow', 'disable', workflow, '--repo', repo], env)
+      const alreadyFrozen = await runGhWorkflowToggle(
+        spawnSyncImpl,
+        ['workflow', 'disable', workflow, '--repo', repo],
+        env,
+      )
 
       const deadline = nowImpl() + 15 * 60_000
       let inProgress = -1
@@ -1118,6 +1144,7 @@ export function createLiveDevelopmentApplyIo({
         lever: 'workflow-disable',
         workflow,
         inProgress: 0,
+        alreadyFrozen,
         leaseClear: true,
         note: 'Lease clear assumed after in_progress=0; staging dispatch blocked via workflow disable',
       }
@@ -1759,7 +1786,11 @@ export function createLiveDevelopmentApplyIo({
       let receipt = null
       const restoreFailures = []
       try {
-        await runGh(spawnSyncImpl, ['workflow', 'enable', workflow, '--repo', repo], env)
+        await runGhWorkflowToggle(
+          spawnSyncImpl,
+          ['workflow', 'enable', workflow, '--repo', repo],
+          env,
+        )
 
         // Job-level `if` reads repo-level `vars.` (environment-scoped vars are
         // not reliably visible there), so the gate is a repository variable.
@@ -1896,7 +1927,11 @@ export function createLiveDevelopmentApplyIo({
           ['workflow', 'disable', workflow, '--repo', repo],
         ]) {
           try {
-            await runGh(spawnSyncImpl, args, env)
+            if (args[0] === 'workflow' && args[1] === 'disable') {
+              await runGhWorkflowToggle(spawnSyncImpl, args, env)
+            } else {
+              await runGh(spawnSyncImpl, args, env)
+            }
           } catch (error) {
             restoreFailures.push(error instanceof Error ? error.message : String(error))
           }
