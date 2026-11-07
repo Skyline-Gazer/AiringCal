@@ -1712,9 +1712,10 @@ export function createLiveDevelopmentApplyIo({
       // EdgeOne Makers injects runtime vars from a `.env` bundled with the
       // deployment; a project-level `env set` alone is NOT visible to the edge
       // function. Link into a fresh temp cwd, mutate env there, pull the full
-      // env into dist/.env, then deploy FROM the linked cwd so the bundle
-      // carries the values. Build first; env mutations + deploy after.
+      // env in that cwd, copy it into the dist bundle, then deploy FROM the
+      // linked cwd so the bundle carries the values.
       const linkDir = mkdtempSync(join(tmpdir(), 'airingcal-eo-link-'))
+      const linkEnvFile = join(linkDir, '.env')
       const eoSpawn = (args, label) =>
         assertSpawnOk(
           spawnSyncImpl('edgeone', args, {
@@ -1771,31 +1772,33 @@ export function createLiveDevelopmentApplyIo({
           imageBaseUrlCleared = true
         }
 
-        // Pull the project's full env into the dist bundle. This is the file
-        // EdgeOne Makers actually deploys; fail closed if any key we set is
-        // missing/mismatched (or a sticky image base survived `env rm`).
+        // `-f .env` is relative to the linked cwd; the CLI does not write to
+        // arbitrary absolute paths (verified live). Pull there, validate, then
+        // copy into dist/.env for the deployment bundle.
         eoSpawn(
-          ['makers', 'env', 'pull', '-e', 'production', '-t', token, '-f', distEnvFile],
+          ['makers', 'env', 'pull', '-e', 'production', '-t', token, '-f', '.env'],
           'edgeone makers env pull',
         )
-        if (!existsSync(distEnvFile)) {
+        if (!existsSync(linkEnvFile)) {
           throw new Error(
-            `edgeone makers env pull did not produce ${distEnvFile}; refusing to deploy without bundled runtime env`,
+            `edgeone makers env pull did not produce ${linkEnvFile}; refusing to deploy without bundled runtime env`,
           )
         }
-        const pulled = parseEdgeoneEnvFile(readFileSync(distEnvFile, 'utf8'))
+        const envContent = readFileSync(linkEnvFile, 'utf8')
+        const pulled = parseEdgeoneEnvFile(envContent)
         for (const [key, value] of envPairs) {
           if (pulled[key] !== value) {
             throw new Error(
-              `edgeone env pull ${distEnvFile} is missing ${key}=${value} (got ${pulled[key] ?? '<absent>'}); refusing to deploy without bundled runtime env`,
+              `edgeone env pull ${linkEnvFile} is missing ${key}=${value} (got ${pulled[key] ?? '<absent>'}); refusing to deploy without bundled runtime env`,
             )
           }
         }
         if (!edgeoneImageBaseUrl && Object.prototype.hasOwnProperty.call(pulled, 'AIRINGCAL_IMAGE_BASE_URL')) {
           throw new Error(
-            `edgeone env pull ${distEnvFile} still contains a sticky AIRINGCAL_IMAGE_BASE_URL after env rm; refusing to deploy`,
+            `edgeone env pull ${linkEnvFile} still contains a sticky AIRINGCAL_IMAGE_BASE_URL after env rm; refusing to deploy`,
           )
         }
+        writeFileSync(distEnvFile, envContent)
 
         const deploy = eoSpawn(
           ['makers', 'deploy', dist, '-n', project, '-a', region, '-t', token, '-e', 'production', '--json'],

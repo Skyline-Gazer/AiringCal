@@ -83,8 +83,9 @@ function createFakeEdgeone({
             if (pullOmitKeys.includes(k)) continue
             lines.push(`${k}=${v}`)
           }
-          mkdirSync(dirname(target), { recursive: true })
-          writeFileSync(target, lines.join('\n') + '\n')
+          const targetPath = resolve(opts?.cwd ?? process.cwd(), target)
+          mkdirSync(dirname(targetPath), { recursive: true })
+          writeFileSync(targetPath, lines.join('\n') + '\n')
         }
       } else if (sub === 'deploy') {
         state.deployCalls += 1
@@ -3162,7 +3163,7 @@ test('deployEdgeoneOverseas links, pulls env into dist/.env, deploys with --json
   const pullCall = fake.state.calls.find((c) => c.cmd === 'edgeone' && c.args[2] === 'pull')
   assert.deepEqual(pullCall.args.slice(0, 7), ['makers', 'env', 'pull', '-e', 'production', '-t', 'eo-tok'])
   assert.equal(pullCall.args[7], '-f')
-  assert.match(pullCall.args[8], /\/\.env$/)
+  assert.equal(pullCall.args[8], '.env', 'env pull must use -f .env relative to linked cwd')
   const deployCall = fake.state.calls.find((c) => c.cmd === 'edgeone' && c.args[1] === 'deploy')
   const distDir = fake.state.distEnvAtDeploy.envFile.replace(/\/\.env$/, '')
   assert.deepEqual(deployCall.args.slice(1), ['deploy', distDir, '-n', 'airingcal-edgeone-read-overseas', '-a', 'overseas', '-t', 'eo-tok', '-e', 'production', '--json'])
