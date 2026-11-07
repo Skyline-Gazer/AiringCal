@@ -10,9 +10,9 @@
 
 | Surface | Current / approved state |
 | --- | --- |
-| Read in Production | Existing `apps/web-worker` v2 mode until explicit GO/NO-GO |
+| Read in Production | Existing `apps/web-worker` Worker `airing-cal-frontend` in v2 mode until explicit GO/NO-GO |
 | Read in v3 Development | Cloudflare Worker and EdgeOne Makers overseas readers consuming one R2 Release |
-| Write in v3 | GitHub Actions `portable-writer.yml` (sole Writer); no QingLong/CNB/Docker |
+| Write in v3 | GitHub Actions `portable-writer.yml` → `apps/node-jobs` Portable Builder (sole Writer); no QingLong/CNB/Docker |
 | Storage target | One R2 Bucket per environment, public Release/images via R2 custom domain, `checkpoints/` denied publicly |
 | Image CDN | Optional independent base URL; off by default |
 | Next gate | Issue [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147) — Development Live Acceptance; [#73](https://github.com/Skyline-Gazer/AiringCal/issues/73) is later Production cutover |
