@@ -3846,3 +3846,45 @@ test('formatCopyProgress renders the documented shape without leaking keys or se
     '[deploy-env] copy airingcal-staging-public: 100/2029 (copied=90, skipped=10)',
   )
 })
+
+test('syncGithubEnvironment derives USERS_JSON from the staging Environment when .env omits it', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', publicBaseUrl: 'https://dev.example.test', mode: 'apply' })
+  const calls = []
+  const spawn = (cmd, args) => {
+    calls.push([cmd, ...args])
+    const joined = args.join(' ')
+    if (joined.includes('environments/staging/variables/AIRINGCAL_STAGING_USERS_JSON')) {
+      return { status: 0, stdout: '[{"userId":"821993","username":"821993"}]\n', stderr: '', error: null }
+    }
+    if (joined.startsWith('secret list')) {
+      return { status: 0, stdout: '[]', stderr: '', error: null }
+    }
+    return { status: 0, stdout: '', stderr: '', error: null }
+  }
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_PRIMARY_USER_ID: '821993',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: 'f082535090d97b0927e4ed69c9a56685',
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'cfut_test-token',
+      AIRINGCAL_BANGUMI_TOKEN: 'bgm-test-token',
+    },
+    plan,
+    spawnSyncImpl: spawn,
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({ success: true, result: { id: 'test-access-key-id' }, errors: [] }),
+    }),
+    createObjectStore: () => ({
+      list: async () => [],
+      head: async () => ({ etag: 'x', size: 1, contentType: 'text/plain' }),
+      close: () => {},
+    }),
+  })
+  await io.deriveAndVerifyS3({})
+  const result = await io.syncGithubEnvironment({})
+  assert.ok(result.variablesSynced.includes('AIRINGCAL_DEVELOPMENT_USERS_JSON'))
+  const setCall = calls.find((c) => c[0] === 'gh' && c[1] === 'variable' && c[2] === 'set' && c[3] === 'AIRINGCAL_DEVELOPMENT_USERS_JSON')
+  assert.ok(setCall, 'USERS_JSON must be synced to development')
+  assert.equal(setCall[setCall.length - 1], '[{"userId":"821993","username":"821993"}]')
+})
