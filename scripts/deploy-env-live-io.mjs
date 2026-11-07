@@ -37,15 +37,13 @@ const ENV_FILE_NULL = ['--env-file', '/dev/null']
 const PG_R2_WRITE = 'e086da7e5abe4ad98b80f09ab37601ac'
 
 /**
- * Stable name of the derived R2 S3 token. Creation is guarded by the GitHub
- * Environment reuse step (the secret pair is only recoverable at creation),
- * so repeated applies must not mint a new token each run.
+ * Stable name of the fallback R2 S3 token. Creation is the fallback path:
+ * the primary derivation reuses the management token itself (id + SHA-256
+ * value), so this token is only minted when the parent token lacks R2
+ * object access. To prevent accumulation, an apply that must create this
+ * token first deletes any prior token carrying the same stable name.
  */
 const DERIVED_S3_TOKEN_NAME = 'airingcal-development-s3'
-
-/** GitHub Environment `development` secrets holding a previously derived pair. */
-const GH_S3_ACCESS_KEY_SECRET = 'AIRINGCAL_DEVELOPMENT_S3_ACCESS_KEY_ID'
-const GH_S3_SECRET_KEY_SECRET = 'AIRINGCAL_DEVELOPMENT_S3_SECRET_ACCESS_KEY'
 
 /** Repository-level gate variable the development writer job `if` reads. */
 const DEVELOPMENT_WRITER_GATE_VAR = 'AIRINGCAL_DEVELOPMENT_WRITER_ENABLED'
@@ -53,14 +51,18 @@ const DEVELOPMENT_WRITER_GATE_VAR = 'AIRINGCAL_DEVELOPMENT_WRITER_ENABLED'
 /** Missing-scope label when the parent token cannot create child tokens. */
 const TOKEN_CREATE_SCOPE = 'User API Tokens: Edit (Create tokens via API)'
 
+/** Escape hatch printed alongside the missing scope. */
+const S3_OVERRIDE_WORKAROUND =
+  'override workaround: set AIRINGCAL_S3_ACCESS_KEY_ID / AIRINGCAL_S3_SECRET_ACCESS_KEY in .env'
+
 const WRITER_TEST_POLL_MS = 5_000
 const WRITER_TEST_DEADLINE_MS = 30 * 60_000
 
 function tokenCreateDeniedError(detail = '') {
   const err = new Error(
-    `Cloudflare API token cannot create R2 S3 API tokens${detail ? ` (${detail})` : ''} — missing scope: ${TOKEN_CREATE_SCOPE}`,
+    `Cloudflare API token cannot create R2 S3 API tokens${detail ? ` (${detail})` : ''} — missing scope: ${TOKEN_CREATE_SCOPE}; ${S3_OVERRIDE_WORKAROUND}`,
   )
-  err.missingScopes = [TOKEN_CREATE_SCOPE]
+  err.missingScopes = [TOKEN_CREATE_SCOPE, S3_OVERRIDE_WORKAROUND]
   return err
 }
 
@@ -543,43 +545,6 @@ export function createLiveDevelopmentApplyIo({
     }
   }
 
-  async function tryGithubSecretReuse(endpoint) {
-    const values = []
-    for (const name of [GH_S3_ACCESS_KEY_SECRET, GH_S3_SECRET_KEY_SECRET]) {
-      let value = ''
-      try {
-        // NOTE: GitHub's API cannot read secret *values* back; `gh secret get`
-        // exists only in some builds. Any failure here (unsupported command,
-        // unset secret, empty output) falls through to derivation — never a
-        // silent pass.
-        const res = runGh(
-          spawnSyncImpl,
-          ['secret', 'get', name, '--env', 'development', '--repo', repo],
-          env,
-        )
-        value = String(res.stdout ?? '').trim()
-      } catch {
-        return null
-      }
-      if (!value) return null
-      values.push(value)
-    }
-    const creds = {
-      accessKeyId: values[0],
-      secretAccessKey: values[1],
-      endpoint,
-      region: String(env.AIRINGCAL_S3_REGION ?? 'auto').trim() || 'auto',
-      derived: false,
-    }
-    try {
-      await verifyS3Access(creds, bucket, { allowMissingBucket: true })
-      return creds
-    } catch {
-      // Stale/denied stored pair → derive fresh credentials instead of passing.
-      return null
-    }
-  }
-
   return {
     async probeToken(ctx = {}) {
       const token = tokenFromEnv(env)
@@ -667,36 +632,77 @@ export function createLiveDevelopmentApplyIo({
         }
       }
 
-      // 2. Reuse the pair previously persisted by syncGithubEnvironment (token
-      //    creation happens once; every later apply reuses + re-verifies).
-      //    Verification failure falls through to derivation, never a pass.
-      const reused = await tryGithubSecretReuse(endpoint)
-      if (reused) {
-        s3Creds = reused
-        ctx.s3 = { accessKeyId: reused.accessKeyId, derived: false, reused: 'github-environment', verified: true }
-        process.stderr.write(
-          `[deploy-env] Reusing R2 S3 Access Key ID ${reused.accessKeyId} from GitHub Environment development\n`,
-        )
-        return {
-          accessKeyId: reused.accessKeyId,
-          secretAccessKey: reused.secretAccessKey,
-          derived: false,
-          reused: 'github-environment',
-          verified: true,
-          keyIdPrinted: reused.accessKeyId,
-        }
-      }
-
       const parentToken = tokenFromEnv(env)
       if (!parentToken) {
         throw new Error(
-          'Cloudflare API token required to derive R2 S3 credentials (no AIRINGCAL_S3_* override and no reusable GitHub Environment secret)',
+          'Cloudflare API token required to derive R2 S3 credentials (no AIRINGCAL_S3_* override set)',
         )
       }
 
-      // 3. Probe the parent token's ability to create tokens BEFORE POSTing,
-      //    so a scope-less token fails with the explicit missing-scope message
-      //    instead of an opaque Create Token error.
+      // 2. Primary path — self-derivation from the management token, zero new
+      //    tokens ("Get S3 API credentials from an API token", Cloudflare R2
+      //    docs): Access Key ID = the token `id` reported by
+      //    GET /user/tokens/verify, Secret Access Key = SHA-256 of the token
+      //    value. Any failure here — verify denied, `result`/`id` missing
+      //    (docs mark result optional), or the parent token lacking R2
+      //    object access on list+head — falls through to the dedicated
+      //    scoped-token fallback; never a silent pass.
+      try {
+        const verifyBody = await cfApi(fetchImpl, parentToken, '/user/tokens/verify')
+        const tokenId = String(verifyBody?.result?.id ?? '').trim()
+        if (tokenId) {
+          const creds = {
+            accessKeyId: tokenId,
+            secretAccessKey: sha256Hex(parentToken),
+            endpoint,
+            region: 'auto',
+            derived: true,
+            source: 'management-token',
+          }
+          try {
+            await verifyS3Access(creds, bucket, { allowMissingBucket: true })
+            s3Creds = creds
+            ctx.s3 = {
+              accessKeyId: tokenId,
+              derived: true,
+              source: 'management-token',
+              verified: true,
+            }
+            process.stderr.write(
+              `[deploy-env] Derived R2 S3 Access Key ID ${tokenId} from the management token (secret redacted)\n`,
+            )
+            return {
+              accessKeyId: tokenId,
+              secretAccessKey: creds.secretAccessKey,
+              derived: true,
+              source: 'management-token',
+              verified: true,
+              keyIdPrinted: tokenId,
+            }
+          } catch (error) {
+            // Object-permission (or other) failure with the management token —
+            // the dedicated scoped token in step 3 may still work.
+            const msg = error instanceof Error ? error.message : String(error)
+            process.stderr.write(
+              `[deploy-env] Management-token S3 derivation not usable (${redactSecrets(msg, secrets)}); trying scoped-token fallback\n`,
+            )
+          }
+        } else {
+          process.stderr.write(
+            '[deploy-env] GET /user/tokens/verify returned no token id; trying scoped-token fallback\n',
+          )
+        }
+      } catch {
+        // Verify endpoint denied/unusual shape → fall back to token creation.
+        process.stderr.write(
+          '[deploy-env] Management token could not be verified; trying scoped-token fallback\n',
+        )
+      }
+
+      // 3. Fallback — dedicated scoped token. Probe the parent token's ability
+      //    to create tokens BEFORE POSTing, so a scope-less token fails with
+      //    the explicit missing-scope message instead of an opaque Create
+      //    Token error.
       try {
         const permissionsBody = await cfApi(fetchImpl, parentToken, '/user/tokens/permissions')
         const verdict = classifyTokenCreationPermission(permissionsBody)
@@ -714,6 +720,33 @@ export function createLiveDevelopmentApplyIo({
       }
 
       const tokenName = DERIVED_S3_TOKEN_NAME
+
+      // Anti-accumulation: delete any pre-existing token carrying the stable
+      // fallback name before creating a replacement, so repeated applies do
+      // not leave multiple airingcal-development-s3 tokens behind. Listing and
+      // deletion are best effort (a token may not see other users' tokens);
+      // the POST below remains the authoritative enforcement point.
+      try {
+        const listed = await cfApi(fetchImpl, parentToken, '/user/tokens')
+        const prior = (Array.isArray(listed?.result) ? listed.result : []).filter(
+          (t) => String(t?.name ?? '') === tokenName && t?.id,
+        )
+        for (const t of prior) {
+          try {
+            await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(String(t.id))}`, {
+              method: 'DELETE',
+            })
+            process.stderr.write(
+              `[deploy-env] Deleted prior R2 S3 token ${t.id} (stable name) before re-creating\n`,
+            )
+          } catch {
+            // Deletion denied/stale — creation still proceeds; CF enforces.
+          }
+        }
+      } catch {
+        // Token listing not permitted for this parent; proceed to create.
+      }
+
       let permissionGroupId = PG_R2_WRITE
       try {
         permissionGroupId = await resolvePermissionGroupId(
@@ -790,7 +823,7 @@ export function createLiveDevelopmentApplyIo({
       s3Creds = creds
       ctx.s3 = { accessKeyId, derived: true, verified: true }
       process.stderr.write(
-        `[deploy-env] Derived R2 S3 Access Key ID ${accessKeyId} (secret redacted)\n`,
+        `[deploy-env] Created scoped R2 S3 token ${accessKeyId} (fallback path; secret redacted)\n`,
       )
       return {
         accessKeyId,

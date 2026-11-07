@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -871,9 +872,6 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
       if (joined.includes('secret list')) {
         return { status: 0, stdout: '', stderr: '', error: null }
       }
-      if (joined.includes('secret get')) {
-        return { status: 1, stdout: '', stderr: 'gh: secret get unsupported', error: null }
-      }
       if (joined.includes('--status in_progress')) {
         return { status: 0, stdout: '[]', stderr: '', error: null }
       }
@@ -1289,39 +1287,49 @@ test('applyCacheRules + configureWaf refuse when plan.publicHost is missing', as
   await assert.rejects(() => io.configureWaf({}), /plan\.publicHost/)
 })
 
-test('deriveAndVerifyS3 reuses GitHub development Environment secrets without POST /user/tokens', async () => {
+const VERIFY_TOKEN_ID = 'ed17574386854bf78a67040be0a770b0'
+
+test('deriveAndVerifyS3 derives S3 creds from the management token without creating any token', async () => {
   const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
     mode: 'apply',
   })
-  const ghCalls = []
-  const storeBuckets = []
+  const parentToken = 'cf-mgmt-token-value-1234567890abcdef'
+  const expectedSecret = createHash('sha256').update(parentToken, 'utf8').digest('hex')
+  const fetchLog = []
+  const storeConfigs = []
   const io = createLiveDevelopmentApplyIo({
     env: {
-      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: parentToken,
       AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
     },
     plan,
-    spawnSyncImpl: (cmd, args) => {
-      const joined = args.join(' ')
-      if (cmd === 'gh') {
-        ghCalls.push(joined)
-        if (joined.includes('secret get AIRINGCAL_DEVELOPMENT_S3_ACCESS_KEY_ID')) {
-          return { status: 0, stdout: 'AKIAREUSED\n', stderr: '', error: null }
-        }
-        if (joined.includes('secret get AIRINGCAL_DEVELOPMENT_S3_SECRET_ACCESS_KEY')) {
-          return { status: 0, stdout: 'reused-secret\n', stderr: '', error: null }
+    spawnSyncImpl: () => {
+      throw new Error('gh/wrangler must not run on the management-token derivation path')
+    },
+    fetchImpl: async (url, init = {}) => {
+      const u = String(url)
+      fetchLog.push([String(init.method ?? 'GET'), u])
+      if (u.endsWith('/user/tokens/verify')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { success: true, result: { id: VERIFY_TOKEN_ID, status: 'active' } }
+          },
         }
       }
-      return { status: 1, stdout: '', stderr: 'unexpected gh call', error: null }
-    },
-    fetchImpl: async () => {
-      throw new Error('CF API must not be called when GH secret reuse verifies')
+      return { ok: false, status: 404, async json() { return { success: false, errors: [] } } }
     },
     createObjectStore: (config) => {
-      storeBuckets.push({ bucket: config.bucket, accessKeyId: config.accessKeyId })
+      storeConfigs.push({
+        bucket: config.bucket,
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
+        endpoint: config.endpoint,
+      })
       return {
         async list() { return [] },
         async head() { return null },
@@ -1329,16 +1337,220 @@ test('deriveAndVerifyS3 reuses GitHub development Environment secrets without PO
       }
     },
   })
-  const result = await io.deriveAndVerifyS3({})
-  assert.equal(result.derived, false)
-  assert.equal(result.reused, 'github-environment')
+  let printed = ''
+  const origWrite = process.stderr.write
+  process.stderr.write = (chunk) => { printed += String(chunk); return true }
+  let result
+  try {
+    result = await io.deriveAndVerifyS3({})
+  } finally {
+    process.stderr.write = origWrite
+  }
+  assert.equal(result.derived, true)
+  assert.equal(result.source, 'management-token')
   assert.equal(result.verified, true)
-  assert.equal(result.accessKeyId, 'AKIAREUSED')
-  assert.equal(storeBuckets[0].accessKeyId, 'AKIAREUSED')
-  assert.ok(ghCalls.every((c) => !c.includes('variable set')))
+  assert.equal(result.accessKeyId, VERIFY_TOKEN_ID)
+  assert.equal(result.keyIdPrinted, VERIFY_TOKEN_ID)
+  assert.equal(storeConfigs[0].accessKeyId, VERIFY_TOKEN_ID)
+  assert.equal(storeConfigs[0].secretAccessKey, expectedSecret)
+  assert.equal(storeConfigs[0].endpoint, 'https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com')
+  assert.ok(!fetchLog.some(([m, u]) => m === 'POST' && u.endsWith('/user/tokens')), 'must not create tokens')
+  assert.ok(fetchLog.some(([m, u]) => m === 'GET' && u.endsWith('/user/tokens/verify')))
+  assert.ok(!printed.includes(expectedSecret), 'SHA-256 secret must never be printed')
+  assert.ok(!printed.includes(parentToken), 'parent token value must never be printed')
+  assert.ok(printed.includes(VERIFY_TOKEN_ID), 'key id is printed')
+  // The creds land in ctx.s3 with the secret for the later GH Environment sync.
+  assert.equal(result.secretAccessKey, expectedSecret)
 })
 
-test('deriveAndVerifyS3 falls through to derivation when reused secrets fail verification', async () => {
+test('deriveAndVerifyS3 continues to scoped-token fallback when parent token cannot verify', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+    },
+    plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
+    fetchImpl: async (url, init = {}) => {
+      const u = String(url)
+      const method = String(init.method ?? 'GET')
+      if (u.endsWith('/user/tokens/verify')) {
+        return { ok: false, status: 403, async json() { return { success: false, errors: [{ code: 10000, message: 'Unauthorized' }] } } }
+      }
+      if (u.endsWith('/user/tokens/permissions')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { success: true, result: { status: 'active', permissions: [{ id: 'p1', name: 'User API Tokens: Edit' }] } }
+          },
+        }
+      }
+      if (u.endsWith('/user/tokens') && method === 'GET') {
+        return { ok: true, status: 200, async json() { return { success: true, result: [] } } }
+      }
+      if (u.endsWith('/user/tokens/permission_groups')) {
+        return { ok: true, status: 200, async json() { return { success: true, result: [] } } }
+      }
+      if (u.endsWith('/user/tokens') && method === 'POST') {
+        return {
+          ok: true,
+          status: 200,
+          async json() { return { success: true, result: { id: 'AKIANEW', value: 'fresh-token-value' } } },
+        }
+      }
+      return { ok: false, status: 404, async json() { return { success: false, errors: [] } } }
+    },
+    createObjectStore: () => ({
+      async list() { return [] },
+      async head() { return null },
+      close() {},
+    }),
+  })
+  const result = await io.deriveAndVerifyS3({})
+  assert.equal(result.derived, true)
+  assert.equal(result.source, undefined)
+  assert.equal(result.accessKeyId, 'AKIANEW')
+})
+
+test('deriveAndVerifyS3 falls through to scoped-token creation when management S3 access is denied', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const fetchLog = []
+  const storeKeys = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+    },
+    plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
+    fetchImpl: async (url, init = {}) => {
+      const u = String(url)
+      const method = String(init.method ?? 'GET')
+      fetchLog.push([method, u])
+      if (u.endsWith('/user/tokens/verify')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() { return { success: true, result: { id: VERIFY_TOKEN_ID, status: 'active' } } },
+        }
+      }
+      if (u.endsWith('/user/tokens/permissions')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { success: true, result: { status: 'active', permissions: ['User API Tokens:Edit'] } }
+          },
+        }
+      }
+      if (u.endsWith('/user/tokens') && method === 'GET') {
+        return { ok: true, status: 200, async json() { return { success: true, result: [] } } }
+      }
+      if (u.endsWith('/user/tokens/permission_groups')) {
+        return { ok: true, status: 200, async json() { return { success: true, result: [] } } }
+      }
+      if (u.endsWith('/user/tokens') && method === 'POST') {
+        return {
+          ok: true,
+          status: 200,
+          async json() { return { success: true, result: { id: 'AKIANEW', value: 'fresh-token-value' } } },
+        }
+      }
+      return { ok: false, status: 404, async json() { return { success: false, errors: [] } } }
+    },
+    createObjectStore: (config) => ({
+      async list() {
+        storeKeys.push(config.accessKeyId)
+        if (config.accessKeyId === VERIFY_TOKEN_ID) {
+          const err = new Error('AccessDenied: management token lacks R2 object access')
+          err.$metadata = { httpStatusCode: 403 }
+          throw err
+        }
+        return []
+      },
+      async head() { return null },
+      close() {},
+    }),
+  })
+  const result = await io.deriveAndVerifyS3({})
+  assert.equal(result.derived, true)
+  assert.equal(result.accessKeyId, 'AKIANEW')
+  assert.ok(storeKeys.includes(VERIFY_TOKEN_ID), 'management creds must be tried first')
+  const createCall = fetchLog.find(([m, u]) => m === 'POST' && u.endsWith('/user/tokens'))
+  assert.ok(createCall, 'scoped-token creation must run after management S3 denial')
+})
+
+test('deriveAndVerifyS3 falls through to scoped-token creation when verify omits result.id', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const storeKeys = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+    },
+    plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
+    fetchImpl: async (url, init = {}) => {
+      const u = String(url)
+      const method = String(init.method ?? 'GET')
+      if (u.endsWith('/user/tokens/verify')) {
+        // Docs mark `result` optional; a shape without id is a management-path failure.
+        return { ok: true, status: 200, async json() { return { success: true, result: { status: 'active' } } } }
+      }
+      if (u.endsWith('/user/tokens/permissions')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { success: true, result: { status: 'active', permissions: ['User API Tokens:Edit'] } }
+          },
+        }
+      }
+      if (u.endsWith('/user/tokens') && method === 'GET') {
+        return { ok: true, status: 200, async json() { return { success: true, result: [] } } }
+      }
+      if (u.endsWith('/user/tokens/permission_groups')) {
+        return { ok: true, status: 200, async json() { return { success: true, result: [] } } }
+      }
+      if (u.endsWith('/user/tokens') && method === 'POST') {
+        return {
+          ok: true,
+          status: 200,
+          async json() { return { success: true, result: { id: 'AKIANEW', value: 'fresh-token-value' } } },
+        }
+      }
+      return { ok: false, status: 404, async json() { return { success: false, errors: [] } } }
+    },
+    createObjectStore: (config) => ({
+      async list() { storeKeys.push(config.accessKeyId); return [] },
+      async head() { return null },
+      close() {},
+    }),
+  })
+  const result = await io.deriveAndVerifyS3({})
+  assert.equal(result.accessKeyId, 'AKIANEW')
+  assert.ok(!storeKeys.includes(VERIFY_TOKEN_ID))
+  assert.equal(storeKeys.length, 1, 'only the fallback creds may touch the store')
+})
+
+test('scoped-token fallback deletes the prior stable-named token before POST', async () => {
   const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
@@ -1352,63 +1564,73 @@ test('deriveAndVerifyS3 falls through to derivation when reused secrets fail ver
       AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
     },
     plan,
-    spawnSyncImpl: (cmd, args) => {
-      const joined = args.join(' ')
-      if (joined.includes('secret get AIRINGCAL_DEVELOPMENT_S3_ACCESS_KEY_ID')) {
-        return { status: 0, stdout: 'AKIASTALE', stderr: '', error: null }
-      }
-      if (joined.includes('secret get AIRINGCAL_DEVELOPMENT_S3_SECRET_ACCESS_KEY')) {
-        return { status: 0, stdout: 'stale-secret', stderr: '', error: null }
-      }
-      return { status: 0, stdout: '', stderr: '', error: null }
-    },
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
     fetchImpl: async (url, init = {}) => {
       const u = String(url)
-      fetchLog.push([String(init.method ?? 'GET'), u])
+      const method = String(init.method ?? 'GET')
+      fetchLog.push([method, u])
+      if (u.endsWith('/user/tokens/verify')) {
+        return { ok: false, status: 403, async json() { return { success: false, errors: [] } } }
+      }
       if (u.endsWith('/user/tokens/permissions')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { success: true, result: { status: 'active', permissions: ['User API Tokens:Edit'] } }
+          },
+        }
+      }
+      if (u.endsWith('/user/tokens') && method === 'GET') {
         return {
           ok: true,
           status: 200,
           async json() {
             return {
               success: true,
-              result: { status: 'active', permissions: [{ id: 'p1', name: 'User API Tokens: Edit' }] },
+              result: [
+                { id: 'old-token-1', name: 'airingcal-development-s3' },
+                { id: 'unrelated-token', name: 'someone-else' },
+              ],
             }
           },
         }
       }
-      if (u.endsWith('/user/tokens/permission_groups')) {
-        return { ok: true, status: 200, async json() { return { success: true, result: [] } } }
+      if (/\/user\/tokens\/[^/]+$/.test(u) && method === 'DELETE') {
+        return { ok: true, status: 200, async json() { return { success: true, result: { id: 'old-token-1' } } } }
       }
-      if (u.endsWith('/user/tokens') && String(init.method) === 'POST') {
+      if (u.endsWith('/user/tokens/permission_groups')) {
         return {
           ok: true,
           status: 200,
           async json() {
-            return { success: true, result: { id: 'AKIANEW', value: 'fresh-token-value' } }
+            return { success: true, result: [{ id: 'grp-r2w', name: 'Workers R2 Storage Write' }] }
           },
+        }
+      }
+      if (u.endsWith('/user/tokens') && method === 'POST') {
+        return {
+          ok: true,
+          status: 200,
+          async json() { return { success: true, result: { id: 'AKIANEW', value: 'fresh-token-value' } } },
         }
       }
       return { ok: false, status: 404, async json() { return { success: false, errors: [] } } }
     },
-    createObjectStore: (config) => ({
-      async list() {
-        if (config.accessKeyId === 'AKIASTALE') {
-          const err = new Error('AccessDenied: stale reused key')
-          err.$metadata = { httpStatusCode: 403 }
-          throw err
-        }
-        return []
-      },
+    createObjectStore: () => ({
+      async list() { return [] },
       async head() { return null },
       close() {},
     }),
   })
   const result = await io.deriveAndVerifyS3({})
-  assert.equal(result.derived, true)
   assert.equal(result.accessKeyId, 'AKIANEW')
-  const createCall = fetchLog.find(([m, u]) => m === 'POST' && u.endsWith('/user/tokens'))
-  assert.ok(createCall, 'derivation must run after failed reuse verification')
+  const deleteIdx = fetchLog.findIndex(([m, u]) => m === 'DELETE' && u.endsWith('/user/tokens/old-token-1'))
+  const createIdx = fetchLog.findIndex(([m, u]) => m === 'POST' && u.endsWith('/user/tokens'))
+  assert.ok(deleteIdx >= 0, 'prior stable-named token must be deleted')
+  assert.ok(createIdx >= 0)
+  assert.ok(deleteIdx < createIdx, 'delete must precede create')
+  assert.ok(!fetchLog.some(([m, u]) => m === 'DELETE' && u.includes('unrelated-token')), 'never delete other tokens')
 })
 
 test('deriveAndVerifyS3 probes token-creation permission and exits-2 style on denial without creating', async () => {
@@ -1448,7 +1670,10 @@ test('deriveAndVerifyS3 probes token-creation permission and exits-2 style on de
   await assert.rejects(
     () => io.deriveAndVerifyS3({}),
     (error) => {
-      assert.deepEqual(error.missingScopes, ['User API Tokens: Edit (Create tokens via API)'])
+      assert.deepEqual(error.missingScopes, [
+        'User API Tokens: Edit (Create tokens via API)',
+        'override workaround: set AIRINGCAL_S3_ACCESS_KEY_ID / AIRINGCAL_S3_SECRET_ACCESS_KEY in .env',
+      ])
       assert.match(error.message, /User API Tokens: Edit/)
       return true
     },
