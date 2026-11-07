@@ -5,7 +5,7 @@
  * Unit tests must not hit live cloud — pass spawn/fetch doubles.
  */
 import { createHash } from 'node:crypto'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
@@ -1798,6 +1798,7 @@ export function createLiveDevelopmentApplyIo({
             `edgeone env pull ${linkEnvFile} still contains a sticky AIRINGCAL_IMAGE_BASE_URL after env rm; refusing to deploy`,
           )
         }
+        mkdirSync(dirname(distEnvFile), { recursive: true })
         writeFileSync(distEnvFile, envContent)
 
         const deploy = eoSpawn(
