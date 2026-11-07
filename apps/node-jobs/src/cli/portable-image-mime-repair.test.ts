@@ -221,15 +221,9 @@ test('imageMimeRepairExitCode is non-zero when report is incomplete', () => {
     aborted: false,
     complete: false,
     counts: {
-      scanned: 1,
-      ok: 0,
-      would_fix: 0,
-      repaired: 1,
-      skipped_unknown: 0,
       conflict: 0,
       verify_failed: 0,
       cdn_stale_pending: 1,
-      missing: 0,
       error: 0,
     },
   }), 1)
@@ -237,15 +231,9 @@ test('imageMimeRepairExitCode is non-zero when report is incomplete', () => {
     aborted: false,
     complete: false,
     counts: {
-      scanned: 1,
-      ok: 0,
-      would_fix: 0,
-      repaired: 0,
-      skipped_unknown: 0,
       conflict: 1,
       verify_failed: 0,
       cdn_stale_pending: 0,
-      missing: 0,
       error: 0,
     },
   }), 1)
@@ -253,15 +241,9 @@ test('imageMimeRepairExitCode is non-zero when report is incomplete', () => {
     aborted: false,
     complete: true,
     counts: {
-      scanned: 1,
-      ok: 1,
-      would_fix: 0,
-      repaired: 0,
-      skipped_unknown: 0,
       conflict: 0,
       verify_failed: 0,
       cdn_stale_pending: 0,
-      missing: 0,
       error: 0,
     },
   }), 0)

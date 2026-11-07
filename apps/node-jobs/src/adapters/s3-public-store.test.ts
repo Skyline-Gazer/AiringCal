@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { PublicReleasePointer } from '@airing-cal/v3-core/ports'
 import { PUBLIC_RELEASE_POINTER_KEY } from '@airing-cal/v3-core/public-pointer'
+import type { ConditionalObjectStore } from './object-store.ts'
 import { MemoryObjectStore } from './memory-object-store.ts'
 import { S3CompatiblePublicStore } from './s3-public-store.ts'
 
@@ -38,7 +39,7 @@ test('S3CompatiblePublicStore enforces immutable objects and pointer CAS', async
 test('S3CompatiblePublicStore sets immutable cache headers for image content types', async () => {
   const objects = new MemoryObjectStore()
   const puts: Array<{ key: string; options: Record<string, unknown> }> = []
-  const recording: typeof objects = {
+  const recording: ConditionalObjectStore = {
     get: (key) => objects.get(key),
     head: (key) => objects.head(key),
     list: (prefix) => objects.list(prefix),
