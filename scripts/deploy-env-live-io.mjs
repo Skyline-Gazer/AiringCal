@@ -5,7 +5,7 @@
  * Unit tests must not hit live cloud — pass spawn/fetch doubles.
  */
 import { createHash } from 'node:crypto'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { createRequire } from 'node:module'
@@ -230,6 +230,52 @@ function assertEdgeoneEnvRmOk(result, label, secrets = []) {
     return result
   }
   return assertSpawnOk(result, label, secrets)
+}
+
+/**
+ * Parse a pulled EdgeOne `env pull` dotenv file (KEY=VALUE lines, optional
+ * quotes / comments / blank lines) into a plain object.
+ */
+function parseEdgeoneEnvFile(content) {
+  const out = {}
+  for (const raw of String(content ?? '').split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line || line.startsWith('#')) continue
+    const eq = line.indexOf('=')
+    if (eq < 0) continue
+    const key = line.slice(0, eq).trim()
+    let value = line.slice(eq + 1).trim()
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1)
+    }
+    if (key) out[key] = value
+  }
+  return out
+}
+
+/**
+ * Prefer the `url` from `--json` deploy output; fall back to the legacy
+ * stdout URL regex for CLIs that print a human-readable deployment line.
+ */
+function parseEdgeoneDeployUrl(stdout) {
+  const out = String(stdout || '').trim()
+  if (out) {
+    try {
+      const parsed = JSON.parse(out)
+      const url = parsed?.url ?? parsed?.data?.url ?? parsed?.result?.url
+      if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
+        return url.replace(/[.,;)]+$/, '')
+      }
+    } catch {
+      // Not JSON (legacy CLI output): fall through to the regex below.
+    }
+  }
+  const match =
+    out.match(/https:\/\/\S*edgeone\S*/i) || out.match(/https:\/\/[^\s"')]+/i)
+  return match ? match[0].replace(/[.,;)]+$/, '') : null
 }
 
 /**
@@ -1662,74 +1708,113 @@ export function createLiveDevelopmentApplyIo({
       assertSpawnOk(build, 'build:edgeone-read', secrets)
 
       const dist = join(ROOT, 'apps/edgeone-read-worker/dist')
-      const deploy = spawnSyncImpl(
-        'edgeone',
-        [
-          'makers',
-          'deploy',
-          dist,
-          '-n',
-          project,
-          '-a',
-          region,
-          '-t',
-          token,
-          '-e',
-          'production',
-        ],
-        { encoding: 'utf8', cwd: ROOT, env: { ...process.env, ...env } },
-      )
-      assertSpawnOk(deploy, `edgeone makers deploy -n ${project}`, secrets)
-
-      const envPairs = [
-        ['AIRINGCAL_PUBLIC_BASE_URL', plan.publicBaseUrl],
-        ['NSFW_SHOW', String(env.AIRINGCAL_NSFW_SHOW ?? 'false')],
-      ]
-      if (env.PACKAGE_VERSION) {
-        envPairs.push(['PACKAGE_VERSION', String(env.PACKAGE_VERSION)])
-      }
-      // Image CDN default off means an explicitly cleared EdgeOne project
-      // variable: EdgeOne project env persists across deploys, so a previously
-      // configured base would stay sticky (and a later verifyImageRouting
-      // would then abort against the stale CDN origin). Unset/empty therefore
-      // runs `env rm`; a non-empty value is propagated with `env set`.
-      const edgeoneImageBaseUrl = String(env.AIRINGCAL_IMAGE_BASE_URL ?? '').trim()
-      if (edgeoneImageBaseUrl) {
-        envPairs.push(['AIRINGCAL_IMAGE_BASE_URL', edgeoneImageBaseUrl])
-      }
-      for (const [key, value] of envPairs) {
-        const setRes = spawnSyncImpl(
-          'edgeone',
-          ['makers', 'env', 'set', key, value, '-e', 'production', '-t', token],
-          { encoding: 'utf8', cwd: ROOT, env: { ...process.env, ...env } },
-        )
-        assertSpawnOk(setRes, `edgeone makers env set ${key}`, secrets)
-      }
-
-      let imageBaseUrlCleared = false
-      if (!edgeoneImageBaseUrl) {
-        assertEdgeoneEnvRmOk(
-          spawnSyncImpl(
-            'edgeone',
-            ['makers', 'env', 'rm', 'AIRINGCAL_IMAGE_BASE_URL', '-e', 'production', '-t', token],
-            { encoding: 'utf8', cwd: ROOT, env: { ...process.env, ...env } },
-          ),
-          'edgeone makers env rm AIRINGCAL_IMAGE_BASE_URL',
+      const distEnvFile = join(dist, '.env')
+      // EdgeOne Makers injects runtime vars from a `.env` bundled with the
+      // deployment; a project-level `env set` alone is NOT visible to the edge
+      // function. Link into a fresh temp cwd, mutate env there, pull the full
+      // env into dist/.env, then deploy FROM the linked cwd so the bundle
+      // carries the values. Build first; env mutations + deploy after.
+      const linkDir = mkdtempSync(join(tmpdir(), 'airingcal-eo-link-'))
+      const eoSpawn = (args, label) =>
+        assertSpawnOk(
+          spawnSyncImpl('edgeone', args, {
+            encoding: 'utf8',
+            cwd: linkDir,
+            env: { ...process.env, ...env },
+          }),
+          label,
           secrets,
         )
-        imageBaseUrlCleared = true
-      }
 
-      const readerUrlMatch = String(deploy.stdout || '').match(/https:\/\/\S*edgeone\S*/i)
-      return {
-        deployed: true,
-        project,
-        region,
-        createdViaDeploy: true,
-        readerUrl: readerUrlMatch ? readerUrlMatch[0].replace(/[.,;)]+$/, '') : null,
-        imageBaseUrl: edgeoneImageBaseUrl || null,
-        imageBaseUrlPersisted: Boolean(edgeoneImageBaseUrl),
-        imageBaseUrlCleared,
+      try {
+        // `link` writes a `.env` in the linked cwd from the project's current
+        // vars; all subsequent Makers commands run from this cwd.
+        eoSpawn(
+          ['makers', 'link', '-n', project, '-a', region, '-t', token],
+          `edgeone makers link -n ${project}`,
+        )
+
+        const envPairs = [
+          ['AIRINGCAL_PUBLIC_BASE_URL', plan.publicBaseUrl],
+          ['NSFW_SHOW', String(env.AIRINGCAL_NSFW_SHOW ?? 'false')],
+        ]
+        if (env.PACKAGE_VERSION) {
+          envPairs.push(['PACKAGE_VERSION', String(env.PACKAGE_VERSION)])
+        }
+        // Image CDN default off means an explicitly cleared EdgeOne project
+        // variable: EdgeOne project env persists across deploys, so a
+        // previously configured base would stay sticky (and a later
+        // verifyImageRouting would abort against the stale CDN origin).
+        // Unset/empty therefore runs `env rm`; non-empty is propagated.
+        const edgeoneImageBaseUrl = String(env.AIRINGCAL_IMAGE_BASE_URL ?? '').trim()
+        if (edgeoneImageBaseUrl) {
+          envPairs.push(['AIRINGCAL_IMAGE_BASE_URL', edgeoneImageBaseUrl])
+        }
+        for (const [key, value] of envPairs) {
+          eoSpawn(
+            ['makers', 'env', 'set', key, value, '-e', 'production', '-t', token],
+            `edgeone makers env set ${key}`,
+          )
+        }
+
+        let imageBaseUrlCleared = false
+        if (!edgeoneImageBaseUrl) {
+          assertEdgeoneEnvRmOk(
+            spawnSyncImpl(
+              'edgeone',
+              ['makers', 'env', 'rm', 'AIRINGCAL_IMAGE_BASE_URL', '-e', 'production', '-t', token],
+              { encoding: 'utf8', cwd: linkDir, env: { ...process.env, ...env } },
+            ),
+            'edgeone makers env rm AIRINGCAL_IMAGE_BASE_URL',
+            secrets,
+          )
+          imageBaseUrlCleared = true
+        }
+
+        // Pull the project's full env into the dist bundle. This is the file
+        // EdgeOne Makers actually deploys; fail closed if any key we set is
+        // missing/mismatched (or a sticky image base survived `env rm`).
+        eoSpawn(
+          ['makers', 'env', 'pull', '-e', 'production', '-t', token, '-f', distEnvFile],
+          'edgeone makers env pull',
+        )
+        if (!existsSync(distEnvFile)) {
+          throw new Error(
+            `edgeone makers env pull did not produce ${distEnvFile}; refusing to deploy without bundled runtime env`,
+          )
+        }
+        const pulled = parseEdgeoneEnvFile(readFileSync(distEnvFile, 'utf8'))
+        for (const [key, value] of envPairs) {
+          if (pulled[key] !== value) {
+            throw new Error(
+              `edgeone env pull ${distEnvFile} is missing ${key}=${value} (got ${pulled[key] ?? '<absent>'}); refusing to deploy without bundled runtime env`,
+            )
+          }
+        }
+        if (!edgeoneImageBaseUrl && Object.prototype.hasOwnProperty.call(pulled, 'AIRINGCAL_IMAGE_BASE_URL')) {
+          throw new Error(
+            `edgeone env pull ${distEnvFile} still contains a sticky AIRINGCAL_IMAGE_BASE_URL after env rm; refusing to deploy`,
+          )
+        }
+
+        const deploy = eoSpawn(
+          ['makers', 'deploy', dist, '-n', project, '-a', region, '-t', token, '-e', 'production', '--json'],
+          `edgeone makers deploy -n ${project}`,
+        )
+
+        return {
+          deployed: true,
+          project,
+          region,
+          createdViaDeploy: true,
+          readerUrl: parseEdgeoneDeployUrl(deploy.stdout),
+          imageBaseUrl: edgeoneImageBaseUrl || null,
+          imageBaseUrlPersisted: Boolean(edgeoneImageBaseUrl),
+          imageBaseUrlCleared,
+        }
+      } finally {
+        rmSync(distEnvFile, { force: true })
+        rmSync(linkDir, { recursive: true, force: true })
       }
     },
 
