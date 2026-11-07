@@ -1566,6 +1566,22 @@ export function createLiveDevelopmentApplyIo({
       }
       if (env.AIRINGCAL_USERS_JSON) {
         variables.AIRINGCAL_DEVELOPMENT_USERS_JSON = String(env.AIRINGCAL_USERS_JSON)
+      } else {
+        // The development writer job requires AIRINGCAL_DEVELOPMENT_USERS_JSON.
+        // When .env omits it (the normal case), reuse the verified staging
+        // Environment value instead of leaving the writer job unconfigured.
+        const stagingUsers = await runGh(
+          spawnSyncImpl,
+          [
+            'api',
+            `repos/${repo}/environments/staging/variables/AIRINGCAL_STAGING_USERS_JSON`,
+            '--jq',
+            '.value',
+          ],
+          env,
+        ).catch(() => null)
+        const value = String(stagingUsers?.stdout ?? '').trim()
+        if (value) variables.AIRINGCAL_DEVELOPMENT_USERS_JSON = value
       }
 
       const syncedVars = []
