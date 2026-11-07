@@ -1324,15 +1324,20 @@ export function createLiveDevelopmentApplyIo({
         }
       }
 
-      const corsConfig = [
-        {
-          AllowedOrigins: origins,
-          AllowedMethods: methods,
-          AllowedHeaders: ['*'],
-          ExposeHeaders: ['ETag', 'Content-Type', 'Content-Length'],
-          MaxAgeSeconds: 86400,
-        },
-      ]
+      // Wrangler `r2 bucket cors set` requires a { rules: [...] } object, not
+      // the bare REST API array. Verified live against airingcal-development.
+      const corsConfig = {
+        rules: [
+          {
+            allowed: {
+              origins,
+              methods,
+            },
+            exposeHeaders: ['ETag', 'Content-Type', 'Content-Length'],
+            maxAgeSeconds: 86400,
+          },
+        ],
+      }
       const dir = mkdtempSync(join(tmpdir(), 'airingcal-cors-'))
       const file = join(dir, 'cors.json')
       try {

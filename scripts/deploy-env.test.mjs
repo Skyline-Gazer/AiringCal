@@ -832,13 +832,19 @@ test('runDevelopmentApply aggregates override rejection + chain failure into the
   assert.ok(Array.isArray(result.missingScopes) && result.missingScopes.length > 0)
 })
 
-test('createLiveDevelopmentApplyIo applyCors writes exact origins file to wrangler', async () => {
+test('createLiveDevelopmentApplyIo applyCors writes Wrangler rules file with exact origins', async () => {
   const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
   const plan = buildDevelopmentDeployPlan({
     target: 'both',
     publicBaseUrl: 'https://dev-cdn.example.test',
     mode: 'apply',
   })
+  const EXPECTED_ORIGINS = [
+    'https://airing-cal-v3-read-staging.r7a.workers.dev',
+    'https://dev-cdn.example.test',
+    'http://127.0.0.1:8787',
+    'http://localhost:8787',
+  ]
   let corsFile = null
   const io = createLiveDevelopmentApplyIo({
     env: {
@@ -852,9 +858,18 @@ test('createLiveDevelopmentApplyIo applyCors writes exact origins file to wrangl
         corsFile = args[fileIdx + 1]
         const raw = readFileSync(corsFile, 'utf8')
         const parsed = JSON.parse(raw)
-        assert.deepEqual(parsed[0].AllowedMethods, ['GET', 'HEAD'])
-        assert.ok(parsed[0].AllowedOrigins.includes('http://127.0.0.1:8787'))
-        assert.ok(!parsed[0].AllowedOrigins.some((o) => o.includes('*')))
+        // Wrangler requires a top-level { rules: [...] } object, never a bare REST array.
+        assert.ok(!Array.isArray(parsed), 'cors file must not be a bare array')
+        assert.ok(!('AllowedOrigins' in parsed), 'no bare AllowedOrigins key at top level')
+        assert.ok(!('AllowedMethods' in parsed), 'no bare AllowedMethods key at top level')
+        assert.ok(Array.isArray(parsed.rules), 'parsed.rules must be an array')
+        const rule = parsed.rules[0]
+        assert.deepEqual(rule.allowed.origins, EXPECTED_ORIGINS)
+        assert.deepEqual(rule.allowed.methods, ['GET', 'HEAD'])
+        assert.ok(!rule.allowed.methods.includes('OPTIONS'), 'no OPTIONS in allowed.methods')
+        assert.ok(!rule.allowed.origins.some((o) => o.includes('*')), 'no wildcard origins')
+        assert.deepEqual(rule.exposeHeaders, ['ETag', 'Content-Type', 'Content-Length'])
+        assert.equal(rule.maxAgeSeconds, 86400)
       }
       return { status: 0, stdout: 'ok', stderr: '', error: null }
     },
