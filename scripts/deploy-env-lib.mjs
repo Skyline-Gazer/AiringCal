@@ -678,7 +678,25 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
       }
     }
 
-    await requireIoMethod(io, 'deriveAndVerifyS3')(ctx)
+    try {
+      await requireIoMethod(io, 'deriveAndVerifyS3')(ctx)
+    } catch (error) {
+      if (Array.isArray(error?.missingScopes) && error.missingScopes.length > 0) {
+        completed.push('derive-s3')
+        return {
+          ok: false,
+          aborted: true,
+          abortCutover: true,
+          dualBucketFallback: false,
+          developmentWriterEnabled: false,
+          exitCode: 2,
+          reason: missingScopeExitMessage(error.missingScopes),
+          completed,
+          missingScopes: error.missingScopes,
+        }
+      }
+      throw error
+    }
     completed.push('derive-s3')
 
     await requireIoMethod(io, 'freezeWriter')(ctx)
@@ -768,8 +786,25 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    const unsupported = /Live I\/O adapter for .+ requires Owner-approved|unsupportedLive|not implemented/i.test(message)
-    if (!unsupported) throw error
+    const missingCapability = /missing capability:/i.test(message)
+    const unsupported =
+      /Live I\/O adapter for .+ requires Owner-approved|unsupportedLive|not implemented/i.test(
+        message,
+      )
+    if (!missingCapability && !unsupported) throw error
+    if (missingCapability) {
+      return {
+        ok: false,
+        aborted: true,
+        abortCutover: true,
+        dualBucketFallback: false,
+        developmentWriterEnabled: false,
+        exitCode: 2,
+        status: 'missing-capability',
+        reason: message,
+        completed,
+      }
+    }
     const stepMatch = message.match(/Live I\/O adapter for ([^\s]+)/i)
     const unimplementedSteps = stepMatch
       ? [stepMatch[1], ...(plan.ownerGatedLiveSteps ?? [])]

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -544,49 +545,416 @@ test('createLiveDevelopmentApplyIo probeAnonymousAccess does not assume r2DevDis
   assert.equal(probe.probes.length, 2)
 })
 
-test('createLiveDevelopmentApplyIo marks mutating steps unsupportedLive', async () => {
+test('createLiveDevelopmentApplyIo probeToken fails closed on wrangler auth error', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const calls = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+    },
+    plan,
+    spawnSyncImpl: (cmd, args) => {
+      calls.push([cmd, ...args])
+      return {
+        status: 1,
+        stdout: '',
+        stderr: 'Unauthorized: not authenticated',
+        error: null,
+      }
+    },
+    fetchImpl: async () => ({ status: 403 }),
+  })
+  const result = await io.probeToken({})
+  assert.equal(result.ok, false)
+  assert.ok(Array.isArray(result.missingScopes))
+  assert.ok(result.missingScopes.length > 0)
+  assert.ok(calls.some((c) => c.includes('whoami')))
+})
+
+test('createLiveDevelopmentApplyIo deriveAndVerifyS3 uses overrides without Create Token', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const storeCalls = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'AKIA_OVERRIDE',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'secret-override',
+    },
+    plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
+    fetchImpl: async () => {
+      throw new Error('fetch should not be used for S3 override path')
+    },
+    createObjectStore: (config) => {
+      storeCalls.push({ bucket: config.bucket, accessKeyId: config.accessKeyId })
+      return {
+        async list() {
+          return []
+        },
+        async head() {
+          return null
+        },
+        async get() {
+          return null
+        },
+        async put() {
+          return { etag: 'x' }
+        },
+        close() {},
+      }
+    },
+  })
+  const derived = await io.deriveAndVerifyS3({})
+  assert.equal(derived.accessKeyId, 'AKIA_OVERRIDE')
+  assert.equal(derived.derived, false)
+  assert.equal(derived.verified, true)
+  assert.equal(storeCalls[0]?.accessKeyId, 'AKIA_OVERRIDE')
+})
+
+test('createLiveDevelopmentApplyIo applyCors writes exact origins file to wrangler', async () => {
   const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
   const plan = buildDevelopmentDeployPlan({
     target: 'both',
     publicBaseUrl: 'https://dev-cdn.example.test',
     mode: 'apply',
   })
-  const io = createLiveDevelopmentApplyIo({ env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 't' }, plan })
-  await assert.rejects(() => io.freezeWriter({}), /Owner-approved|not implemented|unsupported|credentials/i)
-  await assert.rejects(() => io.writeIsolationProbe({}), /Owner-approved|not implemented|unsupported|credentials/i)
+  let corsFile = null
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+    },
+    plan,
+    spawnSyncImpl: (cmd, args) => {
+      if (args.includes('cors') && args.includes('set')) {
+        const fileIdx = args.indexOf('--file')
+        corsFile = args[fileIdx + 1]
+        const raw = readFileSync(corsFile, 'utf8')
+        const parsed = JSON.parse(raw)
+        assert.deepEqual(parsed[0].AllowedMethods, ['GET', 'HEAD', 'OPTIONS'])
+        assert.ok(parsed[0].AllowedOrigins.includes('http://127.0.0.1:8787'))
+        assert.ok(!parsed[0].AllowedOrigins.some((o) => o.includes('*')))
+      }
+      return { status: 0, stdout: 'ok', stderr: '', error: null }
+    },
+    fetchImpl: async () => ({ status: 403 }),
+  })
+  const result = await io.applyCors({})
+  assert.equal(result.ok, true)
+  assert.ok(corsFile)
 })
 
-test('runDevelopmentApply with unsupportedLive adapters returns owner-pending not-implemented', async () => {
+test('createLiveDevelopmentApplyIo freezeWriter disables workflow and waits for empty runs', async () => {
   const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
   const plan = buildDevelopmentDeployPlan({
-    target: 'both',
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const ghCalls = []
+  const io = createLiveDevelopmentApplyIo({
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok' },
+    plan,
+    spawnSyncImpl: (cmd, args) => {
+      if (cmd === 'gh') ghCalls.push(args.join(' '))
+      if (args.includes('workflow') && args.includes('disable')) {
+        return { status: 0, stdout: '', stderr: '', error: null }
+      }
+      if (args.includes('run') && args.includes('list')) {
+        return { status: 0, stdout: '[]', stderr: '', error: null }
+      }
+      return { status: 0, stdout: '', stderr: '', error: null }
+    },
+    fetchImpl: async () => ({ status: 403 }),
+  })
+  const result = await io.freezeWriter({})
+  assert.equal(result.inProgress, 0)
+  assert.ok(ghCalls.some((c) => c.includes('workflow disable')))
+  assert.ok(ghCalls.some((c) => c.includes('run list')))
+})
+
+test('createLiveDevelopmentApplyIo attachCustomDomain fails closed without ZONE_ID', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
     mode: 'apply',
   })
   const io = createLiveDevelopmentApplyIo({
-    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'token' },
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok' },
     plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
     fetchImpl: async () => ({ status: 403 }),
   })
+  await assert.rejects(
+    () => io.attachCustomDomain({}),
+    /missing capability:.*AIRINGCAL_ZONE_ID/i,
+  )
+})
+
+test('runDevelopmentApply with live adapters aborts before copy when isolation fails', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const copyCalls = []
+  const whoamiJson = JSON.stringify({
+    loggedIn: true,
+    accounts: [{ id: '0123456789abcdef0123456789abcdef' }],
+  })
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'AKIA_TEST',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'secret',
+      AIRINGCAL_ZONE_ID: 'zone123',
+      AIRINGCAL_BANGUMI_TOKEN: 'bgm',
+      AIRINGCAL_PRIMARY_USER_ID: '1',
+    },
+    plan,
+    spawnSyncImpl: (cmd, args) => {
+      const joined = args.join(' ')
+      if (joined.includes('whoami')) {
+        return { status: 0, stdout: whoamiJson, stderr: '', error: null }
+      }
+      if (joined.includes('dev-url get')) {
+        return {
+          status: 0,
+          stdout: 'Public access via the r2.dev URL is disabled for this bucket.',
+          stderr: '',
+          error: null,
+        }
+      }
+      return { status: 0, stdout: '[]', stderr: '', error: null }
+    },
+    fetchImpl: async (url, init = {}) => {
+      const u = String(url)
+      if (u.includes('/rulesets')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              success: true,
+              result: { id: 'ruleset-1', rules: [] },
+            }
+          },
+        }
+      }
+      // Isolation anonymous probes intentionally return 200 → abort before copy.
+      if (u.includes('checkpoints/_isolation-probe')) {
+        return { status: 200, ok: true, async json() { return {} } }
+      }
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { success: true, result: {} }
+        },
+      }
+    },
+    createObjectStore: () => ({
+      async list() {
+        return []
+      },
+      async head() {
+        return null
+      },
+      async get() {
+        return null
+      },
+      async put(key) {
+        return { etag: 'p', key }
+      },
+      close() {},
+    }),
+  })
+  const origCopyPublic = io.copyPublicPrefixes.bind(io)
+  const origCopyCheckpoints = io.copyCheckpoints.bind(io)
+  io.copyPublicPrefixes = async (...args) => {
+    copyCalls.push('copy-public')
+    return origCopyPublic(...args)
+  }
+  io.copyCheckpoints = async (...args) => {
+    copyCalls.push('copy-checkpoints')
+    return origCopyCheckpoints(...args)
+  }
+
   const result = await runDevelopmentApply({
     plan,
     env: {
-      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'token',
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
       AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes',
     },
     io,
   })
   assert.equal(result.ok, false)
-  assert.equal(result.aborted, true)
-  assert.notEqual(result.exitCode ?? 0, 0)
-  assert.match(String(result.status ?? result.reason ?? ''), /owner-gated|not-implemented|unsupported/i)
-  assert.ok(Array.isArray(result.pendingOwnerSteps) || Array.isArray(result.unimplementedSteps))
-  const steps = result.pendingOwnerSteps ?? result.unimplementedSteps
-  assert.ok(steps.length > 0)
+  assert.equal(result.abortCutover, true)
   assert.equal(result.dualBucketFallback, false)
+  assert.deepEqual(copyCalls, [])
+  assert.ok(result.completed.includes('isolation-probe-check'))
+  assert.ok(!result.completed.includes('copy-public'))
 })
 
+test('runDevelopmentApply happy path invokes ordered live adapters via doubles', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'both',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const spawnLog = []
+  const whoamiJson = JSON.stringify({
+    loggedIn: true,
+    accounts: [{ id: '0123456789abcdef0123456789abcdef' }],
+  })
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'AKIA_TEST',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'secret',
+      AIRINGCAL_ZONE_ID: 'zone123',
+      AIRINGCAL_BANGUMI_TOKEN: 'bgm',
+      AIRINGCAL_PRIMARY_USER_ID: '1',
+      AIRINGCAL_EDGEONE_API_TOKEN: 'eo-tok',
+      AIRINGCAL_DEPLOY_WRITER_TEST: 'yes',
+    },
+    plan,
+    spawnSyncImpl: (cmd, args) => {
+      spawnLog.push([cmd, args.join(' ')])
+      const joined = args.join(' ')
+      if (joined.includes('whoami')) {
+        return { status: 0, stdout: whoamiJson, stderr: '', error: null }
+      }
+      if (joined.includes('dev-url get')) {
+        return {
+          status: 0,
+          stdout: 'Public access via the r2.dev URL is disabled for this bucket.',
+          stderr: '',
+          error: null,
+        }
+      }
+      if (joined.includes('materialize-v3-read-staging-config')) {
+        return { status: 0, stdout: '', stderr: 'wrote', error: null }
+      }
+      if (cmd === 'pnpm' && joined.includes('build:edgeone-read')) {
+        return { status: 0, stdout: '', stderr: '', error: null }
+      }
+      if (cmd === 'edgeone') {
+        return { status: 0, stdout: 'deployed', stderr: '', error: null }
+      }
+      if (joined.includes('deploy') && joined.includes('--config')) {
+        return {
+          status: 0,
+          stdout: 'Published https://airing-cal-v3-read-staging.r7a.workers.dev',
+          stderr: '',
+          error: null,
+        }
+      }
+      if (joined.includes('secret list')) {
+        return { status: 0, stdout: '', stderr: '', error: null }
+      }
+      if (joined.includes('run list')) {
+        return { status: 0, stdout: '[]', stderr: '', error: null }
+      }
+      return { status: 0, stdout: 'ok', stderr: '', error: null }
+    },
+    fetchImpl: async (url, init = {}) => {
+      const u = String(url)
+      if (u.includes('/rulesets/phases/')) {
+        return {
+          ok: false,
+          status: 404,
+          async json() {
+            return { success: false, errors: [{ code: 10000, message: 'not found' }] }
+          },
+        }
+      }
+      if (u.includes('/rulesets')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { success: true, result: { id: 'new-ruleset' } }
+          },
+        }
+      }
+      if (u.includes('checkpoints/_isolation-probe')) {
+        return { status: 403, ok: false, async json() { return {} } }
+      }
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { success: true, result: {} }
+        },
+      }
+    },
+    createObjectStore: (config) => ({
+      async list(prefix) {
+        if (config.bucket.includes('staging-public') && prefix === 'public/') {
+          return ['public/current-release.json']
+        }
+        if (config.bucket.includes('staging-checkpoint') && prefix === 'checkpoints/') {
+          return ['checkpoints/lease.json']
+        }
+        return []
+      },
+      async head(key) {
+        if (key === 'public/current-release.json' || key === 'checkpoints/lease.json') {
+          return { etag: 'etag1', size: 4, contentType: 'application/json' }
+        }
+        return null
+      },
+      async get(key) {
+        return {
+          body: new TextEncoder().encode('data'),
+          etag: 'etag1',
+          contentType: 'application/json',
+        }
+      },
+      async put() {
+        return { etag: 'etag2' }
+      },
+      close() {},
+    }),
+  })
 
+  const result = await runDevelopmentApply({
+    plan,
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes',
+      AIRINGCAL_DEPLOY_WRITER_TEST: 'yes',
+    },
+    io,
+  })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(result.dualBucketFallback, false)
+  assert.ok(result.completed.includes('copy-public'))
+  assert.ok(result.completed.includes('copy-checkpoints'))
+  assert.ok(result.completed.includes('deploy-cloudflare'))
+  assert.ok(result.completed.includes('deploy-edgeone'))
+  assert.ok(spawnLog.some(([cmd, args]) => cmd === 'gh' && args.includes('workflow disable')))
+  assert.ok(spawnLog.some(([cmd, args]) => cmd === 'pnpm' && args.includes('cors set')))
+  assert.ok(spawnLog.some(([cmd]) => cmd === 'edgeone'))
+})
 
 test('validateImageCdnConfig defaults off and rejects loops / non-https / same host', () => {
   assert.deepEqual(validateImageCdnConfig({ publicBaseUrl: 'https://cdn.example.test' }), {

@@ -7,20 +7,20 @@ EdgeOne project and retires `r2.dev` as the public base. Like
 no DNS record, live deploy apply, or `r2.dev` toggle is created, changed, or
 deleted by a merge.
 
-> **STATUS — pending owner DNS / live apply.** The implementing agent does not
-> hold Owner DNS control for `test.air.teijp.cn`, a Cloudflare API token, or an
-> EdgeOne Makers token. **No live CNAME, deploy `--apply`, or `r2.dev` disable
-> was executed, and no cutover receipt is claimed.** This document lands the
-> executable sequence; the machine-readable status lives in
-> [`fixtures/reader-delivery-cutover-checklist.json`](./fixtures/reader-delivery-cutover-checklist.json),
-> which the acceptance script (`scripts/reader-delivery-accept.mjs`, Task 5.2)
-> reads and prints any `pending_owner` item separately.
+> **STATUS — Live Deployment Ready / pending Owner credentials + DNS.** Code
+> adapters for Wrangler / `gh` / EdgeOne makers / Cloudflare REST are landed.
+> With valid CF/GH/EO credentials + `AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes`,
+> `--apply` executes real platform mutations (isolation abort still blocks copy).
+> The implementing agent does not hold Owner DNS control for `test.air.teijp.cn`
+> or production secrets in this environment. **No live CNAME or Staging Accepted
+> receipt is claimed here.** Machine-readable status:
+> [`fixtures/reader-delivery-cutover-checklist.json`](./fixtures/reader-delivery-cutover-checklist.json).
 
 ## Preconditions (all must hold before Step 1)
 
 | Gate | How to check |
 |---|---|
-| Single-bucket `airingcal-development` built + isolation proven | Owner session only: after live Cloudflare/EdgeOne/GitHub adapters are implemented, `AIRINGCAL_ENV=development … AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes node scripts/deploy-env.mjs --apply` exits **0** with `isolation.ok: true`. Until adapters exist, the same command exits **non-zero** with `status: "owner-gated"` / `reason: "not-implemented: …"` and an `unimplementedSteps` / `pendingOwnerSteps` list — that is **not** isolation proof. A non-zero abort with `aborted: true` means checkpoints were **not** copied — never fall back to dual buckets. |
+| Single-bucket `airingcal-development` built + isolation proven | Owner session: `AIRINGCAL_ENV=development … AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes node scripts/deploy-env.mjs --apply` exits **0** with `isolation.ok: true` (**Staging Accepted**). Without credentials/confirm the CLI stays non-mutating (`owner-gated`). Missing zone/WAF inputs fail as explicit `missing-capability` (not Owner-auth pending). A non-zero abort with `aborted: true` means checkpoints were **not** copied — never fall back to dual buckets. |
 | One effective writer only | Staging `portable-writer.yml` dispatch is blocked for the cutover window; `AIRINGCAL_WRITER_ENABLED` remains unset/false (Production gate); the Development writer test is the only `target=development` run. |
 | Image CDN decision locked | `AIRINGCAL_IMAGE_BASE_URL` unset (reuse public base) **or** an Owner-supplied validated https host with origin Host/SNI = public R2 host and a loop check passing. Default is **off**. |
 
