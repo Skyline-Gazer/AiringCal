@@ -1,4 +1,4 @@
-# Shadow-gate checklist (v3 cutover pre-condition, #147)
+# Shadow-gate checklist (v3 Production cutover pre-condition, #73)
 
 Owner-approved gate: the v3 Release may only go live after the shadow gate
 shows **7 consecutive daily matches** between the legacy read surface and the
