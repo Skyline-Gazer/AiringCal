@@ -1,6 +1,6 @@
 # AiringCal v3 — current state and operator handoff
 
-> **Authoritative as of 2026-11-07.** Updated after PR [#164](https://github.com/Skyline-Gazer/AiringCal/pull/164) merged to `dev` at `a2c0cd67`. Where older planning, issue text, or archived documents conflict, this document and the latest code/configuration on `dev` take precedence. **Do not confuse code merged, old staging proof, new Development cutover, and Production.**
+> **Authoritative as of 2026-11-07.** Updated after PR [#164](https://github.com/Skyline-Gazer/AiringCal/pull/164) merged to `dev` at `a2c0cd67` and docs-governance PR [#165](https://github.com/Skyline-Gazer/AiringCal/pull/165) merged at `fc518131`. Project #7 Status and sub-issue hierarchy were read back via the API on 2026-11-07 (#67/#72/#147 In Progress, #71 Done, #73 Todo, #164/#165 Done; #67 parent of #69/#70/#71/#72/#73/#74/#147/#151), with no extra Status columns. Where older planning, issue text, or archived documents conflict, this document and the latest code/configuration on `dev` take precedence. **Do not confuse code merged, old staging proof, new Development cutover, and Production.**
 
 ## Delivery state
 
@@ -38,8 +38,8 @@
 
 - [x] PR #164 merged to `dev` with green main CI.
 - [x] P2 #71 engineering and real staging proof reconciled as complete.
-- [ ] Project #7 native parent/sub-issue hierarchy, Status/Dates/Views read-back reconciled against current Issues; **no extra Status columns**.
-- [ ] Documentation governance PR reviewed and merged into `dev`; no newer contradictions in entrypoint/runbooks.
+- [x] Project #7 native parent/sub-issue hierarchy, Status/Dates/Views read-back reconciled against current Issues; **no extra Status columns**.
+- [x] Documentation governance PR reviewed and merged into `dev`; no newer contradictions in entrypoint/runbooks.
 - [ ] Read-only deploy preflight accepted; Owner confirms R2 hostname and Zone.
 - [ ] Development Live Apply & WAF/CORS/Copy parity.
 - [ ] MIME repair, EdgeOne overseas DNS cutover and post-bench accepted.

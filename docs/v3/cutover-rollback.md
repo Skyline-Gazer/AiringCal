@@ -1,5 +1,7 @@
 # Cutover and rollback runbook (#73)
 
+> **Scope (2026-11-07): future v2→v3 Production cutover only.** The one-bucket **Development** cutover follows [`reader-delivery-cutover.md`](reader-delivery-cutover.md); the legacy dual-bucket staging real-R2 proof is complete ([#147](https://github.com/Skyline-Gazer/AiringCal/issues/147)). Neither replaces, nor is replaced by, the steps below.
+
 Owner-approved, manual steps for switching public reads to the v3 portable
 release and for rolling back. **CI never performs any step in this document**: no
 production resource is created, deployed, or deleted by a merge.
