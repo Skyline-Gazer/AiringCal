@@ -2,8 +2,10 @@
 # Schedule: 04:00 Asia/Shanghai == 20:00 UTC — production only, gated by vars.AIRINGCAL_WRITER_ENABLED.
 # Development writer uses Environment `development` + single bucket `airingcal-development`;
 # it stays gated by vars.AIRINGCAL_DEVELOPMENT_WRITER_ENABLED until isolation+copy pass.
-# Production writer uses Environment `production` + single bucket `airingcal-production`;
-# it stays gated by vars.AIRINGCAL_WRITER_ENABLED (disabled in this prep).
+# Production writer uses Environment `production` + single bucket `airingcal-production`.
+# First Full Sync (workflow_dispatch) uses vars.AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED;
+# the scheduled job stays gated by vars.AIRINGCAL_WRITER_ENABLED (both disabled in this prep).
+# Concurrency group remains global single-flight across staging/development/production.
 name: Portable writer (GHA)
 
 on:
@@ -269,7 +271,7 @@ jobs:
         run: bash scripts/gha-portable-writer.sh
 
   production:
-    if: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.target == 'production')) && vars.AIRINGCAL_WRITER_ENABLED == 'true' }}
+    if: ${{ (github.event_name == 'schedule' && vars.AIRINGCAL_WRITER_ENABLED == 'true') || (github.event_name == 'workflow_dispatch' && inputs.target == 'production' && vars.AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: production

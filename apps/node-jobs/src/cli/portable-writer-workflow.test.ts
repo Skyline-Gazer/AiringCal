@@ -49,7 +49,7 @@ test('development job runs only on explicit development target plus writer enabl
   assert.equal(development.split('\n').some((line) => line.includes('environment: development')), true)
 })
 
-test('production job is gated by schedule or explicit production target plus writer enable var (C3)', () => {
+test('production job splits bootstrap dispatch gate from schedule writer gate (C3)', () => {
   const source = readFileSync(WORKFLOW_PATH, 'utf8')
   const productionJob = jobSection(source, 'production')
   const productionIf = productionJob.split('\n').find((line) => line.startsWith('    if:'))
@@ -57,6 +57,15 @@ test('production job is gated by schedule or explicit production target plus wri
   assert.match(productionIf, /schedule/)
   assert.match(productionIf, /inputs\.target == 'production'/)
   assert.match(productionIf, /AIRINGCAL_WRITER_ENABLED == 'true'/)
+  assert.match(productionIf, /AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED == 'true'/)
+  assert.match(
+    productionIf,
+    /\(github\.event_name == 'schedule' && vars\.AIRINGCAL_WRITER_ENABLED == 'true'\)/,
+  )
+  assert.match(
+    productionIf,
+    /workflow_dispatch.*AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED == 'true'|AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED == 'true'.*workflow_dispatch/,
+  )
   assert.equal(productionJob.split('\n').some((line) => line.includes('environment: production')), true)
   assert.match(productionJob, /airingcal-production/)
   assert.doesNotMatch(productionJob, /airing-cal-checkpoint|airing-cal-public/)

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, resolve, join } from 'node:path'
 import test from 'node:test'
@@ -12,13 +12,16 @@ import {
   PRODUCTION_FORBIDDEN_COLLISION_NAMES,
   STAGING_ALIAS_MAP,
   applyStagingAliases,
+  assertProductionProcessEnvIsolation,
   assertProductionResourceNames,
   buildCorsAllowedOrigins,
   buildDevelopmentDeployPlan,
   deriveDevelopmentConfig,
   deriveProductionConfig,
   evaluateIsolationProbe,
+  loadProductionDeployEnv,
   parseDeployArgs,
+  resolveDeployDotenvPath,
   resolveExecutionMode,
   runDevelopmentApply,
   validateImageCdnConfig,
@@ -269,6 +272,17 @@ const VALID_PROD_ENV = Object.freeze({
   AIRINGCAL_PRODUCTION_WORKER_NAME: 'airing-cal-v3-read-production',
 })
 
+function writeTempProductionDotenv(overrides = {}) {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-prod-dotenv-'))
+  const path = join(dir, '.env.production')
+  const values = { ...VALID_PROD_ENV, ...overrides }
+  const body = Object.entries(values)
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n')
+  writeFileSync(path, `${body}\n`, 'utf8')
+  return { dir, path }
+}
+
 test('production dry-run plan is clean-bootstrap with no copy steps', () => {
   const { plan } = deriveProductionConfig(VALID_PROD_ENV)
   assert.equal(plan.bucket, 'airingcal-production')
@@ -288,6 +302,99 @@ test('production dry-run plan is clean-bootstrap with no copy steps', () => {
   assert.equal(preflight.accountId, 'abcdef0123456789abcdef0123456789')
   assert.equal(preflight.publicHost, 'cdn.airingcal.example')
 })
+
+test('production ensure-bucket requires a fully empty bucket (any object keys)', () => {
+  const { plan } = deriveProductionConfig(VALID_PROD_ENV)
+  const ensure = plan.steps.find((s) => s.id === 'ensure-bucket-airingcal-production')
+  assert.equal(ensure.requireEmptyBucket, true)
+  assert.equal(ensure.requireEmptyPrefixes, null)
+  assert.match(ensure.title, /any object keys/i)
+  assert.doesNotMatch(plan.steps.find((s) => s.id === 'preflight-identity').title, /distinct CF account/)
+  assert.match(plan.steps.find((s) => s.id === 'preflight-identity').title, /same Cloudflare account OK/i)
+})
+
+test('production dotenv path refuses Development .env default and basename drift', () => {
+  assert.throws(
+    () => resolveDeployDotenvPath({ envName: 'production' }),
+    /AIRINGCAL_DOTENV_PATH|\.env\.production/,
+  )
+  assert.throws(
+    () => resolveDeployDotenvPath({ envName: 'production', dotenvPathEnv: '.env' }),
+    /\.env\.production/,
+  )
+  assert.equal(
+    resolveDeployDotenvPath({ envName: 'production', dotenvPathEnv: '/tmp/x/.env.production' }),
+    '/tmp/x/.env.production',
+  )
+  assert.equal(resolveDeployDotenvPath({ envName: 'development' }), '.env')
+})
+
+test('production env isolation refuses staging/development process leaks and prefers file over shell', () => {
+  assert.throws(
+    () =>
+      assertProductionProcessEnvIsolation({
+        AIRINGCAL_STAGING_BANGUMI_TOKEN: 'leak',
+      }),
+    /must not inherit|AIRINGCAL_STAGING_BANGUMI_TOKEN/,
+  )
+
+  const { dir, path } = writeTempProductionDotenv({
+    AIRINGCAL_BANGUMI_TOKEN: 'from-file',
+  })
+  try {
+    const loaded = loadProductionDeployEnv(path, {
+      AIRINGCAL_BANGUMI_TOKEN: 'from-shell',
+      AIRINGCAL_ENV: 'production',
+    })
+    assert.equal(loaded.AIRINGCAL_BANGUMI_TOKEN, 'from-file')
+    assert.throws(
+      () =>
+        loadProductionDeployEnv(path, {
+          AIRINGCAL_DEVELOPMENT_S3_ACCESS_KEY_ID: 'dev-leak',
+        }),
+      /must not inherit|AIRINGCAL_DEVELOPMENT_S3_ACCESS_KEY_ID/,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('production CLI dry-run requires AIRINGCAL_DOTENV_PATH=.env.production', () => {
+  const missing = spawnSync(process.execPath, [CLI, '--dry-run'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    env: {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      AIRINGCAL_ENV: 'production',
+      ...VALID_PROD_ENV,
+    },
+  })
+  assert.notEqual(missing.status, 0)
+  assert.match(`${missing.stderr}\n${missing.stdout}`, /AIRINGCAL_DOTENV_PATH|\.env\.production/)
+
+  const { dir, path } = writeTempProductionDotenv()
+  try {
+    const ok = spawnSync(process.execPath, [CLI, '--dry-run'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        AIRINGCAL_DOTENV_PATH: path,
+        // Shell conflict that must lose to the file:
+        AIRINGCAL_BANGUMI_TOKEN: 'shell-should-lose',
+      },
+    })
+    assert.equal(ok.status, 0, ok.stderr)
+    const plan = JSON.parse(ok.stdout)
+    assert.equal(plan.bucket, 'airingcal-production')
+    assert.equal(plan.writerEnabled, false)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 
 test('production forbidden collision set includes live v2 worker and EdgeOne keepOld project', () => {
   assert.ok(PRODUCTION_FORBIDDEN_COLLISION_NAMES.includes('airing-cal-frontend'))
@@ -333,57 +440,71 @@ test('production derive refuses missing AIRINGCAL_ZONE_ID on dry-run', () => {
 
 
 test('production apply without AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED still refuses mutations', () => {
-  const result = spawnSync(
-    process.execPath,
-    [CLI, '--apply', '--i-am-sure-production'],
-    {
-      cwd: ROOT,
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        ...VALID_PROD_ENV,
-        AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED: '',
+  const { dir, path } = writeTempProductionDotenv()
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [CLI, '--apply', '--i-am-sure-production'],
+      {
+        cwd: ROOT,
+        encoding: 'utf8',
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          AIRINGCAL_DOTENV_PATH: path,
+          AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED: '',
+        },
       },
-    },
-  )
-  assert.equal(result.status, 2, result.stderr)
-  const combined = `${result.stderr}\n${result.stdout}`
-  assert.match(combined, /not_authorized_in_this_change/)
-  assert.match(combined, /no mutations/i)
-  const plan = JSON.parse(result.stdout)
-  assert.equal(plan.bucket, 'airingcal-production')
-  assert.equal(plan.writerEnabled, false)
-  assert.equal(plan.steps.some((s) => String(s.id).startsWith('copy-')), false)
-  assert.equal(plan.applyAuthorized, false)
-  assert.equal(plan.refusedMutations, true)
+    )
+    assert.equal(result.status, 2, result.stderr)
+    const combined = `${result.stderr}
+${result.stdout}`
+    assert.match(combined, /not_authorized_in_this_change/)
+    assert.match(combined, /no mutations/i)
+    const plan = JSON.parse(result.stdout)
+    assert.equal(plan.bucket, 'airingcal-production')
+    assert.equal(plan.writerEnabled, false)
+    assert.equal(plan.steps.some((s) => String(s.id).startsWith('copy-')), false)
+    assert.equal(plan.applyAuthorized, false)
+    assert.equal(plan.refusedMutations, true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('production apply with AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED still refuses mutations and marks refusedMutations', () => {
-  const result = spawnSync(
-    process.execPath,
-    [CLI, '--apply', '--i-am-sure-production'],
-    {
-      cwd: ROOT,
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        ...VALID_PROD_ENV,
-        AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED: 'yes',
+  const { dir, path } = writeTempProductionDotenv()
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [CLI, '--apply', '--i-am-sure-production'],
+      {
+        cwd: ROOT,
+        encoding: 'utf8',
+        env: {
+          PATH: process.env.PATH,
+          HOME: process.env.HOME,
+          AIRINGCAL_DOTENV_PATH: path,
+          AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED: 'yes',
+        },
       },
-    },
-  )
-  assert.equal(result.status, 2, result.stderr)
-  const combined = `${result.stderr}\n${result.stdout}`
-  assert.match(combined, /not_authorized_in_this_change/)
-  assert.match(combined, /no mutations/i)
-  const plan = JSON.parse(result.stdout)
-  assert.equal(plan.applyAuthorized, true)
-  assert.equal(plan.refusedMutations, true)
-  assert.equal(plan.writerEnabled, false)
-  assert.equal(plan.steps.some((s) => String(s.id).startsWith('copy-')), false)
-  const preflight = plan.steps.find((s) => s.id === 'preflight-identity')
-  assert.ok(preflight)
-  assert.equal(typeof preflight.gitSha === 'string' && preflight.gitSha.length > 0, true)
+    )
+    assert.equal(result.status, 2, result.stderr)
+    const combined = `${result.stderr}
+${result.stdout}`
+    assert.match(combined, /not_authorized_in_this_change/)
+    assert.match(combined, /no mutations/i)
+    const plan = JSON.parse(result.stdout)
+    assert.equal(plan.applyAuthorized, true)
+    assert.equal(plan.refusedMutations, true)
+    assert.equal(plan.writerEnabled, false)
+    assert.equal(plan.steps.some((s) => String(s.id).startsWith('copy-')), false)
+    const preflight = plan.steps.find((s) => s.id === 'preflight-identity')
+    assert.ok(preflight)
+    assert.equal(typeof preflight.gitSha === 'string' && preflight.gitSha.length > 0, true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 
@@ -2870,20 +2991,27 @@ test('CLI --dry-run prints single-bucket development plan JSON', () => {
 })
 
 test('CLI production --apply without force exits non-zero with no mutations', () => {
-  const result = spawnSync(process.execPath, [CLI, '--apply'], {
-    cwd: ROOT,
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      AIRINGCAL_ENV: 'production',
-      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'test-token',
-      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
-      AIRINGCAL_PUBLIC_BASE_URL: 'https://prod.example.test',
-    },
+  const { dir, path } = writeTempProductionDotenv({
+    AIRINGCAL_CLOUDFLARE_API_TOKEN: 'test-token',
+    AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+    AIRINGCAL_PUBLIC_BASE_URL: 'https://prod.example.test',
   })
-  assert.notEqual(result.status, 0)
-  assert.match(`${result.stderr}
+  try {
+    const result = spawnSync(process.execPath, [CLI, '--apply'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        AIRINGCAL_DOTENV_PATH: path,
+      },
+    })
+    assert.notEqual(result.status, 0)
+    assert.match(`${result.stderr}
 ${result.stdout}`, /production|--i-am-sure-production/i)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 // ---------------------------------------------------------------------------

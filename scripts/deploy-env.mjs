@@ -18,9 +18,11 @@ import {
   deriveProductionConfig,
   evaluateIsolationProbe,
   loadDotEnvFile,
+  loadProductionDeployEnv,
   missingScopeExitMessage,
   parseDeployArgs,
   redactSecrets,
+  resolveDeployDotenvPath,
   resolveExecutionMode,
   runDevelopmentApply,
 } from './deploy-env-lib.mjs'
@@ -33,6 +35,7 @@ function usage(exitCode = 1) {
   node scripts/deploy-env.mjs --apply --i-am-sure-production   # production only
 
 Env: AIRINGCAL_ENV=development|production (required)
+Production: AIRINGCAL_DOTENV_PATH must point at .env.production (file overrides shell; no STAGING_/DEVELOPMENT_ inheritance)
 `)
   process.exit(exitCode)
 }
@@ -154,9 +157,50 @@ async function main(argv = process.argv) {
     usage(1)
     return
   }
+  // Resolve dotenv path. Production forbids the Development default `.env` and
+  // requires basename `.env.production`. Development keeps `.env` default.
+  let dotenvPath
+  try {
+    const hintedEnv = String(process.env.AIRINGCAL_ENV ?? '').trim().toLowerCase()
+    dotenvPath = resolve(
+      resolveDeployDotenvPath({
+        envName: hintedEnv || 'development',
+        dotenvPathEnv: process.env.AIRINGCAL_DOTENV_PATH,
+      }),
+    )
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+    return
+  }
 
-  const dotenvPath = resolve(process.env.AIRINGCAL_DOTENV_PATH ?? '.env')
-  const loaded = loadDotEnvFile(dotenvPath, process.env)
+  // Peek AIRINGCAL_ENV from the chosen file (without shell override) so we can
+  // pick Production file-over-shell loading vs Development shell-wins loading.
+  const filePeek = loadDotEnvFile(dotenvPath, {}, { override: true })
+  const fileEnvName = String(filePeek.AIRINGCAL_ENV ?? process.env.AIRINGCAL_ENV ?? '')
+    .trim()
+    .toLowerCase()
+
+  let loaded
+  try {
+    if (fileEnvName === 'production') {
+      // Re-validate path against production rules even if shell AIRINGCAL_ENV was unset/mis-set.
+      dotenvPath = resolve(
+        resolveDeployDotenvPath({
+          envName: 'production',
+          dotenvPathEnv: process.env.AIRINGCAL_DOTENV_PATH,
+        }),
+      )
+      loaded = loadProductionDeployEnv(dotenvPath, process.env)
+    } else {
+      loaded = loadDotEnvFile(dotenvPath, process.env)
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+    return
+  }
+
   const { env, warnings } = applyStagingAliases(loaded)
   for (const warning of warnings) {
     console.error(`[deploy-env] ${warning}`)

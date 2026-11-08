@@ -81,17 +81,17 @@ Reuse [`cutover-rollback.md`](./cutover-rollback.md) `portable-release-rollback`
 
 Owner records GO or NO-GO on #73. Keep the old system as rollback until Owner says otherwise. Traffic switch is not implied by green prep CI or Development acceptance.
 
-## Post-cutover legacy cleanup (not a day timer)
+## Post-cutover legacy cleanup (separate Owner operation; not bootstrap)
 
-After reads are on R2 and Owner approves deletion of legacy per-subject KV keys:
+Legacy KV cleanup is **not** part of Production Clean Bootstrap / first Full Sync.
+Keep the old system as rollback until Owner separately authorizes deletion of legacy per-subject KV keys:
 
 ```bash
 pnpm exec tsx apps/node-jobs/src/cli/portable-legacy-cleanup.ts --dry-run
 pnpm exec tsx apps/node-jobs/src/cli/portable-legacy-cleanup.ts --owner-approved
-# or AIRINGCAL_LEGACY_CLEANUP_OWNER_APPROVED=true
 ```
 
-Deletes only when `migrate:read-mode.mode === 'r2'`, `public:current` is readable, **and** explicit Owner approval. No 14-day wait.
+Deletes only when `migrate:read-mode.mode === 'r2'`, `public:current` is readable, **and** the explicit `--owner-approved` CLI flag. Persistent env auto-approval is not accepted. No 14-day wait.
 
 ## Historical decision (retired hard gates)
 

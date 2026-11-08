@@ -136,6 +136,73 @@ export function normalizeCorsAllowedMethods(methods) {
   return normalized
 }
 
+const PRODUCTION_DOTENV_BASENAME = '.env.production'
+
+/**
+ * Resolve which dotenv file deploy-env loads.
+ * Production MUST use an explicit AIRINGCAL_DOTENV_PATH whose basename is
+ * `.env.production` — never the Development root `.env` default.
+ *
+ * @param {{ envName: string, dotenvPathEnv?: string|null }} opts
+ * @returns {string}
+ */
+export function resolveDeployDotenvPath({ envName, dotenvPathEnv = process.env.AIRINGCAL_DOTENV_PATH } = {}) {
+  const name = String(envName ?? '').trim().toLowerCase()
+  const configured = String(dotenvPathEnv ?? '').trim()
+  if (name === 'production') {
+    if (!configured) {
+      throw new Error(
+        'Production requires AIRINGCAL_DOTENV_PATH pointing at .env.production (refusing default .env)',
+      )
+    }
+    const base = configured.split(/[\\/]/).pop()
+    if (base !== PRODUCTION_DOTENV_BASENAME) {
+      throw new Error(
+        `Production AIRINGCAL_DOTENV_PATH must end with ${PRODUCTION_DOTENV_BASENAME} (got "${configured}")`,
+      )
+    }
+    return configured
+  }
+  return configured || '.env'
+}
+
+/**
+ * Refuse Production runs that still carry Development/Staging writable secrets
+ * in the process environment (Shell inheritance / mixed configs).
+ *
+ * @param {Record<string, string | undefined | null>} env
+ */
+export function assertProductionProcessEnvIsolation(env = {}) {
+  const leaked = []
+  for (const [key, raw] of Object.entries(env)) {
+    if (!key.startsWith('AIRINGCAL_STAGING_') && !key.startsWith('AIRINGCAL_DEVELOPMENT_')) continue
+    if (String(raw ?? '').trim()) leaked.push(key)
+  }
+  if (leaked.length > 0) {
+    throw new Error(
+      `Production must not inherit Development/Staging credentials or config (${leaked.sort().join(', ')}); use an isolated shell with AIRINGCAL_DOTENV_PATH=.env.production only`,
+    )
+  }
+}
+
+/**
+ * Load Production env from `.env.production` with file-over-shell precedence
+ * (`override: true`) so Development Shell values cannot win.
+ *
+ * @param {string} dotenvPath
+ * @param {Record<string, string | undefined>} [processEnv]
+ */
+export function loadProductionDeployEnv(dotenvPath, processEnv = process.env) {
+  assertProductionProcessEnvIsolation(processEnv)
+  const pathBase = String(dotenvPath ?? '').split(/[\\/]/).pop()
+  if (pathBase !== PRODUCTION_DOTENV_BASENAME) {
+    throw new Error(
+      `Production dotenv basename must be ${PRODUCTION_DOTENV_BASENAME} (got "${dotenvPath}")`,
+    )
+  }
+  return loadDotEnvFile(dotenvPath, processEnv, { override: true })
+}
+
 /**
  * @param {string[]} argv
  */
@@ -367,7 +434,7 @@ export function buildProductionPlan({
     {
       id: 'preflight-identity',
       title:
-        'Require AIRINGCAL_ENV=production, distinct CF account/zone ownership, Git SHA, refuse name collisions',
+        'Require AIRINGCAL_ENV=production, independent Production token/resources (same Cloudflare account OK), zone ownership, Git SHA, refuse name collisions',
       mutates: false,
       requireEnv: 'production',
       forbiddenNames: [...PRODUCTION_FORBIDDEN_COLLISION_NAMES],
@@ -379,10 +446,11 @@ export function buildProductionPlan({
 
     {
       id: 'ensure-bucket-airingcal-production',
-      title: `Create-or-reuse empty bucket ${bucket} (abort if public/ or checkpoints/ already present)`,
+      title: `Create-or-reuse empty bucket ${bucket} (abort if any object keys already exist)`,
       mutates: true,
       bucket,
-      requireEmptyPrefixes: ['public/', 'checkpoints/'],
+      requireEmptyBucket: true,
+      requireEmptyPrefixes: null,
     },
     {
       id: 'disable-r2-dev',
@@ -440,13 +508,13 @@ export function buildProductionPlan({
     {
       id: 'bangumi-full-sync-owner-dispatch',
       title:
-        'Document-only: Owner later runs Writer workflow_dispatch target=production force_mode=full after enabling gate',
+        'Document-only: Owner later runs Writer workflow_dispatch target=production force_mode=full after enabling AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED (schedule stays gated by AIRINGCAL_WRITER_ENABLED)',
       mutates: false,
       documentOnly: true,
       gated: true,
       workflow: 'portable-writer.yml',
       dispatch: { target: 'production', force_mode: 'full' },
-      note: 'Prep must not enable AIRINGCAL_WRITER_ENABLED',
+      note: 'Prep must not enable AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED or AIRINGCAL_WRITER_ENABLED; first Full Sync must not arm the schedule',
     },
   ]
 

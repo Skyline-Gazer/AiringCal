@@ -202,9 +202,9 @@ export function parseLegacyCleanupArgs(argv: string[]): { dryRun: boolean; owner
 }
 
 export async function main(env: Record<string, string | undefined> = process.env, argv: string[] = process.argv.slice(2)): Promise<void> {
-  const parsed = parseLegacyCleanupArgs(argv)
-  const ownerApproved = parsed.ownerApproved || env.AIRINGCAL_LEGACY_CLEANUP_OWNER_APPROVED === 'true'
-  const { dryRun } = parsed
+  const { dryRun, ownerApproved } = parseLegacyCleanupArgs(argv)
+  // Destructive cleanup is a separate Owner-approved operation after cutover.
+  // Do not honor persistent env auto-approval (avoids accidental Production bootstrap coupling).
   const config = readNodeJobsConfig(env)
   if (!config.kvNamespaceId) throw new Error('AIRING_CAL_KV_NAMESPACE_ID is required for legacy cleanup')
   const deadlineAt = Date.now() + 10 * 60 * 1000
