@@ -107,3 +107,16 @@ Earlier P4 text required **7 consecutive** Shadow Gate matches and a **14-day** 
 | [`cutover-rollback.md`](./cutover-rollback.md) | Cutover/rollback commands + drill |
 | [`gha-portable-writer.md`](./gha-portable-writer.md) | Writer ops / Environment fill-in |
 | [`reader-delivery-cutover.md`](./reader-delivery-cutover.md) | Reader parity / CDN patterns (Development reference) |
+
+## Governance sync (#73 / Project #7)
+
+- **Issue comment draft (post after merge; do not close #73 from prep):** [`fixtures/issue-73-status-draft.md`](./fixtures/issue-73-status-draft.md)
+- **Machine-readable gate skeleton:** [`fixtures/production-acceptance-checklist.json`](./fixtures/production-acceptance-checklist.json) — prep statuses are `pending_owner` or `blocked_not_authorized` only
+- **Project #7:** Status for #73 stays Todo / In Progress until Owner Apply evidence exists; board Status is **not** mutated by this prep change set
+- **In-repo SoT for the board to link:** this file + [`current-state.md`](./current-state.md)
+
+### CURRENT STATUS blurb (verbatim)
+
+```markdown
+CURRENT STATUS — Production Full Clean Deploy prep: day-timed Shadow/Observation hard gates retired in code+docs; Production remains NOT AUTHORIZED for Apply / main / Writer enable. Acceptance = clean init → Bangumi Full Sync → one-shot v2 core diff → CAS/MIME → CF/EO parity → WAF/cache → rollback drill → Owner GO/NO-GO.
+```

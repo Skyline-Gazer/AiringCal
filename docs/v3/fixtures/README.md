@@ -18,3 +18,14 @@ writeFileSync('docs/v3/fixtures/public-snapshot-48-synthetic.json', JSON.stringi
 ```
 
 Replace with an anonymized production export when the owner provides one; update `content_hash` expectations accordingly.
+
+## `issue-73-status-draft.md`
+
+- **Purpose:** Exact CURRENT STATUS comment + DoD rewrite for [#73](https://github.com/Skyline-Gazer/AiringCal/issues/73); Owner/agent with issue write access posts after prep merge. Do not close #73 from prep alone.
+- **Related:** [`../production-acceptance.md`](../production-acceptance.md), [`../current-state.md`](../current-state.md), Project [#7](https://github.com/orgs/Skyline-Gazer/projects/7).
+
+## `production-acceptance-checklist.json`
+
+- **Purpose:** Machine-readable skeleton of the 10 Production Acceptance gates for Project #7 / #73 tracking.
+- **Prep statuses:** `pending_owner` or `blocked_not_authorized` only (`production_apply_authorized: false`, `writer_enabled: false`).
+- **Not evidence:** do not treat this fixture as live Apply receipts.
