@@ -7,11 +7,9 @@ import { buildPublicSnapshot } from '@airing-cal/domain'
 import {
   migrateShadowStreakKey,
   type PublicCollectionItemV1,
-  type ShadowStreakV1,
 } from '@airing-cal/storage'
 import { openBuilderDatabase, SqliteBuilderStateStore } from '@airing-cal/v3-builder'
 import {
-  REQUIRED_SHADOW_MATCHES,
   parseShadowGateArgs,
   resetShadowStreak,
   runShadowGate,
@@ -66,77 +64,42 @@ function tempSqlite(): string {
   return join(mkdtempSync(join(tmpdir(), 'airingcal-shadow-gate-')), 'builder.sqlite')
 }
 
-function storedStreak(sqlitePath: string): Promise<ShadowStreakV1> {
+async function leftoverStreak(sqlitePath: string): Promise<string | null> {
   const db = openBuilderDatabase(sqlitePath)
   try {
-    return new SqliteBuilderStateStore(db).getKv(migrateShadowStreakKey()).then(
-      (raw) => JSON.parse(raw ?? 'null') as ShadowStreakV1,
-    )
+    return await new SqliteBuilderStateStore(db).getKv(migrateShadowStreakKey())
   } finally {
     db.close()
   }
 }
 
-test('shadow gate opens only after seven consecutive matches', async () => {
+test('shadow gate exits open on a single equal compare and closed on mismatch', async () => {
   const sqlitePath = tempSqlite()
   const candidate = await snapshotFixture()
+  const renamed = await snapshotFixture('Renamed subject')
 
-  for (let run = 1; run <= REQUIRED_SHADOW_MATCHES; run += 1) {
-    const result = await runShadowGate({
-      sqlitePath,
-      legacyPayload: candidate,
-      candidatePayload: candidate,
-      now: () => 1_700_000_000_000 + run * 1_000,
-    })
-    assert.equal(result.equal, true, `run ${run} should compare equal`)
-    assert.equal(result.streak.streak, run)
-    assert.equal(result.cutover_allowed, run >= REQUIRED_SHADOW_MATCHES, `run ${run} gate state`)
-  }
-
-  const stored = await storedStreak(sqlitePath)
-  assert.equal(stored.streak, REQUIRED_SHADOW_MATCHES)
-  assert.equal(stored.last_diff_summary, null)
-  assert.equal(stored.last_success_at, 1_700_000_000 + REQUIRED_SHADOW_MATCHES)
-})
-
-test('shadow gate resets the streak and stores the diff summary on a mismatch', async () => {
-  const sqlitePath = tempSqlite()
-  const candidate = await snapshotFixture()
-
-  await runShadowGate({ sqlitePath, legacyPayload: candidate, candidatePayload: candidate })
-  await runShadowGate({ sqlitePath, legacyPayload: candidate, candidatePayload: candidate })
+  const equal = await runShadowGate({
+    sqlitePath,
+    legacyPayload: candidate,
+    candidatePayload: candidate,
+    now: () => 1_700_000_000_000,
+  })
+  assert.equal(equal.equal, true)
+  assert.equal(equal.diff_count, 0)
+  assert.equal('cutover_allowed' in equal, false)
+  assert.equal('required_matches' in equal, false)
+  assert.equal('streak' in equal, false)
+  assert.equal(await leftoverStreak(sqlitePath), null, 'equal compare must not mutate streak key')
 
   const mismatch = await runShadowGate({
     sqlitePath,
-    legacyPayload: candidate,
-    candidatePayload: await snapshotFixture('Renamed subject'),
+    legacyPayload: renamed,
+    candidatePayload: candidate,
+    now: () => 1_700_000_001_000,
   })
   assert.equal(mismatch.equal, false)
-  assert.equal(mismatch.streak.streak, 0)
-  assert.equal(mismatch.cutover_allowed, false)
   assert.ok(mismatch.diff_count > 0)
-  assert.ok(mismatch.streak.last_diff_summary?.includes('Renamed subject'))
-
-  const recovered = await runShadowGate({ sqlitePath, legacyPayload: candidate, candidatePayload: candidate })
-  assert.equal(recovered.streak.streak, 1, 'the streak restarts after a mismatch')
-})
-
-test('shadow gate ignores a corrupt streak record and reset clears it', async () => {
-  const sqlitePath = tempSqlite()
-  const candidate = await snapshotFixture()
-
-  const db = openBuilderDatabase(sqlitePath)
-  try {
-    await new SqliteBuilderStateStore(db).setKv(migrateShadowStreakKey(), '{"streak":"lots"}')
-  } finally {
-    db.close()
-  }
-  const result = await runShadowGate({ sqlitePath, legacyPayload: candidate, candidatePayload: candidate })
-  assert.equal(result.streak.streak, 1, 'a corrupt streak restarts counting instead of being trusted')
-
-  await resetShadowStreak(sqlitePath)
-  const afterReset = await runShadowGate({ sqlitePath, legacyPayload: candidate, candidatePayload: candidate })
-  assert.equal(afterReset.streak.streak, 1, 'reset clears the previous matches')
+  assert.equal(await leftoverStreak(sqlitePath), null, 'mismatch compare must not mutate streak key')
 })
 
 test('shadow gate normalizes a legacy public result payload', async () => {
@@ -145,7 +108,7 @@ test('shadow gate normalizes a legacy public result payload', async () => {
 
   const result = await runShadowGate({ sqlitePath, legacyPayload: legacy, candidatePayload: legacy })
   assert.equal(result.equal, true, 'both sides normalize through the legacy branch')
-  assert.equal(result.streak.streak, 1)
+  assert.equal(result.diff_count, 0)
 
   const mismatch = await runShadowGate({
     sqlitePath,
@@ -153,7 +116,21 @@ test('shadow gate normalizes a legacy public result payload', async () => {
     candidatePayload: legacyPublicResult('Renamed subject'),
   })
   assert.equal(mismatch.equal, false)
-  assert.equal(mismatch.streak.streak, 0)
+  assert.ok(mismatch.diff_count > 0)
+})
+
+test('reset clears a leftover streak key without rewriting streak state', async () => {
+  const sqlitePath = tempSqlite()
+  const db = openBuilderDatabase(sqlitePath)
+  try {
+    await new SqliteBuilderStateStore(db).setKv(migrateShadowStreakKey(), '{"streak":3}')
+  } finally {
+    db.close()
+  }
+
+  assert.ok(await leftoverStreak(sqlitePath))
+  await resetShadowStreak(sqlitePath)
+  assert.equal(await leftoverStreak(sqlitePath), null)
 })
 
 test('parseShadowGateArgs requires the sqlite flag and rejects unknown options', () => {
