@@ -55,9 +55,14 @@ export const PRODUCTION_FORBIDDEN_COLLISION_NAMES = Object.freeze([
   'airing-cal-checkpoint',
   'airing-cal-images',
   'airing-cal-data',
+  // Live v2 Production worker — must never be overwritten by v3 Production readers.
+  'airing-cal-frontend',
+  // Existing EdgeOne reader project kept as rollback (keepOldProject).
+  'airingcal-edgeone-read',
   DEVELOPMENT_DEFAULTS.workerName,
   DEVELOPMENT_DEFAULTS.edgeoneProject,
 ])
+
 
 
 /** @type {Readonly<Record<string, string>>} */
@@ -309,6 +314,7 @@ export function assertProductionResourceNames({ bucket, cloudflareWorkerName, ed
  *   imageBaseUrl?: string,
  *   mode?: 'dry-run'|'apply',
  *   accountId?: string,
+ *   zoneId?: string,
  *   applyAuthorized?: boolean,
  *   gitSha?: string|null,
  * }} opts
@@ -322,6 +328,7 @@ export function buildProductionPlan({
   imageBaseUrl = '',
   mode = 'dry-run',
   accountId = '',
+  zoneId = '',
   applyAuthorized = false,
   gitSha = null,
 } = {}) {
@@ -330,6 +337,11 @@ export function buildProductionPlan({
   }
   const base = String(publicBaseUrl ?? '').trim().replace(/\/+$/, '')
   if (!base) throw new Error('AIRINGCAL_PUBLIC_BASE_URL is required for the production plan')
+
+  const normalizedZoneId = String(zoneId ?? '').trim()
+  if (!normalizedZoneId) {
+    throw new Error('AIRINGCAL_ZONE_ID is required for production preflight-identity (dry-run and apply)')
+  }
 
   let publicHost
   try {
@@ -360,7 +372,11 @@ export function buildProductionPlan({
       requireEnv: 'production',
       forbiddenNames: [...PRODUCTION_FORBIDDEN_COLLISION_NAMES],
       gitSha: gitSha || null,
+      accountId: accountId || null,
+      zoneId: normalizedZoneId,
+      publicHost,
     },
+
     {
       id: 'ensure-bucket-airingcal-production',
       title: `Create-or-reuse empty bucket ${bucket} (abort if public/ or checkpoints/ already present)`,
@@ -450,6 +466,7 @@ export function buildProductionPlan({
     publicBaseUrl: base,
     publicHost,
     accountId: accountId || null,
+    zoneId: normalizedZoneId,
     imageCdn,
     cors: {
       allowedOrigins: corsOrigins,
@@ -511,6 +528,11 @@ export function deriveProductionConfig(rawEnv = {}, opts = {}) {
     throw new Error('AIRINGCAL_PUBLIC_BASE_URL is required')
   }
 
+  const zoneId = String(env.AIRINGCAL_ZONE_ID ?? env.CLOUDFLARE_ZONE_ID ?? '').trim()
+  if (!zoneId) {
+    throw new Error('AIRINGCAL_ZONE_ID is required for production preflight-identity (dry-run and apply)')
+  }
+
   const deployTarget =
     String(opts.target ?? env.AIRINGCAL_DEPLOY_TARGET ?? 'both').trim() || 'both'
   if (!ALLOWED_TARGETS.has(deployTarget)) {
@@ -537,9 +559,11 @@ export function deriveProductionConfig(rawEnv = {}, opts = {}) {
     imageBaseUrl: env.AIRINGCAL_IMAGE_BASE_URL || '',
     mode: opts.mode || 'dry-run',
     accountId,
+    zoneId,
     applyAuthorized,
     gitSha: opts.gitSha ?? null,
   })
+
 
   const s3Endpoint =
     String(env.AIRINGCAL_S3_ENDPOINT ?? '').trim() ||

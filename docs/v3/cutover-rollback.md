@@ -40,13 +40,16 @@ tsx apps/node-jobs/src/cli/portable-shadow-gate.ts \
 AIRINGCAL_BUILDER=portable AIRINGCAL_BUILDER_PUBLISH=true \
   tsx apps/node-jobs/src/cli/sync-main.ts
 
-# 4. Production readers check (manual, owner credentials; distinct from Development hosts)
-wrangler deploy --config apps/v3-read-worker/wrangler.toml --env-file /dev/null
+# 4. Production readers check — do NOT wrangler-deploy apps/v3-read-worker/wrangler.toml
+#    (that path is Development/staging). Readers come from Production plan step
+#    materialize-and-deploy-readers (Owner Apply under AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED).
+#    After that step, verify the Production host only:
 curl -sf https://<production-host>/api/health   # publish.generation must equal the published generation
 ```
 
 Then confirm reads per [`web-worker-public-api.md`](../reference/web-worker-public-api.md)
 contract (`/api/health`, `/api/collections`, `/api/calendar`, `/image/:hash`).
+
 
 ### After traffic switch (no calendar observation timer)
 
@@ -95,7 +98,7 @@ tsx apps/node-jobs/src/cli/portable-release-rollback.ts --generation <N> \
 
 The receipt records the **prior pointer**, the **target generation**
 (`target_generation` / `target_artifact_ref` / `target_manifest_ref`), the image
-gate result, the CAS outcome, and the resume rule. Attach it to #147.
+gate result, the CAS outcome, and the resume rule. Attach it to #73.
 
 `--receipt` is validated before any store or lease work: its parent directory must
 exist, and the path is resolved to an absolute path. A missing directory fails with
@@ -113,7 +116,8 @@ concurrency as the publish gate.
      (`portable-checkpoint-restore` from a backup, then verify), **or**
    - **Deliberately republish**: accept that the next writer run republishes the
      newer checkpoint state after review.
-   Re-enable the writer only after that choice is recorded (receipt + #147).
+   Re-enable the writer only after that choice is recorded (receipt + #73).
+
 
 If the Worker itself regressed (not the Release), re-deploy the previous Worker
 version instead: `wrangler deployments list --name airing-cal-v3-read`.

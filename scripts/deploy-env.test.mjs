@@ -9,8 +9,10 @@ import { fileURLToPath } from 'node:url'
 
 import {
   DEVELOPMENT_DEFAULTS,
+  PRODUCTION_FORBIDDEN_COLLISION_NAMES,
   STAGING_ALIAS_MAP,
   applyStagingAliases,
+  assertProductionResourceNames,
   buildCorsAllowedOrigins,
   buildDevelopmentDeployPlan,
   deriveDevelopmentConfig,
@@ -270,6 +272,7 @@ const VALID_PROD_ENV = Object.freeze({
 test('production dry-run plan is clean-bootstrap with no copy steps', () => {
   const { plan } = deriveProductionConfig(VALID_PROD_ENV)
   assert.equal(plan.bucket, 'airingcal-production')
+  assert.equal(plan.zoneId, 'zone-prod-example')
   assert.ok(plan.steps.some((s) => s.id === 'ensure-bucket-airingcal-production'))
   assert.ok(plan.steps.some((s) => s.id === 'isolation-probe'))
   assert.ok(plan.steps.some((s) => s.id === 'preflight-identity'))
@@ -280,7 +283,54 @@ test('production dry-run plan is clean-bootstrap with no copy steps', () => {
   assert.ok(plan.steps.some((s) => s.id === 'bangumi-full-sync-owner-dispatch'))
   assert.equal(plan.steps.some((s) => String(s.id).startsWith('copy-')), false)
   assert.equal(plan.writerEnabled, false)
+  const preflight = plan.steps.find((s) => s.id === 'preflight-identity')
+  assert.equal(preflight.zoneId, 'zone-prod-example')
+  assert.equal(preflight.accountId, 'abcdef0123456789abcdef0123456789')
+  assert.equal(preflight.publicHost, 'cdn.airingcal.example')
 })
+
+test('production forbidden collision set includes live v2 worker and EdgeOne keepOld project', () => {
+  assert.ok(PRODUCTION_FORBIDDEN_COLLISION_NAMES.includes('airing-cal-frontend'))
+  assert.ok(PRODUCTION_FORBIDDEN_COLLISION_NAMES.includes('airingcal-edgeone-read'))
+  assert.ok(PRODUCTION_FORBIDDEN_COLLISION_NAMES.includes(DEVELOPMENT_DEFAULTS.workerName))
+  assert.ok(PRODUCTION_FORBIDDEN_COLLISION_NAMES.includes(DEVELOPMENT_DEFAULTS.edgeoneProject))
+
+  assert.throws(
+    () =>
+      assertProductionResourceNames({
+        bucket: 'airingcal-production',
+        cloudflareWorkerName: 'airing-cal-frontend',
+        edgeoneProject: 'airingcal-edgeone-read-production',
+      }),
+    /airing-cal-frontend|collides/,
+  )
+  assert.throws(
+    () =>
+      assertProductionResourceNames({
+        bucket: 'airingcal-production',
+        cloudflareWorkerName: 'airing-cal-v3-read-production',
+        edgeoneProject: 'airingcal-edgeone-read',
+      }),
+    /airingcal-edgeone-read|collides/,
+  )
+  assert.throws(
+    () =>
+      deriveProductionConfig({
+        ...VALID_PROD_ENV,
+        AIRINGCAL_PRODUCTION_WORKER_NAME: 'airing-cal-frontend',
+      }),
+    /airing-cal-frontend|collides/,
+  )
+})
+
+test('production derive refuses missing AIRINGCAL_ZONE_ID on dry-run', () => {
+  const { AIRINGCAL_ZONE_ID: _omit, ...withoutZone } = VALID_PROD_ENV
+  assert.throws(
+    () => deriveProductionConfig(withoutZone),
+    /AIRINGCAL_ZONE_ID/,
+  )
+})
+
 
 test('production apply without AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED still refuses mutations', () => {
   const result = spawnSync(

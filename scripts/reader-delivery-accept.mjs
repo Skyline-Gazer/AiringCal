@@ -816,14 +816,34 @@ export async function runShadowGateStatus({ skip = false, spawnImpl = spawnCaptu
   // Historical RO payloads may still carry streak fields; they are not Production hard gates.
   const streak = Number(status.streak)
   const cutoverAllowed = status.cutover_allowed === true
+  const normalizedDiffCount = Number.isFinite(diffCount) ? diffCount : null
+  if (!equal) {
+    return {
+      id: 'shadow_gate',
+      ok: false,
+      measurable: true,
+      status: 'failed',
+      reason:
+        normalizedDiffCount == null
+          ? 'shadow-gate RO status reports mismatch (equal=false)'
+          : `shadow-gate RO status reports mismatch (equal=false, diff_count=${normalizedDiffCount})`,
+      equal: false,
+      diff_count: normalizedDiffCount,
+      streak: Number.isFinite(streak) ? streak : null,
+      cutover_allowed: cutoverAllowed,
+      required_matches: status.required_matches ?? null,
+      path: resolved,
+      note: 'read-only status JSON; Production one-shot parity tool is portable-shadow-gate / portable-snapshot-compare (no seven-match requirement)',
+    }
+  }
   return {
     id: 'shadow_gate',
     ok: true,
     measurable: true,
     status: 'ok',
     reason: null,
-    equal,
-    diff_count: Number.isFinite(diffCount) ? diffCount : null,
+    equal: true,
+    diff_count: normalizedDiffCount,
     streak: Number.isFinite(streak) ? streak : null,
     cutover_allowed: cutoverAllowed,
     required_matches: status.required_matches ?? null,
@@ -942,9 +962,16 @@ function printReport(report) {
       measurable: g.measurable,
       status: g.status ?? (g.ok ? 'ok' : 'failed'),
       reason: g.reason ?? null,
-      failures: g.failures ?? undefined,
-      notes: g.notes ?? undefined,
+      failures: g.failures ?? null,
+      notes: g.notes ?? null,
+      ...(g.id === 'shadow_gate'
+        ? {
+            equal: g.equal ?? null,
+            diff_count: g.diff_count ?? null,
+          }
+        : {}),
     })),
+
     pending_owner: report.pending_owner,
   }
   console.log(JSON.stringify(printable, null, 2))
