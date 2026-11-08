@@ -73,7 +73,7 @@
       "kind": "action",
       "status": "pending_owner",
       "requiresOwner": "Legacy + Production candidate snapshots; record equal evidence on #73",
-      "command": "pnpm exec tsx apps/node-jobs/src/cli/portable-shadow-gate.ts --sqlite <path> --legacy <v2.json> --candidate <prod-snapshot.json",
+      "command": "pnpm exec tsx apps/node-jobs/src/cli/portable-shadow-gate.ts --sqlite <path> --legacy <v2.json> --candidate <prod-snapshot.json>",
       "gate_rule": "exit 0 and equal:true / diff_count:0; no streak/cutover_allowed hard gate"
     },
     {
