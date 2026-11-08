@@ -1,20 +1,21 @@
 # Development Reader & R2 domain cutover runbook
 
 
-> **STATUS — 2026-11-08: Development live apply COMPLETE.** [current-state.md](current-state.md) is the authoritative entry. Public R2 custom domain is `airingcal.223.im` (zone `223.im`), r2.dev disabled, host-scoped WAF/cache/CORS applied, isolation proven, data copied, readers deployed, writer test passed, MIME repair/parity/post-bench/accept green. **Only `test.air.teijp.cn` CNAME → overseas EO and post-CNAME parity remain Owner actions; no Production cutover.** Evidence: [`development-live-acceptance.md`](./development-live-acceptance.md).
+> **STATUS — 2026-11-08: STAGING ACCEPTED.** Public R2 custom domain `airingcal.223.im` (zone `223.im`, r2.dev off), host-scoped WAF/cache/CORS, isolation proven, copy, GH env, CF reader, EdgeOne overseas project, 302 routing, single writer test, MIME repair, parity and post-bench all passed. Owner DNS cutover complete: reader domain **`airingcal.teijp.cn`** → overseas EO; old global project at `test.air.teijp.cn` retained as rollback. No Production cutover. Evidence: [`development-live-acceptance.md`](./development-live-acceptance.md).
 
-Owner-approved, **manual** sequence that moves the Development reader domain
-`test.air.teijp.cn` from the global EdgeOne project to the new **overseas**
-EdgeOne project and retires `r2.dev` as the public base. Like
+Owner-approved, **manual** sequence that moved the Development reader domain
+to the new **overseas** EdgeOne project and retired `r2.dev` as the public
+base. The Owner-supplied reader domain is **`airingcal.teijp.cn`**; the
+previous global project at `test.air.teijp.cn` is retained as rollback. Like
 [`cutover-rollback.md`](./cutover-rollback.md), **CI never runs any step here**:
 no DNS record, live deploy apply, or `r2.dev` toggle is created, changed, or
 deleted by a merge.
 
-> **REMAINING OWNER ACTION — DNS + post-CNAME parity.** The implementing agent
-> executed `--apply` on Development with real credentials and holds full
-> receipts (see below), but does not hold Owner DNS control for
-> `test.air.teijp.cn`. Machine-readable status:
-> [`fixtures/reader-delivery-cutover-checklist.json`](./fixtures/reader-delivery-cutover-checklist.json).
+> **COMPLETE — DNS cutover + post-CNAME parity PASS.** Owner bound
+> `airingcal.teijp.cn` to `airingcal-edgeone-read-overseas`; final parity receipt
+> [`fixtures/reader-delivery-cutover-parity-post.json`](./fixtures/reader-delivery-cutover-parity-post.json)
+> shows `cf_vs_eo.equal: true` (gen 4). Machine-readable checklist status is
+> `accepted`: [`fixtures/reader-delivery-cutover-checklist.json`](./fixtures/reader-delivery-cutover-checklist.json).
 
 ## Preconditions (all must hold before Step 1)
 
@@ -48,25 +49,22 @@ overseas project is serving a different Release — stop; re-check its
 `AIRINGCAL_PUBLIC_BASE_URL` project variable and pointer freshness before
 touching DNS.
 
-## Step 2 — Point `test.air.teijp.cn` to the overseas project
+## Step 2 — Reader domain cutover (done 2026-11-08)
 
-Owner DNS account action:
-
-1. In the EdgeOne console, bind `test.air.teijp.cn` to
-   `airingcal-edgeone-read-overseas` and copy the target CNAME value.
-2. At the DNS provider, repoint the `test` record's CNAME to that overseas
-   target. Lower the record TTL first so rollback is fast.
-3. **Leave `airingcal-edgeone-read` (global) deployed and unbound** — it is the
-   immediate rollback if the overseas route misbehaves.
-
-Then re-run Step 1 with `test.air.teijp.cn` in place of the preview host and
-confirm `cf_vs_eo.equal` stays **`true`**:
+Owner bound **`airingcal.teijp.cn`** (substituted for the plan's
+`test.air.teijp.cn`) to `airingcal-edgeone-read-overseas` with CNAME
+`airingcal.teijp.cn.pages.dnsoe7.com`; the old global project at
+`test.air.teijp.cn` (gen 3) remains deployed/unbound as immediate rollback.
+Final parity was re-run against the real hostname:
 
 ```bash
 node scripts/reader-delivery-bench.mjs \
-  --hosts https://airing-cal-v3-read-staging.r7a.workers.dev,https://test.air.teijp.cn \
+  --hosts https://airing-cal-v3-read-staging.r7a.workers.dev,https://airingcal.teijp.cn \
   --out docs/v3/fixtures/reader-delivery-cutover-parity-post.json
 ```
+
+Receipt: `cf_vs_eo.equal: true`, gen 4 / `content_hash 2613eb5d…`, and
+`GET /image/<hash>` → 302 `https://airingcal.223.im/images/…/original`.
 
 ## Step 3 — Confirm the custom domain (not `r2.dev`) serves the public base
 

@@ -34,6 +34,19 @@ Apply (`--concurrency 16`): **1352 repaired, 3 ok, 0 conflict/verify_failed/erro
 | Rollback safety | `portable-release-rollback --generation 3` dry-run receipt: `dry_run: true`, `cas_result: not_attempted`, image gate `reused: 2028`; pointer untouched, writer frozen |
 | Freeze | `portable-writer.yml` `disabled_manually`, 0 in-progress runs; `AIRINGCAL_WRITER_ENABLED` false (Production gate) |
 
-Pending (not claimed): `test.air.teijp.cn` CNAME → overseas EO + post-CNAME parity (Owner DNS), mainland bench, optional ICP image CDN, CF smoke (skipped in accept run), shadow-gate RO status, and all Production apply/cutover.
+## DNS cutover (Owner-executed, 2026-11-08)
+
+Owner bound reader domain **`airingcal.teijp.cn`** (substituted for the plan's
+`test.air.teijp.cn`) to overseas `airingcal-edgeone-read-overseas`, CNAME
+`airingcal.teijp.cn.pages.dnsoe7.com`; old global project at
+`test.air.teijp.cn` (gen 3) retained as rollback. Final parity receipt
+[`fixtures/reader-delivery-cutover-parity-post.json`](./fixtures/reader-delivery-cutover-parity-post.json):
+`cf_vs_eo.equal: true`, gen 4 / `content_hash 2613eb5d…`; `GET /image/<hash>`
+on the new domain → 302 `https://airingcal.223.im/images/…/original`.
+Checklist status: `accepted`, `staging_accepted: true`.
+
+Pending (not claimed): mainland bench, optional ICP image CDN, CF smoke
+(skipped in accept run), shadow-gate RO status, and all Production
+apply/cutover.
 
 Machine-readable checklist: [`fixtures/reader-delivery-cutover-checklist.json`](./fixtures/reader-delivery-cutover-checklist.json).

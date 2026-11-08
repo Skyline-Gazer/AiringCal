@@ -2,12 +2,12 @@
   "schema_version": 1,
   "kind": "reader_delivery_cutover_checklist",
   "generated_by": "PR-D Task 4.4 (docs/v3/reader-delivery-cutover.md)",
-  "status": "partially_complete_awaiting_owner_dns",
+  "status": "accepted",
   "executed_by_agent": true,
-  "environment_reason": "development-live-apply-complete-awaiting-owner-dns-cname",
-  "tried": "Rounds 7-21: real cloud apply completed on 2026-11-08. Isolation proof, single-bucket copy, GH development Environment, CF reader cutover, EdgeOne overseas deployment with bundled runtime env, 302 routing verification, single writer test, MIME repair (1352 repaired), CF/EO parity, post-bench and acceptance all executed with receipts. Remaining: Owner DNS CNAME switch, mainland bench, optional ICP image CDN, Production (out of scope).",
+  "environment_reason": "development-live-apply-and-domain-cutover-complete",
+  "tried": "Development live apply (2026-11-08) and Owner DNS cutover both complete. Reader domain airingcal.teijp.cn -> overseas EdgeOne project; old global project test.air.teijp.cn retained as rollback. All evidence in docs/v3/development-live-acceptance.md.",
   "code_status": "live_development_applied",
-  "staging_accepted": false,
+  "staging_accepted": true,
   "policy": {
     "neverFakeReceipts": true,
     "doNotDeleteStagingBuckets": true,
@@ -41,21 +41,23 @@
       "id": "cname-test-air-to-overseas-eo",
       "title": "test.air.teijp.cn CNAME points to airingcal-edgeone-read-overseas; old airingcal-edgeone-read kept alive",
       "kind": "action",
-      "status": "pending_owner",
+      "status": "done",
       "requiresOwner": "DNS account control for teijp.cn + EdgeOne console domain binding",
-      "evidence": null,
-      "rollback": "Repoint the test CNAME back to airingcal-edgeone-read (still deployed) with reduced TTL."
+      "evidence": "Owner bound airingcal.teijp.cn (substituted for test.air.teijp.cn per Owner instruction) to airingcal-edgeone-read-overseas; CNAME -> airingcal.teijp.cn.pages.dnsoe7.com. Old global project test.air.teijp.cn (gen 3) retained as rollback.",
+      "rollback": "Repoint the test CNAME back to airingcal-edgeone-read (still deployed) with reduced TTL.",
+      "executed_by_agent": false,
+      "owner_executed": true
     },
     {
       "id": "cf-eo-parity-post",
       "title": "CF staging vs test.air.teijp.cn (now overseas) share publish.generation + content_hash after CNAME",
       "kind": "action",
-      "status": "pending_owner",
+      "status": "done",
       "requiresOwner": "CNAME propagated",
-      "evidence": "Preview-host parity verified (cf-eo-overseas-parity-pre). This item requires test.air.teijp.cn to resolve to the overseas EO project first; Owner DNS CNAME action pending.",
+      "evidence": "docs/v3/fixtures/reader-delivery-cutover-parity-post.json: cf_vs_eo.equal=true, gen 4 / content_hash 2613eb5d... on CF worker and https://airingcal.teijp.cn; /image/* 302 -> https://airingcal.223.im.",
       "command": "node scripts/reader-delivery-bench.mjs --hosts https://airing-cal-v3-read-staging.r7a.workers.dev,https://test.air.teijp.cn --out docs/v3/fixtures/reader-delivery-cutover-parity-post.json",
       "gate": "receipt.cf_vs_eo.equal === true",
-      "executed_by_agent": false
+      "executed_by_agent": true
     },
     {
       "id": "disable-r2-dev-after-parity",
