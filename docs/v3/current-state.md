@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | Reader/MIME/Widget + deploy CLI engineering | **Delivered on `dev`** | [PR #164](https://github.com/Skyline-Gazer/AiringCal/pull/164); [CI 42354196599](https://github.com/Skyline-Gazer/AiringCal/actions/runs/42354196599) green (build:check, typecheck, test, operator smoke). |
 | Old isolated **Staging** R2 (two buckets) | **Real-R2 acceptance PASS** | [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147): 3 generations, CAS/lease, image gate, rollback/GC, CF/EO reader parity. Preserve as rollback source. |
-| New **Development** (one bucket) | **LIVE APPLY COMPLETE; DNS CNAME PENDING** | `airingcal-development` + custom domain `airingcal.223.im` (SSL active, r2.dev off), host-scoped WAF/cache/CORS, anonymous checkpoint isolation proven (GET/HEAD 403), 2036 objects copied, `development` GH Environment synced, CF reader cut over, EdgeOne overseas project deployed, 302 routing verified, single writer test run `42397688191` success (generation 4), MIME repair 1352 objects, CF/EO parity + post-bench + accept green. Remaining Owner action: CNAME `test.air.teijp.cn` → overseas EO, then post-CNAME parity. See [`development-live-acceptance.md`](./development-live-acceptance.md). |
+| New **Development** (one bucket) | **STAGING ACCEPTED** | `airingcal-development` + custom domain `airingcal.223.im` (SSL active, r2.dev off), host-scoped WAF/cache/CORS, anonymous checkpoint isolation proven (GET/HEAD 403), 2036 objects copied, `development` GH Environment synced, CF reader cut over, EdgeOne overseas project deployed, 302 routing verified, single writer test run `42397688191` success (generation 4), MIME repair 1352 objects, CF/EO parity + post-bench + accept green. Owner DNS cutover complete: reader domain **`airingcal.teijp.cn`** → overseas EO; old `test.air.teijp.cn` (global, gen 3) kept as rollback; final parity [`reader-delivery-cutover-parity-post.json`](./fixtures/reader-delivery-cutover-parity-post.json) `cf_vs_eo.equal: true`. See [`development-live-acceptance.md`](./development-live-acceptance.md). |
 | Production v2→v3 switch | **NOT AUTHORIZED** | [#73](https://github.com/Skyline-Gazer/AiringCal/issues/73): v2 export, shadow gate, owner GO/NO-GO, rollback and 14-day observation. Production Writer remains disabled. |
 
 ## Architecture (approved target, not a claim of live cutover)
@@ -43,5 +43,5 @@
 - [x] Read-only deploy preflight accepted; Owner confirms R2 hostname and Zone (`airingcal.223.im` / zone `223.im`).
 - [x] Development Live Apply & WAF/CORS/Copy parity (2026-11-08, isolation.ok=true, 19/19 steps).
 - [x] MIME repair and post-bench accepted (1352 repaired; `docs/v3/fixtures/reader-delivery-bench-post.json`; `reader-delivery-accept.mjs` exit 0).
-- [ ] EdgeOne overseas DNS cutover (`test.air.teijp.cn` CNAME) and post-CNAME parity — Owner action.
+- [x] EdgeOne overseas DNS cutover (`airingcal.teijp.cn` → overseas EO, Owner-executed) and post-CNAME parity (`cf_vs_eo.equal: true`).
 - [ ] Separate future owner authorization for Production.
