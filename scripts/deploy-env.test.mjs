@@ -14,6 +14,7 @@ import {
   buildCorsAllowedOrigins,
   buildDevelopmentDeployPlan,
   deriveDevelopmentConfig,
+  deriveProductionConfig,
   evaluateIsolationProbe,
   parseDeployArgs,
   resolveExecutionMode,
@@ -238,6 +239,17 @@ test('applyStagingAliases is a no-op outside development', () => {
   })
   assert.equal(env.AIRINGCAL_BANGUMI_TOKEN, undefined)
   assert.equal(warnings.length, 0)
+})
+
+test('production env refuses staging/development secret aliases', () => {
+  assert.throws(
+    () => deriveProductionConfig({
+      AIRINGCAL_ENV: 'production',
+      AIRINGCAL_STAGING_BANGUMI_TOKEN: 'x',
+      // missing AIRINGCAL_BANGUMI_TOKEN
+    }),
+    /must not alias|AIRINGCAL_BANGUMI_TOKEN/,
+  )
 })
 
 test('buildCorsAllowedOrigins uses exact hosts only (no port wildcards)', () => {

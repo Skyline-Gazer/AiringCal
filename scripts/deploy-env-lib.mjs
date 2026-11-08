@@ -211,6 +211,64 @@ export function applyStagingAliases(inputEnv = {}) {
   return { env, warnings }
 }
 
+/** Production required secrets that must not be filled only via staging/development aliases. */
+export const PRODUCTION_REQUIRED_SECRET_KEYS = Object.freeze([
+  'AIRINGCAL_BANGUMI_TOKEN',
+  'AIRINGCAL_CLOUDFLARE_API_TOKEN',
+  'AIRINGCAL_EDGEONE_API_TOKEN',
+])
+
+/**
+ * Refuse Production config when a required Production secret is empty while a
+ * corresponding AIRINGCAL_STAGING_* or AIRINGCAL_DEVELOPMENT_* writable secret
+ * is present (aliases must never supply Production). Does not call
+ * applyStagingAliases.
+ *
+ * @param {Record<string, string | undefined | null>} env
+ */
+export function assertNoProductionSecretAliases(env = {}) {
+  for (const key of PRODUCTION_REQUIRED_SECRET_KEYS) {
+    const present = Boolean(String(env[key] ?? '').trim())
+    if (present) continue
+    const suffix = key.slice('AIRINGCAL_'.length)
+    const stagingKey = `AIRINGCAL_STAGING_${suffix}`
+    const developmentKey = `AIRINGCAL_DEVELOPMENT_${suffix}`
+    const stagingPresent = Boolean(String(env[stagingKey] ?? '').trim())
+    const developmentPresent = Boolean(String(env[developmentKey] ?? '').trim())
+    if (!stagingPresent && !developmentPresent) continue
+    const source = stagingPresent ? stagingKey : developmentKey
+    throw new Error(
+      `Production must not alias ${key} from ${source}; set ${key} in .env.production`,
+    )
+  }
+}
+
+/**
+ * Derive a minimal Production config surface. Task 5 expands the plan steps;
+ * this export hard-fails staging/development secret aliasing and never maps aliases.
+ *
+ * @param {Record<string, string | undefined | null>} rawEnv
+ */
+export function deriveProductionConfig(rawEnv = {}) {
+  const env = { ...rawEnv }
+  const airingEnv = String(env.AIRINGCAL_ENV ?? '').trim().toLowerCase()
+  if (airingEnv !== 'production') {
+    throw new Error(`deriveProductionConfig only supports production (got "${airingEnv || '(empty)'}")`)
+  }
+  assertNoProductionSecretAliases(env)
+  const bucket = 'airingcal-production'
+  const plan = {
+    bucket,
+    steps: [],
+    writerEnabled: false,
+  }
+  return {
+    bucket,
+    writerEnabled: false,
+    plan,
+  }
+}
+
 /**
  * @param {{ cloudflareWorkerHosts?: string[], edgeoneHosts?: string[], extraOrigins?: string[] }} opts
  */
