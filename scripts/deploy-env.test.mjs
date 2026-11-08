@@ -251,6 +251,62 @@ test('production env refuses staging/development secret aliases', () => {
     /must not alias|AIRINGCAL_BANGUMI_TOKEN/,
   )
 })
+const VALID_PROD_ENV = Object.freeze({
+  AIRINGCAL_ENV: 'production',
+  AIRINGCAL_DEPLOY_TARGET: 'both',
+  AIRINGCAL_CLOUDFLARE_API_TOKEN: 'prod-cf-token',
+  AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: 'abcdef0123456789abcdef0123456789',
+  AIRINGCAL_ZONE_ID: 'zone-prod-example',
+  AIRINGCAL_BANGUMI_TOKEN: 'prod-bangumi-token',
+  AIRINGCAL_PRIMARY_USER_ID: '900001',
+  AIRINGCAL_PUBLIC_BASE_URL: 'https://cdn.airingcal.example',
+  AIRINGCAL_EDGEONE_API_TOKEN: 'prod-eo-token',
+  AIRINGCAL_EDGEONE_TEAM_ID: 'team-prod',
+  AIRINGCAL_EDGEONE_PROJECT: 'airingcal-edgeone-read-production',
+  AIRINGCAL_EDGEONE_REGION: 'overseas',
+  AIRINGCAL_PRODUCTION_WORKER_NAME: 'airing-cal-v3-read-production',
+})
+
+test('production dry-run plan is clean-bootstrap with no copy steps', () => {
+  const { plan } = deriveProductionConfig(VALID_PROD_ENV)
+  assert.equal(plan.bucket, 'airingcal-production')
+  assert.ok(plan.steps.some((s) => s.id === 'ensure-bucket-airingcal-production'))
+  assert.ok(plan.steps.some((s) => s.id === 'isolation-probe'))
+  assert.ok(plan.steps.some((s) => s.id === 'preflight-identity'))
+  assert.ok(plan.steps.some((s) => s.id === 'disable-r2-dev'))
+  assert.ok(plan.steps.some((s) => s.id === 'waf-checkpoints'))
+  assert.ok(plan.steps.some((s) => s.id === 'sync-github-production-env'))
+  assert.ok(plan.steps.some((s) => s.id === 'materialize-and-deploy-readers'))
+  assert.ok(plan.steps.some((s) => s.id === 'bangumi-full-sync-owner-dispatch'))
+  assert.equal(plan.steps.some((s) => String(s.id).startsWith('copy-')), false)
+  assert.equal(plan.writerEnabled, false)
+})
+
+test('production apply without AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED still refuses mutations', () => {
+  const result = spawnSync(
+    process.execPath,
+    [CLI, '--apply', '--i-am-sure-production'],
+    {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ...VALID_PROD_ENV,
+        AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED: '',
+      },
+    },
+  )
+  assert.equal(result.status, 2, result.stderr)
+  const combined = `${result.stderr}\n${result.stdout}`
+  assert.match(combined, /not_authorized_in_this_change/)
+  assert.match(combined, /no mutations/i)
+  const plan = JSON.parse(result.stdout)
+  assert.equal(plan.bucket, 'airingcal-production')
+  assert.equal(plan.writerEnabled, false)
+  assert.equal(plan.steps.some((s) => String(s.id).startsWith('copy-')), false)
+  assert.equal(plan.applyAuthorized, false)
+})
+
 
 test('buildCorsAllowedOrigins uses exact hosts only (no port wildcards)', () => {
   const origins = buildCorsAllowedOrigins({

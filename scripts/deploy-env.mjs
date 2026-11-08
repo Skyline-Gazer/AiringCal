@@ -13,6 +13,7 @@ import {
   DEVELOPMENT_DEFAULTS,
   applyStagingAliases,
   deriveDevelopmentConfig,
+  deriveProductionConfig,
   evaluateIsolationProbe,
   loadDotEnvFile,
   missingScopeExitMessage,
@@ -171,31 +172,51 @@ async function main(argv = process.argv) {
     : String(env.AIRINGCAL_DEPLOY_TARGET ?? flags.target ?? 'both').trim() || 'both'
 
   if (envName === 'production') {
-    const productionPlan = {
-      env: 'production',
+    let derived
+    try {
+      derived = deriveProductionConfig(env, { target, mode: execution.mode })
+    } catch (error) {
+      console.error(
+        redactSecrets(error instanceof Error ? error.message : String(error), secretListFromEnv(env)),
+      )
+      process.exitCode = 1
+      return
+    }
+
+    const plan = {
+      ...derived.plan,
       mode: execution.mode,
       reason: execution.reason,
-      target,
-      refusedMutations: execution.mode !== 'apply',
-      note:
-        'Production bootstrap stays out of scope for this change. Development cutover uses airingcal-development only.',
-      steps: [
-        {
-          id: 'refuse-or-owner-force',
-          title:
-            execution.mode === 'apply'
-              ? 'Owner-forced production apply (not implemented in this slice)'
-              : 'Dry-run only — pass --apply --i-am-sure-production to force (still Owner-gated)',
-        },
-      ],
+      applyAuthorized: derived.applyAuthorized,
+      writerEnabled: false,
+      refusedMutations: execution.mode === 'apply' ? !derived.applyAuthorized : true,
     }
-    process.stdout.write(`${JSON.stringify(productionPlan, null, 2)}\n`)
-    if (execution.mode === 'apply') {
+
+    process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`)
+
+    if (execution.mode === 'dry-run') {
+      if (derived.missingCloudflareToken) {
+        console.error(
+          '[deploy-env] note: Cloudflare token absent — production dry-run plan only; live --apply stays unauthorized without AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes.',
+        )
+      }
+      return
+    }
+
+    // Apply path: require both --i-am-sure-production (already enforced) AND
+    // AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes. This prep never mutates.
+    if (!derived.applyAuthorized) {
       console.error(
-        'Production --apply is Owner-gated and not implemented in Task 4.2; no mutations performed.',
+        'not_authorized_in_this_change: Production --apply refused without AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes; no mutations performed.',
       )
       process.exitCode = 2
+      return
     }
+
+    console.error(
+      'not_authorized_in_this_change: Production apply executor is not wired in this prep; no mutations performed.',
+    )
+    process.exitCode = 2
     return
   }
 
