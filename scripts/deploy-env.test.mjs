@@ -305,7 +305,37 @@ test('production apply without AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED still refus
   assert.equal(plan.writerEnabled, false)
   assert.equal(plan.steps.some((s) => String(s.id).startsWith('copy-')), false)
   assert.equal(plan.applyAuthorized, false)
+  assert.equal(plan.refusedMutations, true)
 })
+
+test('production apply with AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED still refuses mutations and marks refusedMutations', () => {
+  const result = spawnSync(
+    process.execPath,
+    [CLI, '--apply', '--i-am-sure-production'],
+    {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ...VALID_PROD_ENV,
+        AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED: 'yes',
+      },
+    },
+  )
+  assert.equal(result.status, 2, result.stderr)
+  const combined = `${result.stderr}\n${result.stdout}`
+  assert.match(combined, /not_authorized_in_this_change/)
+  assert.match(combined, /no mutations/i)
+  const plan = JSON.parse(result.stdout)
+  assert.equal(plan.applyAuthorized, true)
+  assert.equal(plan.refusedMutations, true)
+  assert.equal(plan.writerEnabled, false)
+  assert.equal(plan.steps.some((s) => String(s.id).startsWith('copy-')), false)
+  const preflight = plan.steps.find((s) => s.id === 'preflight-identity')
+  assert.ok(preflight)
+  assert.equal(typeof preflight.gitSha === 'string' && preflight.gitSha.length > 0, true)
+})
+
 
 
 test('buildCorsAllowedOrigins uses exact hosts only (no port wildcards)', () => {

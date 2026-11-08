@@ -6,8 +6,10 @@
  * Live Cloudflare / EdgeOne / GitHub mutations require --apply AND credentials.
  * Isolation proof failure aborts cutover — never falls back to dual-bucket.
  */
-import { pathToFileURL } from 'node:url'
+import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
 
 import {
   DEVELOPMENT_DEFAULTS,
@@ -48,6 +50,20 @@ function secretListFromEnv(env) {
     env.AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY,
     env.AIRINGCAL_EDGEONE_API_TOKEN,
   ]
+}
+
+function resolveGitSha(cwd = process.cwd()) {
+  try {
+    const result = spawnSync('git', ['rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      cwd,
+    })
+    if (result.status !== 0) return null
+    const sha = String(result.stdout ?? '').trim()
+    return sha || null
+  } catch {
+    return null
+  }
 }
 
 function createLiveDevelopmentApplyIo(options = {}) {
@@ -174,7 +190,11 @@ async function main(argv = process.argv) {
   if (envName === 'production') {
     let derived
     try {
-      derived = deriveProductionConfig(env, { target, mode: execution.mode })
+      derived = deriveProductionConfig(env, {
+        target,
+        mode: execution.mode,
+        gitSha: resolveGitSha(),
+      })
     } catch (error) {
       console.error(
         redactSecrets(error instanceof Error ? error.message : String(error), secretListFromEnv(env)),
@@ -183,13 +203,16 @@ async function main(argv = process.argv) {
       return
     }
 
+    // This prep never mutates: refusedMutations must stay true even when
+    // AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes, because the apply executor
+    // remains unwired and we still exit 2.
     const plan = {
       ...derived.plan,
       mode: execution.mode,
       reason: execution.reason,
       applyAuthorized: derived.applyAuthorized,
       writerEnabled: false,
-      refusedMutations: execution.mode === 'apply' ? !derived.applyAuthorized : true,
+      refusedMutations: true,
     }
 
     process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`)
