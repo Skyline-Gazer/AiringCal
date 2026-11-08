@@ -1,9 +1,9 @@
-# Shadow equivalence gate (#73)
+# Production parity tool — one-shot shadow compare (#73)
 
-Compares the normalized legacy export with the currently published snapshot,
-persists the consecutive-match streak, and reports whether a cutover is
-permitted. Read-only with respect to the published release: the only write is
-the streak record in the builder SQLite `builder_kv`.
+Compares a normalized legacy / v2 export with a candidate `PublicSnapshotV1`
+and reports equal/diff in one shot. This is the **data-integrity tool** for
+Production Acceptance gate 5 in [`production-acceptance.md`](./production-acceptance.md).
+It does **not** persist a match streak, expose `cutover_allowed`, or open traffic.
 
 ```bash
 pnpm exec tsx apps/node-jobs/src/cli/portable-shadow-gate.ts \
@@ -14,32 +14,31 @@ pnpm exec tsx apps/node-jobs/src/cli/portable-shadow-gate.ts \
 
 | Flag | Meaning |
 |---|---|
-| `--sqlite` | Builder SQLite checkpoint holding `migrate:shadow:streak` |
+| `--sqlite` | Builder SQLite path (required; used for optional leftover-key cleanup with `--reset`) |
 | `--legacy` | v2 R2 snapshot JSON **or** legacy public result JSON (no `schema_version`) |
-| `--candidate` | Current published `PublicSnapshotV1` JSON |
+| `--candidate` | Current / candidate `PublicSnapshotV1` JSON |
 | `--hydrated` | Optional legacy hydration sidecar (`{ "<subject_id>": {...} }`) |
-| `--reset` | Clear the streak and exit |
+| `--reset` | Delete any leftover `migrate:shadow:streak` key and exit (cleanup only; no counters rewritten) |
 
 ## Behaviour
 
 - Both sides go through the same normalization (`normalizeV2PublicExport`), then
   `compareShadowSnapshots` reports business differences (collection fields,
   subject ids, calendar, summary, images, NSFW).
-- Equal run → streak +1, `last_success_at` updated. Mismatch → streak reset to
-  `0`, up to 20 diffs stored in `last_diff_summary`, and the run exits **2**.
-- A corrupt/absent streak record is ignored: counting restarts from 0 instead of
-  trusting the stored value.
-- Cutover permitted only when the streak reaches **7** consecutive matches
-  (`cutover_allowed`).
-- Run it once per day (scheduler/cron); the streak is the operator-visible
-  evidence trail for the #73 gate.
+- Equal → stdout JSON `stage: shadow_gate_equal`, `equal: true`, `diff_count: 0`, exit **0**.
+- Mismatch → `stage: shadow_gate_mismatch`, `equal: false`, up to 20 diffs, exit **2**.
+- Usage / IO errors → exit **1**.
+- No streak mutation on compare. Historical streak keys may be cleared with `--reset`.
 
-Exit codes: `0` gate open, `2` gate closed (equal or diff), `1` usage/IO error.
+Pure file compare without sqlite: `portable-snapshot-compare.ts <left.json> <right.json>` (exit 2 on diff).
+Normalize first with `portable-v2-public-normalize.ts` when inputs are raw v2/legacy shapes.
 
 ## Not covered here
 
-- **KV budget acceptance** is a v2-specific condition (legacy per-subject KV
-  writes); the portable path performs no legacy KV writes, so there is nothing to
-  budget in this slice.
-- The cutover itself (publishing a v3 release, switching reads) and the 14-day
-  observation gate remain owner-approved manual steps.
+- **KV budget acceptance** is a v2-specific condition; the portable path performs no legacy KV writes.
+- Traffic switch, Writer enablement, and resource Apply are Owner gates in [`production-acceptance.md`](./production-acceptance.md) / [`cutover-rollback.md`](./cutover-rollback.md).
+- Legacy KV cleanup after cutover is Owner-flagged (`--owner-approved`), not a day timer — see cleanup section in the acceptance doc.
+
+## Historical decision
+
+An earlier design required **7 consecutive** daily matches (`cutover_allowed`) before cutover. That streak hard gate is retired; Production uses one-shot equal/diff plus the full acceptance checklist.

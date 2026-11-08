@@ -1,35 +1,34 @@
-# Shadow-gate checklist (v3 Production cutover pre-condition, #73)
+# One-shot Production parity checklist (#73)
 
-Owner-approved gate: the v3 Release may only go live after the shadow gate
-shows **7 consecutive daily matches** between the legacy read surface and the
-v3 candidate Release. Any mismatch resets the streak to 0.
+Operator checklist for **Production Acceptance gate 5** (data integrity one-shot compare). Authoritative order: [`production-acceptance.md`](./production-acceptance.md).
 
-> **OWNER_ACTION:** execution of every item below waits on the owner's
-> staging credential export (isolated staging R2 checkpoint + public bucket +
-> staging Environment secrets). No CI or agent process performs these steps.
+> **OWNER_ACTION:** live Production credentials, Writer dispatch, and traffic switch wait on Owner authorization. This checklist does not enable `AIRINGCAL_WRITER_ENABLED` or run Production Apply.
 
 ## Preconditions
 
-- [ ] Isolated staging credentials exported (never production secrets):
-      `AIRINGCAL_CHECKPOINT_S3_*`, `AIRINGCAL_PUBLIC_S3_*`, `BGM_TOKEN`,
-      `AIRINGCAL_USERS_JSON` pointing at staging buckets
-- [ ] `AIRINGCAL_WRITER_ENABLED` stays `false` (unset) on GitHub until this checklist passes
-- [ ] Fresh checkpoint backup exists (`portable-checkpoint-backup`)
+- [ ] Production preflight dry-run PASS ([`production-acceptance.md`](./production-acceptance.md) gate 1)
+- [ ] Production resources exist / isolation probe PASS when in Owner Apply phase (gates 2–3)
+- [ ] Candidate Release exists from Bangumi Full Sync into the Production checkpoint (gate 4), **or** a scoped compare input Owner approved for prep/smoke
+- [ ] `AIRINGCAL_WRITER_ENABLED` remains unset/`false` on Production until Owner GO for Writer use
+- [ ] Fresh checkpoint backup available if comparing against a mutable builder SQLite (`portable-checkpoint-backup`)
 
-## Daily shadow runs (repeat until 7 consecutive matches)
+## One-shot compare (single PASS — not a streak)
 
-- [ ] Run portable builder against staging (`AIRINGCAL_BUILDER=portable AIRINGCAL_BUILDER_PUBLISH=true tsx apps/node-jobs/src/cli/sync-main.ts`)
-- [ ] Run the shadow gate:
-      `tsx apps/node-jobs/src/cli/portable-shadow-gate.ts --sqlite <path> --legacy legacy.json --candidate public-snapshot.json` → exit **0**
-- [ ] Record match/miss in #147; any miss resets the streak and blocks cutover
-- [ ] Two distinct Release generations exist (manifests + snapshots + pointer) before declaring the gate satisfied
-- [ ] Pointer CAS / 412 conflict behavior observed on the real bucket
-      (note: MinIO CI PASS is compatibility-only, **not** a real-R2 PASS)
-- [ ] Checkpoint restore after a clean run verified
-- [ ] Image completeness for the current pointer: all referenced originals/required thumbs readable
-- [ ] Reader (web-worker `AIRINGCAL_READ_MODE=v3-release` and/or v3-read-worker) serves the latest Release API/images consistently
+- [ ] Normalize inputs if needed:
+      `tsx apps/node-jobs/src/cli/portable-v2-public-normalize.ts <public.json> [hydrated.json]`
+- [ ] Run one-shot shadow gate:
+      `tsx apps/node-jobs/src/cli/portable-shadow-gate.ts --sqlite <path> --legacy <legacy.json> --candidate <public-snapshot.json>` → exit **0**, `equal: true`, `diff_count: 0`
+- [ ] Or pure compare: `tsx apps/node-jobs/src/cli/portable-snapshot-compare.ts <left.json> <right.json>` → exit **0**
+- [ ] Record equal/mismatch evidence on [#73](https://github.com/Skyline-Gazer/AiringCal/issues/73); mismatch is FAIL for gate 5 (re-run after fix — no “day N of 7”)
+- [ ] Core fields covered: collections, subject ids, calendar (and agreed image/NSFW fields)
 
-## Gate exit
+## Adjacent gates (do not confuse with streak)
 
-- [ ] 7 consecutive daily matches recorded on #147
-- [ ] Owner signs off on cutover per [`cutover-rollback.md`](./cutover-rollback.md)
+- [ ] Gate 6: R2 CAS / image completeness / MIME — separate from this compare
+- [ ] Gate 7–8: Reader / CDN / WAF — see [`reader-delivery-cutover.md`](./reader-delivery-cutover.md) patterns
+- [ ] Gate 9: rollback drill — [`cutover-rollback.md`](./cutover-rollback.md)
+- [ ] Gate 10: Owner GO/NO-GO before traffic switch
+
+## Historical decision
+
+Retired: “7 consecutive daily matches” and “any miss resets the streak.” Active rule is one successful one-shot equal compare as gate 5 inside the ten-gate Production Acceptance list.

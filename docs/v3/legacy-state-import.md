@@ -87,9 +87,9 @@ no release pointer changes and v2 reads keep serving the current snapshot.
 
 1. **Export** (read-only Cloudflare KV → `kv-export.json`): `portable-legacy-export.ts`, see above.
 2. **Import** (KV export → builder SQLite `subject_media`): `portable-legacy-state-import.ts`, this document.
-3. **Shadow gate** (normalized legacy vs published snapshot, seven-match cutover gate): [`shadow-gate.md`](./shadow-gate.md).
+3. **One-shot parity** (normalized legacy vs candidate snapshot): [`shadow-gate.md`](./shadow-gate.md) — Production Acceptance gate 5 in [`production-acceptance.md`](./production-acceptance.md).
 
-Still open: the owner-approved cutover / rollback runbook execution.
+Still open: Owner-authorized Production Apply / Full Sync / GO-NO-GO traffic switch (not this prep).
 
 ### Why there is no D1/R2 export adapter (decision, 2026-10-17)
 

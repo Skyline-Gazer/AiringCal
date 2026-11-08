@@ -32,7 +32,7 @@
 
 - `staging` dual-bucket setup, `r2.dev` URL, and `scripts/setup-staging.sh` remain **legacy migration/rollback sources**, not the desired fresh Development bootstrap.
 - Earlier ADRs and phase plans discussing CNB-primary, Docker/Compose, QingLong, fixed `public/manifest.json`, separate checkpoint/public production buckets or `dev` SHA snapshots are **historical**. Do not copy their commands into the new deployment procedure.
-- This document is a compact current entrypoint, not a replacement for contracts or archived evidence: see [ADR 0001](adr-0001-release-contract-and-adapters.md), [GHA portable writer](gha-portable-writer.md), [EdgeOne read store](edgeone-store.md), and the [v2 production rollback runbook](cutover-rollback.md).
+- This document is a compact current entrypoint, not a replacement for contracts or archived evidence: see [ADR 0001](adr-0001-release-contract-and-adapters.md), [GHA portable writer](gha-portable-writer.md), [EdgeOne read store](edgeone-store.md), [Production Acceptance](production-acceptance.md), and the [Production cutover/rollback runbook](cutover-rollback.md).
 
 ## Maintainer closeout checklist
 

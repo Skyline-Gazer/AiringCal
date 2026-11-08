@@ -407,7 +407,7 @@ test('runShadowGateStatus stays pending and never spawns mutating portable-shado
         return { ok: true, code: 0, timedOut: false, stdout: '{\"streak\":1}\n', stderr: '' }
       },
     })
-    assert.equal(calls.length, 0, 'must not invoke portable-shadow-gate (writes migrate:shadow:streak)')
+    assert.equal(calls.length, 0, 'must not invoke portable-shadow-gate from Development accept by default')
     assert.equal(gate.id, 'shadow_gate')
     assert.equal(gate.ok, true)
     assert.equal(gate.measurable, false)
@@ -421,16 +421,19 @@ test('runShadowGateStatus stays pending and never spawns mutating portable-shado
   }
 })
 
-test('runShadowGateStatus reports RO streak JSON when provided without spawning CLI', async () => {
+test('runShadowGateStatus reports RO one-shot equal JSON when provided without spawning CLI', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'accept-shadow-ro-'))
   const statusPath = join(dir, 'shadow-status.json')
   writeFileSync(
     statusPath,
     JSON.stringify({
+      equal: true,
+      diff_count: 0,
+      stage: 'shadow_gate_equal',
+      // historical fields may still appear; not Production hard gates
       streak: 7,
       required_matches: 7,
       cutover_allowed: true,
-      equal: true,
       updated_at: 1_700_000_000,
     }),
   )
@@ -448,6 +451,8 @@ test('runShadowGateStatus reports RO streak JSON when provided without spawning 
     assert.equal(gate.status, 'ok')
     assert.equal(gate.measurable, true)
     assert.equal(gate.ok, true)
+    assert.equal(gate.equal, true)
+    assert.equal(gate.diff_count, 0)
     assert.equal(gate.streak, 7)
     assert.equal(gate.cutover_allowed, true)
   } finally {

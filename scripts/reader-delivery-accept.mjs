@@ -3,11 +3,16 @@
  * Reader & delivery acceptance checklist (PR-D / Task 5.2).
  *
  * Composes baseline+post bench JSON gates, portable e2e, optional CF smoke,
- * MIME sample HEAD, rollback dry-run, shadow-gate read-only status, and
- * cutover checklist Owner-pending items.
+ * MIME sample HEAD, rollback dry-run, optional one-shot parity RO status JSON,
+ * and cutover checklist Owner-pending items.
  *
  * Exit 0 only when all *measurable* gates pass. Owner-pending items are
  * printed separately and never the sole reason for a non-zero exit.
+ *
+ * Production data-integrity tool is one-shot `portable-shadow-gate` / snapshot
+ * compare ([docs/v3/production-acceptance.md](../docs/v3/production-acceptance.md)
+ * gate 5). This accept script keeps RO status support and does not require a
+ * seven-match streak for Development reader acceptance.
  *
  * Usage:
  *   node scripts/reader-delivery-accept.mjs
@@ -757,8 +762,9 @@ export async function runShadowGateStatus({ skip = false, spawnImpl = spawnCaptu
       reason: 'skipped via --skip-shadow-gate',
     }
   }
-  // Never invoke portable-shadow-gate: it mutates migrate:shadow:streak.
-  // Prefer an Owner-supplied RO status JSON, else pending.
+  // Prefer Owner-supplied RO status JSON (one-shot equal/diff shape).
+  // Development accept does not require spawning portable-shadow-gate here;
+  // Production gate 5 runs that CLI (or portable-snapshot-compare) explicitly.
   void spawnImpl
   const statusPath = process.env.AIRINGCAL_SHADOW_GATE_STATUS_JSON?.trim()
   if (!statusPath) {
@@ -768,7 +774,7 @@ export async function runShadowGateStatus({ skip = false, spawnImpl = spawnCaptu
       measurable: false,
       status: 'pending',
       reason:
-        'shadow-gate read-only pending: no RO reader (set AIRINGCAL_SHADOW_GATE_STATUS_JSON); refuse mutating portable-shadow-gate',
+        'one-shot parity RO status pending: set AIRINGCAL_SHADOW_GATE_STATUS_JSON to equal/diff JSON from portable-shadow-gate (Production tool); Development accept does not require streak counters',
     }
   }
   const resolved = resolve(ROOT, statusPath)
@@ -805,6 +811,9 @@ export async function runShadowGateStatus({ skip = false, spawnImpl = spawnCaptu
       path: resolved,
     }
   }
+  const equal = status.equal === true || status.stage === 'shadow_gate_equal'
+  const diffCount = Number(status.diff_count)
+  // Historical RO payloads may still carry streak fields; they are not Production hard gates.
   const streak = Number(status.streak)
   const cutoverAllowed = status.cutover_allowed === true
   return {
@@ -813,11 +822,13 @@ export async function runShadowGateStatus({ skip = false, spawnImpl = spawnCaptu
     measurable: true,
     status: 'ok',
     reason: null,
+    equal,
+    diff_count: Number.isFinite(diffCount) ? diffCount : null,
     streak: Number.isFinite(streak) ? streak : null,
     cutover_allowed: cutoverAllowed,
     required_matches: status.required_matches ?? null,
     path: resolved,
-    note: 'read-only status JSON; portable-shadow-gate not invoked',
+    note: 'read-only status JSON; Production one-shot parity tool is portable-shadow-gate / portable-snapshot-compare (no seven-match requirement)',
   }
 }
 

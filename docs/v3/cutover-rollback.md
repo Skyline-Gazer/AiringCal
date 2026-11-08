@@ -1,21 +1,25 @@
 # Cutover and rollback runbook (#73)
 
-> **Scope (2026-11-07): future v2→v3 Production cutover only.** The one-bucket **Development** cutover follows [`reader-delivery-cutover.md`](reader-delivery-cutover.md); the legacy dual-bucket staging real-R2 proof is complete ([#147](https://github.com/Skyline-Gazer/AiringCal/issues/147)). Neither replaces, nor is replaced by, the steps below.
+> **Scope (2026-11-08): future v2→v3 Production cutover only.** Authoritative Production Acceptance order: [`production-acceptance.md`](./production-acceptance.md). The one-bucket **Development** cutover follows [`reader-delivery-cutover.md`](reader-delivery-cutover.md); the legacy dual-bucket staging real-R2 proof is complete ([#147](https://github.com/Skyline-Gazer/AiringCal/issues/147)). Neither replaces, nor is replaced by, the steps below.
 
 Owner-approved, manual steps for switching public reads to the v3 portable
 release and for rolling back. **CI never performs any step in this document**: no
-production resource is created, deployed, or deleted by a merge.
+production resource is created, deployed, or deleted by a merge. This prep change
+set does **not** authorize Production Apply, `main` merge, or enabling
+`AIRINGCAL_WRITER_ENABLED`.
 
 ## Preconditions (all must hold)
 
 | Gate | How to check |
 |---|---|
-| Shadow equivalence: 7 consecutive daily matches | `tsx apps/node-jobs/src/cli/portable-shadow-gate.ts --sqlite <path> --legacy <legacy.json> --candidate <public-snapshot.json>` exits **0** |
-| Legacy import complete | `portable-legacy-state-import` summary with `errored: 0` (or every `errored` subject re-run without `--resume`) |
+| Production Acceptance gates 1–9 PASS | Follow [`production-acceptance.md`](./production-acceptance.md); do not treat streak=7 or a 14-day wait as substitutes |
+| One-shot shadow / snapshot compare equal | `tsx apps/node-jobs/src/cli/portable-shadow-gate.ts --sqlite <path> --legacy <legacy.json> --candidate <public-snapshot.json>` exits **0** (`equal: true`) — see [`shadow-gate.md`](./shadow-gate.md) |
+| Bangumi-first Production Release (or scoped import Owner-approved) | Writer `workflow_dispatch` target=`production` `force_mode=full` into empty Production checkpoint, or scoped legacy import only for proven non-rebuildable fields |
 | Operator config validates | `tsx apps/node-jobs/src/cli/airingcal-config-validate.ts <airingcal.json>` plus `airingcal-setup` emit |
 | Fresh checkpoint backup | `portable-checkpoint-backup` succeeded; file present in `AIRINGCAL_BUILDER_BACKUP_DIR` |
 | Real-bucket publish safety verified | Immutable put is a no-op on re-publish, changed bytes are rejected, stale `If-Match` pointer commit conflicts (see [`cloudflare-read-worker.md`](./cloudflare-read-worker.md)) |
 | Previous release retained | Public-store GC keeps ≥5 generations and ≥30 days; do not run `--apply`/`--apply-images` on the day of cutover |
+| Owner GO recorded | Explicit GO on [#73](https://github.com/Skyline-Gazer/AiringCal/issues/73) before traffic switch (gate 10) |
 
 ## Cutover
 
@@ -26,24 +30,40 @@ export AIRINGCAL_BUILDER_BACKUP_DIR=/data/backups
 # 1. checkpoint backup (rollback anchor)
 tsx apps/node-jobs/src/cli/portable-checkpoint-backup.ts
 
-# 2. shadow gate must exit 0 (7 consecutive matches)
+# 2. one-shot parity must exit 0 (equal) — not a 7-run streak
 tsx apps/node-jobs/src/cli/portable-shadow-gate.ts \
   --sqlite "$AIRINGCAL_BUILDER_SQLITE_PATH" --legacy legacy.json --candidate public-snapshot.json
 
-# 3. publish/refresh the v3 release (portable builder path, needs BGM_TOKEN + AIRINGCAL_USERS_JSON)
+# 3. publish/refresh only under Owner-authorized Production Writer path
+#    (GHA workflow_dispatch target=production force_mode=full preferred for first Release)
+#    local portable publish remains an operator fallback when credentials allow:
 AIRINGCAL_BUILDER=portable AIRINGCAL_BUILDER_PUBLISH=true \
   tsx apps/node-jobs/src/cli/sync-main.ts
 
-# 4. staging check of the Workers read gateway (manual, owner credentials)
-wrangler deploy --config apps/v3-read-worker/wrangler.toml
-curl -sf https://<staging-host>/api/health   # publish.generation must equal the published generation
+# 4. Production readers check (manual, owner credentials; distinct from Development hosts)
+wrangler deploy --config apps/v3-read-worker/wrangler.toml --env-file /dev/null
+curl -sf https://<production-host>/api/health   # publish.generation must equal the published generation
 ```
 
 Then confirm reads per [`web-worker-public-api.md`](../reference/web-worker-public-api.md)
-contract (`/api/health`, `/api/collections`, `/api/calendar`, `/image/:hash`) and
-start the observation window: run the shadow gate daily for **14 days** before
-enabling legacy cleanup; any mismatch resets the streak to 0 and blocks further
-cutover steps.
+contract (`/api/health`, `/api/collections`, `/api/calendar`, `/image/:hash`).
+
+### After traffic switch (no calendar observation timer)
+
+Keep the previous system as rollback until Owner says otherwise. Re-run one-shot
+parity and reader/CDN checks if releases continue. Legacy per-subject KV cleanup
+is **Owner-flagged**, not a 14-day wait:
+
+```bash
+tsx apps/node-jobs/src/cli/portable-legacy-cleanup.ts --dry-run
+tsx apps/node-jobs/src/cli/portable-legacy-cleanup.ts --owner-approved
+```
+
+### Historical decision
+
+Earlier runbooks required daily shadow for **14 days** after cutover and **7**
+consecutive matches before cutover. Those hard day/run gates are retired; active
+policy is [`production-acceptance.md`](./production-acceptance.md).
 
 ## Rollback (pointer CAS, C9)
 
