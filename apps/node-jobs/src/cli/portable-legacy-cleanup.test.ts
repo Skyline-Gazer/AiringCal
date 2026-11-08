@@ -106,19 +106,29 @@ function seededKv(count: number): FakeCleanupKv {
   return kv
 }
 
-test('cleanup deletes nothing before the fourteen-day observation window', async () => {
+test('cleanup deletes nothing without owner approval even after switch', async () => {
   const d1 = new FakeCleanupD1()
   d1.rows = [subjectRow(1)]
-  d1.appState.set(migrateReadModeKey(), {
-    mode: 'r2',
-    switched_at: now - 10 * DAY,
-  } satisfies ReadModeV1)
+  r2Mode(d1)
   const kv = seededKv(1)
 
-  const cursor = await runLegacyCleanup(d1, kv, new FakeCleanupR2(), now)
+  const cursor = await runLegacyCleanup(d1, kv, new FakeCleanupR2(), now, false)
 
   assert.equal(cursor.deleted_count, 0)
   assert.equal(kv.deleted, 0)
+})
+
+test('cleanup deletes when owner-approved and r2 mode with valid pointer', async () => {
+  const d1 = new FakeCleanupD1()
+  d1.rows = [subjectRow(1)]
+  r2Mode(d1)
+  const kv = seededKv(1)
+
+  const cursor = await runLegacyCleanup(d1, kv, new FakeCleanupR2(), now, true)
+
+  assert.equal(cursor.deleted_count, 4)
+  assert.equal(kv.deleted, 4)
+  assert.equal(cursor.last_subject_id, 1)
 })
 
 test('cleanup deletes at most one hundred legacy keys per run', async () => {
@@ -127,7 +137,7 @@ test('cleanup deletes at most one hundred legacy keys per run', async () => {
   r2Mode(d1)
   const kv = seededKv(30)
 
-  const cursor = await runLegacyCleanup(d1, kv, new FakeCleanupR2(), now)
+  const cursor = await runLegacyCleanup(d1, kv, new FakeCleanupR2(), now, true)
 
   assert.equal(cursor.deleted_count, 100)
   assert.equal(kv.deleted, 100)
@@ -140,8 +150,8 @@ test('cleanup resumes from the persisted cursor on a later run', async () => {
   r2Mode(d1)
   const kv = seededKv(30)
 
-  const first = await runLegacyCleanup(d1, kv, new FakeCleanupR2(), now)
-  const second = await runLegacyCleanup(d1, kv, new FakeCleanupR2(), now + DAY)
+  const first = await runLegacyCleanup(d1, kv, new FakeCleanupR2(), now, true)
+  const second = await runLegacyCleanup(d1, kv, new FakeCleanupR2(), now + DAY, true)
 
   assert.equal(first.last_subject_id, 25)
   assert.equal(second.deleted_count, 100 + 20)
@@ -157,7 +167,7 @@ test('cleanup aborts without deletes when the verified R2 generation is missing'
   const r2 = new FakeCleanupR2()
   r2.hasObject = false
 
-  const cursor = await runLegacyCleanup(d1, kv, r2, now)
+  const cursor = await runLegacyCleanup(d1, kv, r2, now, true)
 
   assert.equal(cursor.deleted_count, 0)
   assert.equal(kv.deleted, 0)
@@ -168,7 +178,7 @@ test('cleanup stays idle while read mode is legacy', async () => {
   d1.rows = [subjectRow(1)]
   const kv = seededKv(1)
 
-  const cursor = await runLegacyCleanup(d1, kv, new FakeCleanupR2(), now)
+  const cursor = await runLegacyCleanup(d1, kv, new FakeCleanupR2(), now, true)
 
   assert.equal(cursor.deleted_count, 0)
   assert.equal(kv.deleted, 0)
@@ -191,7 +201,7 @@ test('a failing delete stops the run without advancing past the failed subject',
     },
   })
 
-  const cursor = await runLegacyCleanup(d1, failingKv as unknown as LegacyCleanupKv, new FakeCleanupR2(), now)
+  const cursor = await runLegacyCleanup(d1, failingKv as unknown as LegacyCleanupKv, new FakeCleanupR2(), now, true)
 
   assert.equal(cursor.last_subject_id, 2)
   assert.equal(cursor.deleted_count, 8)
@@ -222,7 +232,7 @@ test('decodeCleanupCursor rejects malformed persisted cursors via getAppState pa
   d1.appState.set(migrateCleanupCursorKey(), { last_subject_id: 'bogus', deleted_count: -1 })
   const kv = seededKv(1)
 
-  const cursor = await runLegacyCleanup(d1, kv, new FakeCleanupR2(), now)
+  const cursor = await runLegacyCleanup(d1, kv, new FakeCleanupR2(), now, true)
 
   assert.equal(cursor.last_subject_id, 1)
 })
