@@ -93,8 +93,9 @@ From `apps/web-worker/src/read-api.ts` (also exported as literals in `packages/v
 | Read-only v2 legacy state import (KV export → SQLite, batch ≤50, cursor/resumable) | `apps/node-jobs/src/cli/portable-legacy-state-import.ts`, `packages/v3-builder/src/sqlite-subject-media.ts` |
 | Read-only legacy KV export (Cloudflare KV list + bulk get → JSON) | `apps/node-jobs/src/adapters/cloudflare-kv-export.ts`, `apps/node-jobs/src/cli/portable-legacy-export.ts` |
 | Legacy import + rollback runbook (#73) | [`docs/v3/legacy-state-import.md`](./legacy-state-import.md) |
-| Shadow equivalence gate (streak + 7-match cutover gate, exit 0/2) | `apps/node-jobs/src/cli/portable-shadow-gate.ts`, `portable-shadow-gate.test.ts` |
-| Shadow gate runbook (#73) | [`docs/v3/shadow-gate.md`](./shadow-gate.md) |
+| Shadow / Production parity tool (one-shot equal/diff, exit 0/2) | `apps/node-jobs/src/cli/portable-shadow-gate.ts`, `portable-shadow-gate.test.ts` |
+| Shadow / parity runbook (#73) | [`docs/v3/shadow-gate.md`](./shadow-gate.md) |
+| Production Acceptance checklist (#73) | [`docs/v3/production-acceptance.md`](./production-acceptance.md) |
 | Cutover + rollback runbook (#73) | [`docs/v3/cutover-rollback.md`](./cutover-rollback.md) |
 | Checkpoint rollback drill (backup → diverge → restore, state verified) | [`docs/v3/cutover-rollback.md`](./cutover-rollback.md) "Local drill" |
 | Cross-store read parity (filesystem vs R2 gateways byte-identical) | `packages/v3-read/src/read-gateway-parity.test.ts` |

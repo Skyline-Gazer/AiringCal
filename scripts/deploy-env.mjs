@@ -6,18 +6,23 @@
  * Live Cloudflare / EdgeOne / GitHub mutations require --apply AND credentials.
  * Isolation proof failure aborts cutover — never falls back to dual-bucket.
  */
-import { pathToFileURL } from 'node:url'
+import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
 
 import {
   DEVELOPMENT_DEFAULTS,
   applyStagingAliases,
   deriveDevelopmentConfig,
+  deriveProductionConfig,
   evaluateIsolationProbe,
   loadDotEnvFile,
+  loadProductionDeployEnv,
   missingScopeExitMessage,
   parseDeployArgs,
   redactSecrets,
+  resolveDeployDotenvPath,
   resolveExecutionMode,
   runDevelopmentApply,
 } from './deploy-env-lib.mjs'
@@ -30,6 +35,7 @@ function usage(exitCode = 1) {
   node scripts/deploy-env.mjs --apply --i-am-sure-production   # production only
 
 Env: AIRINGCAL_ENV=development|production (required)
+Production: AIRINGCAL_DOTENV_PATH must point at .env.production (file overrides shell; no STAGING_/DEVELOPMENT_ inheritance)
 `)
   process.exit(exitCode)
 }
@@ -47,6 +53,20 @@ function secretListFromEnv(env) {
     env.AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY,
     env.AIRINGCAL_EDGEONE_API_TOKEN,
   ]
+}
+
+function resolveGitSha(cwd = process.cwd()) {
+  try {
+    const result = spawnSync('git', ['rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+      cwd,
+    })
+    if (result.status !== 0) return null
+    const sha = String(result.stdout ?? '').trim()
+    return sha || null
+  } catch {
+    return null
+  }
 }
 
 function createLiveDevelopmentApplyIo(options = {}) {
@@ -137,9 +157,50 @@ async function main(argv = process.argv) {
     usage(1)
     return
   }
+  // Resolve dotenv path. Production forbids the Development default `.env` and
+  // requires basename `.env.production`. Development keeps `.env` default.
+  let dotenvPath
+  try {
+    const hintedEnv = String(process.env.AIRINGCAL_ENV ?? '').trim().toLowerCase()
+    dotenvPath = resolve(
+      resolveDeployDotenvPath({
+        envName: hintedEnv || 'development',
+        dotenvPathEnv: process.env.AIRINGCAL_DOTENV_PATH,
+      }),
+    )
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+    return
+  }
 
-  const dotenvPath = resolve(process.env.AIRINGCAL_DOTENV_PATH ?? '.env')
-  const loaded = loadDotEnvFile(dotenvPath, process.env)
+  // Peek AIRINGCAL_ENV from the chosen file (without shell override) so we can
+  // pick Production file-over-shell loading vs Development shell-wins loading.
+  const filePeek = loadDotEnvFile(dotenvPath, {}, { override: true })
+  const fileEnvName = String(filePeek.AIRINGCAL_ENV ?? process.env.AIRINGCAL_ENV ?? '')
+    .trim()
+    .toLowerCase()
+
+  let loaded
+  try {
+    if (fileEnvName === 'production') {
+      // Re-validate path against production rules even if shell AIRINGCAL_ENV was unset/mis-set.
+      dotenvPath = resolve(
+        resolveDeployDotenvPath({
+          envName: 'production',
+          dotenvPathEnv: process.env.AIRINGCAL_DOTENV_PATH,
+        }),
+      )
+      loaded = loadProductionDeployEnv(dotenvPath, process.env)
+    } else {
+      loaded = loadDotEnvFile(dotenvPath, process.env)
+    }
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+    return
+  }
+
   const { env, warnings } = applyStagingAliases(loaded)
   for (const warning of warnings) {
     console.error(`[deploy-env] ${warning}`)
@@ -171,31 +232,58 @@ async function main(argv = process.argv) {
     : String(env.AIRINGCAL_DEPLOY_TARGET ?? flags.target ?? 'both').trim() || 'both'
 
   if (envName === 'production') {
-    const productionPlan = {
-      env: 'production',
+    let derived
+    try {
+      derived = deriveProductionConfig(env, {
+        target,
+        mode: execution.mode,
+        gitSha: resolveGitSha(),
+      })
+    } catch (error) {
+      console.error(
+        redactSecrets(error instanceof Error ? error.message : String(error), secretListFromEnv(env)),
+      )
+      process.exitCode = 1
+      return
+    }
+
+    // This prep never mutates: refusedMutations must stay true even when
+    // AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes, because the apply executor
+    // remains unwired and we still exit 2.
+    const plan = {
+      ...derived.plan,
       mode: execution.mode,
       reason: execution.reason,
-      target,
-      refusedMutations: execution.mode !== 'apply',
-      note:
-        'Production bootstrap stays out of scope for this change. Development cutover uses airingcal-development only.',
-      steps: [
-        {
-          id: 'refuse-or-owner-force',
-          title:
-            execution.mode === 'apply'
-              ? 'Owner-forced production apply (not implemented in this slice)'
-              : 'Dry-run only — pass --apply --i-am-sure-production to force (still Owner-gated)',
-        },
-      ],
+      applyAuthorized: derived.applyAuthorized,
+      writerEnabled: false,
+      refusedMutations: true,
     }
-    process.stdout.write(`${JSON.stringify(productionPlan, null, 2)}\n`)
-    if (execution.mode === 'apply') {
+
+    process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`)
+
+    if (execution.mode === 'dry-run') {
+      if (derived.missingCloudflareToken) {
+        console.error(
+          '[deploy-env] note: Cloudflare token absent — production dry-run plan only; live --apply stays unauthorized without AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes.',
+        )
+      }
+      return
+    }
+
+    // Apply path: require both --i-am-sure-production (already enforced) AND
+    // AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes. This prep never mutates.
+    if (!derived.applyAuthorized) {
       console.error(
-        'Production --apply is Owner-gated and not implemented in Task 4.2; no mutations performed.',
+        'not_authorized_in_this_change: Production --apply refused without AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes; no mutations performed.',
       )
       process.exitCode = 2
+      return
     }
+
+    console.error(
+      'not_authorized_in_this_change: Production apply executor is not wired in this prep; no mutations performed.',
+    )
+    process.exitCode = 2
     return
   }
 

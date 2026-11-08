@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "kind": "production_acceptance_checklist",
+  "issue": 73,
+  "project": 7,
+  "generated_by": "P4 Task 8 governance sync pack",
+  "status": "prep_not_authorized",
+  "executed_by_agent": false,
+  "environment_reason": "production-full-clean-deploy-prep-only",
+  "tried": "In-repo prep: day/run hard gates retired in code+docs; Production Apply / main / Writer enable remain unauthorized. Owner posts CURRENT STATUS from docs/v3/fixtures/issue-73-status-draft.md after merge.",
+  "code_status": "prep_docs_and_tooling",
+  "production_apply_authorized": false,
+  "writer_enabled": false,
+  "project_7_status_note": "Todo/In Progress until Owner Apply evidence exists; do not mark Done from prep alone",
+  "source_of_truth": {
+    "current_state": "docs/v3/current-state.md",
+    "production_acceptance": "docs/v3/production-acceptance.md",
+    "issue_73_status_draft": "docs/v3/fixtures/issue-73-status-draft.md"
+  },
+  "policy": {
+    "neverFakeReceipts": true,
+    "noDevelopmentCloneOrObjectCopy": true,
+    "noProductionApplyInThisPrep": true,
+    "noMainMergeInThisPrep": true,
+    "noWriterEnableInThisPrep": true,
+    "retiredHardGates": ["7_consecutive_shadow_matches", "14_day_observation_before_cleanup"]
+  },
+  "items": [
+    {
+      "id": "production-preflight-dry-run",
+      "gate": 1,
+      "title": "Production Preflight identity/token/zone/domain/Git SHA dry-run plan PASS",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "Filled gitignored .env.production from .env.production.example; record dry-run plan evidence",
+      "command": "AIRINGCAL_DOTENV_PATH=.env.production AIRINGCAL_ENV=production node scripts/deploy-env.mjs --dry-run",
+      "gate_rule": "plan.bucket === 'airingcal-production'; no copy-* steps; writerEnabled false; --apply without AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes still refuses mutations"
+    },
+    {
+      "id": "create-production-resources",
+      "gate": 2,
+      "title": "Create empty airingcal-production + GH production Environment + CF Worker + EdgeOne overseas project",
+      "kind": "action",
+      "status": "blocked_not_authorized",
+      "requiresOwner": "Separate AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED + Owner Apply; distinct names from Development/Staging/v2",
+      "command": null,
+      "gate_rule": "Empty bucket only; abort if public/ or checkpoints/ already populated without separate wipe authorization"
+    },
+    {
+      "id": "isolation-probe",
+      "gate": 3,
+      "title": "Isolation probe PASS on Production public host",
+      "kind": "action",
+      "status": "blocked_not_authorized",
+      "requiresOwner": "Resources from gate 2; anonymous GET/HEAD of checkpoint probe must be 403 before writer publish",
+      "command": null,
+      "gate_rule": "plan step isolation-probe; GET+HEAD 403"
+    },
+    {
+      "id": "bangumi-full-sync",
+      "gate": 4,
+      "title": "Bangumi first Full Sync into empty Production checkpoint",
+      "kind": "action",
+      "status": "blocked_not_authorized",
+      "requiresOwner": "Enable AIRINGCAL_WRITER_ENABLED only under separate authorization; workflow_dispatch target=production force_mode=full",
+      "command": "GitHub Actions portable-writer.yml workflow_dispatch target=production force_mode=full",
+      "gate_rule": "First Release from Bangumi Full Sync; no Development checkpoint object copy"
+    },
+    {
+      "id": "oneshot-v2-core-diff",
+      "gate": 5,
+      "title": "Data integrity one-shot compare vs v2 core fields / collections / calendar",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "Legacy + Production candidate snapshots; record equal evidence on #73",
+      "command": "pnpm exec tsx apps/node-jobs/src/cli/portable-shadow-gate.ts --sqlite <path> --legacy <v2.json> --candidate <prod-snapshot.json>",
+      "gate_rule": "exit 0 and equal:true / diff_count:0; no streak/cutover_allowed hard gate"
+    },
+    {
+      "id": "r2-cas-image-mime",
+      "gate": 6,
+      "title": "R2 checkpoint/release CAS, image completeness, MIME verification",
+      "kind": "action",
+      "status": "blocked_not_authorized",
+      "requiresOwner": "Live Production bucket after Full Sync",
+      "command": null,
+      "gate_rule": "CAS conflict behavior + images readable + MIME OK on airingcal-production"
+    },
+    {
+      "id": "cf-eo-reader-parity",
+      "gate": 7,
+      "title": "Cloudflare / EdgeOne Reader API + generation + image 302 parity",
+      "kind": "action",
+      "status": "blocked_not_authorized",
+      "requiresOwner": "Production reader hosts/credentials",
+      "command": "node scripts/reader-delivery-accept.mjs (Production hosts; RO status / one-shot compare tool)",
+      "gate_rule": "Both readers agree on generation/content hash; GET /image/<hash> → 302"
+    },
+    {
+      "id": "cdn-waf-cache",
+      "gate": 8,
+      "title": "CDN / WAF checkpoint deny + cache correctness",
+      "kind": "action",
+      "status": "blocked_not_authorized",
+      "requiresOwner": "Production public host rules applied",
+      "command": null,
+      "gate_rule": "Host-scoped WAF deny checkpoints/**; cache rules for /images/ + /snapshots/ + pointer bypass"
+    },
+    {
+      "id": "rollback-rollforward-drill",
+      "gate": 9,
+      "title": "Rollback + roll-forward drill PASS",
+      "kind": "action",
+      "status": "pending_owner",
+      "requiresOwner": "portable-release-rollback receipt; Owner --apply --writer-frozen only under freeze authorization",
+      "command": "pnpm exec tsx apps/node-jobs/src/cli/portable-release-rollback.ts (see docs/v3/cutover-rollback.md)",
+      "gate_rule": "Drill PASS + resume rule confirmed before re-enabling Writer"
+    },
+    {
+      "id": "owner-go-no-go",
+      "gate": 10,
+      "title": "Owner explicit GO/NO-GO before traffic switch",
+      "kind": "decision",
+      "status": "pending_owner",
+      "requiresOwner": "Record GO or NO-GO on #73; keep old system as rollback until Owner says otherwise",
+      "command": null,
+      "gate_rule": "Traffic switch only after explicit Owner GO; prep CI green does not imply GO"
+    }
+  ]
+}

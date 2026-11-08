@@ -50,7 +50,8 @@ and [Project #7](https://github.com/orgs/Skyline-Gazer/projects/7) (authoritativ
 | [`v3/cloudflare-read-worker.md`](v3/cloudflare-read-worker.md) | CF Workers entry, R2 binding/ETag contract, staging checklist |
 | [`v3/edgeone-store.md`](v3/edgeone-store.md) | EdgeOne Blob store + read gateway, why not KV |
 | [`v3/legacy-state-import.md`](v3/legacy-state-import.md) | #73 export → import pipeline (KV), D1/R2 scope decision |
-| [`v3/shadow-gate.md`](v3/shadow-gate.md) | Seven-match shadow-equivalence gate |
+| [`v3/production-acceptance.md`](v3/production-acceptance.md) | **Authoritative** Production Full Clean Deploy 10-gate GO/NO-GO checklist (#73); Project #7 SoT with [`v3/current-state.md`](v3/current-state.md); drafts in [`v3/fixtures/issue-73-status-draft.md`](v3/fixtures/issue-73-status-draft.md) + [`v3/fixtures/production-acceptance-checklist.json`](v3/fixtures/production-acceptance-checklist.json) |
+| [`v3/shadow-gate.md`](v3/shadow-gate.md) | One-shot Production parity compare (equal/diff; not a streak gate) |
 | [`v3/cutover-rollback.md`](v3/cutover-rollback.md) | Owner-approved v2→v3 **Production** cutover/rollback runbook (#73) + executed drill — not the Development cutover |
 | [`v3/reader-delivery-cutover.md`](v3/reader-delivery-cutover.md) | PR-D reader-domain cutover runbook (parity → CNAME → r2.dev) + Owner-pending checklist hook |
 | [`v3/airingcal-config.example.yaml`](v3/airingcal-config.example.yaml) | `airingcal.yaml` operator config (JSON twin alongside) |

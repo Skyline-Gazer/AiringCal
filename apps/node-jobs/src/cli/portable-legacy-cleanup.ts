@@ -19,11 +19,9 @@ import {
   type RunContext,
 } from '../adapters/index.ts'
 
-export const LEGACY_CLEANUP_OBSERVATION_DAYS = 14
 export const MAX_LEGACY_KEYS_PER_RUN = 100
 
 const POINTER_KEY = 'public:current'
-const DAY_SECONDS = 86_400
 const LOWERCASE_SHA256 = /^[0-9a-f]{64}$/
 const EMPTY_META = {
   duration: 0,
@@ -128,12 +126,10 @@ export async function runLegacyCleanup(
   kv: LegacyCleanupKv,
   dataR2: LegacyCleanupDataR2,
   now: number,
+  ownerApproved: boolean,
 ): Promise<CleanupCursorV1> {
   const readMode = await d1.getAppState(migrateReadModeKey(), decodeReadMode)
-  const switchedAt = readMode?.mode === 'r2' && readMode.switched_at !== null
-    ? readMode.switched_at
-    : null
-  if (switchedAt === null || now - switchedAt < LEGACY_CLEANUP_OBSERVATION_DAYS * DAY_SECONDS) {
+  if (readMode?.mode !== 'r2' || !ownerApproved) {
     return emptyCursor(now)
   }
   const pointerValue = await kv.getJson(POINTER_KEY)
@@ -194,17 +190,21 @@ function decodeCleanupCursor(value: unknown): CleanupCursorV1 | undefined {
   }
 }
 
-export function parseLegacyCleanupArgs(argv: string[]): { dryRun: boolean } {
+export function parseLegacyCleanupArgs(argv: string[]): { dryRun: boolean; ownerApproved: boolean } {
   let dryRun = false
+  let ownerApproved = false
   for (const arg of argv) {
     if (arg === '--dry-run') dryRun = true
-    else throw new Error(`Unknown argument: ${arg} (supported: --dry-run)`)
+    else if (arg === '--owner-approved') ownerApproved = true
+    else throw new Error(`Unknown argument: ${arg} (supported: --dry-run, --owner-approved)`)
   }
-  return { dryRun }
+  return { dryRun, ownerApproved }
 }
 
 export async function main(env: Record<string, string | undefined> = process.env, argv: string[] = process.argv.slice(2)): Promise<void> {
-  const { dryRun } = parseLegacyCleanupArgs(argv)
+  const { dryRun, ownerApproved } = parseLegacyCleanupArgs(argv)
+  // Destructive cleanup is a separate Owner-approved operation after cutover.
+  // Do not honor persistent env auto-approval (avoids accidental Production bootstrap coupling).
   const config = readNodeJobsConfig(env)
   if (!config.kvNamespaceId) throw new Error('AIRING_CAL_KV_NAMESPACE_ID is required for legacy cleanup')
   const deadlineAt = Date.now() + 10 * 60 * 1000
@@ -218,19 +218,24 @@ export async function main(env: Record<string, string | undefined> = process.env
   if (dryRun) {
     const readMode = await store.getAppState(migrateReadModeKey(), decodeReadMode)
     const switchedAt = readMode?.mode === 'r2' && readMode.switched_at !== null ? readMode.switched_at : null
-    const eligible = switchedAt !== null && now - switchedAt >= LEGACY_CLEANUP_OBSERVATION_DAYS * DAY_SECONDS
+    const pointerValue = await kv.getJson(POINTER_KEY)
+    const pointer = isValidPointer(pointerValue) ? pointerValue : null
+    const pointerReadable = pointer !== null && await dataR2.get(pointer.r2_key) !== null
     const cursor = await store.getAppState(migrateCleanupCursorKey(), decodeCleanupCursor)
     console.log(JSON.stringify({
       status: 'info',
       stage: 'legacy_cleanup_dry_run',
       read_mode: readMode?.mode ?? null,
       switched_at: switchedAt,
-      observation_elapsed: eligible,
+      owner_approved: ownerApproved,
+      pointer_readable: pointerReadable,
+      eligible_except_approval: readMode?.mode === 'r2' && pointerReadable,
       cursor: cursor ?? null,
     }))
+    dataR2.close()
     return
   }
-  const result = await runLegacyCleanup(store, kv, dataR2, now)
+  const result = await runLegacyCleanup(store, kv, dataR2, now, ownerApproved)
   console.log(JSON.stringify({
     status: 'ok',
     stage: 'legacy_cleanup',

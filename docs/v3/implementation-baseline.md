@@ -88,7 +88,7 @@ not edited.
 | #70 | OPEN | Portable builder, SQLite, scheduler, Compose E2E | 2026-10-25 note: SQLite lease is not distributed fencing (#135). OCR still disabled | Remaining text still says the sizing CLI has not been run |
 | #71 | OPEN | Release, GC, thumbs, parity, portable/Compose E2E; sync tab removed (#128) | Frontend E2E left manual; real v3 publisher/CAS unverified. 2026-10-25 note records a fixed-key `public/manifest.json` across generations; this pass did not re-audit that code | Sizing line on the issue is already marked completed |
 | #72 | OPEN | CF R2 store, v3-read-worker local smoke, EdgeOne Blob fail-closed, `airingcal.yaml` / setup | Real staging on both platforms | — |
-| #73 | OPEN | KV export/import, shadow gate, cutover runbook, local rollback drill | Owner-run production KV export, owner cutover, 14-day observation. D1/R2 export adapters are explicitly not outstanding | Remaining text still lists anonymized sizing as open; #69 records it done |
+| #73 | OPEN | KV export/import, one-shot shadow parity, cutover runbook, local rollback drill, Production Acceptance checklist | Owner-run Production Apply / Bangumi Full Sync / GO-NO-GO traffic switch. Day/run hard gates retired. D1/R2 export adapters are explicitly not outstanding | Remaining text still lists anonymized sizing as open; #69 records it done |
 | #74 | CLOSED | OCR workflow exists and is disabled | Billing/credential, not code | — |
 | #133 #135 #136 #138 #139 | OPEN | Related CNB / runtime notes | Not closed here. ADR 0002 amendment (2026-10-27) already records GitHub as the write origin; #139’s body is still the pre-amendment plan | — |
 | #134 #137 | CLOSED | — | — | — |

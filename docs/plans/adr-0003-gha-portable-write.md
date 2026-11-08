@@ -165,3 +165,12 @@ Parent: #67. Decision: docs/plans/adr-0003-gha-portable-write.md
   D1/KV write; remove Docker/CNB write code (docs historical); 04:00 Shanghai
   self-judged full/incremental; public image bytes; retain `/image/:hash`.
 - No production workflow or bucket change accompanies this documentation PR.
+
+## Amendment — Production Full Clean Deploy (2026-11-08)
+
+- Production uses one new bucket `airingcal-production` (prefixes), never a clone/copy of Development/Staging/v2 buckets.
+- Production bootstrap creates independent `.env.production`, CF token/zone/custom domain, Reader Worker, EdgeOne overseas project, GitHub `production` Environment, fresh SQLite checkpoint/lease/release.
+- First Production Release comes from Bangumi Full Sync; scoped v2 migration only for fields proven non-rebuildable.
+- Mandatory 7 consecutive Shadow matches and 14-day observation are retired as Production hard gates.
+- New acceptance: clean init → Bangumi Full Sync → one-shot v2 core-field diff → R2 CAS/image/MIME → CF/EO reader parity → CDN/WAF/cache → rollback/roll-forward drill → Owner GO/NO-GO → traffic switch.
+- This amendment does not authorize Production Apply, `main` cutover, or enabling `AIRINGCAL_WRITER_ENABLED`.

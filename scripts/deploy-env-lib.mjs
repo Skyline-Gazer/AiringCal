@@ -33,6 +33,37 @@ export const DEVELOPMENT_DEFAULTS = Object.freeze({
     publicBucket: 'airingcal-staging-public',
   }),
 })
+export const PRODUCTION_DEFAULTS = Object.freeze({
+  repository: ALLOWED_REPOSITORY,
+  environment: 'production',
+  bucket: 'airingcal-production',
+  workerName: 'airing-cal-v3-read-production',
+  edgeoneProject: 'airingcal-edgeone-read-production',
+  edgeoneRegion: 'overseas',
+  s3Region: 'auto',
+  corsMethods: Object.freeze(['GET', 'HEAD']),
+  isolationProbeKey: 'checkpoints/_isolation-probe.txt',
+  isolationProbeBody: 'isolation-probe',
+})
+
+/** Bucket / resource names that must never be used as Production targets. */
+export const PRODUCTION_FORBIDDEN_COLLISION_NAMES = Object.freeze([
+  'airingcal-development',
+  'airingcal-staging-checkpoint',
+  'airingcal-staging-public',
+  'airing-cal-public',
+  'airing-cal-checkpoint',
+  'airing-cal-images',
+  'airing-cal-data',
+  // Live v2 Production worker — must never be overwritten by v3 Production readers.
+  'airing-cal-frontend',
+  // Existing EdgeOne reader project kept as rollback (keepOldProject).
+  'airingcal-edgeone-read',
+  DEVELOPMENT_DEFAULTS.workerName,
+  DEVELOPMENT_DEFAULTS.edgeoneProject,
+])
+
+
 
 /** @type {Readonly<Record<string, string>>} */
 export const STAGING_ALIAS_MAP = Object.freeze({
@@ -103,6 +134,73 @@ export function normalizeCorsAllowedMethods(methods) {
     )
   }
   return normalized
+}
+
+const PRODUCTION_DOTENV_BASENAME = '.env.production'
+
+/**
+ * Resolve which dotenv file deploy-env loads.
+ * Production MUST use an explicit AIRINGCAL_DOTENV_PATH whose basename is
+ * `.env.production` — never the Development root `.env` default.
+ *
+ * @param {{ envName: string, dotenvPathEnv?: string|null }} opts
+ * @returns {string}
+ */
+export function resolveDeployDotenvPath({ envName, dotenvPathEnv = process.env.AIRINGCAL_DOTENV_PATH } = {}) {
+  const name = String(envName ?? '').trim().toLowerCase()
+  const configured = String(dotenvPathEnv ?? '').trim()
+  if (name === 'production') {
+    if (!configured) {
+      throw new Error(
+        'Production requires AIRINGCAL_DOTENV_PATH pointing at .env.production (refusing default .env)',
+      )
+    }
+    const base = configured.split(/[\\/]/).pop()
+    if (base !== PRODUCTION_DOTENV_BASENAME) {
+      throw new Error(
+        `Production AIRINGCAL_DOTENV_PATH must end with ${PRODUCTION_DOTENV_BASENAME} (got "${configured}")`,
+      )
+    }
+    return configured
+  }
+  return configured || '.env'
+}
+
+/**
+ * Refuse Production runs that still carry Development/Staging writable secrets
+ * in the process environment (Shell inheritance / mixed configs).
+ *
+ * @param {Record<string, string | undefined | null>} env
+ */
+export function assertProductionProcessEnvIsolation(env = {}) {
+  const leaked = []
+  for (const [key, raw] of Object.entries(env)) {
+    if (!key.startsWith('AIRINGCAL_STAGING_') && !key.startsWith('AIRINGCAL_DEVELOPMENT_')) continue
+    if (String(raw ?? '').trim()) leaked.push(key)
+  }
+  if (leaked.length > 0) {
+    throw new Error(
+      `Production must not inherit Development/Staging credentials or config (${leaked.sort().join(', ')}); use an isolated shell with AIRINGCAL_DOTENV_PATH=.env.production only`,
+    )
+  }
+}
+
+/**
+ * Load Production env from `.env.production` with file-over-shell precedence
+ * (`override: true`) so Development Shell values cannot win.
+ *
+ * @param {string} dotenvPath
+ * @param {Record<string, string | undefined>} [processEnv]
+ */
+export function loadProductionDeployEnv(dotenvPath, processEnv = process.env) {
+  assertProductionProcessEnvIsolation(processEnv)
+  const pathBase = String(dotenvPath ?? '').split(/[\\/]/).pop()
+  if (pathBase !== PRODUCTION_DOTENV_BASENAME) {
+    throw new Error(
+      `Production dotenv basename must be ${PRODUCTION_DOTENV_BASENAME} (got "${dotenvPath}")`,
+    )
+  }
+  return loadDotEnvFile(dotenvPath, processEnv, { override: true })
 }
 
 /**
@@ -209,6 +307,357 @@ export function applyStagingAliases(inputEnv = {}) {
     }
   }
   return { env, warnings }
+}
+
+/** Production required secrets that must not be filled only via staging/development aliases. */
+export const PRODUCTION_REQUIRED_SECRET_KEYS = Object.freeze([
+  'AIRINGCAL_BANGUMI_TOKEN',
+  'AIRINGCAL_CLOUDFLARE_API_TOKEN',
+  'AIRINGCAL_EDGEONE_API_TOKEN',
+])
+
+/**
+ * Refuse Production config when a required Production secret is empty while a
+ * corresponding AIRINGCAL_STAGING_* or AIRINGCAL_DEVELOPMENT_* writable secret
+ * is present (aliases must never supply Production). Does not call
+ * applyStagingAliases.
+ *
+ * @param {Record<string, string | undefined | null>} env
+ */
+export function assertNoProductionSecretAliases(env = {}) {
+  for (const key of PRODUCTION_REQUIRED_SECRET_KEYS) {
+    const present = Boolean(String(env[key] ?? '').trim())
+    if (present) continue
+    const suffix = key.slice('AIRINGCAL_'.length)
+    const stagingKey = `AIRINGCAL_STAGING_${suffix}`
+    const developmentKey = `AIRINGCAL_DEVELOPMENT_${suffix}`
+    const stagingPresent = Boolean(String(env[stagingKey] ?? '').trim())
+    const developmentPresent = Boolean(String(env[developmentKey] ?? '').trim())
+    if (!stagingPresent && !developmentPresent) continue
+    const source = stagingPresent ? stagingKey : developmentKey
+    throw new Error(
+      `Production must not alias ${key} from ${source}; set ${key} in .env.production`,
+    )
+  }
+}
+
+/**
+ * Assert Production resource names do not collide with Development/Staging/v2 names.
+ * @param {{ bucket: string, cloudflareWorkerName: string, edgeoneProject: string }} names
+ */
+export function assertProductionResourceNames({ bucket, cloudflareWorkerName, edgeoneProject }) {
+  const forbidden = new Set(PRODUCTION_FORBIDDEN_COLLISION_NAMES)
+  for (const [label, value] of [
+    ['bucket', bucket],
+    ['cloudflareWorkerName', cloudflareWorkerName],
+    ['edgeoneProject', edgeoneProject],
+  ]) {
+    const name = String(value ?? '').trim()
+    if (!name) {
+      throw new Error(`Production ${label} is required`)
+    }
+    if (forbidden.has(name)) {
+      throw new Error(
+        `Production ${label} "${name}" collides with Development/Staging/v2 forbidden names`,
+      )
+    }
+  }
+  if (bucket !== PRODUCTION_DEFAULTS.bucket) {
+    throw new Error(
+      `Production bucket must be hard-coded ${PRODUCTION_DEFAULTS.bucket} (got "${bucket}")`,
+    )
+  }
+}
+
+/**
+ * Build the copy-free Production clean-bootstrap plan.
+ *
+ * @param {{
+ *   target?: 'cloudflare'|'edgeone'|'both',
+ *   publicBaseUrl: string,
+ *   edgeoneProject?: string,
+ *   edgeoneRegion?: string,
+ *   cloudflareWorkerName?: string,
+ *   imageBaseUrl?: string,
+ *   mode?: 'dry-run'|'apply',
+ *   accountId?: string,
+ *   zoneId?: string,
+ *   applyAuthorized?: boolean,
+ *   gitSha?: string|null,
+ * }} opts
+ */
+export function buildProductionPlan({
+  target = 'both',
+  publicBaseUrl,
+  edgeoneProject = PRODUCTION_DEFAULTS.edgeoneProject,
+  edgeoneRegion = PRODUCTION_DEFAULTS.edgeoneRegion,
+  cloudflareWorkerName = PRODUCTION_DEFAULTS.workerName,
+  imageBaseUrl = '',
+  mode = 'dry-run',
+  accountId = '',
+  zoneId = '',
+  applyAuthorized = false,
+  gitSha = null,
+} = {}) {
+  if (!ALLOWED_TARGETS.has(target)) {
+    throw new Error(`target must be cloudflare|edgeone|both (got "${target}")`)
+  }
+  const base = String(publicBaseUrl ?? '').trim().replace(/\/+$/, '')
+  if (!base) throw new Error('AIRINGCAL_PUBLIC_BASE_URL is required for the production plan')
+
+  const normalizedZoneId = String(zoneId ?? '').trim()
+  if (!normalizedZoneId) {
+    throw new Error('AIRINGCAL_ZONE_ID is required for production preflight-identity (dry-run and apply)')
+  }
+
+  let publicHost
+  try {
+    publicHost = new URL(base).host
+  } catch {
+    throw new Error('AIRINGCAL_PUBLIC_BASE_URL must be an absolute URL')
+  }
+
+  const bucket = PRODUCTION_DEFAULTS.bucket
+  assertProductionResourceNames({
+    bucket,
+    cloudflareWorkerName,
+    edgeoneProject,
+  })
+
+  const imageCdn = validateImageCdnConfig({ publicBaseUrl: base, imageBaseUrl })
+  const corsOrigins = buildCorsAllowedOrigins({
+    cloudflareWorkerHosts: [`https://${cloudflareWorkerName}.r7a.workers.dev`],
+    edgeoneHosts: [base],
+  })
+
+  const steps = [
+    {
+      id: 'preflight-identity',
+      title:
+        'Require AIRINGCAL_ENV=production, independent Production token/resources (same Cloudflare account OK), zone ownership, Git SHA, refuse name collisions',
+      mutates: false,
+      requireEnv: 'production',
+      forbiddenNames: [...PRODUCTION_FORBIDDEN_COLLISION_NAMES],
+      gitSha: gitSha || null,
+      accountId: accountId || null,
+      zoneId: normalizedZoneId,
+      publicHost,
+    },
+
+    {
+      id: 'ensure-bucket-airingcal-production',
+      title: `Create-or-reuse empty bucket ${bucket} (abort if any object keys already exist)`,
+      mutates: true,
+      bucket,
+      requireEmptyBucket: true,
+      requireEmptyPrefixes: null,
+    },
+    {
+      id: 'disable-r2-dev',
+      title: 'Disable r2.dev on production bucket before isolation proof',
+      mutates: true,
+    },
+    {
+      id: 'attach-custom-domain',
+      title: `Attach custom domain ${publicHost} from AIRINGCAL_PUBLIC_BASE_URL when missing`,
+      mutates: true,
+    },
+    {
+      id: 'cache-rules',
+      title: 'Apply cache rules (images/snapshots immutable 1y; pointer max-age=0) host-scoped to production',
+      mutates: true,
+    },
+    {
+      id: 'cors',
+      title: 'Set CORS AllowedOrigins to exact Production reader + local smoke origins',
+      mutates: true,
+      allowedOrigins: corsOrigins,
+      methods: [...PRODUCTION_DEFAULTS.corsMethods],
+    },
+    {
+      id: 'waf-checkpoints',
+      title: 'Configure WAF/path deny for checkpoints/* on production public host',
+      mutates: true,
+    },
+    {
+      id: 'isolation-probe',
+      title:
+        'Write non-sensitive checkpoints/_isolation-probe.txt and prove anonymous GET/HEAD denied before writer publish',
+      mutates: true,
+      probeKey: PRODUCTION_DEFAULTS.isolationProbeKey,
+      abortOnFailure: true,
+      dualBucketFallback: false,
+    },
+    {
+      id: 'sync-github-production-env',
+      title: 'Sync GitHub Environment production Variables/Secrets from .env.production only',
+      mutates: true,
+      environment: 'production',
+      writerEnabled: false,
+    },
+    {
+      id: 'materialize-and-deploy-readers',
+      title:
+        'Materialize + deploy Production CF Worker and EdgeOne overseas project (names must differ from Development)',
+      mutates: true,
+      workerName: cloudflareWorkerName,
+      edgeoneProject,
+      edgeoneRegion,
+      target,
+    },
+    {
+      id: 'bangumi-full-sync-owner-dispatch',
+      title:
+        'Document-only: Owner later runs Writer workflow_dispatch target=production force_mode=full after enabling AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED (schedule stays gated by AIRINGCAL_WRITER_ENABLED)',
+      mutates: false,
+      documentOnly: true,
+      gated: true,
+      workflow: 'portable-writer.yml',
+      dispatch: { target: 'production', force_mode: 'full' },
+      note: 'Prep must not enable AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED or AIRINGCAL_WRITER_ENABLED; first Full Sync must not arm the schedule',
+    },
+  ]
+
+  return {
+    env: 'production',
+    mode,
+    target,
+    repository: PRODUCTION_DEFAULTS.repository,
+    bucket,
+    singleBucket: true,
+    dualBucketFallback: false,
+    abortOnIsolationFailure: true,
+    copyFree: true,
+    writerEnabled: false,
+    productionWriterEnabled: false,
+    applyAuthorized: Boolean(applyAuthorized),
+    publicBaseUrl: base,
+    publicHost,
+    accountId: accountId || null,
+    zoneId: normalizedZoneId,
+    imageCdn,
+    cors: {
+      allowedOrigins: corsOrigins,
+      methods: [...PRODUCTION_DEFAULTS.corsMethods],
+    },
+    keyLayout: {
+      private: ['checkpoints/**'],
+      public: ['public/**', 'snapshots/**', 'images/**'],
+    },
+    cacheRules: {
+      immutable: ['images/*', 'snapshots/*'],
+      pointerBypass: ['public/current-release.json'],
+    },
+    edgeone: {
+      project: edgeoneProject,
+      region: edgeoneRegion,
+    },
+    cloudflareWorkerName,
+    forbiddenCollisionNames: [...PRODUCTION_FORBIDDEN_COLLISION_NAMES],
+    steps,
+    ownerGatedLiveSteps: [
+      'preflight-identity',
+      'ensure-bucket-airingcal-production',
+      'disable-r2-dev / attach-custom-domain / cache / cors / waf-checkpoints',
+      'isolation-probe',
+      'sync-github-production-env',
+      'materialize-and-deploy-readers',
+      'bangumi-full-sync-owner-dispatch (Owner later; gate stays disabled in this prep)',
+    ],
+  }
+}
+
+/**
+ * Derive the Production config surface used by dry-run / apply planning.
+ * Never maps staging/development aliases. Does not call remote APIs.
+ *
+ * @param {Record<string, string | undefined | null>} rawEnv
+ * @param {{ target?: string, mode?: 'dry-run'|'apply', applyAuthorized?: boolean, gitSha?: string|null }} [opts]
+ */
+export function deriveProductionConfig(rawEnv = {}, opts = {}) {
+  const env = { ...rawEnv }
+  const airingEnv = String(env.AIRINGCAL_ENV ?? '').trim().toLowerCase()
+  if (airingEnv !== 'production') {
+    throw new Error(`deriveProductionConfig only supports production (got "${airingEnv || '(empty)'}")`)
+  }
+  assertNoProductionSecretAliases(env)
+
+  const accountId = String(
+    env.AIRINGCAL_CLOUDFLARE_ACCOUNT_ID ?? env.CLOUDFLARE_ACCOUNT_ID ?? '',
+  )
+    .trim()
+    .toLowerCase()
+  if (accountId && !ACCOUNT_ID_RE.test(accountId)) {
+    throw new Error('AIRINGCAL_CLOUDFLARE_ACCOUNT_ID must be a 32-character hex Cloudflare account id')
+  }
+
+  const publicBaseUrl = String(env.AIRINGCAL_PUBLIC_BASE_URL ?? '').trim().replace(/\/+$/, '')
+  if (!publicBaseUrl) {
+    throw new Error('AIRINGCAL_PUBLIC_BASE_URL is required')
+  }
+
+  const zoneId = String(env.AIRINGCAL_ZONE_ID ?? env.CLOUDFLARE_ZONE_ID ?? '').trim()
+  if (!zoneId) {
+    throw new Error('AIRINGCAL_ZONE_ID is required for production preflight-identity (dry-run and apply)')
+  }
+
+  const deployTarget =
+    String(opts.target ?? env.AIRINGCAL_DEPLOY_TARGET ?? 'both').trim() || 'both'
+  if (!ALLOWED_TARGETS.has(deployTarget)) {
+    throw new Error(`AIRINGCAL_DEPLOY_TARGET must be cloudflare|edgeone|both (got "${deployTarget}")`)
+  }
+
+  const cloudflareWorkerName =
+    String(env.AIRINGCAL_PRODUCTION_WORKER_NAME ?? '').trim() || PRODUCTION_DEFAULTS.workerName
+  const edgeoneProject =
+    String(env.AIRINGCAL_EDGEONE_PROJECT ?? '').trim() || PRODUCTION_DEFAULTS.edgeoneProject
+  const edgeoneRegion =
+    String(env.AIRINGCAL_EDGEONE_REGION ?? '').trim() || PRODUCTION_DEFAULTS.edgeoneRegion
+
+  const applyAuthorized =
+    opts.applyAuthorized === true ||
+    String(env.AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED ?? '').trim() === 'yes'
+
+  const plan = buildProductionPlan({
+    target: deployTarget,
+    publicBaseUrl,
+    edgeoneProject,
+    edgeoneRegion,
+    cloudflareWorkerName,
+    imageBaseUrl: env.AIRINGCAL_IMAGE_BASE_URL || '',
+    mode: opts.mode || 'dry-run',
+    accountId,
+    zoneId,
+    applyAuthorized,
+    gitSha: opts.gitSha ?? null,
+  })
+
+
+  const s3Endpoint =
+    String(env.AIRINGCAL_S3_ENDPOINT ?? '').trim() ||
+    (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : '')
+
+  const secretsPresent = {
+    AIRINGCAL_CLOUDFLARE_API_TOKEN: Boolean(
+      String(env.AIRINGCAL_CLOUDFLARE_API_TOKEN ?? env.CLOUDFLARE_API_TOKEN ?? '').trim(),
+    ),
+    AIRINGCAL_BANGUMI_TOKEN: Boolean(String(env.AIRINGCAL_BANGUMI_TOKEN ?? '').trim()),
+    AIRINGCAL_S3_ACCESS_KEY_ID: Boolean(String(env.AIRINGCAL_S3_ACCESS_KEY_ID ?? '').trim()),
+    AIRINGCAL_S3_SECRET_ACCESS_KEY: Boolean(String(env.AIRINGCAL_S3_SECRET_ACCESS_KEY ?? '').trim()),
+    AIRINGCAL_EDGEONE_API_TOKEN: Boolean(String(env.AIRINGCAL_EDGEONE_API_TOKEN ?? '').trim()),
+  }
+
+  return {
+    bucket: plan.bucket,
+    writerEnabled: false,
+    applyAuthorized,
+    secretsPresent,
+    missingCloudflareToken: !secretsPresent.AIRINGCAL_CLOUDFLARE_API_TOKEN,
+    s3Endpoint,
+    s3Region: String(env.AIRINGCAL_S3_REGION ?? PRODUCTION_DEFAULTS.s3Region).trim() || 'auto',
+    primaryUserId: String(env.AIRINGCAL_PRIMARY_USER_ID ?? '').trim() || null,
+    plan,
+  }
 }
 
 /**
