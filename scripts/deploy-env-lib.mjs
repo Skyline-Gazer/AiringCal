@@ -107,6 +107,40 @@ export const PRODUCTION_VARIABLE_KEYS = Object.freeze([
   'AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED',
 ])
 
+/**
+ * Steps whose success implies EXTERNAL state may have changed (bucket,
+ * GitHub env/vars/secrets, workers, edge config, dispatches). Read-only or
+ * plan-only steps (token probe, S3 derive, verification, evaluation) are
+ * excluded. Used to answer "what actually mutated?" truthfully in the apply
+ * result JSON (ShipReview #10) — `completed` alone conflates probes with
+ * mutations.
+ */
+export const MUTATING_STEP_IDS = Object.freeze([
+  'writer-freeze',
+  'ensure-bucket',
+  'ensure-bucket-empty',
+  'disable-r2-dev',
+  'attach-custom-domain',
+  'cache-rules',
+  'cors',
+  'waf-checkpoints',
+  'isolation-probe-write',
+  'isolation-probe-cleanup',
+  'copy-public',
+  'copy-checkpoints',
+  'sync-gh-env',
+  'deploy-cloudflare',
+  'deploy-edgeone',
+  'materialize-and-deploy-readers',
+  'bangumi-full-sync-owner-dispatch',
+  'single-writer-test',
+])
+
+export function mutationsExecutedFrom(completed) {
+  const done = Array.isArray(completed) ? completed : []
+  return done.filter((id) => MUTATING_STEP_IDS.includes(id))
+}
+
 export const PRODUCTION_SECRET_KEYS = Object.freeze([
   'AIRINGCAL_PRODUCTION_BANGUMI_TOKEN',
   'AIRINGCAL_PRODUCTION_S3_ACCESS_KEY_ID',

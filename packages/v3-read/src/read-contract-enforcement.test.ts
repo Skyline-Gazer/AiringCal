@@ -247,3 +247,21 @@ test('unknown paths answer 404 with NO published release — never 503 (ShipRevi
   })
   assert.equal(api.status, 503)
 })
+
+test('deprecated sync routes answer 410 on EVERY method and runtime entry (ShipReview #7)', async () => {
+  const { store } = await publishedStore()
+  const env = { publicStore: store }
+  for (const path of ['/api/sync/apply', '/api/sync/compare', '/api/check/whatever', '/sync/apply', '/check/x']) {
+    for (const method of ['GET', 'POST', 'OPTIONS', 'DELETE'] as const) {
+      const res = await handlePortableReadRequest(
+        new Request(`https://local${path}`, { method, headers: { Origin: 'https://embed.test' } }),
+        { ...env, corsAllowedOrigins: ['https://embed.test'] },
+      )
+      assert.equal(res.status, 410, `${method} ${path} -> ${res.status}; old clients must learn it is GONE`)
+    }
+  }
+  // The CF/Node entries (static-first) keep identical semantics:
+  const { handlePortableStaticRequest } = await import('./portable-static-handler.ts')
+  const staticGone = handlePortableStaticRequest(new Request('https://local/api/sync/apply', { method: 'POST' }))
+  assert.equal(staticGone?.status, 410)
+})

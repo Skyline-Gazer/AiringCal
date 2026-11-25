@@ -20,6 +20,7 @@ import {
   loadDotEnvFile,
   loadProductionDeployEnv,
   missingScopeExitMessage,
+  mutationsExecutedFrom,
   parseDeployArgs,
   redactSecrets,
   resolveDeployDotenvPath,
@@ -142,7 +143,7 @@ async function applyDevelopment({ env, plan, derived, io }) {
   const applyIo = io ?? createLiveDevelopmentApplyIo({ env, plan })
   const result = await runDevelopmentApply({ plan, env, io: applyIo })
   process.stdout.write(
-    `${JSON.stringify({ status: result.ok ? 'applied' : 'aborted', ...result }, null, 2)}\n`,
+    `${JSON.stringify({ status: result.ok ? 'applied' : 'aborted', ...result, mutationsExecuted: mutationsExecutedFrom(result.completed) }, null, 2)}\n`,
   )
   if (!result.ok) {
     process.exitCode = result.exitCode ?? 1
@@ -248,9 +249,12 @@ async function main(argv = process.argv, options = {}) {
       return
     }
 
-    // The plan object is printed at every exit point. refusedMutations is
-    // only false on the executed-apply path, where the result JSON printed
-    // afterwards is authoritative for what actually mutated.
+    // The plan object is printed at every exit point. `refusedMutations`
+    // describes THIS print (true until the executor starts); once the apply
+    // runs, the result JSON printed afterwards is authoritative and carries
+    // `mutationsExecuted` — the completed steps that could touch external
+    // state. A failure in step one therefore reports mutationsExecuted: []
+    // even though the plan printed `false` earlier (ShipReview #10).
     const plan = {
       ...derived.plan,
       mode: execution.mode,
@@ -307,7 +311,7 @@ async function main(argv = process.argv, options = {}) {
     const applyIo = options.io ?? createLiveDevelopmentApplyIo({ env, plan })
     const result = await runProductionApply({ plan, env, io: applyIo })
     process.stdout.write(
-      `${JSON.stringify({ status: result.ok ? 'applied' : 'aborted', ...result }, null, 2)}\n`,
+      `${JSON.stringify({ status: result.ok ? 'applied' : 'aborted', ...result, mutationsExecuted: mutationsExecutedFrom(result.completed) }, null, 2)}\n`,
     )
     if (!result.ok) {
       process.exitCode = result.exitCode ?? 1

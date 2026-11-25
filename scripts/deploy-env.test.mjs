@@ -4802,3 +4802,68 @@ test('PRODUCTION_SECRET_KEYS admits the BARK_URL secret the workflow reads (Ship
   // Never the value:
   assert.equal(joined.includes('https://bark.example/x'), false, 'bark url must not leak into args')
 })
+
+test('production env sync refuses when workflow-required source keys are empty (ShipReview #4)', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildProductionPlan({
+    target: 'cloudflare',
+    mode: 'apply',
+    accountId: 'acct',
+    zoneId: 'zone',
+    applyAuthorized: true,
+  })
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: 'acct',
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'ak',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'sk',
+      AIRINGCAL_BANGUMI_TOKEN: 'bgm',
+      AIRINGCAL_PRIMARY_USER_ID: '',
+    },
+    plan,
+    spawnSyncImpl: (cmd, args) => {
+      io.calls = (io.calls ?? []).concat([[cmd, ...args].join(' ')])
+      return { status: 0, stdout: '{}', stderr: '', error: null }
+    },
+    createObjectStore: () => ({ list: async () => [], head: async () => null, close() {} }),
+  })
+  await io.deriveAndVerifyS3({})
+  await assert.rejects(
+    () => io.syncGithubEnvironment({}),
+    /production env sync refuses: AIRINGCAL_USERS_JSON, AIRINGCAL_PRIMARY_USER_ID empty/,
+  )
+  // refused BEFORE any gh write call (env PUT may precede; variables must not):
+  assert.equal((io.calls ?? []).some((c) => c.includes('variable set')), false)
+  assert.equal((io.calls ?? []).some((c) => c.includes('secret set')), false)
+})
+
+test('mutationsExecutedFrom separates probes from external mutations (ShipReview #10)', async () => {
+  const { mutationsExecutedFrom, MUTATING_STEP_IDS } = await import('./deploy-env-lib.mjs')
+  assert.deepEqual(
+    mutationsExecutedFrom([
+      'token-probe',
+      'derive-s3',
+      'ensure-bucket-empty',
+      'isolation-probe-write',
+      'isolation-probe-check',
+      'isolation-probe-cleanup',
+      'sync-gh-env',
+      'deploy-cloudflare',
+      'image-routing-verify',
+      'image-cdn-validate',
+    ]),
+    [
+      'ensure-bucket-empty',
+      'isolation-probe-write',
+      'isolation-probe-cleanup',
+      'sync-gh-env',
+      'deploy-cloudflare',
+    ],
+  )
+  assert.deepEqual(mutationsExecutedFrom(['token-probe', 'derive-s3']), [])
+  assert.deepEqual(mutationsExecutedFrom(undefined), [])
+  for (const id of ['token-probe', 'derive-s3', 'isolation-probe-check', 'image-routing-verify', 'image-cdn-validate']) {
+    assert.equal(MUTATING_STEP_IDS.includes(id), false, `${id} must stay read-only in the ledger`)
+  }
+})

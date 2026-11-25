@@ -276,3 +276,13 @@ test('EdgeOne read handler redirects images via imageBaseUrl when provided', asy
   assert.equal(without.headers.get('Location'), `${BASE_URL}/images/${IMAGE_HASH}/original`)
 })
 
+
+test('edgeone entry answers 410 for the deprecated sync surface (ShipReview #7)', async () => {
+  const { store } = await publishedBucket()
+  const { impl } = cdnFetch(store)
+  const handler = createEdgeOneReadHandler({ publicBaseUrl: BASE_URL, fetch: impl })
+  for (const method of ['GET', 'POST', 'OPTIONS'] as const) {
+    const res = await handler(new Request('https://eo.test/api/sync/apply', { method }))
+    assert.equal(res.status, 410, `${method} -> ${res.status}`)
+  }
+})

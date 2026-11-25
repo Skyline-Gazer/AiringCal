@@ -13,6 +13,7 @@ import {
 } from '@airing-cal/v3-core/public-image-url'
 import { loadVerifiedPublicSnapshot, type VerifiedPublicSnapshot } from './load-public-snapshot.ts'
 import { handlePublicObject, isPublicObjectPath } from './public-object-routes.ts'
+import { deprecatedSyncResponse, isDeprecatedSyncPath } from './portable-static-handler.ts'
 import { resolveRuntimePlatformIdFromEnv } from '@airing-cal/v3-adapters/platform-id'
 import type { PortableCronStatus } from './portable-builder-cron.ts'
 import type { VerifiedSnapshotCache } from './verified-snapshot-cache.ts'
@@ -330,6 +331,14 @@ async function routePortableReadRequest(
     // allowlist configured, CORS stays an edge (bucket/zone) concern and a
     // permissive OPTIONS here would imply a policy the Worker does not own.
     const method = request.method.toUpperCase()
+    const url = new URL(request.url)
+    const path = normalizePortableReadPath(url.pathname)
+    // Deprecated sync routes 410 ahead of the method guard AND the CORS
+    // preflight: the EdgeOne entry has no static handler, and old clients
+    // must learn the API is gone regardless of method (ShipReview #7).
+    if (isDeprecatedSyncPath(path)) {
+      return deprecatedSyncResponse()
+    }
     if (method !== 'GET' && method !== 'HEAD') {
       const corsOrigin = allowedCorsOrigin(request, env)
       if (method === 'OPTIONS' && corsOrigin) {
@@ -349,8 +358,6 @@ async function routePortableReadRequest(
         headers: { 'Allow': 'GET, HEAD', 'Cache-Control': V2_CACHE_CONTROL.error },
       })
     }
-    const url = new URL(request.url)
-    const path = normalizePortableReadPath(url.pathname)
     if (path === '/config') {
       return json({ nsfw: env.nsfwShow !== false }, { headers: { 'Cache-Control': V2_CACHE_CONTROL.config } })
     }

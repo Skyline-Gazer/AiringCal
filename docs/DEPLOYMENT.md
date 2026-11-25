@@ -57,8 +57,10 @@ development-environment `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED`.
 
 ## Configuration
 
-Per-environment dotenv files, never committed: `.env.staging`,
-`.env.development`, `.env.production`. Production apply requires
+Per-environment dotenv files, never committed: `.env.development`,
+`.env.production` (`deploy-env.mjs` accepts only these two selectors; the
+legacy `.env.staging` belongs solely to the frozen `scripts/setup-staging.sh`
+rollback flow). Production apply requires
 `AIRINGCAL_DOTENV_PATH` to point at a file ending in `.env.production`, and
 refuses to run if any `AIRINGCAL_STAGING_*`/`AIRINGCAL_DEVELOPMENT_*` value is
 present in the process environment.
@@ -75,8 +77,8 @@ present in the process environment.
 | `AIRINGCAL_BANGUMI_TOKEN` | required secret | writer token (synced to GitHub, never used by deploy reads) |
 | `AIRINGCAL_EDGEONE_API_TOKEN` | required for target≠cloudflare | EdgeOne token |
 | `AIRINGCAL_DEPLOY_TARGET` | optional | `cloudflare` \| `edgeone` \| `both` (default `both`) |
-| `AIRINGCAL_PRIMARY_USER_ID` | optional | writer owner uid; needed for GitHub env sync |
-| `AIRINGCAL_USERS_JSON` | optional (dev/staging writer config) | writer users payload |
+| `AIRINGCAL_PRIMARY_USER_ID` | **required for production**; needed for dev/staging env sync | writer owner uid; production `--apply` sync refuses without it (the first Full Sync validates the derived variable as required) |
+| `AIRINGCAL_USERS_JSON` | **required for production**; optional dev/staging (dev falls back to the verified staging env value) | writer users payload → `AIRINGCAL_PRODUCTION_USERS_JSON`; production sync fails closed when empty |
 | `AIRINGCAL_IMAGE_BASE_URL` | optional | sticky image base override; deploy clears it when unset |
 | `AIRINGCAL_S3_ACCESS_KEY_ID` / `AIRINGCAL_S3_SECRET_ACCESS_KEY` / `AIRINGCAL_S3_REGION` / `AIRINGCAL_S3_ENDPOINT` | optional overrides | otherwise derived from the management token |
 | `AIRINGCAL_PRODUCTION_WORKER_NAME` / `AIRINGCAL_EDGEONE_PROJECT` / `AIRINGCAL_EDGEONE_REGION` | optional | resource-name overrides |
@@ -127,8 +129,13 @@ removed by `ensure-bucket` instead of poisoning the empty-bucket guard.
 
 ## Deploy — production (clean bootstrap, Owner-gated)
 
-Production apply exists and is wired, but requires three explicit gates;
-missing any one leaves it refusing with the plan printed and exit code 2:
+Production apply exists and is wired, but requires three explicit gates, all
+refusing before any mutation: missing `--i-am-sure-production` exits **1** at
+argument resolution; missing `AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED` or
+`AIRINGCAL_DEPLOY_LIVE_CONFIRM` prints the plan (or owner-gated payload) and
+exits **2**. Once the executor runs, the result JSON's `mutationsExecuted`
+lists the completed steps that could touch external state (empty when only
+probes ran before an abort):
 
 ```bash
 AIRINGCAL_ENV=production AIRINGCAL_DOTENV_PATH=.env.production \
