@@ -50,7 +50,13 @@ export function startPortableReadServer(options: {
     try {
       const host = req.headers.host ?? '127.0.0.1'
       const url = new URL(req.url ?? '/', `http://${host}`)
-      const request = new Request(url.toString(), { method: req.method ?? 'GET' })
+      // The read surface is bodyless; content framing headers would describe a
+      // body we intentionally do not forward, so drop them. Everything else
+      // (If-None-Match, Origin, Accept, …) reaches the handlers verbatim.
+      const forwardedHeaders = Object.entries(req.headers ?? {})
+        .filter(([key, value]) => value != null && key !== 'content-length' && key !== 'transfer-encoding')
+        .map(([key, value]) => [key, String(value)])
+      const request = new Request(url.toString(), { method: req.method ?? 'GET', headers: forwardedHeaders })
       const buildSha = options.gitSha ?? process.env.BANGUMI_GIT_COMMIT_SHA?.trim()
       const staticResponse = handlePortableStaticRequest(request, {
         build: buildSha ? { commitSha: buildSha } : undefined,
