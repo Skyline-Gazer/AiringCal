@@ -12,6 +12,25 @@ const DEPRECATED_SYNC = JSON.stringify({
   error: { code: 'DEPRECATED', message: 'Sync API removed; use operator docs for builder sync.' },
 })
 
+/**
+ * Deprecated v2 sync surface answers 410 for EVERY method (a POST or
+ * preflight must not pretend the route might come back). Exported so the
+ * static guard and the read handler answer identically in every runtime —
+ * the EdgeOne entry has no static handler and relies on the read handler
+ * alone (ShipReview #7).
+ */
+export function deprecatedSyncResponse(): Response {
+  return new Response(DEPRECATED_SYNC, {
+    status: 410,
+    headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': V2_CACHE_CONTROL.error },
+  })
+}
+
+/** Matches the NORMALIZED path (after stripping the /api alias prefix). */
+export function isDeprecatedSyncPath(path: string): boolean {
+  return path === '/sync/apply' || path === '/sync/compare' || path.startsWith('/check/')
+}
+
 const STATIC_CACHE = 'public, max-age=300'
 
 export interface PortableStaticEnv {
@@ -28,15 +47,8 @@ export function handlePortableStaticRequest(
   // Deprecated sync endpoints answer 410 for every method before the read-only
   // method guard below: old clients must learn the API is gone, not that GET
   // would work.
-  if (
-    path === '/api/sync/apply'
-    || path === '/api/sync/compare'
-    || path.startsWith('/api/check/')
-  ) {
-    return new Response(DEPRECATED_SYNC, {
-      status: 410,
-      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': V2_CACHE_CONTROL.error },
-    })
+  if (path === '/api/sync/apply' || path === '/api/sync/compare' || path.startsWith('/api/check/')) {
+    return deprecatedSyncResponse()
   }
 
   // Owner target contract §6.2: the public surface is read-only (GET/HEAD).

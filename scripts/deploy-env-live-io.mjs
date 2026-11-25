@@ -1677,6 +1677,22 @@ export function createLiveDevelopmentApplyIo({
 
     async syncGithubEnvironment(ctx = {}) {
       const envName = isProduction ? 'production' : 'development'
+      // ShipReview #4: the production job's "Validate required production
+      // config" treats AIRINGCAL_PRODUCTION_USERS_JSON and _PRIMARY_USER_ID
+      // as required vars. The empty-value filter in the write loop below
+      // would silently SKIP them, and the FIRST FULL SYNC — the very next
+      // Owner action — would fail hours later. Refuse before ANY gh call.
+      if (isProduction) {
+        const requiredMissing = ['AIRINGCAL_USERS_JSON', 'AIRINGCAL_PRIMARY_USER_ID']
+          .filter((sourceKey) => !String(env[sourceKey] ?? '').trim())
+        if (requiredMissing.length > 0) {
+          throw new Error(
+            `production env sync refuses: ${requiredMissing.join(', ')} empty — ` +
+              'the production job validates the derived AIRINGCAL_PRODUCTION_* variables as required; ' +
+              'set the source keys in .env.production and rerun apply (docs/DEPLOYMENT.md "Production apply")',
+          )
+        }
+      }
       await runGh(spawnSyncImpl, ['api', '--method', 'PUT', `repos/${repo}/environments/${envName}`], env)
 
       const accountId = accountIdFrom(env, plan) || ctx.accountId || ''
