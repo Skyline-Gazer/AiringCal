@@ -40,8 +40,13 @@ export function handlePortableStaticRequest(
   }
 
   // Owner target contract §6.2: the public surface is read-only (GET/HEAD).
+  // The refusal is scoped to the assets THIS handler owns; anything else
+  // (including OPTIONS for the read gateway's CORS preflight, which needs
+  // its Allow-Methods/204 answer) falls through to the read handler, which
+  // owns the method policy for its own routes.
   const method = request.method.toUpperCase()
-  if (method !== 'GET' && method !== 'HEAD') {
+  const owned = path === '/' || path === '/src/bangumi.js' || path === '/src/bangumi.css' || path === '/src/cache.js'
+  if (owned && method !== 'GET' && method !== 'HEAD') {
     return new Response('Method Not Allowed', {
       status: 405,
       headers: { 'Allow': 'GET, HEAD', 'Cache-Control': V2_CACHE_CONTROL.error },

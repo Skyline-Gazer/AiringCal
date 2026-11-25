@@ -113,7 +113,7 @@ test('non-allowlisted keys are refused without ever reading the denied object', 
     readKeys.length = 0
     const res = await handlePortableReadRequest(new Request(`https://reader.test${path}`), { publicStore: store })
     assert.notEqual(res.status, 200, `${path} must not be served`)
-    assert.ok(res.status === 404 || res.status === 503, `${path} refused as 404/503 (got ${res.status})`)
+    assert.equal(res.status, 404, `${path} must 404 even with no published release (ShipReview #3)`)
     assert.ok(
       readKeys.every((k) => k === 'pointer' || k === 'public/manifest.json'),
       `${path} must never be read from the store (reads: ${readKeys.join(',')})`,

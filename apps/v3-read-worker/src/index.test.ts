@@ -204,3 +204,40 @@ test('worker fails closed on placeholder or non-https AIRINGCAL_PUBLIC_BASE_URL'
     assert.match(body.error.message, pattern)
   }
 })
+
+test('entry-level OPTIONS preflight reaches the read handler (ShipReview #1)', async () => {
+  const bucket = await publishedBucket()
+  const env = {
+    AIRINGCAL_PUBLIC_R2: bucket,
+    AIRINGCAL_CORS_ORIGINS: 'https://embed.test',
+  }
+  const pre = await handleReadWorkerRequest(
+    new Request('https://worker.test/api/collections', {
+      method: 'OPTIONS',
+      headers: { Origin: 'https://embed.test' },
+    }),
+    env,
+  )
+  assert.equal(pre.status, 204, 'static guard must not shadow the preflight')
+  assert.equal(pre.headers.get('Access-Control-Allow-Origin'), 'https://embed.test')
+  assert.equal(pre.headers.get('Access-Control-Allow-Methods'), 'GET, HEAD')
+
+  const foreign = await handleReadWorkerRequest(
+    new Request('https://worker.test/api/collections', {
+      method: 'OPTIONS',
+      headers: { Origin: 'https://evil.test' },
+    }),
+    env,
+  )
+  assert.equal(foreign.status, 405)
+  assert.equal(foreign.headers.get('Access-Control-Allow-Origin'), null)
+})
+
+test('entry-level GET on static assets still short-circuits before the read handler', async () => {
+  const bucket = await publishedBucket()
+  const res = await handleReadWorkerRequest(new Request('https://worker.test/'), {
+    AIRINGCAL_PUBLIC_R2: bucket,
+  })
+  assert.equal(res.status, 200)
+  assert.match(res.headers.get('Content-Type') ?? '', /text\/html/)
+})

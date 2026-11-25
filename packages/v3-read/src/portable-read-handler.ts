@@ -129,6 +129,20 @@ function notModifiedResponse(etag: string, cacheControl: string): Response {
   })
 }
 
+/**
+ * RFC 9110 §13.1.2 If-None-Match evaluation: the field may list several
+ * validators, `*` matches any current representation, and weak/strong
+ * comparison is by opaque value with a leading `W/` ignored. Exact string
+ * equality alone would hand 200 bodies to conformant clients.
+ */
+function etagMatches(header: string | null, etag: string): boolean {
+  if (header === null) return false
+  return header.split(',').some((raw) => {
+    const candidate = raw.trim()
+    return candidate === '*' || candidate.replace(/^W\//, '') === etag
+  })
+}
+
 async function handleCollections(url: URL, snapshot: PublicSnapshotV1): Promise<Response> {
   const type = parseCollectionType(singleQueryParameter(url.searchParams, 'type'))
   const page = parsePositiveInteger('page', singleQueryParameter(url.searchParams, 'page'), 1)
@@ -359,6 +373,14 @@ async function routePortableReadRequest(
     if (isPublicObjectPath(path)) {
       return await handlePublicObject(path, env.publicStore)
     }
+    // Anything outside the release-dependent routes is not part of this
+    // surface: answer 404 BEFORE the snapshot load, so anonymous probes
+    // (`checkpoints/**`, stray paths) cannot depend on a published release.
+    // On a clean bootstrap bucket the snapshot load would otherwise return
+    // 503 NO_RELEASE, which the isolation gate (403/404 only) would reject.
+    if (path !== '/health' && path !== '/collections' && path !== '/calendar' && path !== '/cache') {
+      return new Response('Not found', { status: 404 })
+    }
     let loaded
     try {
       loaded = env.snapshotCache
@@ -402,7 +424,7 @@ async function routePortableReadRequest(
         : path === '/calendar'
           ? V2_CACHE_CONTROL.calendar
           : V2_CACHE_CONTROL.defaultJson
-      if (request.headers.get('If-None-Match') === etag) return notModifiedResponse(etag, cacheControl)
+      if (etagMatches(request.headers.get('If-None-Match'), etag)) return notModifiedResponse(etag, cacheControl)
       const response = path === '/collections'
         ? await handleCollections(url, snapshot)
         : path === '/calendar'

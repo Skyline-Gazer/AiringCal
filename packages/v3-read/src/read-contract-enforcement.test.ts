@@ -206,3 +206,44 @@ test('static handler refuses non-GET/HEAD methods with 405 + Allow', () => {
   const deprecated = handlePortableStaticRequest(new Request('https://local/api/sync/apply', { method: 'POST' }))
   assert.equal(deprecated?.status, 410, 'deprecated sync routes keep answering 410 ahead of the method guard')
 })
+
+test('If-None-Match follows RFC 9110: weak validators, lists, and * (ShipReview #4)', async () => {
+  const { store, pointer } = await publishedStore()
+  const expectedEtag = `"g${pointer.generation}-${pointer.content_hash}"`
+  for (const header of [`W/${expectedEtag}`, `"stale", ${expectedEtag}`, '*', `${expectedEtag}, "x"`]) {
+    const res = await handlePortableReadRequest(
+      new Request('https://local/api/cache', { headers: { 'If-None-Match': header } }),
+      { publicStore: store },
+    )
+    assert.equal(res.status, 304, `${header} must match (got ${res.status})`)
+  }
+  for (const header of ['W/"g9-nope"', '"a", "b"']) {
+    const res = await handlePortableReadRequest(
+      new Request('https://local/api/cache', { headers: { 'If-None-Match': header } }),
+      { publicStore: store },
+    )
+    assert.equal(res.status, 200, `${header} must not match`)
+  }
+})
+
+test('unknown paths answer 404 with NO published release — never 503 (ShipReview #3)', async () => {
+  const empty = new MemoryPublicStore()
+  for (const path of [
+    '/checkpoints/_isolation-probe.txt',
+    '/checkpoints/latest.sqlite',
+    '/whatever.txt',
+    '/snapshots/v9/1-' + 'a'.repeat(64) + '.json',
+  ]) {
+    for (const method of ['GET', 'HEAD'] as const) {
+      const res = await handlePortableReadRequest(new Request(`https://local${path}`, { method }), {
+        publicStore: empty,
+      })
+      assert.equal(res.status, 404, `${method} ${path} on a clean bucket must be 404 (got ${res.status})`)
+    }
+  }
+  // release-dependent routes keep their 503 NO_RELEASE semantics
+  const api = await handlePortableReadRequest(new Request('https://local/api/collections'), {
+    publicStore: empty,
+  })
+  assert.equal(api.status, 503)
+})
