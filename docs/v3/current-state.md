@@ -36,6 +36,33 @@
 - Earlier ADRs and phase plans discussing CNB-primary, Docker/Compose, QingLong, fixed `public/manifest.json`, separate checkpoint/public production buckets or `dev` SHA snapshots are **historical**. Do not copy their commands into the new deployment procedure.
 - This document is a compact current entrypoint, not a replacement for contracts or archived evidence: see [ADR 0001](adr-0001-release-contract-and-adapters.md), [GHA portable writer](gha-portable-writer.md), [EdgeOne read store](edgeone-store.md), [Production Acceptance](production-acceptance.md), and the [Production cutover/rollback runbook](cutover-rollback.md).
 
+## Delivery verdict (machine-readable, 2026-11-25)
+
+```json
+{
+  "asOf": "2026-11-25",
+  "candidate": { "pr": 181, "mergedToDev": "ca942bff", "ci": "green" },
+  "production": {
+    "status": "not-deployed",
+    "verdict": "OWNER-APPROVAL-REQUIRED",
+    "blockers": ["clean bootstrap apply", "first Full Sync", "writer enable gate", "v2 retirement + DNS cutover", "dev→main merge"]
+  },
+  "staging": {
+    "status": "legacy-rollback-source",
+    "verdict": "FROZEN",
+    "note": "unchanged since 2026-11-08; must not be repurposed or cleaned up (rollback source per #147)"
+  },
+  "development": {
+    "status": "live",
+    "generation": 4,
+    "verdict": "GO",
+    "acceptance": ["2026-11-08 live acceptance", "2026-11-25 re-verification (wrangler/miniflare + Node + bun runtimes)"],
+    "readContract": "enforced-in-code; live redeploy of the v3 read Worker is the next Owner-run step (scripts/deploy-env.mjs --env development)"
+  },
+  "verifier": "node scripts/v3-ship-verify.mjs --base <reader-origin> --json"
+}
+```
+
 ## Maintainer closeout checklist
 
 - [x] PR #164 merged to `dev` with green main CI.
