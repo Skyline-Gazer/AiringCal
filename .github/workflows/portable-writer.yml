@@ -1,10 +1,13 @@
 # ADR 0003 — portable writer (GitHub Actions one-shot), staging/development/production isolated (C3).
-# Schedule: 04:00 Asia/Shanghai == 20:00 UTC — production only, gated by vars.AIRINGCAL_WRITER_ENABLED.
+# Schedule: 04:00 Asia/Shanghai == 20:00 UTC — production only, gated by repo-level vars.AIRINGCAL_WRITER_ENABLED
+# (the only scope a job-level `if` can read; schedule stays DISABLED until #73 bootstrap receipts exist).
 # Development writer uses Environment `development` + single bucket `airingcal-development`;
-# it stays gated by vars.AIRINGCAL_DEVELOPMENT_WRITER_ENABLED until isolation+copy pass.
+# dispatch is gated in-job by the ENVIRONMENT-scoped vars.AIRINGCAL_DEVELOPMENT_WRITER_ENABLED
+# (step-level first gate, fails closed; deploy pins it 'false' at every apply).
 # Production writer uses Environment `production` + single bucket `airingcal-production`.
-# First Full Sync (workflow_dispatch) uses vars.AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED;
-# the scheduled job stays gated by vars.AIRINGCAL_WRITER_ENABLED (both disabled in this prep).
+# First Full Sync (workflow_dispatch) is gated in-job by the ENVIRONMENT-scoped
+# vars.AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED (step-level, fails closed —
+# job-level `if` cannot resolve environment-scoped vars).
 # Concurrency group remains global single-flight across staging/development/production.
 name: Portable writer (GHA)
 
@@ -156,11 +159,23 @@ jobs:
         run: bash scripts/gha-portable-writer.sh
 
   development:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.target == 'development' && vars.AIRINGCAL_DEVELOPMENT_WRITER_ENABLED == 'true' }}
+    # Same scope rule as the production job: the environment-scoped
+    # development writer gate (pinned 'false' by deploy-env.mjs sync) is
+    # checked in the first step; the job condition only routes dispatches.
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.target == 'development' }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     environment: development
     steps:
+      - name: Development writer gate (fails closed)
+        env:
+          DEVELOPMENT_GATE: ${{ vars.AIRINGCAL_DEVELOPMENT_WRITER_ENABLED }}
+        run: |
+          if [ "${DEVELOPMENT_GATE}" != "true" ]; then
+            echo "::error::Refusing development dispatch: AIRINGCAL_DEVELOPMENT_WRITER_ENABLED is not 'true' in the development environment (deploy pins it false; enable deliberately)."
+            exit 1
+          fi
+
       - name: Validate required development config
         id: config
         env:
@@ -271,11 +286,30 @@ jobs:
         run: bash scripts/gha-portable-writer.sh
 
   production:
-    if: ${{ (github.event_name == 'schedule' && vars.AIRINGCAL_WRITER_ENABLED == 'true') || (github.event_name == 'workflow_dispatch' && inputs.target == 'production' && vars.AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED == 'true') }}
+    # Job-level `if` can only see github/inputs and REPOSITORY-level vars —
+    # environment-scoped vars are NOT resolvable here (they resolve inside
+    # the job at step level). The environment-scoped bootstrap gate therefore
+    # lives in the first step below; the job-level condition only routes the
+    # event (schedule via the repo kill-switch, dispatch by selected target).
+    if: ${{ (github.event_name == 'schedule' && vars.AIRINGCAL_WRITER_ENABLED == 'true') || (github.event_name == 'workflow_dispatch' && inputs.target == 'production') }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: production
     steps:
+      - name: Production bootstrap gate (fails closed)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          BOOTSTRAP_GATE: ${{ vars.AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED }}
+        run: |
+          # Resolves the PRODUCTION-environment value of the bootstrap flag.
+          # The Owner sets it to 'true' once (after the authorized clean
+          # bootstrap apply), dispatches, and clears it; deploy-env.mjs pins
+          # it to 'false' at every apply. Never echo the value.
+          if [ "${BOOTSTRAP_GATE}" != "true" ]; then
+            echo "::error::Refusing production dispatch: AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED is not 'true' in the production environment. Set it deliberately, run the dispatch, then clear it."
+            exit 1
+          fi
+
       - name: Validate required production config
         id: config
         env:

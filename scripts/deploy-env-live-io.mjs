@@ -2178,14 +2178,20 @@ export function createLiveDevelopmentApplyIo({
           env,
         )
 
-        // Job-level `if` reads repo-level `vars.` (environment-scoped vars are
-        // not reliably visible there), so the gate is a repository variable.
+        // The development job's first-step gate reads
+        // vars.AIRINGCAL_DEVELOPMENT_WRITER_ENABLED at STEP level, which
+        // resolves the ENVIRONMENT-scoped value (falling back to repo when
+        // the environment does not define it). syncGithubEnvironment pins the
+        // environment value 'false', so the toggle must write the SAME scope —
+        // a repository-level flip would be masked by the environment pin.
         await runGh(
           spawnSyncImpl,
           [
             'variable',
             'set',
             DEVELOPMENT_WRITER_GATE_VAR,
+            '--env',
+            'development',
             '--repo',
             repo,
             '--body',
@@ -2309,7 +2315,7 @@ export function createLiveDevelopmentApplyIo({
       } finally {
         // Always restore the freeze (gate off + workflow disabled), pass or fail.
         for (const args of [
-          ['variable', 'set', DEVELOPMENT_WRITER_GATE_VAR, '--repo', repo, '--body', 'false'],
+          ['variable', 'set', DEVELOPMENT_WRITER_GATE_VAR, '--env', 'development', '--repo', repo, '--body', 'false'],
           ['workflow', 'disable', workflow, '--repo', repo],
         ]) {
           try {
