@@ -2117,45 +2117,61 @@ export function createLiveDevelopmentApplyIo({
       const receipts = []
       for (const reader of readers) {
         const imageUrl = `${reader.base}/image/${hash}`
+        // Version-propagation race (D1 live apply 2026-11-25): the first
+        // requests after `wrangler deploy` can still land on the previous
+        // version, which 302s to the legacy bucket domain. In worker mode
+        // that is a KNOWN transient (the new build streams); retry with
+        // bounded backoff before failing closed. Redirect mode keeps its
+        // single-shot semantics — there 302 is the pass shape anyway.
+        const raceRetryable = plan.publicOriginMode === 'worker'
+        const maxAttempts = raceRetryable ? 6 : 1
         let response
-        try {
-          response = await withNetworkRetry(
-            () => fetchImpl(imageUrl, { redirect: 'manual' }),
-            { isRetriable: isThrownNetworkError, sleep: sleepImpl },
-          )
-        } catch (error) {
-          throw new Error(
-            `image routing verification failed: ${reader.label} GET ${imageUrl} errored: ${error?.message ?? error}`,
-          )
-        }
-        const status = Number(response?.status ?? 0)
-        const location = headerValue(response, 'location')
-        let locationOrigin = null
-        if (location) {
+        for (let attempt = 1; ; attempt += 1) {
           try {
-            locationOrigin = new URL(location, reader.base).origin
-          } catch {
-            locationOrigin = null
+            response = await withNetworkRetry(
+              () => fetchImpl(imageUrl, { redirect: 'manual' }),
+              { isRetriable: isThrownNetworkError, sleep: sleepImpl },
+            )
+          } catch (error) {
+            throw new Error(
+              `image routing verification failed: ${reader.label} GET ${imageUrl} errored: ${error?.message ?? error}`,
+            )
           }
-        }
-        // §6.3 worker mode: with no bucket/CDN base the reader STREAMS the
-        // image itself (200 + image/* from its own origin) — that is the
-        // correct landing. Redirect mode keeps the 302-to-expected-origin
-        // evidence. Anything else fails closed.
-        const readerOrigin = new URL(reader.base).origin
-        const contentType = (headerValue(response, 'content-type') ?? '').toLowerCase()
-        const streamed =
-          status === 200 && readerOrigin === expectedOrigin && contentType.startsWith('image/')
-        if (streamed) {
-          receipts.push({ base: reader.base, streamed: true, contentType })
-          continue
-        }
-        if (status !== 302 || !location || locationOrigin !== expectedOrigin) {
+          const status = Number(response?.status ?? 0)
+          const location = headerValue(response, 'location')
+          let locationOrigin = null
+          if (location) {
+            try {
+              locationOrigin = new URL(location, reader.base).origin
+            } catch {
+              locationOrigin = null
+            }
+          }
+          // §6.3 worker mode: with no bucket/CDN base the reader STREAMS the
+          // image itself (200 + image/* from its own origin) — that is the
+          // correct landing. Redirect mode keeps the 302-to-expected-origin
+          // evidence. Anything else fails closed.
+          const readerOrigin = new URL(reader.base).origin
+          const contentType = (headerValue(response, 'content-type') ?? '').toLowerCase()
+          const streamed =
+            status === 200 && readerOrigin === expectedOrigin && contentType.startsWith('image/')
+          const redirected = status === 302 && !!location && locationOrigin === expectedOrigin
+          if (streamed) {
+            receipts.push({ base: reader.base, streamed: true, contentType, attempts: attempt })
+            break
+          }
+          if (redirected) {
+            receipts.push({ base: reader.base, location, originMatches: true, attempts: attempt })
+            break
+          }
+          if (raceRetryable && attempt < maxAttempts) {
+            await sleepImpl(2_000 * attempt)
+            continue
+          }
           throw new Error(
-            `image routing verification failed: ${reader.label} GET ${imageUrl} -> ${status || 'no response'} location=${location ?? '(none)'}; expected 302 to origin ${expectedOrigin} (or 200 image/* streamed from it)`,
+            `image routing verification failed: ${reader.label} GET ${imageUrl} -> ${status || 'no response'} location=${location ?? '(none)'}; expected 302 to origin ${expectedOrigin} (or 200 image/* streamed from it) after ${attempt} attempt(s)`,
           )
         }
-        receipts.push({ base: reader.base, location, originMatches: true })
       }
       return { hash, readers: receipts }
     },

@@ -1035,7 +1035,12 @@ export function evaluateIsolationProbe({ r2DevDisabled, probes = [] }) {
     }
   }
 
-  const allowedDenied = new Set([403, 404])
+  // Denial = the anonymous surface refused to serve the object. 403/404 are
+  // the policy answers; 400 counts too — Cloudflare's edge rejects encoded
+  // traversal variants (`/public/..%2f..%2fcheckpoints/…`) with 400 BEFORE
+  // routing (live D1 apply 2026-11-25), which is a refusal, not a leak.
+  // 2xx is a real exposure and 5xx proves nothing — both fail closed.
+  const allowedDenied = new Set([400, 403, 404])
   const failures = []
   for (const probe of list) {
     const status = Number(probe.status)
@@ -1044,7 +1049,7 @@ export function evaluateIsolationProbe({ r2DevDisabled, probes = [] }) {
         url: probe.url,
         method: probe.method,
         status,
-        expected: '403|404',
+        expected: '400|403|404',
       })
     }
   }
