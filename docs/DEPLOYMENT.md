@@ -18,11 +18,22 @@ Each environment owns **one R2 bucket** holding `public/`, `snapshots/`,
 Cloudflare Worker (`apps/v3-read-worker`) that bundles the Reader/Widget static
 assets and serves the allowlisted Viewer routes (`/api/config`, `/api/version`,
 `/api/health`, `/api/collections`, `/api/calendar`, `/api/cache`,
-`/image/:hash[/thumb]`) over one R2 binding. The bucket is also published
-through an R2 custom domain for direct immutable reads; `checkpoints/**` is
-denied there by host-scoped zone rules, and the Worker never exposes it (no
-listing, no key passthrough, GET/HEAD only, pointer refs prefix-allowlisted).
-EdgeOne Makers mirrors the same static Reader for the overseas domain.
+`/image/:hash[/thumb]`) **plus the public object interface**
+(`/public/current-release.json`, legacy `/public/manifest.json`,
+`/snapshots/v1/{gen}-{hash}.json`, `/public/manifests/{gen}-{hash}.json`,
+`/images/{hash}/original|thumb.v1.webp|thumb.v2.webp`) over one **private** R2
+binding. By default the Worker origin *is* the public surface: images are
+streamed with sniffed `Content-Type` and immutable cache, every other key
+(including `checkpoints/**`, encoded and traversal variants) is 404 before any
+object read, and cross-origin access is governed by the exact-origin allowlist
+`AIRINGCAL_CORS_ORIGINS`. Publishing raw bucket URLs (custom domain + host
+WAF/cache/CORS, `bucket-domain` mode) is a legacy opt-in selected only by
+setting `AIRINGCAL_PUBLIC_BASE_URL` to a non-Worker `https://` origin; the
+live `airingcal.223.im` topology runs in that mode. The Worker never exposes
+checkpoints (no listing, no key passthrough, GET/HEAD only, pointer refs
+prefix-allowlisted).
+EdgeOne Makers mirrors the same static Reader for the overseas domain and
+consumes the controlled interface above — it never fetches raw bucket keys.
 
 Writes never happen in the read deploy: publishing is the GHA Portable Builder
 (`.github/workflows/portable-writer.yml`), gated by `AIRINGCAL_WRITER_ENABLED`
@@ -53,8 +64,9 @@ present in the process environment.
 |---|---|---|
 | `AIRINGCAL_ENV` | required selector | `staging` \| `development` \| `production` |
 | `AIRINGCAL_DOTENV_PATH` | required for production | path to `.env.production` |
-| `AIRINGCAL_PUBLIC_BASE_URL` | required | public origin of the environment bucket/domain |
-| `AIRINGCAL_ZONE_ID` | required | Cloudflare zone for the domain above |
+| `AIRINGCAL_PUBLIC_BASE_URL` | optional | **unset/`*.workers.dev` → `worker` mode** (Worker origin is the public surface, bucket fully private). A non-Worker `https://` origin selects legacy `bucket-domain` mode (custom domain + edge WAF/cache/CORS) and then must be a real R2 custom-domain URL — never a placeholder or `r2.dev`. |
+| `AIRINGCAL_CORS_ORIGINS` | optional (worker mode) | comma-separated **exact** origins allowed cross-origin (`null` for file:// embeds); wildcards refused at config time; unset keeps OPTIONS at 405 and CORS an edge concern |
+| `AIRINGCAL_ZONE_ID` | required for production; required in bucket-domain mode | Cloudflare zone (production preflight identity; domain/WAF rules otherwise) |
 | `AIRINGCAL_CLOUDFLARE_API_TOKEN` | required secret | management token (S3 keys are derived from it) |
 | `AIRINGCAL_CLOUDFLARE_ACCOUNT_ID` | required at apply | 32-char hex |
 | `AIRINGCAL_BANGUMI_TOKEN` | required secret | writer token (synced to GitHub, never used by deploy reads) |
@@ -91,16 +103,23 @@ AIRINGCAL_ENV=development node scripts/deploy-env.mjs --apply \
   AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes   # in env or .env.development
 ```
 
-Steps (each idempotent, abort fail-closed): token scope probe → S3 derive →
-writer freeze (workflow disable + in-flight/lease check) → ensure bucket →
-disable r2.dev → attach custom domain → cache rules → CORS → WAF `checkpoints/`
-deny → isolation probe (write + anonymous GET/HEAD; failure aborts the cutover
-before any copy) → copy `public/` + `checkpoints/` from the verified staging
-bucket → GitHub `development` env sync (writer gate pinned `false`) → deploy CF
-reader Worker + EdgeOne Makers → image routing verify (real hashes from the
-published release) → CDN cache validation → optional single-writer smoke test.
+Steps (each idempotent, abort fail-closed), **worker mode** (default):
+token scope probe → S3 derive → writer freeze (workflow disable +
+in-flight/lease check) → ensure bucket → disable r2.dev → GitHub
+`development` env sync (writer gate pinned `false`; `PUBLIC_BASE_URL`
+records the Worker origin) → deploy CF reader Worker + EdgeOne Makers →
+image routing verify (real hashes streamed from the Worker) → CDN cache
+validation → **isolation probe after deploys** (write with S3 `HEAD` proof,
+anonymous GET/HEAD × plain/`%63`/`..%2f` variants against every deployed
+reader origin, probe always deleted afterwards) → optional single-writer
+smoke test. In legacy **bucket-domain** mode the edge steps run first
+(attach custom domain → cache rules → CORS → WAF `checkpoints/` deny →
+isolation probe before any copy) and `public/` + `checkpoints/` are copied
+from the verified staging bucket.
 
-Re-running after an interruption is safe: every step re-checks and no-ops.
+Re-running after an interruption is safe: every step re-checks and no-ops;
+an interrupted apply that left only the probe object behind is detected and
+removed by `ensure-bucket` instead of poisoning the empty-bucket guard.
 
 ## Deploy — production (clean bootstrap, Owner-gated)
 
@@ -116,12 +135,17 @@ AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes \
 
 The production sequence is **copy-free**: it never reads or copies staging or
 development data. `ensure-bucket` refuses a non-empty `airingcal-production`
-bucket; `checkpoints/` isolation is proven by anonymous probe before anything
+bucket (the one exception being a provable leftover isolation-probe object,
+verified against the known probe body and deleted before re-checking emptiness
+— an interrupted apply is recovered, the guard is not weakened);
+`checkpoints/` isolation is proven by the anonymous probe with write-`HEAD`
+evidence and guaranteed cleanup — in worker mode after the readers deploy,
+against every deployed reader origin, in bucket-domain mode before anything
 is written; GitHub sync targets the `production` environment with
 `AIRINGCAL_PRODUCTION_*` names and pins
-`AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED=false`; readers deploy last.
-Apply never enables the writer and never dispatches the first sync — those are
-the Owner's separate actions below.
+`AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED=false`. Apply never enables the
+writer and never dispatches the first sync — those are the Owner's separate
+actions below.
 
 ## First data load (Owner dispatch, per environment)
 
@@ -148,9 +172,10 @@ index/Widget assets, pointer identity, API shape, method allowlist (405 +
 `/api/cache`), `checkpoints/**` isolation, and image delivery (original +
 optional thumb). It is strictly read-only and exits non-zero on any failed
 check. Remaining manual items: anonymous `GET/HEAD` on
-`<public origin>/checkpoints/_isolation-probe.txt` must be 403/404 (WAF side,
-not reachable through the Worker), and CORS allowlist behavior against a
-non-allowlisted foreign origin.
+`<public origin>/checkpoints/_isolation-probe.txt` must be 403 (bucket-domain
+mode, WAF side) or 404 (worker mode, allowlist refusal) and is exercised
+automatically by the deploy probe itself, and CORS allowlist behavior against
+a non-allowlisted foreign origin.
 
 ## Update / rollback
 

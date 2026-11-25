@@ -32,3 +32,27 @@ export function readConfigErrorResponse(error: unknown): Response {
     },
   })
 }
+
+/**
+ * Parse `AIRINGCAL_CORS_ORIGINS` (comma-separated exact origins) for
+ * Worker-origin deployments (#72 private-R2: with the bucket private and the
+ * Worker as the public origin, there is no bucket CORS or zone rule to carry
+ * the allowlist — the Worker itself answers preflight). Wildcards are refused
+ * at config time, never silently widened. Empty/unset keeps the previous
+ * behavior: OPTIONS is refused with 405 and no CORS headers are emitted.
+ */
+export function parseCorsAllowedOrigins(raw: string | null | undefined): string[] {
+  const origins: string[] = []
+  for (const part of String(raw ?? '').split(',')) {
+    const value = part.trim()
+    if (!value) continue
+    if (value.includes('*')) {
+      throw new Error(`AIRINGCAL_CORS_ORIGINS must be exact origins (no wildcards): ${value}`)
+    }
+    if (value !== 'null' && !/^https?:\/\//i.test(value)) {
+      throw new Error(`AIRINGCAL_CORS_ORIGINS entries must be absolute http(s) origins or "null": ${value}`)
+    }
+    if (!origins.includes(value)) origins.push(value.replace(/\/+$/, ''))
+  }
+  return origins
+}

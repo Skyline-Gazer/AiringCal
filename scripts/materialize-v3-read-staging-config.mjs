@@ -31,6 +31,7 @@ if (!sourcePath || !outputPath) {
 const BUCKET = process.env.AIRINGCAL_STAGING_PUBLIC_R2_BUCKET?.trim() ?? ''
 const PUBLIC_BASE_URL = process.env.AIRINGCAL_STAGING_PUBLIC_BASE_URL?.trim() ?? ''
 const IMAGE_BASE_URL = process.env.AIRINGCAL_IMAGE_BASE_URL?.trim() ?? ''
+const CORS_ORIGINS = process.env.AIRINGCAL_CORS_ORIGINS?.trim() ?? ''
 const GIT_SHA = process.env.BANGUMI_GIT_COMMIT_SHA?.trim() ?? ''
 const PACKAGE_VERSION = process.env.PACKAGE_VERSION?.trim() ?? ''
 
@@ -61,12 +62,27 @@ if (!BUCKET) fail('AIRINGCAL_STAGING_PUBLIC_R2_BUCKET is required')
 if (!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(BUCKET)) {
   fail('AIRINGCAL_STAGING_PUBLIC_R2_BUCKET must be a valid R2 bucket name (3-63 lowercase chars)')
 }
-if (!PUBLIC_BASE_URL) fail('AIRINGCAL_STAGING_PUBLIC_BASE_URL is required')
-parseBaseUrl(
-  PUBLIC_BASE_URL,
-  'AIRINGCAL_STAGING_PUBLIC_BASE_URL',
-  'configure the verified staging CDN host',
-)
+// §6.3 worker-origin mode (private R2): an empty PUBLIC_BASE_URL is valid —
+// the Worker itself is the public origin, streams images from the R2 binding
+// and serves the allowlisted public object interface. When set, it stays the
+// legacy bucket-domain/CDN base and the reader redirects images to it.
+if (PUBLIC_BASE_URL) {
+  parseBaseUrl(
+    PUBLIC_BASE_URL,
+    'AIRINGCAL_STAGING_PUBLIC_BASE_URL',
+    'configure the verified staging CDN host',
+  )
+}
+if (CORS_ORIGINS) {
+  for (const origin of CORS_ORIGINS.split(',')) {
+    const value = origin.trim()
+    if (!value) continue
+    if (value.includes('*')) fail('AIRINGCAL_CORS_ORIGINS must be exact origins (no wildcards)')
+    if (value !== 'null' && !/^https?:\/\//i.test(value)) {
+      fail('AIRINGCAL_CORS_ORIGINS entries must be absolute http(s) origins or "null"')
+    }
+  }
+}
 if (IMAGE_BASE_URL) {
   // Image CDN stays OFF by default: unset → the reader reuses the public base.
   parseBaseUrl(
@@ -133,9 +149,10 @@ const vars = [
   '',
   '# Generated staging vars (#147 C8). Do not commit this file.',
   '[vars]',
-  `AIRINGCAL_PUBLIC_BASE_URL = ${JSON.stringify(PUBLIC_BASE_URL)}`,
   `BANGUMI_GIT_COMMIT_SHA = ${JSON.stringify(GIT_SHA.toLowerCase())}`,
 ]
+if (PUBLIC_BASE_URL) vars.push(`AIRINGCAL_PUBLIC_BASE_URL = ${JSON.stringify(PUBLIC_BASE_URL)}`)
+if (CORS_ORIGINS) vars.push(`AIRINGCAL_CORS_ORIGINS = ${JSON.stringify(CORS_ORIGINS)}`)
 if (PACKAGE_VERSION) vars.push(`PACKAGE_VERSION = ${JSON.stringify(PACKAGE_VERSION)}`)
 if (IMAGE_BASE_URL) vars.push(`AIRINGCAL_IMAGE_BASE_URL = ${JSON.stringify(IMAGE_BASE_URL)}`)
 

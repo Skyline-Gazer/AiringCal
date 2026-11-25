@@ -422,18 +422,10 @@ export function buildProductionPlan({
     throw new Error(`target must be cloudflare|edgeone|both (got "${target}")`)
   }
   const base = String(publicBaseUrl ?? '').trim().replace(/\/+$/, '')
-  if (!base) throw new Error('AIRINGCAL_PUBLIC_BASE_URL is required for the production plan')
 
   const normalizedZoneId = String(zoneId ?? '').trim()
   if (!normalizedZoneId) {
     throw new Error('AIRINGCAL_ZONE_ID is required for production preflight-identity (dry-run and apply)')
-  }
-
-  let publicHost
-  try {
-    publicHost = new URL(base).host
-  } catch {
-    throw new Error('AIRINGCAL_PUBLIC_BASE_URL must be an absolute URL')
   }
 
   const bucket = PRODUCTION_DEFAULTS.bucket
@@ -443,10 +435,16 @@ export function buildProductionPlan({
     edgeoneProject,
   })
 
+  // §6.3 private-R2 target: unset (or Worker-hosted) base = the Worker is the
+  // only anonymous surface. A bucket custom domain keeps the legacy edge plan.
+  const publicOriginMode = resolvePublicOriginMode({ publicBaseUrl: base, cloudflareWorkerName })
+  const workerOrigin = `https://${cloudflareWorkerName}.r7a.workers.dev`
+  const publicHost = base ? new URL(base).host : new URL(workerOrigin).host
+
   const imageCdn = validateImageCdnConfig({ publicBaseUrl: base, imageBaseUrl })
   const corsOrigins = buildCorsAllowedOrigins({
-    cloudflareWorkerHosts: [`https://${cloudflareWorkerName}.r7a.workers.dev`],
-    edgeoneHosts: [base],
+    cloudflareWorkerHosts: [workerOrigin],
+    edgeoneHosts: base && publicOriginMode === 'bucket-domain' ? [base] : [],
   })
 
   const steps = [
@@ -475,37 +473,6 @@ export function buildProductionPlan({
       id: 'disable-r2-dev',
       title: 'Disable r2.dev on production bucket before isolation proof',
       mutates: true,
-    },
-    {
-      id: 'attach-custom-domain',
-      title: `Attach custom domain ${publicHost} from AIRINGCAL_PUBLIC_BASE_URL when missing`,
-      mutates: true,
-    },
-    {
-      id: 'cache-rules',
-      title: 'Apply cache rules (images/snapshots immutable 1y; pointer max-age=0) host-scoped to production',
-      mutates: true,
-    },
-    {
-      id: 'cors',
-      title: 'Set CORS AllowedOrigins to exact Production reader + local smoke origins',
-      mutates: true,
-      allowedOrigins: corsOrigins,
-      methods: [...PRODUCTION_DEFAULTS.corsMethods],
-    },
-    {
-      id: 'waf-checkpoints',
-      title: 'Configure WAF/path deny for checkpoints/* on production public host',
-      mutates: true,
-    },
-    {
-      id: 'isolation-probe',
-      title:
-        'Write non-sensitive checkpoints/_isolation-probe.txt and prove anonymous GET/HEAD denied before writer publish',
-      mutates: true,
-      probeKey: PRODUCTION_DEFAULTS.isolationProbeKey,
-      abortOnFailure: true,
-      dualBucketFallback: false,
     },
     {
       id: 'sync-github-production-env',
@@ -537,6 +504,56 @@ export function buildProductionPlan({
     },
   ]
 
+  // Edge/bucket-domain steps exist only in the legacy public-bucket topology;
+  // in worker mode the deployed readers themselves are the anonymous surface
+  // and the isolation probe runs against them after deploy (#72 §6.3).
+  const edgeSteps = publicOriginMode === 'bucket-domain'
+    ? [
+      {
+        id: 'attach-custom-domain',
+        title: `Attach custom domain ${publicHost} from AIRINGCAL_PUBLIC_BASE_URL when missing`,
+        mutates: true,
+      },
+      {
+        id: 'cache-rules',
+        title: 'Apply cache rules (images/snapshots immutable 1y; pointer max-age=0) host-scoped to production',
+        mutates: true,
+      },
+      {
+        id: 'cors',
+        title: 'Set CORS AllowedOrigins to exact Production reader + local smoke origins',
+        mutates: true,
+        allowedOrigins: corsOrigins,
+        methods: [...PRODUCTION_DEFAULTS.corsMethods],
+      },
+      {
+        id: 'waf-checkpoints',
+        title: 'Configure WAF/path deny for checkpoints/* on production public host',
+        mutates: true,
+      },
+    ]
+    : []
+  const isolationProbeStep = {
+    id: 'isolation-probe',
+    title: publicOriginMode === 'worker'
+      ? 'Write checkpoints/_isolation-probe.txt, prove it exists via S3 HEAD, prove every deployed reader origin denies it anonymously (GET/HEAD + encoded variants), then delete it'
+      : 'Write non-sensitive checkpoints/_isolation-probe.txt and prove anonymous GET/HEAD denied before writer publish',
+    mutates: true,
+    probeKey: PRODUCTION_DEFAULTS.isolationProbeKey,
+    abortOnFailure: true,
+    dualBucketFallback: false,
+    probeTargets: publicOriginMode === 'worker' ? 'deployed-reader-origins' : 'bucket-domain',
+    positiveProof: true,
+    cleanupProbe: true,
+  }
+  if (publicOriginMode === 'worker') {
+    const docIndex = steps.findIndex((step) => step.id === 'bangumi-full-sync-owner-dispatch')
+    steps.splice(docIndex, 0, isolationProbeStep)
+  } else {
+    const syncIndex = steps.findIndex((step) => step.id === 'sync-github-production-env')
+    steps.splice(syncIndex, 0, ...edgeSteps, isolationProbeStep)
+  }
+
   return {
     env: 'production',
     mode,
@@ -550,8 +567,10 @@ export function buildProductionPlan({
     writerEnabled: false,
     productionWriterEnabled: false,
     applyAuthorized: Boolean(applyAuthorized),
-    publicBaseUrl: base,
+    publicBaseUrl: base || null,
     publicHost,
+    publicOriginMode,
+    workerOrigin,
     accountId: accountId || null,
     zoneId: normalizedZoneId,
     imageCdn,
@@ -611,9 +630,7 @@ export function deriveProductionConfig(rawEnv = {}, opts = {}) {
   }
 
   const publicBaseUrl = String(env.AIRINGCAL_PUBLIC_BASE_URL ?? '').trim().replace(/\/+$/, '')
-  if (!publicBaseUrl) {
-    throw new Error('AIRINGCAL_PUBLIC_BASE_URL is required')
-  }
+  // Unset is valid §6.3 worker-origin mode; the plan builder resolves the mode.
 
   const zoneId = String(env.AIRINGCAL_ZONE_ID ?? env.CLOUDFLARE_ZONE_ID ?? '').trim()
   if (!zoneId) {
@@ -733,19 +750,18 @@ export function buildDevelopmentDeployPlan({
     throw new Error(`target must be cloudflare|edgeone|both (got "${target}")`)
   }
   const base = String(publicBaseUrl ?? '').trim().replace(/\/+$/, '')
-  if (!base) throw new Error('AIRINGCAL_PUBLIC_BASE_URL is required for the development plan')
 
-  let publicHost
-  try {
-    publicHost = new URL(base).host
-  } catch {
-    throw new Error('AIRINGCAL_PUBLIC_BASE_URL must be an absolute URL')
-  }
+  // §6.3 private-R2 target (mirrors buildProductionPlan): unset/Worker base =
+  // the Worker is the only anonymous surface; a bucket custom domain keeps
+  // the legacy edge plan (custom domain + WAF + bucket CORS + staging copies).
+  const publicOriginMode = resolvePublicOriginMode({ publicBaseUrl: base, cloudflareWorkerName })
+  const workerOrigin = `https://${cloudflareWorkerName}.r7a.workers.dev`
+  const publicHost = base ? new URL(base).host : new URL(workerOrigin).host
 
   const imageCdn = validateImageCdnConfig({ publicBaseUrl: base, imageBaseUrl })
   const corsOrigins = buildCorsAllowedOrigins({
-    cloudflareWorkerHosts: [`https://${cloudflareWorkerName}.r7a.workers.dev`],
-    edgeoneHosts: [base],
+    cloudflareWorkerHosts: [workerOrigin],
+    edgeoneHosts: base && publicOriginMode === 'bucket-domain' ? [base] : [],
   })
 
   const steps = [
@@ -772,50 +788,6 @@ export function buildDevelopmentDeployPlan({
       mutates: true,
     },
     {
-      id: 'attach-custom-domain',
-      title: `Attach custom domain ${publicHost} when missing`,
-      mutates: true,
-    },
-    {
-      id: 'cache-rules',
-      title: 'Apply cache rules (images/snapshots immutable 1y; pointer max-age=0)',
-      mutates: true,
-    },
-    {
-      id: 'cors',
-      title: 'Set CORS AllowedOrigins to exact reader + local smoke origins',
-      mutates: true,
-      allowedOrigins: corsOrigins,
-      methods: [...DEVELOPMENT_DEFAULTS.corsMethods],
-    },
-    {
-      id: 'waf-checkpoints',
-      title: 'Configure WAF/path deny for checkpoints/* on public entrypoints',
-      mutates: true,
-    },
-    {
-      id: 'isolation-probe',
-      title: 'Write non-sensitive checkpoints/_isolation-probe.txt and prove anonymous GET/HEAD denied',
-      mutates: true,
-      probeKey: DEVELOPMENT_DEFAULTS.isolationProbeKey,
-      abortOnFailure: true,
-      dualBucketFallback: false,
-    },
-    {
-      id: 'copy-public',
-      title: 'Copy public/, snapshots/, images/ from staging public bucket',
-      mutates: true,
-      requiresIsolationPass: true,
-      sourceBucket: DEVELOPMENT_DEFAULTS.stagingSource.publicBucket,
-    },
-    {
-      id: 'copy-checkpoints',
-      title: 'Copy real checkpoints/** from staging checkpoint bucket',
-      mutates: true,
-      requiresIsolationPass: true,
-      sourceBucket: DEVELOPMENT_DEFAULTS.stagingSource.checkpointBucket,
-    },
-    {
       id: 'sync-gh-env',
       title: 'Sync GitHub Environment development Variables/Secrets (writer stays disabled)',
       mutates: true,
@@ -823,6 +795,67 @@ export function buildDevelopmentDeployPlan({
       writerEnabled: false,
     },
   ]
+
+  const edgeSteps = publicOriginMode === 'bucket-domain'
+    ? [
+      {
+        id: 'attach-custom-domain',
+        title: `Attach custom domain ${publicHost} when missing`,
+        mutates: true,
+      },
+      {
+        id: 'cache-rules',
+        title: 'Apply cache rules (images/snapshots immutable 1y; pointer max-age=0)',
+        mutates: true,
+      },
+      {
+        id: 'cors',
+        title: 'Set CORS AllowedOrigins to exact reader + local smoke origins',
+        mutates: true,
+        allowedOrigins: corsOrigins,
+        methods: [...DEVELOPMENT_DEFAULTS.corsMethods],
+      },
+      {
+        id: 'waf-checkpoints',
+        title: 'Configure WAF/path deny for checkpoints/* on public entrypoints',
+        mutates: true,
+      },
+    ]
+    : []
+  const isolationProbeStep = {
+    id: 'isolation-probe',
+    title: publicOriginMode === 'worker'
+      ? 'Write checkpoints/_isolation-probe.txt, prove it exists via S3 HEAD, prove every deployed reader origin denies it anonymously (GET/HEAD + encoded variants), then delete it'
+      : 'Write non-sensitive checkpoints/_isolation-probe.txt and prove anonymous GET/HEAD denied',
+    mutates: true,
+    probeKey: DEVELOPMENT_DEFAULTS.isolationProbeKey,
+    abortOnFailure: true,
+    dualBucketFallback: false,
+    probeTargets: publicOriginMode === 'worker' ? 'deployed-reader-origins' : 'bucket-domain',
+    positiveProof: true,
+    cleanupProbe: true,
+  }
+  // Staging-coupled migration copies belong ONLY to the legacy one-shot
+  // bucket-domain cutover (they ran 2026-11-07/08); worker-mode dev applies
+  // are pure infrastructure redeployments against the live single bucket.
+  const copySteps = publicOriginMode === 'bucket-domain'
+    ? [
+      {
+        id: 'copy-public',
+        title: 'Copy public/, snapshots/, images/ from staging public bucket',
+        mutates: true,
+        requiresIsolationPass: true,
+        sourceBucket: DEVELOPMENT_DEFAULTS.stagingSource.publicBucket,
+      },
+      {
+        id: 'copy-checkpoints',
+        title: 'Copy real checkpoints/** from staging checkpoint bucket',
+        mutates: true,
+        requiresIsolationPass: true,
+        sourceBucket: DEVELOPMENT_DEFAULTS.stagingSource.checkpointBucket,
+      },
+    ]
+    : []
 
   if (target === 'cloudflare' || target === 'both') {
     steps.push({
@@ -850,6 +883,15 @@ export function buildDevelopmentDeployPlan({
     gated: true,
   })
 
+  if (publicOriginMode === 'worker') {
+    // The probe needs the DEPLOYED readers as its anonymous targets, so it
+    // runs after both deploy steps and before the gated writer test.
+    steps.splice(steps.findIndex((step) => step.id === 'single-writer-test'), 0, isolationProbeStep)
+  } else {
+    const syncIndex = steps.findIndex((step) => step.id === 'sync-gh-env')
+    steps.splice(syncIndex, 0, ...edgeSteps, isolationProbeStep, ...copySteps)
+  }
+
   return {
     env: 'development',
     mode,
@@ -859,8 +901,10 @@ export function buildDevelopmentDeployPlan({
     singleBucket: true,
     dualBucketFallback: false,
     abortOnIsolationFailure: true,
-    publicBaseUrl: base,
+    publicBaseUrl: base || null,
     publicHost,
+    publicOriginMode,
+    workerOrigin,
     accountId: accountId || null,
     imageCdn,
     cors: {
@@ -989,18 +1033,50 @@ export function evaluateIsolationProbe({ r2DevDisabled, probes = [] }) {
 }
 
 /**
+ * Resolve which surface is the anonymous public origin (#72 private-R2):
+ * - `bucket-domain` (legacy): `AIRINGCAL_PUBLIC_BASE_URL` is a bucket custom
+ *   domain / CDN in front of the bucket; WAF, cache and CORS live at the edge.
+ * - `worker` (target): unset or pointing at the Worker itself; the bucket has
+ *   no anonymous surface, the Worker serves the controlled public object
+ *   interface, streams images, and answers CORS from its own allowlist.
+ */
+export function resolvePublicOriginMode({ publicBaseUrl = '', cloudflareWorkerName }) {
+  const base = String(publicBaseUrl).trim().replace(/\/+$/, '')
+  if (!base) return 'worker'
+  let host
+  try {
+    host = new URL(base).host
+  } catch {
+    throw new Error('AIRINGCAL_PUBLIC_BASE_URL must be an absolute URL')
+  }
+  return host.endsWith('.workers.dev') ? 'worker' : 'bucket-domain'
+}
+
+/**
  * @param {{
- *   publicBaseUrl: string,
+ *   publicBaseUrl?: string,
  *   imageBaseUrl?: string,
  *   originHost?: string,
  * }}
  */
 export function validateImageCdnConfig({ publicBaseUrl, imageBaseUrl = '', originHost } = {}) {
-  const publicUrl = new URL(String(publicBaseUrl).trim())
+  const publicRaw = String(publicBaseUrl ?? '').trim()
+  const trimmedImage = String(imageBaseUrl ?? '').trim()
+  if (!publicRaw) {
+    // Worker-origin mode (§6.3): with no public bucket base, `/image/*`
+    // streams from the store; an image CDN base would redirect to a raw
+    // bucket URL the private architecture does not expose.
+    if (trimmedImage) {
+      throw new Error(
+        'AIRINGCAL_IMAGE_BASE_URL requires AIRINGCAL_PUBLIC_BASE_URL (redirect mode); leave it empty to stream images from the Worker',
+      )
+    }
+    return { enabled: false, imageBaseUrl: null }
+  }
+  const publicUrl = new URL(publicRaw)
   if (publicUrl.protocol !== 'https:') {
     throw new Error('AIRINGCAL_PUBLIC_BASE_URL must be https')
   }
-  const trimmedImage = String(imageBaseUrl ?? '').trim()
   if (!trimmedImage) {
     return {
       enabled: false,
@@ -1064,9 +1140,7 @@ export function deriveDevelopmentConfig(rawEnv = {}, { target, mode = 'dry-run' 
   }
 
   const publicBaseUrl = String(env.AIRINGCAL_PUBLIC_BASE_URL ?? '').trim().replace(/\/+$/, '')
-  if (!publicBaseUrl) {
-    throw new Error('AIRINGCAL_PUBLIC_BASE_URL is required')
-  }
+  // Unset is valid §6.3 worker-origin mode; the plan builder resolves the mode.
 
   // Explicit CLI `--target` (passed via opts.target) wins over env.
   const deployTarget = String(target ?? env.AIRINGCAL_DEPLOY_TARGET ?? 'both').trim() || 'both'
@@ -1126,8 +1200,9 @@ export function missingScopeExitMessage(missingScopes = []) {
  * @property {(ctx: object) => Promise<object>} applyCacheRules
  * @property {(ctx: object) => Promise<object>} applyCors
  * @property {(ctx: object) => Promise<object>} configureWaf
- * @property {(ctx: object) => Promise<object>} writeIsolationProbe
- * @property {(ctx: object) => Promise<{ r2DevDisabled: boolean, probes: Array<{url:string,method:string,status:number}> }>} probeAnonymousAccess
+ * @property {(ctx: object) => Promise<{ key: string, body: string, exists: true, size?: number, etag?: string|null }>} writeIsolationProbe
+ * @property {(ctx: object) => Promise<{ r2DevDisabled: boolean, probes: Array<{url:string,method:string,status:number}>, origins?: string[] }>} probeAnonymousAccess
+ * @property {(ctx: object) => Promise<{ key: string, deleted: true }>} deleteIsolationProbe
  * @property {(ctx: object) => Promise<object>} copyPublicPrefixes
  * @property {(ctx: object) => Promise<object>} copyCheckpoints
  * @property {(ctx: object) => Promise<object>} syncGithubEnvironment
@@ -1144,6 +1219,31 @@ function requireIoMethod(io, name) {
     throw new Error(`runDevelopmentApply missing injectable I/O method: ${name}`)
   }
   return fn
+}
+
+/**
+ * Isolation probe lifecycle shared by both live runners (§6.3 / #147):
+ * write + positive S3 proof, collect anonymous deny evidence against the
+ * plan's public entrypoints, then ALWAYS delete the probe — including when
+ * the evidence fails or the fetch throws — so an interrupted apply never
+ * leaves probe residue that would poison the clean-bucket guard on retry.
+ * Returns the evaluate verdict; the runner decides the abort payload.
+ */
+async function executeIsolationProbeLifecycle({ io, ctx, completed }) {
+  await requireIoMethod(io, 'writeIsolationProbe')(ctx)
+  completed.push('isolation-probe-write')
+  let probeResult
+  try {
+    probeResult = await requireIoMethod(io, 'probeAnonymousAccess')(ctx)
+    completed.push('isolation-probe-check')
+  } finally {
+    await requireIoMethod(io, 'deleteIsolationProbe')(ctx)
+    completed.push('isolation-probe-cleanup')
+  }
+  return evaluateIsolationProbe({
+    r2DevDisabled: Boolean(ctx.r2DevDisabled),
+    probes: probeResult?.probes ?? [],
+  })
 }
 
 /**
@@ -1228,47 +1328,48 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
     // Provenance: only the disable-r2-dev adapter result may claim r2.dev is off.
     ctx.r2DevDisabled = Boolean(disableResult?.disabled)
 
-    await requireIoMethod(io, 'attachCustomDomain')(ctx)
-    completed.push('attach-custom-domain')
+    // §6.3 architecture split. bucket-domain (legacy) mode keeps the edge
+    // sequence (custom domain / cache / CORS / WAF) and proves isolation
+    // against the bucket domain before any staging copy. worker mode has no
+    // bucket edge surface: sync + deploy come first and the isolation probe
+    // runs against the DEPLOYED reader origins afterwards.
+    const workerOriginMode = plan.publicOriginMode === 'worker'
+    let isolation = null
 
-    await requireIoMethod(io, 'applyCacheRules')(ctx)
-    completed.push('cache-rules')
+    if (!workerOriginMode) {
+      await requireIoMethod(io, 'attachCustomDomain')(ctx)
+      completed.push('attach-custom-domain')
 
-    await requireIoMethod(io, 'applyCors')(ctx)
-    completed.push('cors')
+      await requireIoMethod(io, 'applyCacheRules')(ctx)
+      completed.push('cache-rules')
 
-    await requireIoMethod(io, 'configureWaf')(ctx)
-    completed.push('waf-checkpoints')
+      await requireIoMethod(io, 'applyCors')(ctx)
+      completed.push('cors')
 
-    await requireIoMethod(io, 'writeIsolationProbe')(ctx)
-    completed.push('isolation-probe-write')
+      await requireIoMethod(io, 'configureWaf')(ctx)
+      completed.push('waf-checkpoints')
 
-    const probeResult = await requireIoMethod(io, 'probeAnonymousAccess')(ctx)
-    completed.push('isolation-probe-check')
-    const isolation = evaluateIsolationProbe({
-      r2DevDisabled: Boolean(ctx.r2DevDisabled),
-      probes: probeResult?.probes ?? [],
-    })
-
-    if (!isolation.ok) {
-      return {
-        ok: false,
-        aborted: true,
-        abortCutover: true,
-        dualBucketFallback: false,
-        developmentWriterEnabled: false,
-        exitCode: 1,
-        reason: isolation.reason,
-        isolation,
-        completed,
+      isolation = await executeIsolationProbeLifecycle({ io, ctx, completed })
+      if (!isolation.ok) {
+        return {
+          ok: false,
+          aborted: true,
+          abortCutover: true,
+          dualBucketFallback: false,
+          developmentWriterEnabled: false,
+          exitCode: 1,
+          reason: isolation.reason,
+          isolation,
+          completed,
+        }
       }
+
+      await requireIoMethod(io, 'copyPublicPrefixes')(ctx)
+      completed.push('copy-public')
+
+      await requireIoMethod(io, 'copyCheckpoints')(ctx)
+      completed.push('copy-checkpoints')
     }
-
-    await requireIoMethod(io, 'copyPublicPrefixes')(ctx)
-    completed.push('copy-public')
-
-    await requireIoMethod(io, 'copyCheckpoints')(ctx)
-    completed.push('copy-checkpoints')
 
     await requireIoMethod(io, 'syncGithubEnvironment')(ctx)
     completed.push('sync-gh-env')
@@ -1292,6 +1393,26 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
 
     await requireIoMethod(io, 'validateImageCdn')(ctx)
     completed.push('image-cdn-validate')
+
+    if (workerOriginMode) {
+      // §6.3: with the bucket private, the deployed readers ARE the
+      // anonymous surface; prove the allowlisted interface denies
+      // checkpoints/** before anything else can touch the bucket.
+      isolation = await executeIsolationProbeLifecycle({ io, ctx, completed })
+      if (!isolation.ok) {
+        return {
+          ok: false,
+          aborted: true,
+          abortCutover: true,
+          dualBucketFallback: false,
+          developmentWriterEnabled: false,
+          exitCode: 1,
+          reason: isolation.reason,
+          isolation,
+          completed,
+        }
+      }
+    }
 
     // Writer stays disabled until isolation+copy pass; the I/O adapter may
     // still record a controlled dispatch, but the runner never flips the flag.
@@ -1448,40 +1569,39 @@ export async function runProductionApply({ plan, env = {}, io }) {
     completed.push('disable-r2-dev')
     ctx.r2DevDisabled = Boolean(disableResult?.disabled)
 
-    await requireIoMethod(io, 'attachCustomDomain')(ctx)
-    completed.push('attach-custom-domain')
+    // §6.3 architecture split (mirrors runDevelopmentApply): bucket-domain
+    // mode proves isolation against the bucket edge before touching anything
+    // else; worker mode deploys first and probes the live reader origins.
+    const workerOriginMode = plan.publicOriginMode === 'worker'
+    let isolation = null
 
-    await requireIoMethod(io, 'applyCacheRules')(ctx)
-    completed.push('cache-rules')
+    if (!workerOriginMode) {
+      await requireIoMethod(io, 'attachCustomDomain')(ctx)
+      completed.push('attach-custom-domain')
 
-    await requireIoMethod(io, 'applyCors')(ctx)
-    completed.push('cors')
+      await requireIoMethod(io, 'applyCacheRules')(ctx)
+      completed.push('cache-rules')
 
-    await requireIoMethod(io, 'configureWaf')(ctx)
-    completed.push('waf-checkpoints')
+      await requireIoMethod(io, 'applyCors')(ctx)
+      completed.push('cors')
 
-    await requireIoMethod(io, 'writeIsolationProbe')(ctx)
-    completed.push('isolation-probe-write')
+      await requireIoMethod(io, 'configureWaf')(ctx)
+      completed.push('waf-checkpoints')
 
-    const probeResult = await requireIoMethod(io, 'probeAnonymousAccess')(ctx)
-    completed.push('isolation-probe-check')
-    const isolation = evaluateIsolationProbe({
-      r2DevDisabled: Boolean(ctx.r2DevDisabled),
-      probes: probeResult?.probes ?? [],
-    })
-
-    if (!isolation.ok) {
-      return {
-        ok: false,
-        aborted: true,
-        abortCutover: true,
-        dualBucketFallback: false,
-        copyFree: true,
-        productionWriterEnabled: false,
-        exitCode: 1,
-        reason: isolation.reason,
-        isolation,
-        completed,
+      isolation = await executeIsolationProbeLifecycle({ io, ctx, completed })
+      if (!isolation.ok) {
+        return {
+          ok: false,
+          aborted: true,
+          abortCutover: true,
+          dualBucketFallback: false,
+          copyFree: true,
+          productionWriterEnabled: false,
+          exitCode: 1,
+          reason: isolation.reason,
+          isolation,
+          completed,
+        }
       }
     }
 
@@ -1502,6 +1622,24 @@ export async function runProductionApply({ plan, env = {}, io }) {
 
     await requireIoMethod(io, 'validateImageCdn')(ctx)
     completed.push('image-cdn-validate')
+
+    if (workerOriginMode) {
+      isolation = await executeIsolationProbeLifecycle({ io, ctx, completed })
+      if (!isolation.ok) {
+        return {
+          ok: false,
+          aborted: true,
+          abortCutover: true,
+          dualBucketFallback: false,
+          copyFree: true,
+          productionWriterEnabled: false,
+          exitCode: 1,
+          reason: isolation.reason,
+          isolation,
+          completed,
+        }
+      }
+    }
 
     return {
       ok: true,

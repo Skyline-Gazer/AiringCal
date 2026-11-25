@@ -12,6 +12,7 @@ import {
   resolvePublicObjectUrl,
 } from '@airing-cal/v3-core/public-image-url'
 import { loadVerifiedPublicSnapshot, type VerifiedPublicSnapshot } from './load-public-snapshot.ts'
+import { handlePublicObject, isPublicObjectPath } from './public-object-routes.ts'
 import { resolveRuntimePlatformIdFromEnv } from '@airing-cal/v3-adapters/platform-id'
 import type { PortableCronStatus } from './portable-builder-cron.ts'
 import type { VerifiedSnapshotCache } from './verified-snapshot-cache.ts'
@@ -46,6 +47,12 @@ export interface PortableReadEnv {
    * tests inject a fresh cache. When omitted, each request loads through the pure loader.
    */
   snapshotCache?: VerifiedSnapshotCache
+  /**
+   * Exact CORS allowlist (already parsed; see `parseCorsAllowedOrigins`).
+   * Set only for Worker-origin deployments where no edge CORS surface exists
+   * (private R2, §6.3). Unset keeps OPTIONS refused with 405.
+   */
+  corsAllowedOrigins?: readonly string[]
 }
 
 class InvalidQueryError extends Error {}
@@ -276,14 +283,53 @@ export async function handlePortableReadRequest(
   request: Request,
   env: PortableReadEnv,
 ): Promise<Response> {
+  const response = await routePortableReadRequest(request, env)
+  const corsOrigin = allowedCorsOrigin(request, env)
+  if (corsOrigin && response.status !== 204) {
+    response.headers.set('Access-Control-Allow-Origin', corsOrigin)
+    response.headers.append('Vary', 'Origin')
+  }
+  return response
+}
+
+/**
+ * Exact-origin CORS match. `null` (file:// embeds) is allowed only when the
+ * operator listed it explicitly.
+ */
+function allowedCorsOrigin(request: Request, env: PortableReadEnv): string | null {
+  if (!env.corsAllowedOrigins || env.corsAllowedOrigins.length === 0) return null
+  const origin = request.headers.get('Origin')?.trim() ?? ''
+  if (!origin) return null
+  return env.corsAllowedOrigins.includes(origin) ? origin : null
+}
+
+async function routePortableReadRequest(
+  request: Request,
+  env: PortableReadEnv,
+): Promise<Response> {
   try {
     // Owner target contract §6.2: the public Viewer surface is read-only.
-    // Everything except GET/HEAD is refused before any store read happens;
-    // OPTIONS is refused too because CORS is configured at the edge (bucket /
-    // zone rules), not in this Worker — a permissive OPTIONS here would imply
-    // a CORS policy the Worker does not own.
+    // Everything except GET/HEAD is refused before any store read happens.
+    // OPTIONS is refused too — unless the deployment runs the Worker as the
+    // public origin with an exact CORS allowlist (`AIRINGCAL_CORS_ORIGINS`),
+    // in which case the Worker itself answers the preflight below; with no
+    // allowlist configured, CORS stays an edge (bucket/zone) concern and a
+    // permissive OPTIONS here would imply a policy the Worker does not own.
     const method = request.method.toUpperCase()
     if (method !== 'GET' && method !== 'HEAD') {
+      const corsOrigin = allowedCorsOrigin(request, env)
+      if (method === 'OPTIONS' && corsOrigin) {
+        return new Response(null, {
+          status: 204,
+          headers: {
+            'Access-Control-Allow-Origin': corsOrigin,
+            'Access-Control-Allow-Methods': 'GET, HEAD',
+            'Access-Control-Max-Age': '86400',
+            'Vary': 'Origin',
+            'Cache-Control': V2_CACHE_CONTROL.defaultJson,
+          },
+        })
+      }
       return new Response('Method Not Allowed', {
         status: 405,
         headers: { 'Allow': 'GET, HEAD', 'Cache-Control': V2_CACHE_CONTROL.error },
@@ -306,6 +352,12 @@ export async function handlePortableReadRequest(
     // Image routes never pay the verified-snapshot load (CPU / origin).
     if (path.startsWith('/image/')) {
       return await handleImage(path, env.publicStore, env.publicBaseUrl, env.imageBaseUrl)
+    }
+    // §6.3 controlled public object interface: allowlisted release keys served
+    // straight from the store (private-R2 convergence). Checked before the
+    // snapshot load so a pointer is readable even with no verified release.
+    if (isPublicObjectPath(path)) {
+      return await handlePublicObject(path, env.publicStore)
     }
     let loaded
     try {

@@ -22,3 +22,4 @@ export {
 export { readConfigErrorResponse } from './read-config.ts'
 export { startPortableReadServer } from './serve-node.ts'
 export { handlePortableStaticRequest, type PortableStaticEnv } from './portable-static-handler.ts'
+export { handlePublicObject, isPublicObjectPath, matchPublicObjectPath } from './public-object-routes.ts'

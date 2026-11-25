@@ -18,6 +18,11 @@ export interface ReadWorkerEnv {
   AIRINGCAL_PUBLIC_BASE_URL?: string
   /** Optional Image CDN base; unset keeps `/image/*` on `AIRINGCAL_PUBLIC_BASE_URL`. */
   AIRINGCAL_IMAGE_BASE_URL?: string
+  /**
+   * Exact CORS allowlist for Worker-origin deployments (comma-separated,
+   * `null` allowed for file:// embeds). Unset: OPTIONS refused with 405.
+   */
+  AIRINGCAL_CORS_ORIGINS?: string
   /** Git revision rendered on `/` (short sha) and reported by build metadata. */
   BANGUMI_GIT_COMMIT_SHA?: string
   /** Reported by `/api/version`; injected as a Worker var at deploy time. */
@@ -35,6 +40,7 @@ function readHandlerFingerprint(env: ReadWorkerEnv): string {
   return [
     env.AIRINGCAL_PUBLIC_BASE_URL ?? '',
     env.AIRINGCAL_IMAGE_BASE_URL ?? '',
+    env.AIRINGCAL_CORS_ORIGINS ?? '',
     env.PACKAGE_VERSION ?? '',
   ].join('|')
 }
@@ -53,6 +59,7 @@ function readHandlerFor(env: ReadWorkerEnv): CloudflareReadHandler {
     publicR2: binding,
     publicBaseUrl: env.AIRINGCAL_PUBLIC_BASE_URL,
     imageBaseUrl: env.AIRINGCAL_IMAGE_BASE_URL,
+    corsAllowedOrigins: env.AIRINGCAL_CORS_ORIGINS,
     packageVersion: env.PACKAGE_VERSION,
   })
   cachedReadHandler = { fingerprint, binding, handler }
