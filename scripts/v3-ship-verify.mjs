@@ -11,16 +11,24 @@
  *   --base <url>          probe an already-running Viewer (live hosts included)
  *   --public-dir <dir>    spawn packages/v3-read serve-node over a mirrored
  *                         public tree (same layout as the R2 public bucket)
+ *   --bucket <name>       positive private-object proof: read-only S3
+ *                         list+HEAD of a real checkpoints/ object (needs
+ *                         AIRINGCAL_S3_ACCESS_KEY_ID/_SECRET_ACCESS_KEY and
+ *                         AIRINGCAL_S3_ENDPOINT or *_ACCOUNT_ID), then the
+ *                         anonymous GET/HEAD denial through --base
+ *   --allow-unproven-isolation
+ *                         explicit, JSON-visible skip of that proof
  *
  * Usage:
  *   node scripts/v3-ship-verify.mjs --base https://airingcal.teijp.cn --json
+ *   node scripts/v3-ship-verify.mjs --base https://w.r7a.workers.dev --bucket airingcal-development --json
  *   node scripts/v3-ship-verify.mjs --public-dir ./mirror --json
  *
  * Exit 0 only when every executed check passes.
  */
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -35,10 +43,13 @@ function parseArgs(argv) {
     else if (a === '--base') args.base = argv[++i]
     else if (a === '--public-dir') args.publicDir = argv[++i]
     else if (a === '--port') args.port = Number(argv[++i])
+    else if (a === '--bucket') args.bucket = argv[++i]
+    else if (a === '--allow-unproven-isolation') args.allowUnprovenIsolation = true
     else throw new Error(`unknown argument: ${a}`)
   }
   if (!args.base && !args.publicDir) throw new Error('need --base <url> or --public-dir <dir>')
   if (args.base && args.publicDir) throw new Error('--base and --public-dir are exclusive')
+  if (args.bucket && !args.base) throw new Error('--bucket requires --base (the reader origin to probe)')
   if (args.publicDir && !existsSync(resolve(args.publicDir, 'public/current-release.json'))) {
     throw new Error(`--public-dir lacks public/current-release.json: ${args.publicDir}`)
   }
@@ -55,6 +66,50 @@ async function fetchHeadless(base, path, init = {}) {
 export function evaluateProbeResults(probes) {
   const failures = probes.filter((p) => p.pass !== true)
   return { pass: probes.length > 0 && failures.length === 0, failed: failures.map((p) => p.name) }
+}
+
+/**
+ * Positive private-object proof over an injected store ({ list(prefix),
+ * head(key) }) and anonymous probe function. Read-only by construction —
+ * the store adapter is never given write capability here.
+ */
+export async function runPrivateObjectProof(rec, { bucket, store, probe }) {
+  let listed
+  try {
+    listed = await store.list('checkpoints/')
+  } catch (error) {
+    rec('private-object-proof', false, `S3 list checkpoints/ on ${bucket} failed: ${error?.message ?? error}`)
+    return
+  }
+  const keys = (Array.isArray(listed) ? listed : []).filter(
+    (k) => typeof k === 'string' && k.startsWith('checkpoints/') && !k.endsWith('/'),
+  )
+  if (keys.length === 0) {
+    rec('private-object-proof', false, `bucket ${bucket} exposes no checkpoints/ objects — isolation has nothing to prove`)
+    return
+  }
+  const key = keys.includes('checkpoints/latest.sqlite') ? 'checkpoints/latest.sqlite' : keys[0]
+  let head = null
+  try {
+    head = await store.head(key)
+  } catch {
+    head = null
+  }
+  if (!head) {
+    rec('private-object-exists', false, `${key} listed but S3 HEAD returned nothing on ${bucket}`)
+    return
+  }
+  rec('private-object-exists', true, `${key} present in ${bucket} (size=${head.size ?? '?'})`)
+  for (const method of ['GET', 'HEAD']) {
+    let status = 0
+    try {
+      status = (await probe(key, method))?.status ?? 0
+    } catch (error) {
+      rec(`anon-${method.toLowerCase()}-private-key-denied`, false, `probe error: ${error?.message ?? error}`)
+      continue
+    }
+    rec(`anon-${method.toLowerCase()}-private-key-denied`, status === 403 || status === 404, `/${key} -> ${status}`)
+  }
 }
 
 export async function runProbes(base, opts = {}) {
@@ -121,6 +176,30 @@ export async function runProbes(base, opts = {}) {
   const cp = await fetchHeadless(base, '/checkpoints/latest.sqlite')
   rec('checkpoints-path-404', cp.status === 404, `status=${cp.status}`)
 
+  // Positive private-object proof (#183 P4): an anonymous 404 only isolates
+  // if the object DEMONSTRABLY exists in the private store. With --bucket +
+  // read-only S3 credentials (or a --public-dir mirror that actually carries
+  // checkpoints/) pick a real checkpoint key, prove existence via HEAD, then
+  // require 403/404 for GET and HEAD through the same public base. Without
+  // proof capability the run fails closed unless the operator explicitly
+  // passes --allow-unproven-isolation (recorded in JSON, never silent).
+  if (opts.objectStore) {
+    await runPrivateObjectProof(rec, {
+      bucket: opts.bucket ?? 'mirror',
+      store: opts.objectStore,
+      probe: (key, method) =>
+        fetchHeadless(base, `/${key.split('/').map(encodeURIComponent).join('/')}`, { method }),
+    })
+  } else {
+    rec(
+      'private-object-proof',
+      opts.allowUnprovenIsolation === true,
+      opts.allowUnprovenIsolation === true
+        ? 'explicitly skipped via --allow-unproven-isolation (NOT a positive isolation proof)'
+        : 'existence unverified: pass --bucket with read-only S3 credentials, or use --public-dir containing checkpoints/, or state the skip with --allow-unproven-isolation',
+    )
+  }
+
   // Image delivery: first hash-bearing image ref across snapshot payloads.
   const images = []
   const walk = (v) => {
@@ -159,6 +238,35 @@ export async function runProbes(base, opts = {}) {
   return probes
 }
 
+/** Read-only fs-backed store adapter for --public-dir mirrors. */
+export function mirrorObjectStore(dir) {
+  return {
+    async list(prefix) {
+      const out = []
+      const walk = (abs, rel) => {
+        let entries
+        try {
+          entries = readdirSync(abs, { withFileTypes: true })
+        } catch {
+          return
+        }
+        for (const e of entries) {
+          const childRel = rel ? `${rel}/${e.name}` : e.name
+          if (e.isDirectory()) walk(join(abs, e.name), childRel)
+          else if (e.isFile()) out.push(childRel)
+        }
+      }
+      walk(resolve(dir, prefix.replace(/\/+$/, '')), prefix.replace(/\/+$/, ''))
+      return out
+    },
+    async head(key) {
+      const abs = resolve(dir, key)
+      if (!existsSync(abs)) return null
+      return { size: statSync(abs).size, etag: null, contentType: null }
+    },
+  }
+}
+
 async function startLocalServer(publicDir, requestedPort) {
   const port = requestedPort || 49152 + Math.floor(Math.random() * 16383)
   const child = spawn('pnpm', ['exec', 'tsx', resolve(ROOT, 'packages/v3-read/src/serve-node.ts')], {
@@ -187,6 +295,7 @@ async function main() {
   let server = null
   let base = args.base
   let release = null
+  let objectStore = null
   try {
     if (args.publicDir) {
       server = await startLocalServer(args.publicDir, args.port)
@@ -195,8 +304,39 @@ async function main() {
         try { await fetchHeadless(base, '/api/cache'); break } catch { await new Promise((r) => setTimeout(r, 200)) }
       }
       release = JSON.parse(readFileSync(resolve(args.publicDir, 'public/current-release.json'), 'utf8'))
+      if (existsSync(resolve(args.publicDir, 'checkpoints'))) {
+        objectStore = mirrorObjectStore(args.publicDir)
+      }
+    } else if (args.bucket) {
+      const { createDefaultObjectStore } = await import('./deploy-env-live-io.mjs')
+      const accessKeyId = String(process.env.AIRINGCAL_S3_ACCESS_KEY_ID ?? '').trim()
+      const secretAccessKey = String(process.env.AIRINGCAL_S3_SECRET_ACCESS_KEY ?? '').trim()
+      const accountId = String(process.env.AIRINGCAL_S3_ACCOUNT_ID ?? process.env.AIRINGCAL_CLOUDFLARE_ACCOUNT_ID ?? '').trim()
+      const endpoint = String(process.env.AIRINGCAL_S3_ENDPOINT ?? (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : '')).trim()
+      objectStore =
+        accessKeyId && secretAccessKey && endpoint
+          ? createDefaultObjectStore({
+              bucket: args.bucket,
+              endpoint,
+              region: String(process.env.AIRINGCAL_S3_REGION ?? 'auto').trim() || 'auto',
+              accessKeyId,
+              secretAccessKey,
+            })
+          : {
+              async list() {
+                throw new Error(
+                  'S3 credentials incomplete (need AIRINGCAL_S3_ACCESS_KEY_ID + AIRINGCAL_S3_SECRET_ACCESS_KEY + AIRINGCAL_S3_ENDPOINT or *_ACCOUNT_ID)',
+                )
+              },
+            }
     }
-    const probes = await runProbes(base, { release, publicDir: args.publicDir && resolve(args.publicDir) })
+    const probes = await runProbes(base, {
+      release,
+      publicDir: args.publicDir && resolve(args.publicDir),
+      objectStore,
+      bucket: args.bucket ?? null,
+      allowUnprovenIsolation: args.allowUnprovenIsolation === true,
+    })
     const verdict = evaluateProbeResults(probes)
     const out = {
       tool: 'v3-ship-verify',
@@ -216,6 +356,7 @@ async function main() {
     console.error(`v3-ship-verify error: ${err && err.message ? err.message : err}`)
     process.exitCode = 2
   } finally {
+    objectStore?.close?.()
     if (server?.child?.pid) { try { process.kill(-server.child.pid, 'SIGTERM') } catch { server.child.kill('SIGKILL') } }
   }
   process.exit(process.exitCode ?? 2)

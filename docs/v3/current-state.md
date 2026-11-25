@@ -61,7 +61,7 @@
     "acceptance": ["2026-11-08 live acceptance", "2026-11-25 re-verification (wrangler/miniflare + Node + bun runtimes)"],
     "readContract": "enforced-in-code incl. the 2026-11-25 private-R2 public object interface; live redeploy of the v3 read Worker is the next Owner-run step (AIRINGCAL_ENV=development node scripts/deploy-env.mjs --dry-run, then --apply)"
   },
-  "verifier": "node scripts/v3-ship-verify.mjs --base <reader-origin> --json"
+  "verifier": "node scripts/v3-ship-verify.mjs --base <reader-origin> --bucket airingcal-development --json (positive private-object proof; --allow-unproven-isolation only for legacy hosts)"
 }
 ```
 

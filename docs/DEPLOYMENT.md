@@ -165,21 +165,26 @@ actions below.
 ## Verify
 
 ```bash
-pnpm exec tsx scripts/reader-delivery-accept.mjs --env development --json
-pnpm exec tsx scripts/reader-delivery-bench.mjs --env development --json
+# accept/bench have no --env/--json flags (they print JSON by default); hosts
+# come from --public-base / --hosts, fixture paths from --baseline/--post.
+pnpm exec tsx scripts/reader-delivery-accept.mjs --public-base <reader-origin>
+pnpm exec tsx scripts/reader-delivery-bench.mjs --hosts <cf-origin>,<eo-origin> --runs 3
 node scripts/v3-ship-verify.mjs --base https://airingcal.teijp.cn --json   # or --public-dir <mirror>
+node scripts/v3-ship-verify.mjs --base <worker-origin-url> --bucket airingcal-development --json   # positive private-object proof
 ```
 
 `v3-ship-verify.mjs` runs every read-surface probe automatically: static
 index/Widget assets, pointer identity, API shape, method allowlist (405 +
 `Allow`), conditional GET (`ETag`/304 on `/api/collections`, `/api/calendar`,
-`/api/cache`), `checkpoints/**` isolation, and image delivery (original +
-optional thumb). It is strictly read-only and exits non-zero on any failed
-check. Remaining manual items: anonymous `GET/HEAD` on
-`<public origin>/checkpoints/_isolation-probe.txt` must be 403 (bucket-domain
-mode, WAF side) or 404 (worker mode, allowlist refusal) and is exercised
-automatically by the deploy probe itself, and CORS allowlist behavior against
-a non-allowlisted foreign origin.
+`/api/cache`), `checkpoints/**` isolation — including the **positive
+private-object proof** when `--bucket` is supplied (read-only S3 list+HEAD of a
+real `checkpoints/` object followed by anonymous GET/HEAD denial through the
+same reader base; an anonymous 404 over a bucket that holds nothing proves
+nothing) — and image delivery (original + optional thumb). It is strictly
+read-only and exits non-zero on any failed check; without `--bucket`/mirror
+`checkpoints/` the proof fails closed unless the operator states the skip via
+`--allow-unproven-isolation` (visible in the JSON). Remaining manual item:
+CORS allowlist behavior against a non-allowlisted foreign origin.
 
 ## Update / rollback
 
