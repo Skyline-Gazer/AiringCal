@@ -4867,3 +4867,94 @@ test('mutationsExecutedFrom separates probes from external mutations (ShipReview
     assert.equal(MUTATING_STEP_IDS.includes(id), false, `${id} must stay read-only in the ledger`)
   }
 })
+
+function buildWorkerModeRoutingIo(fetchImpl) {
+  return import('./deploy-env.mjs').then(({ createLiveDevelopmentApplyIo }) =>
+    createLiveDevelopmentApplyIo({
+      env: {
+        AIRINGCAL_CLOUDFLARE_API_TOKEN: 'routing-token',
+        AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+      },
+      plan: buildDevelopmentDeployPlan({ target: 'cloudflare', mode: 'apply' }),
+      spawnSyncImpl: () => {
+        throw new Error('spawn must not be used by verifyImageRouting')
+      },
+      sleepImpl: async () => {},
+      fetchImpl,
+    }),
+  )
+}
+
+function workerRaceFetch({ streamAfter = 1, calls = [] }) {
+  return async (url) => {
+    const u = String(url)
+    calls.push(u)
+    if (u.endsWith('/public/current-release.json')) {
+      return { ok: true, status: 200, async json() { return { artifact_ref: 'snapshots/v1/9-abc.json' } } }
+    }
+    if (u.includes('/snapshots/v1/')) {
+      return { ok: true, status: 200, async json() { return routingSnapshotWithImage(ROUTE_HASH) } }
+    }
+    if (u.includes('/image/')) {
+      const seen = calls.filter((c) => c.includes('/image/')).length
+      if (seen > streamAfter) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (n) => (String(n).toLowerCase() === 'content-type' ? 'image/webp' : null) },
+        }
+      }
+      return {
+        ok: false,
+        status: 302,
+        headers: {
+          get: (n) =>
+            String(n).toLowerCase() === 'location'
+              ? `https://legacy-bucket.example.test/images/${ROUTE_HASH}/original`
+              : null,
+        },
+      }
+    }
+    throw new Error(`verifyImageRouting: unexpected fetch ${u}`)
+  }
+}
+
+test('verifyImageRouting retries the worker-mode version-propagation race then accepts streaming (D1 live apply)', async () => {
+  const calls = []
+  const io = await buildWorkerModeRoutingIo(workerRaceFetch({ streamAfter: 2, calls }))
+  const receipt = await io.verifyImageRouting({
+    cloudflareDeploy: { deployed: true, workerUrl: 'https://cf-reader.example.workers.dev' },
+  })
+  assert.equal(receipt.hash, ROUTE_HASH)
+  assert.equal(receipt.readers.length, 1)
+  assert.equal(receipt.readers[0].streamed, true)
+  assert.equal(receipt.readers[0].attempts, 3)
+  assert.equal(calls.filter((c) => c.includes('/image/')).length, 3)
+})
+
+test('verifyImageRouting fails closed after bounded retries on a persistent stale-version redirect', async () => {
+  const calls = []
+  const io = await buildWorkerModeRoutingIo(workerRaceFetch({ streamAfter: 99, calls }))
+  await assert.rejects(
+    io.verifyImageRouting({
+      cloudflareDeploy: { deployed: true, workerUrl: 'https://cf-reader.example.workers.dev' },
+    }),
+    /after 6 attempt\(s\)/,
+  )
+  assert.equal(calls.filter((c) => c.includes('/image/')).length, 6)
+})
+
+test('evaluateIsolationProbe accepts edge-refusal 400 as denial, rejects 5xx and 2xx (D1 live finding)', async () => {
+  const { evaluateIsolationProbe } = await import('./deploy-env-lib.mjs')
+  const mk = (status) => [
+    { url: 'https://w.example/a', method: 'GET', status },
+    { url: 'https://w.example/a', method: 'HEAD', status },
+  ]
+  assert.equal(evaluateIsolationProbe({ r2DevDisabled: true, probes: mk(400) }).ok, true)
+  assert.equal(evaluateIsolationProbe({ r2DevDisabled: true, probes: mk(403) }).ok, true)
+  assert.equal(evaluateIsolationProbe({ r2DevDisabled: true, probes: mk(404) }).ok, true)
+  assert.equal(evaluateIsolationProbe({ r2DevDisabled: true, probes: mk(200) }).ok, false)
+  const serverError = evaluateIsolationProbe({ r2DevDisabled: true, probes: mk(503) })
+  assert.equal(serverError.ok, false)
+  assert.equal(serverError.failures[0].expected, '400|403|404')
+})
