@@ -1,8 +1,8 @@
 # Docs index (for AI & operators)
 
-> **CURRENT — 2026-11-07.** Read [v3/current-state.md](v3/current-state.md) **first**. PR [#164](https://github.com/Skyline-Gazer/AiringCal/pull/164) merged at `a2c0cd67` with green CI. **Old dual-bucket Staging real-R2 proof PASSED** (three generations/CAS/rollback), while **new one-bucket Development Live Acceptance has NOT been performed**. Production remains v2 and is NOT approved for cutover. See [#67](https://github.com/Skyline-Gazer/AiringCal/issues/67) / [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147) / [#72](https://github.com/Skyline-Gazer/AiringCal/issues/72) / [#73](https://github.com/Skyline-Gazer/AiringCal/issues/73).
+> **CURRENT — 2026-11-25.** Read [v3/current-state.md](v3/current-state.md) **first** (machine-readable verdict at the end). Development one-bucket cutover is **live and accepted** (2026-11-08; re-verified 2026-11-25); old dual-bucket Staging is the **FROZEN rollback source**. Production remains v2 and is NOT approved for cutover; executor wired, gates in #73. See [#67](https://github.com/Skyline-Gazer/AiringCal/issues/67) / [#147](https://github.com/Skyline-Gazer/AiringCal/issues/147) / [#72](https://github.com/Skyline-Gazer/AiringCal/issues/72) / [#73](https://github.com/Skyline-Gazer/AiringCal/issues/73) / [#183](https://github.com/Skyline-Gazer/AiringCal/issues/183).
 >
-> **Approved:** GitHub-only `dev` → `main` release, one-shot GHA Writer, Cloudflare R2 single Bucket **per environment**, direct public Release/images on R2 Custom Domain with host-scoped WAF denying `checkpoints/`. Cloudflare/EdgeOne are stateless readers; EdgeOne Reader `overseas`, optional separate ICP image CDN off by default. **No CNB, QingLong, Docker/Compose deployment.** `CORS` does not protect private objects. `r2.dev` must be disabled for the new mixed bucket, after checking rollback boundaries.
+> **Approved:** GitHub-only `dev` → `main` release, one-shot GHA Writer, Cloudflare R2 single Bucket **per environment**, **private by default**: one Reader Worker per environment serves Viewer routes, read APIs, images and an allowlisted public object interface straight off the R2 binding; publishing the bucket through a Custom Domain + host WAF is legacy opt-in only (current `airingcal.223.im`). Cloudflare/EdgeOne are stateless readers consuming the controlled interface; EdgeOne Reader `overseas`, optional separate ICP image CDN off by default. **No CNB, QingLong, Docker/Compose deployment.** `CORS` does not protect private objects. `r2.dev` must be disabled, after checking rollback boundaries. ADS is adopted at `v0.8.0` (lite profile; [.ads pin](../AGENTS.md), evidence in [`v3/ads-adoption-closeout.md`](v3/ads-adoption-closeout.md)).
 
 ## Approved v3 target architecture (not production-live)
 
@@ -15,10 +15,11 @@
 
 ```text
 Bangumi → GHA Portable Writer
-        → R2 one Bucket per env:
-           checkpoints/ (blocked over public domain)
-           public/ + snapshots/ + images/ (CDN-served)
-        → CF Reader / EdgeOne Overseas Reader → optional ICP image CDN for images
+        → R2 one private Bucket per env:
+           checkpoints/ (never routable publicly)
+           public/ + snapshots/ + images/ (allowlisted object interface)
+        → one Reader Worker per env (Viewer + APIs + objects + images)
+        → EdgeOne Overseas Reader → optional ICP image CDN for images
 ```
 
 **Acceptance sequence:** Issue/PR/Project #7 + docs governance → read-only Zone/domain/token preflight → Owner-approved Development live apply → MIME repair + CF/EO parity + post-benchmark → separate future production decision. Contracts: [ADR 0003](plans/adr-0003-gha-portable-write.md); [GHA ops](v3/gha-portable-writer.md).
@@ -53,6 +54,7 @@ and [Project #7](https://github.com/orgs/Skyline-Gazer/projects/7) (authoritativ
 | [`v3/edgeone-store.md`](v3/edgeone-store.md) | EdgeOne Blob store + read gateway, why not KV |
 | [`v3/legacy-state-import.md`](v3/legacy-state-import.md) | #73 export → import pipeline (KV), D1/R2 scope decision |
 | [`v3/production-acceptance.md`](v3/production-acceptance.md) | **Authoritative** Production Full Clean Deploy 10-gate GO/NO-GO checklist (#73); Project #7 SoT with [`v3/current-state.md`](v3/current-state.md); drafts in [`v3/fixtures/issue-73-status-draft.md`](v3/fixtures/issue-73-status-draft.md) + [`v3/fixtures/production-acceptance-checklist.json`](v3/fixtures/production-acceptance-checklist.json) |
+| [`v3/ads-adoption-closeout.md`](v3/ads-adoption-closeout.md) | ADS v0.8.0 adoption + observation closeout (T0/T1/T2 evidence, #183 P5; handoffs on ads#133) |
 | [`v3/shadow-gate.md`](v3/shadow-gate.md) | One-shot Production parity compare (equal/diff; not a streak gate) |
 | [`v3/cutover-rollback.md`](v3/cutover-rollback.md) | Owner-approved v2→v3 **Production** cutover/rollback runbook (#73) + executed drill — not the Development cutover |
 | [`v3/reader-delivery-cutover.md`](v3/reader-delivery-cutover.md) | PR-D reader-domain cutover runbook (parity → CNAME → r2.dev) + Owner-pending checklist hook |
