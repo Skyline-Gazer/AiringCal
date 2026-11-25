@@ -149,9 +149,9 @@ const vars = [
   '',
   '# Generated staging vars (#147 C8). Do not commit this file.',
   '[vars]',
-  `BANGUMI_GIT_COMMIT_SHA = ${JSON.stringify(GIT_SHA.toLowerCase())}`,
 ]
 if (PUBLIC_BASE_URL) vars.push(`AIRINGCAL_PUBLIC_BASE_URL = ${JSON.stringify(PUBLIC_BASE_URL)}`)
+vars.push(`BANGUMI_GIT_COMMIT_SHA = ${JSON.stringify(GIT_SHA.toLowerCase())}`)
 if (CORS_ORIGINS) vars.push(`AIRINGCAL_CORS_ORIGINS = ${JSON.stringify(CORS_ORIGINS)}`)
 if (PACKAGE_VERSION) vars.push(`PACKAGE_VERSION = ${JSON.stringify(PACKAGE_VERSION)}`)
 if (IMAGE_BASE_URL) vars.push(`AIRINGCAL_IMAGE_BASE_URL = ${JSON.stringify(IMAGE_BASE_URL)}`)
