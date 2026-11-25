@@ -4,7 +4,7 @@ import { FilesystemPublicStore } from '@airing-cal/v3-core'
 import { parsePublicBaseUrl } from '@airing-cal/v3-core/public-image-url'
 import { handlePortableReadRequest } from './portable-read-handler.ts'
 import { readPortableCronStatus } from './portable-builder-cron.ts'
-import { resolveNsfwShow } from './read-config.ts'
+import { parseCorsAllowedOrigins, resolveNsfwShow } from './read-config.ts'
 import { handlePortableStaticRequest } from './portable-static-handler.ts'
 import { createVerifiedSnapshotCache } from './verified-snapshot-cache.ts'
 
@@ -38,12 +38,14 @@ export function startPortableReadServer(options: {
   gitSha?: string
   publicBaseUrl?: string
   imageBaseUrl?: string
+  corsAllowedOrigins?: string
 } = {}) {
   const publicDir = options.publicDir ?? readPublicDir()
   const port = options.port ?? Number(process.env.PORT ?? 8787)
   // C6: validate once at startup, not per request; placeholder values throw here.
   const publicBaseUrl = parsePublicBaseUrl(options.publicBaseUrl ?? process.env.AIRINGCAL_PUBLIC_BASE_URL) ?? undefined
   const imageBaseUrl = parsePublicBaseUrl(options.imageBaseUrl ?? process.env.AIRINGCAL_IMAGE_BASE_URL) ?? undefined
+  const corsAllowedOrigins = parseCorsAllowedOrigins(options.corsAllowedOrigins ?? process.env.AIRINGCAL_CORS_ORIGINS)
   const publicStore = new FilesystemPublicStore(publicDir)
   const snapshotCache = createVerifiedSnapshotCache()
   const server = createServer(async (req, res) => {
@@ -67,6 +69,7 @@ export function startPortableReadServer(options: {
         packageVersion: options.packageVersion ?? process.env.npm_package_version,
         publicBaseUrl,
         imageBaseUrl,
+        corsAllowedOrigins,
         processEnv: process.env,
         cronStatus: process.env.AIRINGCAL_BUILDER_SQLITE_PATH
           ? () => readPortableCronStatus(process.env)

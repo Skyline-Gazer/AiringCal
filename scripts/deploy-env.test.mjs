@@ -24,6 +24,7 @@ import {
   parseDeployArgs,
   resolveDeployDotenvPath,
   resolveExecutionMode,
+  resolvePublicOriginMode,
   runDevelopmentApply,
   runProductionApply,
   validateImageCdnConfig,
@@ -735,6 +736,7 @@ function createRecordingApplyIo(overrides = {}) {
     writeIsolationProbe: record('isolation-probe-write', async () => ({
       key: DEVELOPMENT_DEFAULTS.isolationProbeKey,
       body: DEVELOPMENT_DEFAULTS.isolationProbeBody,
+      exists: true,
     })),
     probeAnonymousAccess: record('isolation-probe-check', async () => ({
       r2DevDisabled: true,
@@ -750,6 +752,10 @@ function createRecordingApplyIo(overrides = {}) {
           status: 404,
         },
       ],
+    })),
+    deleteIsolationProbe: record('isolation-probe-cleanup', async () => ({
+      key: DEVELOPMENT_DEFAULTS.isolationProbeKey,
+      deleted: true,
     })),
     copyPublicPrefixes: record('copy-public', async () => ({ copied: 3 })),
     copyCheckpoints: record('copy-checkpoints', async () => ({ copied: 1 })),
@@ -787,6 +793,7 @@ function createRecordingApplyIo(overrides = {}) {
         configureWaf: 'waf-checkpoints',
         writeIsolationProbe: 'isolation-probe-write',
         probeAnonymousAccess: 'isolation-probe-check',
+        deleteIsolationProbe: 'isolation-probe-cleanup',
         copyPublicPrefixes: 'copy-public',
         copyCheckpoints: 'copy-checkpoints',
         syncGithubEnvironment: 'sync-gh-env',
@@ -833,6 +840,7 @@ test('runDevelopmentApply executes ordered steps with injectable I/O', async () 
     'waf-checkpoints',
     'isolation-probe-write',
     'isolation-probe-check',
+    'isolation-probe-cleanup',
     'copy-public',
     'copy-checkpoints',
     'sync-gh-env',
@@ -881,6 +889,7 @@ test('runProductionApply executes the ordered copy-free production sequence', as
     'waf-checkpoints',
     'isolation-probe-write',
     'isolation-probe-check',
+    'isolation-probe-cleanup',
     'sync-gh-env',
     'deploy-cloudflare',
     'deploy-edgeone',
@@ -1120,7 +1129,7 @@ test('createLiveDevelopmentApplyIo probeAnonymousAccess does not assume r2DevDis
   })
   const probe = await io.probeAnonymousAccess({ plan })
   assert.equal(probe.r2DevDisabled, false)
-  assert.equal(probe.probes.length, 2)
+  assert.equal(probe.probes.length, 6)
 })
 
 test('createLiveDevelopmentApplyIo probeToken fails closed on wrangler auth error', async () => {
@@ -1617,11 +1626,17 @@ test('runDevelopmentApply with live adapters aborts before copy when isolation f
         },
       }
     },
-    createObjectStore: () => ({
+    createObjectStore: () => {
+      const state = { probeDeleted: false }
+      return {
       async list() {
         return []
       },
-      async head() {
+      async head(key) {
+        if (key === 'checkpoints/_isolation-probe.txt') {
+          if (state.probeDeleted) return null
+          return { etag: 'p', size: 34, contentType: 'text/plain; charset=utf-8' }
+        }
         return null
       },
       async get() {
@@ -1630,8 +1645,13 @@ test('runDevelopmentApply with live adapters aborts before copy when isolation f
       async put(key) {
         return { etag: 'p', key }
       },
+      async delete(key) {
+        state.probeDeleted = true
+        return { deleted: true, key }
+      },
       close() {},
-    }),
+      }
+    },
   })
   const origCopyPublic = io.copyPublicPrefixes.bind(io)
   const origCopyCheckpoints = io.copyCheckpoints.bind(io)
@@ -1773,7 +1793,7 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
           },
         }
       }
-      if (u.includes('checkpoints/_isolation-probe')) {
+      if (u.includes('_isolation-probe')) {
         return { status: 403, ok: false, async json() { return {} } }
       }
       if (u.endsWith('/public/current-release.json')) {
@@ -1820,7 +1840,9 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
         },
       }
     },
-    createObjectStore: (config) => ({
+    createObjectStore: (config) => {
+      const state = { probeDeleted: false }
+      return {
       async list(prefix) {
         if (config.bucket.includes('staging-public') && prefix === 'public/') {
           return ['public/current-release.json']
@@ -1831,6 +1853,10 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
         return []
       },
       async head(key) {
+        if (key === 'checkpoints/_isolation-probe.txt') {
+          if (state.probeDeleted) return null
+          return { etag: 'probe', size: 34, contentType: 'text/plain; charset=utf-8' }
+        }
         if (key === 'public/current-release.json' || key === 'checkpoints/lease.json') {
           return { etag: 'etag1', size: 4, contentType: 'application/json' }
         }
@@ -1846,8 +1872,13 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
       async put() {
         return { etag: 'etag2' }
       },
+      async delete(key) {
+        if (key === 'checkpoints/_isolation-probe.txt') state.probeDeleted = true
+        return { deleted: true, key }
+      },
       close() {},
-    }),
+      }
+    },
     sleepImpl: async () => {},
   })
 
@@ -4030,32 +4061,30 @@ test('probeAnonymousAccess retries a transient fetch failure and records definit
     publicBaseUrl: 'https://dev-cdn.example.test',
     mode: 'apply',
   })
-  const queue = [
-    () => {
-      const err = new Error('connect ECONNRESET 104.16.0.1:443')
-      err.errno = 'ECONNRESET'
-      err.code = 'ECONNRESET'
-      throw err
-    },
-    () => ({ status: 403 }),
-    () => ({ status: 404 }),
-  ]
   let calls = 0
   const io = createLiveDevelopmentApplyIo({
     env: {},
     plan,
     sleepImpl: async () => {},
     fetchImpl: async () => {
-      const step = queue[Math.min(calls, queue.length - 1)]
       calls += 1
-      return step()
+      if (calls === 1) {
+        const err = new Error('connect ECONNRESET 104.16.0.1:443')
+        err.errno = 'ECONNRESET'
+        err.code = 'ECONNRESET'
+        throw err
+      }
+      return { status: calls % 2 === 0 ? 403 : 404 }
     },
   })
   const result = await io.probeAnonymousAccess({})
-  assert.equal(calls, 3)
+  // bucket-domain mode: 1 origin × 3 path variants × GET+HEAD = 6 definitive
+  // probes, plus the single retried first call.
+  assert.equal(calls, 7)
+  assert.equal(result.probes.length, 6)
   assert.deepEqual(
     result.probes.map((p) => p.status),
-    [403, 404],
+    [403, 404, 403, 404, 403, 404],
   )
 })
 
@@ -4079,10 +4108,11 @@ test('probeAnonymousAccess does not retry definitive HTTP statuses', async () =>
     },
   })
   const result = await io.probeAnonymousAccess({})
-  assert.equal(calls, 2)
+  assert.equal(calls, 6)
+  assert.equal(result.probes.length, 6)
   assert.deepEqual(
     result.probes.map((p) => p.status),
-    [200, 200],
+    [200, 200, 200, 200, 200, 200],
   )
 })
 
@@ -4367,4 +4397,285 @@ test('syncGithubEnvironment derives USERS_JSON from the staging Environment when
   const setCall = calls.find((c) => c[0] === 'gh' && c[1] === 'variable' && c[2] === 'set' && c[3] === 'AIRINGCAL_DEVELOPMENT_USERS_JSON')
   assert.ok(setCall, 'USERS_JSON must be synced to development')
   assert.equal(setCall[setCall.length - 1], '[{"userId":"821993","username":"821993"}]')
+})
+
+// ---------------------------------------------------------------------------
+// §6.3 private-R2 / worker-origin architecture (owner directive 2026-11-25)
+// ---------------------------------------------------------------------------
+
+test('resolvePublicOriginMode classifies unset, workers.dev, and bucket domains', () => {
+  assert.equal(resolvePublicOriginMode({ publicBaseUrl: '', cloudflareWorkerName: 'w' }), 'worker')
+  assert.equal(
+    resolvePublicOriginMode({ publicBaseUrl: 'https://w.r7a.workers.dev', cloudflareWorkerName: 'w' }),
+    'worker',
+  )
+  assert.equal(
+    resolvePublicOriginMode({ publicBaseUrl: 'https://cdn.example.test', cloudflareWorkerName: 'w' }),
+    'bucket-domain',
+  )
+  assert.throws(() => resolvePublicOriginMode({ publicBaseUrl: 'not-a-url', cloudflareWorkerName: 'w' }))
+})
+
+test('validateImageCdnConfig accepts empty base only in streaming mode', () => {
+  assert.deepEqual(validateImageCdnConfig({ publicBaseUrl: '' }), { enabled: false, imageBaseUrl: null })
+  assert.throws(
+    () => validateImageCdnConfig({ publicBaseUrl: '', imageBaseUrl: 'https://img.example.test' }),
+    /requires AIRINGCAL_PUBLIC_BASE_URL/,
+  )
+})
+
+test('development plan without public base is worker-mode: no edge steps, probe after deploys', () => {
+  const plan = buildDevelopmentDeployPlan({ target: 'both', mode: 'apply' })
+  assert.equal(plan.publicOriginMode, 'worker')
+  assert.equal(plan.publicBaseUrl, null)
+  assert.equal(plan.publicHost, 'airing-cal-v3-read-staging.r7a.workers.dev')
+  const ids = plan.steps.map((step) => step.id)
+  for (const absent of ['attach-custom-domain', 'cache-rules', 'cors', 'waf-checkpoints', 'copy-public', 'copy-checkpoints']) {
+    assert.equal(ids.includes(absent), false, `worker mode must not include ${absent}`)
+  }
+  assert.ok(ids.indexOf('isolation-probe') > ids.indexOf('deploy-cloudflare'))
+  assert.ok(ids.indexOf('isolation-probe') > ids.indexOf('deploy-edgeone'))
+  assert.ok(ids.indexOf('isolation-probe') < ids.indexOf('single-writer-test'))
+  const probeStep = plan.steps.find((step) => step.id === 'isolation-probe')
+  assert.equal(probeStep.probeTargets, 'deployed-reader-origins')
+  assert.equal(probeStep.positiveProof, true)
+  assert.equal(probeStep.cleanupProbe, true)
+})
+
+test('production plan without public base is worker-mode and keeps the empty-bucket guard', () => {
+  const plan = buildProductionPlan({
+    target: 'cloudflare',
+    mode: 'apply',
+    accountId: 'acct',
+    zoneId: 'zone',
+    applyAuthorized: true,
+  })
+  assert.equal(plan.publicOriginMode, 'worker')
+  assert.equal(plan.publicBaseUrl, null)
+  assert.equal(plan.copyFree, true)
+  const ids = plan.steps.map((step) => step.id)
+  assert.ok(ids.includes('ensure-bucket-airingcal-production'))
+  assert.equal(ids.includes('attach-custom-domain'), false)
+  assert.ok(ids.indexOf('isolation-probe') > ids.indexOf('materialize-and-deploy-readers'))
+})
+
+test('runDevelopmentApply worker mode orders deploys before the probe and always cleans up', async () => {
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', mode: 'apply' })
+  const io = createRecordingApplyIo()
+  const result = await runDevelopmentApply({
+    plan,
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok', AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes' },
+    io,
+  })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  const calls = io.calls
+  assert.ok(calls.indexOf('isolation-probe-write') > calls.indexOf('deploy-cloudflare'))
+  assert.deepEqual(
+    calls.slice(calls.indexOf('isolation-probe-write'), calls.indexOf('single-writer-test')),
+    ['isolation-probe-write', 'isolation-probe-check', 'isolation-probe-cleanup'],
+  )
+  assert.equal(calls.includes('attach-custom-domain'), false)
+  assert.equal(calls.includes('copy-public'), false)
+})
+
+test('runDevelopmentApply worker mode still deletes the probe when evidence fails', async () => {
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', mode: 'apply' })
+  const io = createRecordingApplyIo({
+    probeAnonymousAccess: async () => ({
+      r2DevDisabled: true,
+      probes: [{ url: 'https://w.test/checkpoints/_isolation-probe.txt', method: 'GET', status: 200 }],
+    }),
+  })
+  const result = await runDevelopmentApply({
+    plan,
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok', AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes' },
+    io,
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.aborted, true)
+  assert.ok(result.completed.includes('isolation-probe-cleanup'))
+})
+
+test('worker-mode probeAnonymousAccess targets deployed reader origins and fails without any', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({ target: 'both', mode: 'apply' })
+  const urls = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {},
+    plan,
+    fetchImpl: async (url) => {
+      urls.push(String(url))
+      return { status: 404 }
+    },
+  })
+  await assert.rejects(
+    () => io.probeAnonymousAccess({ r2DevDisabled: true }),
+    /at least one deployed reader origin/,
+  )
+  const result = await io.probeAnonymousAccess({
+    r2DevDisabled: true,
+    cloudflareDeploy: { workerUrl: 'https://w.r7a.workers.dev' },
+    edgeoneDeploy: { readerUrl: 'https://eo.example.test/' },
+  })
+  assert.equal(result.probes.length, 12)
+  assert.deepEqual(result.origins, ['https://w.r7a.workers.dev', 'https://eo.example.test'])
+  assert.ok(urls.every((u) => u.includes('_isolation-probe')))
+})
+
+test('writeIsolationProbe fails closed when the written object cannot be proven', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', mode: 'apply' })
+  const state = { putDone: false }
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: 'acct',
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'ak',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'sk',
+    },
+    plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '{}', stderr: '', error: null }),
+    createObjectStore: () => ({
+      async list() { return [] },
+      async put() { state.putDone = true; return { etag: 'x' } },
+      async head() { return state.putDone ? null : { etag: 'v', size: 1 } },
+      async delete() { return { deleted: true } },
+      close() {},
+    }),
+  })
+  await io.deriveAndVerifyS3({})
+  await assert.rejects(() => io.writeIsolationProbe({}), /returned no object/)
+})
+
+test('production ensureBucket removes a provable probe-only residue and keeps refusing foreign objects', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildProductionPlan({
+    target: 'cloudflare',
+    mode: 'apply',
+    accountId: 'acct',
+    zoneId: 'zone',
+    applyAuthorized: true,
+  })
+  const probeKey = DEVELOPMENT_DEFAULTS.isolationProbeKey
+  const probeBody = DEVELOPMENT_DEFAULTS.isolationProbeBody
+  const makeIo = (state) => createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: 'acct',
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'ak',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'sk',
+    },
+    plan,
+    spawnSyncImpl: (_cmd, args) => {
+      if (args[0] === 'r2' && args[1] === 'bucket' && args[2] === 'info') {
+        return { status: 0, stdout: '{"name":"airingcal-production"}', stderr: '', error: null }
+      }
+      return { status: 0, stdout: '{}', stderr: '', error: null }
+    },
+    createObjectStore: () => ({
+      async list() { return [...state.keys] },
+      async get() { return { body: new TextEncoder().encode(state.body) } },
+      async head() { return state.keys.length ? { etag: 'e', size: state.body.length } : null },
+      async delete(key) { state.keys = state.keys.filter((k) => k !== key); return { deleted: true } },
+      close() {},
+    }),
+  })
+  const probeOnly = makeIo({ keys: [probeKey], body: probeBody })
+  await probeOnly.deriveAndVerifyS3({})
+  const cleaned = await probeOnly.ensureBucket({})
+  assert.equal(cleaned.emptyVerified, true)
+  assert.equal(cleaned.probeResidueCleaned, true)
+  assert.deepEqual(probeOnly.lastList, undefined)
+
+  const foreign = makeIo({ keys: [probeKey], body: 'someone-elses-bytes' })
+  await foreign.deriveAndVerifyS3({})
+  await assert.rejects(() => foreign.ensureBucket({}), /empty bucket/)
+
+  const mixed = makeIo({ keys: [probeKey, 'other.json'], body: probeBody })
+  await mixed.deriveAndVerifyS3({})
+  await assert.rejects(() => mixed.ensureBucket({}), /empty bucket/)
+})
+
+test('syncGithubEnvironment records the Worker origin when the plan has no bucket base', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', mode: 'apply' })
+  const calls = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: 'acct',
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'ak',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'sk',
+      AIRINGCAL_BANGUMI_TOKEN: 'bgm',
+      AIRINGCAL_USERS_JSON: '[{"id":1}]',
+      AIRINGCAL_PRIMARY_USER_ID: '1',
+    },
+    plan,
+    spawnSyncImpl: (cmd, args) => {
+      calls.push([cmd, ...args].join(' '))
+      return { status: 0, stdout: '{}', stderr: '', error: null }
+    },
+    createObjectStore: () => ({ list: async () => [], head: async () => null, close() {} }),
+  })
+  await io.deriveAndVerifyS3({})
+  await io.syncGithubEnvironment({})
+  const joined = calls.join('\n')
+  assert.match(joined, /variable set AIRINGCAL_DEVELOPMENT_PUBLIC_BASE_URL[\s\S]*https:\/\/airing-cal-v3-read-staging\.r7a\.workers\.dev/)
+})
+
+test('verifyImageRouting accepts streamed 200 image responses in worker mode', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', mode: 'apply' })
+  const io = createLiveDevelopmentApplyIo({
+    env: {},
+    plan,
+    fetchImpl: async (url, init = {}) => {
+      const u = String(url)
+      if (u.endsWith('/public/current-release.json')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              generation: 1,
+              content_hash: 'a'.repeat(64),
+              artifact_ref: `snapshots/v1/1-${'a'.repeat(64)}.json`,
+            }
+          },
+        }
+      }
+      if (u.includes('/snapshots/v1/')) {
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return {
+              schema_version: 1,
+              generated_at: '2026-11-25T00:00:00Z',
+              collections: {
+                subjects: [{
+                  id: 1,
+                  images: { large: { hash: 'b'.repeat(64), width: 1000 } },
+                }],
+              },
+            }
+          },
+        }
+      }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (name) => (String(name).toLowerCase() === 'content-type' ? 'image/jpeg' : null) },
+        async json() { return {} },
+      }
+    },
+  })
+  const result = await io.verifyImageRouting({
+    cloudflareDeploy: { workerUrl: 'https://w.r7a.workers.dev' },
+  })
+  assert.equal(result.hash, 'b'.repeat(64))
+  assert.equal(result.readers.length, 1)
+  assert.equal(result.readers[0].streamed, true)
+  assert.equal(result.readers[0].base, 'https://w.r7a.workers.dev')
+  assert.equal(result.readers[0].contentType, 'image/jpeg')
 })

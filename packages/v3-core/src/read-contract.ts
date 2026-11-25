@@ -27,6 +27,20 @@ export const V2_RETIRED_ROUTES = [
   'GET /api/check/*',
 ] as const
 
+/**
+ * v3 controlled public object interface (#72 private-R2): exactly these
+ * allowlisted key shapes are served from the store; everything else 404s.
+ */
+export const PUBLIC_OBJECT_ROUTES = [
+  'GET /public/current-release.json',
+  'GET /public/manifest.json',
+  'GET /snapshots/v1/{generation}-{sha256}.json',
+  'GET /public/manifests/{generation}-{sha256}.json',
+  'GET /images/{sha256}/original',
+  'GET /images/{sha256}/thumb.v1.webp',
+  'GET /images/{sha256}/thumb.v2.webp',
+] as const
+
 export const V2_CACHE_CONTROL = {
   collections: 'public, max-age=30, s-maxage=60, stale-while-revalidate=30',
   calendar: 'public, max-age=30, s-maxage=60, stale-while-revalidate=30',

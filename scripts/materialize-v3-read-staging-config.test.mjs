@@ -165,3 +165,25 @@ test('staging config materializer rejects sources that already declare vars or e
   writeFileSync(withEnv, 'name = "x"\nmain = "src/index.ts"\n[env.staging]\nname = "y"\n')
   expectFailure([withEnv, target], VALID_ENV, /must not declare \[env\./)
 })
+
+test('staging config materializer supports worker-origin mode (empty base) and CORS vars', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airing-cal-v3-staging-'))
+  const source = join(dir, 'wrangler.toml')
+  const target = join(dir, 'out', 'wrangler.toml')
+  writeFileSync(source, readFileSync(REPO_SOURCE, 'utf8'))
+
+  run([source, target], {
+    ...VALID_ENV,
+    AIRINGCAL_STAGING_PUBLIC_BASE_URL: '',
+    AIRINGCAL_CORS_ORIGINS: 'https://embed.example.com,null',
+  })
+  const materialized = readFileSync(target, 'utf8')
+  assert.doesNotMatch(materialized, /AIRINGCAL_PUBLIC_BASE_URL =/, 'worker mode emits no public base var')
+  assert.match(materialized, /AIRINGCAL_CORS_ORIGINS = "https:\/\/embed\.example\.com,null"/)
+  assert.match(materialized, /BANGUMI_GIT_COMMIT_SHA/)
+
+  expectFailure([source, target], {
+    ...VALID_ENV,
+    AIRINGCAL_CORS_ORIGINS: 'https://*.example.com',
+  }, /no wildcards/)
+})

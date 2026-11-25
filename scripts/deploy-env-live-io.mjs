@@ -527,7 +527,7 @@ function s3EndpointFor(accountId) {
 }
 
 export function createDefaultObjectStore(config) {
-  const { S3Client, GetObjectCommand, HeadObjectCommand, PutObjectCommand, ListObjectsV2Command } =
+  const { S3Client, GetObjectCommand, HeadObjectCommand, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command } =
     requireFromNodeJobs('@aws-sdk/client-s3')
   const client = new S3Client({
     region: config.region || 'auto',
@@ -592,6 +592,10 @@ export function createDefaultObjectStore(config) {
       return {
         etag: response.ETag ? String(response.ETag).replaceAll('"', '') : null,
       }
+    },
+    async delete(key) {
+      await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key }))
+      return { deleted: true }
     },
     async list(prefix) {
       const keys = []
@@ -871,7 +875,6 @@ export function createLiveDevelopmentApplyIo({
   const bucket = plan.bucket || DEVELOPMENT_DEFAULTS.bucket
   const probeKey = DEVELOPMENT_DEFAULTS.isolationProbeKey
   const probeBody = DEVELOPMENT_DEFAULTS.isolationProbeBody
-  const probeUrl = `${plan.publicBaseUrl}/${probeKey}`
   const repo = plan.repository || DEVELOPMENT_DEFAULTS.repository
   // The adapter is environment-aware: the same step machinery serves the
   // development cutover and the production clean bootstrap, but production
@@ -1334,10 +1337,31 @@ export function createLiveDevelopmentApplyIo({
         // Full Sync must find an empty bucket. Reusing a bucket that already
         // holds objects would silently mix foreign data into the release
         // lineage, so refuse instead of adopting.
+        // One residue class is provably OURS: an interrupted apply can die
+        // between probe write and probe delete. If (and only if) the bucket
+        // holds exactly the isolation probe key AND the body matches the
+        // known probe body, delete it and continue — the empty guard is not
+        // weakened, it is re-established against a verifiable interruption.
         const store = objectStoreFor(bucket)
         let keys = []
+        let probeResidueCleaned = false
         try {
           keys = await store.list('')
+          if (keys.length === 1 && keys[0] === probeKey) {
+            const object = await store.get(probeKey)
+            const body = new TextDecoder().decode(object?.body ?? new Uint8Array())
+            if (body === probeBody) {
+              await store.delete(probeKey)
+              const after = await store.list('')
+              if (after.length !== 0) {
+                throw new Error(
+                  `probe residue cleanup did not empty ${bucket}: ${after.length} object(s) remain`,
+                )
+              }
+              probeResidueCleaned = true
+              keys = after
+            }
+          }
         } finally {
           store.close?.()
         }
@@ -1348,8 +1372,9 @@ export function createLiveDevelopmentApplyIo({
           err.exitCode = 1
           throw err
         }
+        return { bucket, created, emptyVerified: true, probeResidueCleaned }
       }
-      return { bucket, created, emptyVerified: isProduction }
+      return { bucket, created, emptyVerified: false }
     },
 
     async disableR2Dev() {
@@ -1529,27 +1554,91 @@ export function createLiveDevelopmentApplyIo({
         await store.put(probeKey, new TextEncoder().encode(probeBody), {
           contentType: 'text/plain; charset=utf-8',
         })
+        // Positive proof (§6.3 / mission 4.1): an anonymous 404 only means
+        // isolation if the object demonstrably EXISTS in the private bucket.
+        // A head that comes back null (or throws) fails the step closed.
+        const head = await store.head(probeKey)
+        if (!head) {
+          throw new Error(`isolation probe written but S3 HEAD ${probeKey} returned no object`)
+        }
+        return { key: probeKey, body: probeBody, exists: true, size: head.size, etag: head.etag }
       } finally {
         store.close?.()
       }
-      return { key: probeKey, body: probeBody }
     },
 
+    /**
+     * Anonymous deny evidence against every public entrypoint of THIS plan:
+     * - bucket-domain mode: the bucket custom domain (WAF 403 expected);
+     * - worker mode (§6.3): each deployed reader origin (CF Worker and, when
+     *   deployed, EdgeOne) — the allowlisted public object interface must 404
+     *   `checkpoints/**` including encoded/traversal variants.
+     * Any status other than 403/404, or a fetch that resolves to 2xx with a
+     * body, fails the probe; thrown network errors retry, then fail.
+     */
     async probeAnonymousAccess(ctx = {}) {
       if (typeof fetchImpl !== 'function') {
         throw new Error('fetchImpl required for isolation anonymous GET/HEAD probes')
       }
-      const probes = []
-      for (const method of ['GET', 'HEAD']) {
-        // Retriable = thrown network error only; any HTTP status is a
-        // definitive answer (403 is the wanted evidence) and is never retried.
-        const response = await withNetworkRetry(
-          () => fetchImpl(probeUrl, { method, redirect: 'manual' }),
-          { isRetriable: isThrownNetworkError, sleep: sleepImpl },
-        )
-        probes.push({ url: probeUrl, method, status: Number(response.status) })
+      const origins = []
+      if (plan.publicOriginMode === 'worker') {
+        const workerUrl = String(ctx?.cloudflareDeploy?.workerUrl ?? '').trim()
+        if (workerUrl) origins.push(workerUrl.replace(/\/+$/, ''))
+        const edgeoneUrl =
+          String(ctx?.edgeoneDeploy?.readerUrl ?? '').trim() ||
+          String(env.AIRINGCAL_EDGEONE_READER_URL ?? '').trim()
+        if (edgeoneUrl && (plan.target === 'edgeone' || plan.target === 'both')) {
+          origins.push(edgeoneUrl.replace(/\/+$/, ''))
+        }
+        if (origins.length === 0) {
+          throw new Error(
+            'worker-mode isolation probe requires at least one deployed reader origin (no workerUrl in deploy receipt)',
+          )
+        }
+      } else {
+        origins.push(String(plan.publicBaseUrl).replace(/\/+$/, ''))
       }
-      return { r2DevDisabled: Boolean(ctx?.r2DevDisabled), probes }
+      const paths = [
+        `/${probeKey}`,
+        `/${probeKey.replace('checkpoints/', '%63heckpoints/')}`,
+        `/public/..%2f..%2f${probeKey}`,
+      ]
+      const probes = []
+      for (const origin of origins) {
+        for (const path of paths) {
+          const url = `${origin}${path}`
+          for (const method of ['GET', 'HEAD']) {
+            // Retriable = thrown network error only; any HTTP status is a
+            // definitive answer (403/404 is the wanted evidence) and is never retried.
+            const response = await withNetworkRetry(
+              () => fetchImpl(url, { method, redirect: 'manual' }),
+              { isRetriable: isThrownNetworkError, sleep: sleepImpl },
+            )
+            probes.push({ url, method, status: Number(response.status) })
+          }
+        }
+      }
+      return { r2DevDisabled: Boolean(ctx?.r2DevDisabled), probes, origins }
+    },
+
+    /**
+     * Probe cleanup: the bootstrap isolation probe must never survive into
+     * the release bucket — it would (a) violate the clean empty-bucket
+     * invariant on retry and (b) leave a foreign-looking object. Verified
+     * gone via HEAD before the receipt is issued.
+     */
+    async deleteIsolationProbe() {
+      const store = objectStoreFor(bucket)
+      try {
+        await store.delete(probeKey)
+        const head = await store.head(probeKey)
+        if (head) {
+          throw new Error(`isolation probe delete not visible: S3 HEAD ${probeKey} still returns an object`)
+        }
+        return { key: probeKey, deleted: true }
+      } finally {
+        store.close?.()
+      }
     },
 
     async copyPublicPrefixes(ctx = {}) {
@@ -1595,7 +1684,10 @@ export function createLiveDevelopmentApplyIo({
       const variables = {
         [`${prefix}PRIMARY_USER_ID`]: String(env.AIRINGCAL_PRIMARY_USER_ID ?? '').trim(),
         [`${prefix}CLOUDFLARE_ACCOUNT_ID`]: accountId,
-        [`${prefix}PUBLIC_BASE_URL`]: plan.publicBaseUrl,
+        // §6.3: in worker mode the Worker origin IS the public base — the
+        // EdgeOne adapter and verifier consume the allowlisted public
+        // object interface there; the bucket keeps no anonymous surface.
+        [`${prefix}PUBLIC_BASE_URL`]: plan.publicBaseUrl || plan.workerOrigin || '',
         [`${prefix}R2_BUCKET`]: bucket,
         [`${prefix}S3_ENDPOINT`]: s3EndpointFor(accountId),
         [`${prefix}S3_REGION`]: String(env.AIRINGCAL_S3_REGION ?? 'auto').trim() || 'auto',
@@ -1722,7 +1814,11 @@ export function createLiveDevelopmentApplyIo({
               ...process.env,
               ...env,
               AIRINGCAL_STAGING_PUBLIC_R2_BUCKET: bucket,
-              AIRINGCAL_STAGING_PUBLIC_BASE_URL: plan.publicBaseUrl,
+              // Empty in §6.3 worker mode: the reader then streams images
+              // and serves the public object interface itself.
+              AIRINGCAL_STAGING_PUBLIC_BASE_URL: plan.publicBaseUrl ?? '',
+              AIRINGCAL_CORS_ORIGINS:
+                plan.publicOriginMode === 'worker' ? (plan.cors?.allowedOrigins ?? []).join(',') : '',
               // Explicit (empty when unset) so process.env can never leak an
               // image base into a deploy where the caller did not configure one.
               AIRINGCAL_IMAGE_BASE_URL: String(env.AIRINGCAL_IMAGE_BASE_URL ?? '').trim(),
@@ -1798,7 +1894,9 @@ export function createLiveDevelopmentApplyIo({
         )
 
         const envPairs = [
-          ['AIRINGCAL_PUBLIC_BASE_URL', plan.publicBaseUrl],
+          // §6.3: private bucket → EdgeOne's HttpPublicStore consumes the
+          // Worker's controlled public object interface, not the bucket.
+          ['AIRINGCAL_PUBLIC_BASE_URL', plan.publicBaseUrl || plan.workerOrigin],
           ['NSFW_SHOW', String(env.AIRINGCAL_NSFW_SHOW ?? 'false')],
         ]
         if (env.PACKAGE_VERSION) {
@@ -1897,7 +1995,14 @@ export function createLiveDevelopmentApplyIo({
       if (typeof fetchImpl !== 'function') {
         throw new Error('image routing verification failed: fetchImpl required')
       }
-      const publicBase = String(plan.publicBaseUrl).replace(/\/+$/, '')
+      const publicBase = (
+        String(plan.publicBaseUrl ?? '').trim() || String(ctx.cloudflareDeploy?.workerUrl ?? '').trim()
+      ).replace(/\/+$/, '')
+      if (!publicBase) {
+        throw new Error(
+          'image routing verification failed: no public data base (bucket-domain mode requires plan.publicBaseUrl; worker mode requires the deployed Worker URL)',
+        )
+      }
       const imageBase = String(env.AIRINGCAL_IMAGE_BASE_URL ?? '').trim()
       const expectedOrigin = new URL(imageBase || publicBase).origin
 
@@ -2006,9 +2111,21 @@ export function createLiveDevelopmentApplyIo({
             locationOrigin = null
           }
         }
+        // §6.3 worker mode: with no bucket/CDN base the reader STREAMS the
+        // image itself (200 + image/* from its own origin) — that is the
+        // correct landing. Redirect mode keeps the 302-to-expected-origin
+        // evidence. Anything else fails closed.
+        const readerOrigin = new URL(reader.base).origin
+        const contentType = (headerValue(response, 'content-type') ?? '').toLowerCase()
+        const streamed =
+          status === 200 && readerOrigin === expectedOrigin && contentType.startsWith('image/')
+        if (streamed) {
+          receipts.push({ base: reader.base, streamed: true, contentType })
+          continue
+        }
         if (status !== 302 || !location || locationOrigin !== expectedOrigin) {
           throw new Error(
-            `image routing verification failed: ${reader.label} GET ${imageUrl} -> ${status || 'no response'} location=${location ?? '(none)'}; expected 302 to origin ${expectedOrigin}`,
+            `image routing verification failed: ${reader.label} GET ${imageUrl} -> ${status || 'no response'} location=${location ?? '(none)'}; expected 302 to origin ${expectedOrigin} (or 200 image/* streamed from it)`,
           )
         }
         receipts.push({ base: reader.base, location, originMatches: true })
