@@ -2019,6 +2019,17 @@ export function createLiveDevelopmentApplyIo({
         { isRetriable: isThrownNetworkError, sleep: sleepImpl },
       )
       if (!isOkResponse(pointerResponse)) {
+        // Clean bootstrap (#73): on a copy-free production plan the pointer
+        // CANNOT exist yet — the first Full Sync is an Owner dispatch that
+        // runs after this apply. Record an explicit skip instead of aborting
+        // (the bucket/readers were already mutated by prior steps). Every
+        // other mode keeps failing closed on a non-2xx pointer.
+        if (plan.copyFree === true && Number(pointerResponse?.status ?? 0) === 404) {
+          return {
+            status: 'skipped-no-release',
+            reason: `no published release yet on ${publicBase} (pointer 404); image routing verifies after the first Full Sync`,
+          }
+        }
         throw new Error(
           `image routing verification failed: pointer fetch ${pointerUrl} -> ${pointerResponse?.status ?? 'no response'}`,
         )

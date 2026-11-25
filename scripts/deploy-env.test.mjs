@@ -4693,3 +4693,112 @@ test('verifyImageRouting accepts streamed 200 image responses in worker mode', a
   assert.equal(result.readers[0].base, 'https://w.r7a.workers.dev')
   assert.equal(result.readers[0].contentType, 'image/jpeg')
 })
+
+test('verifyImageRouting skips with skipped-no-release on a copy-free bootstrap pointer 404', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildProductionPlan({
+    target: 'cloudflare',
+    mode: 'apply',
+    accountId: 'acct',
+    zoneId: 'zone',
+    applyAuthorized: true,
+  })
+  const io = createLiveDevelopmentApplyIo({
+    env: {},
+    plan,
+    fetchImpl: async (url) => {
+      const u = String(url)
+      if (u.endsWith('/public/current-release.json')) return { ok: false, status: 404 }
+      throw new Error(`unexpected fetch ${u}`)
+    },
+  })
+  const result = await io.verifyImageRouting({
+    cloudflareDeploy: { workerUrl: 'https://prod.example.workers.dev' },
+  })
+  assert.equal(result.status, 'skipped-no-release')
+  assert.match(result.reason, /first Full Sync/)
+})
+
+test('verifyImageRouting still fails closed on pointer 404 for non-bootstrap (dev) plans', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    mode: 'apply',
+  })
+  const io = createLiveDevelopmentApplyIo({
+    env: {},
+    plan,
+    fetchImpl: async () => ({ ok: false, status: 404 }),
+  })
+  await assert.rejects(
+    () => io.verifyImageRouting({ cloudflareDeploy: { workerUrl: 'https://w.test' } }),
+    /image routing verification failed: pointer fetch/,
+  )
+})
+
+test('runProductionApply records skipped-no-release without completing or aborting', async () => {
+  const plan = buildProductionPlan({
+    target: 'cloudflare',
+    mode: 'apply',
+    accountId: 'acct',
+    zoneId: 'zone',
+    applyAuthorized: true,
+  })
+  const io = createRecordingApplyIo({
+    verifyImageRouting: async () => ({
+      status: 'skipped-no-release',
+      reason: 'no published release yet (pointer 404)',
+    }),
+  })
+  const result = await runProductionApply({
+    plan,
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes',
+      AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED: 'yes',
+    },
+    io,
+  })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(result.completed.includes('image-routing-verify'), false)
+})
+
+test('PRODUCTION_SECRET_KEYS admits the BARK_URL secret the workflow reads (ShipReview #5)', async () => {
+  const lib = await import('./deploy-env-lib.mjs')
+  assert.ok(lib.PRODUCTION_SECRET_KEYS.includes('AIRINGCAL_PRODUCTION_BARK_URL'))
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildProductionPlan({
+    target: 'cloudflare',
+    mode: 'apply',
+    accountId: 'acct',
+    zoneId: 'zone',
+    applyAuthorized: true,
+  })
+  const calls = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: 'acct',
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'ak',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'sk',
+      AIRINGCAL_BANGUMI_TOKEN: 'bgm',
+      AIRINGCAL_USERS_JSON: '[{"id":1}]',
+      AIRINGCAL_PRIMARY_USER_ID: '1',
+      AIRINGCAL_BARK_URL: 'https://bark.example/x',
+    },
+    plan,
+    spawnSyncImpl: (cmd, args) => {
+      calls.push([cmd, ...args].join(' '))
+      return { status: 0, stdout: '{}', stderr: '', error: null }
+    },
+    createObjectStore: () => ({ list: async () => [], head: async () => null, close() {} }),
+  })
+  await io.deriveAndVerifyS3({})
+  const res = await io.syncGithubEnvironment({})
+  const joined = calls.join('\n')
+  assert.match(joined, /secret set AIRINGCAL_PRODUCTION_BARK_URL --env production/)
+  assert.ok(res.secretsSynced.includes('AIRINGCAL_PRODUCTION_BARK_URL'))
+  // Never the value:
+  assert.equal(joined.includes('https://bark.example/x'), false, 'bark url must not leak into args')
+})

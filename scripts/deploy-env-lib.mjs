@@ -111,6 +111,11 @@ export const PRODUCTION_SECRET_KEYS = Object.freeze([
   'AIRINGCAL_PRODUCTION_BANGUMI_TOKEN',
   'AIRINGCAL_PRODUCTION_S3_ACCESS_KEY_ID',
   'AIRINGCAL_PRODUCTION_S3_SECRET_ACCESS_KEY',
+  // Read by the production job (portable-writer.yml) for writer-failure
+  // notification; syncGithubEnvironment only writes it when the operator
+  // actually set AIRINGCAL_BARK_URL, but the allowlist must admit it or the
+  // secret is silently dropped while the workflow still references it.
+  'AIRINGCAL_PRODUCTION_BARK_URL',
 ])
 
 const ACCOUNT_ID_RE = /^[0-9a-f]{32}$/i
@@ -1208,7 +1213,7 @@ export function missingScopeExitMessage(missingScopes = []) {
  * @property {(ctx: object) => Promise<object>} syncGithubEnvironment
  * @property {(ctx: object) => Promise<object>} [deployCloudflareReader]
  * @property {(ctx: object) => Promise<object>} [deployEdgeoneOverseas]
- * @property {(ctx: object) => Promise<{ hash: string, readers: Array<object> } | { status: 'skipped-no-images', reason: string }>} verifyImageRouting
+ * @property {(ctx: object) => Promise<{ hash: string, readers: Array<object> } | { status: 'skipped-no-images' | 'skipped-no-release', reason: string }>} verifyImageRouting
  * @property {(ctx: object) => Promise<object>} validateImageCdn
  * @property {(ctx: object) => Promise<object>} runSingleWriterTest
  */
@@ -1618,7 +1623,12 @@ export async function runProductionApply({ plan, env = {}, io }) {
     }
 
     const imageRouting = await requireIoMethod(io, 'verifyImageRouting')(ctx)
-    if (imageRouting?.status !== 'skipped-no-images') completed.push('image-routing-verify')
+    if (
+      imageRouting?.status !== 'skipped-no-images'
+      && imageRouting?.status !== 'skipped-no-release'
+    ) {
+      completed.push('image-routing-verify')
+    }
 
     await requireIoMethod(io, 'validateImageCdn')(ctx)
     completed.push('image-cdn-validate')
