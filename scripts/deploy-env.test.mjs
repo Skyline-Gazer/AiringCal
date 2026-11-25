@@ -1932,9 +1932,13 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
   assert.ok(ghJoined.some((a) => a.includes('workflow enable')))
   assert.ok(
     ghJoined.some(
-      (a) => a.includes('variable set AIRINGCAL_DEVELOPMENT_WRITER_ENABLED') && a.includes('--body true') && !a.includes('--env'),
+      (a) =>
+        a.includes('variable set AIRINGCAL_DEVELOPMENT_WRITER_ENABLED') &&
+        a.includes('--env') &&
+        a.includes('development') &&
+        a.includes('--body true'),
     ),
-    `repo-level gate var not set true: ${ghJoined.join(' | ')}`,
+    `environment-scoped gate var not set true: ${ghJoined.join(' | ')}`,
   )
   assert.ok(
     ghJoined.some((a) => a.includes('workflow run portable-writer.yml') && a.includes('target=development')),
@@ -1942,8 +1946,13 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
   assert.ok(ghJoined.some((a) => a.includes('run view 101')))
   assert.ok(
     ghJoined.some(
-      (a) => a.includes('variable set AIRINGCAL_DEVELOPMENT_WRITER_ENABLED') && a.includes('--body false'),
+      (a) =>
+        a.includes('variable set AIRINGCAL_DEVELOPMENT_WRITER_ENABLED') &&
+        a.includes('--env') &&
+        a.includes('development') &&
+        a.includes('--body false'),
     ),
+    `environment-scoped gate restore missing: ${ghJoined.join(' | ')}`,
   )
   assert.equal(result.singleWriterTest?.runId, 101)
   assert.equal(result.singleWriterTest?.jobConclusion, 'success')
@@ -2001,7 +2010,7 @@ function buildWriterTestIo(spawnSyncImpl, extraEnv = {}) {
   })
 }
 
-test('runSingleWriterTest success: enable → repo var true → run → poll → repo var false → disable, receipt returned', async () => {
+test('runSingleWriterTest success: enable → env var true → run → poll → env var false → disable, receipt returned', async () => {
   const { ghCalls, spawnSyncImpl } = writerTestSpawnDouble({
     jobs: [{ name: 'development', conclusion: 'success' }],
   })
@@ -2028,6 +2037,11 @@ test('runSingleWriterTest success: enable → repo var true → run → poll →
   })
   assert.deepEqual(order, ['enable', 'var-true', 'list', 'run', 'list', 'view', 'var-false', 'disable'])
   assert.ok(ghCalls.every((c) => c.includes('Skyline-Gazer/AiringCal')))
+  // The step-level job gate resolves the ENVIRONMENT-scoped var; the toggle
+  // must write the same scope, because a repo-level flip is masked by the
+  // environment pin that syncGithubEnvironment pins to 'false'.
+  assert.ok(ghCalls.some((c) => c.includes('--body true') && c.includes('--env development')))
+  assert.ok(ghCalls.some((c) => c.includes('--body false') && c.includes('--env development')))
 })
 
 test('runSingleWriterTest fails closed on skipped development job (skipped ≠ pass) and restores freeze', async () => {

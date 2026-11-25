@@ -29,16 +29,17 @@ Without `AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes`, `--apply --i-am-sure-produc
 
 Future Owner Apply only — empty `airingcal-production`, GitHub Environment `production`, Production CF Worker, EdgeOne overseas project. Names must not collide with Development/Staging/v2. Not authorized in this prep.
 
-### 3. Isolation probe PASS on Production public host
+### 3. Isolation probe PASS on the Production public surface
 
-Anonymous `GET`/`HEAD` of a checkpoint probe on the Production public host must be **403** before any writer publish (plan step `isolation-probe`). Mirror Development evidence pattern in [`development-live-acceptance.md`](./development-live-acceptance.md).
+Worker mode (default, #72): the probe runs **after** the readers deploy and the anonymous `GET`/`HEAD` of the checkpoint probe on **every deployed reader origin** (plain, `%63`-encoded and `..%2f` variants) must be **404** — the allowlisted object interface refuses `checkpoints/**`; the write step must also prove the object exists via private S3 `HEAD`, and the probe is always deleted afterwards. Legacy bucket-domain mode: **403** from the host WAF before any writer publish. Plan step `isolation-probe`; evidence must come from the apply receipt, not a hand-run curl. Mirror Development evidence pattern in [`development-live-acceptance.md`](./development-live-acceptance.md).
 
 ### 4. Bangumi first Full Sync into empty checkpoint (Owner Apply phase)
 
-Owner enables the Production Writer gate only under separate authorization, then dispatches:
+Owner enables the Production Writer gate only under separate authorization, then dispatches. The gate is the **production-environment** variable `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED`, checked fails-closed by the first step inside the production job (`gh variable set AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED --env production --repo Skyline-Gazer/AiringCal --body true`); the repo-level schedule kill-switch `AIRINGCAL_WRITER_ENABLED` stays untouched (it stays `false` until post-acceptance).
 
 - Workflow: `.github/workflows/portable-writer.yml`
 - `workflow_dispatch` **target=`production`**, **`force_mode=full`**
+- Immediately after the run appears: clear the bootstrap flag (`--body false`) so no later dispatch can reuse it
 
 First Production Release must come from Bangumi Full Sync into the fresh SQLite checkpoint/lease/release — not imported Development checkpoint bytes. Scoped v2 field import only if a field is proven non-rebuildable ([`legacy-state-import.md`](./legacy-state-import.md)).
 

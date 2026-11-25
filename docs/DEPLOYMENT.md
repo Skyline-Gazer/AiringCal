@@ -36,9 +36,12 @@ EdgeOne Makers mirrors the same static Reader for the overseas domain and
 consumes the controlled interface above — it never fetches raw bucket keys.
 
 Writes never happen in the read deploy: publishing is the GHA Portable Builder
-(`.github/workflows/portable-writer.yml`), gated by `AIRINGCAL_WRITER_ENABLED`
-(schedule) and, for the first production run only,
-`AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED` (workflow_dispatch).
+(`.github/workflows/portable-writer.yml`), gated by the repo-level
+`AIRINGCAL_WRITER_ENABLED` on the schedule (job-level `if`) and, for the first
+production run only, by the production-environment
+`AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED` checked in a fails-closed first
+step inside the job; development dispatches are gated the same way by the
+development-environment `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED`.
 
 ## Prerequisites
 
@@ -62,7 +65,7 @@ present in the process environment.
 
 | Name | Kind | Meaning |
 |---|---|---|
-| `AIRINGCAL_ENV` | required selector | `staging` \| `development` \| `production` |
+| `AIRINGCAL_ENV` | required selector | `development` \| `production` — the deploy CLI **rejects** `staging` and has no `--env` flag; legacy staging is only the frozen `scripts/setup-staging.sh` rollback source |
 | `AIRINGCAL_DOTENV_PATH` | required for production | path to `.env.production` |
 | `AIRINGCAL_PUBLIC_BASE_URL` | optional | **unset/`*.workers.dev` → `worker` mode** (Worker origin is the public surface, bucket fully private). A non-Worker `https://` origin selects legacy `bucket-domain` mode (custom domain + edge WAF/cache/CORS) and then must be a real R2 custom-domain URL — never a placeholder or `r2.dev`. |
 | `AIRINGCAL_CORS_ORIGINS` | optional (worker mode) | comma-separated **exact** origins allowed cross-origin (`null` for file:// embeds); wildcards refused at config time; unset keeps OPTIONS at 405 and CORS an edge concern |
@@ -77,8 +80,9 @@ present in the process environment.
 | `AIRINGCAL_IMAGE_BASE_URL` | optional | sticky image base override; deploy clears it when unset |
 | `AIRINGCAL_S3_ACCESS_KEY_ID` / `AIRINGCAL_S3_SECRET_ACCESS_KEY` / `AIRINGCAL_S3_REGION` / `AIRINGCAL_S3_ENDPOINT` | optional overrides | otherwise derived from the management token |
 | `AIRINGCAL_PRODUCTION_WORKER_NAME` / `AIRINGCAL_EDGEONE_PROJECT` / `AIRINGCAL_EDGEONE_REGION` | optional | resource-name overrides |
-| `AIRINGCAL_WRITER_ENABLED` | GitHub repo variable, not dotenv | schedule gate; deploy never flips it |
-| `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED` | GitHub production env variable | first-sync gate; deploy pins it `false`, Owner sets `true` once |
+| `AIRINGCAL_WRITER_ENABLED` | GitHub **repo** variable, not dotenv | schedule gate — the only gate scope a job-level `if` can read; deploy never flips it |
+| `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED` | GitHub **development environment** variable | development dispatch gate, checked by the first step inside the job (job-level `if` cannot resolve environment-scoped vars); deploy pins it `false`; `runSingleWriterTest` flips the same environment scope and restores `false` |
+| `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED` | GitHub **production environment** variable | first-sync gate, checked by the first step inside the production job (fails closed, value never logged); deploy pins it `false`, Owner sets `true` once, dispatches, clears |
 
 Legacy `AIRINGCAL_STAGING_*` names still load through a compatibility alias map
 and print a deprecation note; prefer the environment-neutral names above.
