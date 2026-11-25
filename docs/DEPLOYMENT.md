@@ -139,14 +139,18 @@ the Owner's separate actions below.
 ```bash
 pnpm exec tsx scripts/reader-delivery-accept.mjs --env development --json
 pnpm exec tsx scripts/reader-delivery-bench.mjs --env development --json
+node scripts/v3-ship-verify.mjs --base https://airingcal.teijp.cn --json   # or --public-dir <mirror>
 ```
 
-plus the manual probes: anonymous `GET/HEAD` on
-`<public origin>/checkpoints/_isolation-probe.txt` must be 403/404;
-`POST/PUT/DELETE` on any API route must be 405; `/api/calendar` must answer a
-matching `If-None-Match` with 304; the Reader at the public domain must render
-today's weekday (nav chips + auto-scroll) and the Widget must load from a
-foreign host only for allowlisted origins (CORS is edge-configured).
+`v3-ship-verify.mjs` runs every read-surface probe automatically: static
+index/Widget assets, pointer identity, API shape, method allowlist (405 +
+`Allow`), conditional GET (`ETag`/304 on `/api/collections`, `/api/calendar`,
+`/api/cache`), `checkpoints/**` isolation, and image delivery (original +
+optional thumb). It is strictly read-only and exits non-zero on any failed
+check. Remaining manual items: anonymous `GET/HEAD` on
+`<public origin>/checkpoints/_isolation-probe.txt` must be 403/404 (WAF side,
+not reachable through the Worker), and CORS allowlist behavior against a
+non-allowlisted foreign origin.
 
 ## Update / rollback
 
