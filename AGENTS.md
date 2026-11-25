@@ -8,7 +8,7 @@
 
 ## ADS (pinned submodule)
 
-**Pin:** `.ads` @ `82c3404b68995425249a022bdbeb4ac18b88fcd0` (actual submodule gitlink on `dev` as verified 2026-11-05; do not infer an ADS release tag).
+**Pin:** `.ads` @ `178212c41cce8fbf9354d4066e0f77341f6f23c4` — ADS **v0.8.0** (annotated tag → commit resolution and `82c3404b…` v0.7-era ancestry verified 2026-11-25, adoption tracked in [#183](https://github.com/Skyline-Gazer/AiringCal/issues/183); do not infer a different release from this SHA).
 
 Read [`.ads/STANDARD.md`](.ads/STANDARD.md), [`.ads/SAFETY.md`](.ads/SAFETY.md), [`.ads/QUALITY.md`](.ads/QUALITY.md) before structural changes; opt-in skills under [`.ads/skills/`](.ads/skills). Project-local rules below (§零, docs-sync, Comet guard) remain authoritative where they are stricter. Project-only read **and** write boundary applies: never list, search, hash or read paths outside this repository without explicit authorization (see [`.ads/docs/host-filesystem-boundary.md`](.ads/docs/host-filesystem-boundary.md)).
 
