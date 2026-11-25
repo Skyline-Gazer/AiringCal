@@ -25,6 +25,7 @@ import {
   resolveDeployDotenvPath,
   resolveExecutionMode,
   runDevelopmentApply,
+  runProductionApply,
 } from './deploy-env-lib.mjs'
 import { createLiveDevelopmentApplyIo as createLiveIoAdapters } from './deploy-env-live-io.mjs'
 
@@ -148,7 +149,7 @@ async function applyDevelopment({ env, plan, derived, io }) {
   }
 }
 
-async function main(argv = process.argv) {
+async function main(argv = process.argv, options = {}) {
   let flags
   try {
     flags = parseDeployArgs(argv)
@@ -247,21 +248,22 @@ async function main(argv = process.argv) {
       return
     }
 
-    // This prep never mutates: refusedMutations must stay true even when
-    // AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes, because the apply executor
-    // remains unwired and we still exit 2.
+    // The plan object is printed at every exit point. refusedMutations is
+    // only false on the executed-apply path, where the result JSON printed
+    // afterwards is authoritative for what actually mutated.
     const plan = {
       ...derived.plan,
       mode: execution.mode,
       reason: execution.reason,
       applyAuthorized: derived.applyAuthorized,
       writerEnabled: false,
+      productionWriterEnabled: false,
+      bootstrapWriterEnabled: false,
       refusedMutations: true,
     }
 
-    process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`)
-
     if (execution.mode === 'dry-run') {
+      process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`)
       if (derived.missingCloudflareToken) {
         console.error(
           '[deploy-env] note: Cloudflare token absent — production dry-run plan only; live --apply stays unauthorized without AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes.',
@@ -270,9 +272,14 @@ async function main(argv = process.argv) {
       return
     }
 
-    // Apply path: require both --i-am-sure-production (already enforced) AND
-    // AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes. This prep never mutates.
+    // Apply path: three explicit gates — --apply --i-am-sure-production
+    // (resolveExecutionMode), AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes and
+    // AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes. Everything else is the same
+    // injectable step machinery as development, with the production plan's
+    // copy-free / empty-bucket / production-environment semantics enforced by
+    // runProductionApply and the environment-aware live adapters.
     if (!derived.applyAuthorized) {
+      process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`)
       console.error(
         'not_authorized_in_this_change: Production --apply refused without AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes; no mutations performed.',
       )
@@ -280,10 +287,31 @@ async function main(argv = process.argv) {
       return
     }
 
-    console.error(
-      'not_authorized_in_this_change: Production apply executor is not wired in this prep; no mutations performed.',
+    if (String(env.AIRINGCAL_DEPLOY_LIVE_CONFIRM ?? '').trim() !== 'yes') {
+      const pending = {
+        status: 'owner-gated',
+        reason:
+          'Production apply authorized but AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes not set; printing plan and refusing mutations.',
+        plan: { ...plan },
+        pendingOwnerSteps: plan.ownerGatedLiveSteps,
+        writerEnabled: false,
+        productionWriterEnabled: false,
+        bootstrapWriterEnabled: false,
+      }
+      process.stdout.write(`${JSON.stringify(pending, null, 2)}\n`)
+      process.exitCode = 2
+      return
+    }
+
+    process.stdout.write(`${JSON.stringify({ ...plan, refusedMutations: false }, null, 2)}\n`)
+    const applyIo = options.io ?? createLiveDevelopmentApplyIo({ env, plan })
+    const result = await runProductionApply({ plan, env, io: applyIo })
+    process.stdout.write(
+      `${JSON.stringify({ status: result.ok ? 'applied' : 'aborted', ...result }, null, 2)}\n`,
     )
-    process.exitCode = 2
+    if (!result.ok) {
+      process.exitCode = result.exitCode ?? 1
+    }
     return
   }
 
@@ -310,7 +338,7 @@ async function main(argv = process.argv) {
     return
   }
 
-  await applyDevelopment({ env, plan, derived })
+  await applyDevelopment({ env, plan, derived, io: options.io })
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

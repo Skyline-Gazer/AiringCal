@@ -16,6 +16,8 @@ import {
   DEVELOPMENT_DEFAULTS,
   DEVELOPMENT_SECRET_KEYS,
   DEVELOPMENT_VARIABLE_KEYS,
+  PRODUCTION_SECRET_KEYS,
+  PRODUCTION_VARIABLE_KEYS,
   normalizeCorsAllowedMethods,
   redactSecrets,
   validateImageCdnConfig,
@@ -871,6 +873,11 @@ export function createLiveDevelopmentApplyIo({
   const probeBody = DEVELOPMENT_DEFAULTS.isolationProbeBody
   const probeUrl = `${plan.publicBaseUrl}/${probeKey}`
   const repo = plan.repository || DEVELOPMENT_DEFAULTS.repository
+  // The adapter is environment-aware: the same step machinery serves the
+  // development cutover and the production clean bootstrap, but production
+  // refuses every staging-coupled step (copy / freeze / writer test) and
+  // targets the production GitHub Environment + AIRINGCAL_PRODUCTION_* names.
+  const isProduction = plan.env === 'production'
 
   /** @type {{ accessKeyId: string, secretAccessKey: string, endpoint: string, region: string, derived: boolean } | null} */
   let s3Creds = null
@@ -1242,6 +1249,11 @@ export function createLiveDevelopmentApplyIo({
     },
 
     async freezeWriter(ctx = {}) {
+      if (isProduction) {
+        throw new Error(
+          'production apply must not disable the shared writer workflow; the production writer was never enabled and the schedule stays gated by AIRINGCAL_WRITER_ENABLED',
+        )
+      }
       const workflow = plan.writerFreeze?.workflow || 'portable-writer.yml'
       const alreadyFrozen = await runGhWorkflowToggle(
         spawnSyncImpl,
@@ -1317,7 +1329,27 @@ export function createLiveDevelopmentApplyIo({
       if (s3Creds) {
         await verifyS3Access(s3Creds, bucket, { allowMissingBucket: false })
       }
-      return { bucket, created }
+      if (isProduction) {
+        // Clean bootstrap (production plan requireEmptyBucket): the first
+        // Full Sync must find an empty bucket. Reusing a bucket that already
+        // holds objects would silently mix foreign data into the release
+        // lineage, so refuse instead of adopting.
+        const store = objectStoreFor(bucket)
+        let keys = []
+        try {
+          keys = await store.list('')
+        } finally {
+          store.close?.()
+        }
+        if (keys.length > 0) {
+          const err = new Error(
+            `production bootstrap requires an empty bucket: ${bucket} already holds at least ${keys.length} object(s); refusing a dirty bucket`,
+          )
+          err.exitCode = 1
+          throw err
+        }
+      }
+      return { bucket, created, emptyVerified: isProduction }
     },
 
     async disableR2Dev() {
@@ -1521,6 +1553,9 @@ export function createLiveDevelopmentApplyIo({
     },
 
     async copyPublicPrefixes(ctx = {}) {
+      if (isProduction) {
+        throw new Error('production apply is copy-free; refusing any staging/development prefix copy')
+      }
       if (ctx.isolation?.ok === false) {
         throw new Error('Refusing copyPublicPrefixes after isolation failure')
       }
@@ -1535,6 +1570,9 @@ export function createLiveDevelopmentApplyIo({
     },
 
     async copyCheckpoints(ctx = {}) {
+      if (isProduction) {
+        throw new Error('production apply is copy-free; refusing any staging checkpoint copy')
+      }
       if (ctx.isolation?.ok === false) {
         throw new Error('Refusing copyCheckpoints after isolation failure')
       }
@@ -1549,24 +1587,32 @@ export function createLiveDevelopmentApplyIo({
     },
 
     async syncGithubEnvironment(ctx = {}) {
-      const envName = 'development'
+      const envName = isProduction ? 'production' : 'development'
       await runGh(spawnSyncImpl, ['api', '--method', 'PUT', `repos/${repo}/environments/${envName}`], env)
 
       const accountId = accountIdFrom(env, plan) || ctx.accountId || ''
+      const prefix = isProduction ? 'AIRINGCAL_PRODUCTION_' : 'AIRINGCAL_DEVELOPMENT_'
       const variables = {
-        AIRINGCAL_DEVELOPMENT_PRIMARY_USER_ID: String(env.AIRINGCAL_PRIMARY_USER_ID ?? '').trim(),
-        AIRINGCAL_DEVELOPMENT_CLOUDFLARE_ACCOUNT_ID: accountId,
-        AIRINGCAL_DEVELOPMENT_PUBLIC_BASE_URL: plan.publicBaseUrl,
-        AIRINGCAL_DEVELOPMENT_R2_BUCKET: bucket,
-        AIRINGCAL_DEVELOPMENT_S3_ENDPOINT: s3EndpointFor(accountId),
-        AIRINGCAL_DEVELOPMENT_S3_REGION: String(env.AIRINGCAL_S3_REGION ?? 'auto').trim() || 'auto',
-        AIRINGCAL_DEVELOPMENT_WORKER_NAME:
-          plan.cloudflareWorkerName || DEVELOPMENT_DEFAULTS.workerName,
-        AIRINGCAL_DEVELOPMENT_WRITER_ENABLED: 'false',
+        [`${prefix}PRIMARY_USER_ID`]: String(env.AIRINGCAL_PRIMARY_USER_ID ?? '').trim(),
+        [`${prefix}CLOUDFLARE_ACCOUNT_ID`]: accountId,
+        [`${prefix}PUBLIC_BASE_URL`]: plan.publicBaseUrl,
+        [`${prefix}R2_BUCKET`]: bucket,
+        [`${prefix}S3_ENDPOINT`]: s3EndpointFor(accountId),
+        [`${prefix}S3_REGION`]: String(env.AIRINGCAL_S3_REGION ?? 'auto').trim() || 'auto',
+        [`${prefix}WORKER_NAME`]: plan.cloudflareWorkerName || DEVELOPMENT_DEFAULTS.workerName,
       }
-      if (env.AIRINGCAL_USERS_JSON) {
-        variables.AIRINGCAL_DEVELOPMENT_USERS_JSON = String(env.AIRINGCAL_USERS_JSON)
+      if (isProduction) {
+        // Both production writer gates stay off in apply: the schedule reads
+        // the repo-level AIRINGCAL_WRITER_ENABLED (untouched here) and the
+        // first Full Sync reads AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED.
+        variables[`${prefix}BOOTSTRAP_WRITER_ENABLED`] = 'false'
       } else {
+        variables[`${prefix}WRITER_ENABLED`] = 'false'
+      }
+      const allowedVariableKeys = isProduction ? PRODUCTION_VARIABLE_KEYS : DEVELOPMENT_VARIABLE_KEYS
+      if (env.AIRINGCAL_USERS_JSON) {
+        variables[`${prefix}USERS_JSON`] = String(env.AIRINGCAL_USERS_JSON)
+      } else if (!isProduction) {
         // The development writer job requires AIRINGCAL_DEVELOPMENT_USERS_JSON.
         // When .env omits it (the normal case), reuse the verified staging
         // Environment value instead of leaving the writer job unconfigured.
@@ -1581,18 +1627,14 @@ export function createLiveDevelopmentApplyIo({
           env,
         ).catch(() => null)
         const value = String(stagingUsers?.stdout ?? '').trim()
-        if (value) variables.AIRINGCAL_DEVELOPMENT_USERS_JSON = value
+        if (value) variables[`${prefix}USERS_JSON`] = value
       }
 
       const syncedVars = []
       for (const [name, value] of Object.entries(variables)) {
-        if (
-          !DEVELOPMENT_VARIABLE_KEYS.includes(name) &&
-          name !== 'AIRINGCAL_DEVELOPMENT_USERS_JSON'
-        ) {
-          continue
-        }
-        if (!value && name !== 'AIRINGCAL_DEVELOPMENT_WRITER_ENABLED') continue
+        if (!allowedVariableKeys.includes(name)) continue
+        const writerGateName = isProduction ? `${prefix}BOOTSTRAP_WRITER_ENABLED` : `${prefix}WRITER_ENABLED`
+        if (!value && name !== writerGateName) continue
         await runGh(
           spawnSyncImpl,
           ['variable', 'set', name, '--env', envName, '--repo', repo, '--body', String(value)],
@@ -1615,14 +1657,18 @@ export function createLiveDevelopmentApplyIo({
 
       const s3 = requireS3()
       const secretMap = {
-        AIRINGCAL_DEVELOPMENT_BANGUMI_TOKEN: String(env.AIRINGCAL_BANGUMI_TOKEN ?? '').trim(),
-        AIRINGCAL_DEVELOPMENT_S3_ACCESS_KEY_ID: s3.accessKeyId,
-        AIRINGCAL_DEVELOPMENT_S3_SECRET_ACCESS_KEY: s3.secretAccessKey,
+        [`${prefix}BANGUMI_TOKEN`]: String(env.AIRINGCAL_BANGUMI_TOKEN ?? '').trim(),
+        [`${prefix}S3_ACCESS_KEY_ID`]: s3.accessKeyId,
+        [`${prefix}S3_SECRET_ACCESS_KEY`]: s3.secretAccessKey,
       }
+      if (isProduction && String(env.AIRINGCAL_BARK_URL ?? '').trim()) {
+        secretMap[`${prefix}BARK_URL`] = String(env.AIRINGCAL_BARK_URL).trim()
+      }
+      const allowedSecretKeys = isProduction ? PRODUCTION_SECRET_KEYS : DEVELOPMENT_SECRET_KEYS
       const syncedSecrets = []
       const missingSecrets = []
       for (const [name, value] of Object.entries(secretMap)) {
-        if (!DEVELOPMENT_SECRET_KEYS.includes(name)) continue
+        if (!allowedSecretKeys.includes(name)) continue
         if (value) {
           await runGh(
             spawnSyncImpl,
@@ -1653,7 +1699,7 @@ export function createLiveDevelopmentApplyIo({
     async deployCloudflareReader() {
       const workerName = plan.cloudflareWorkerName || DEVELOPMENT_DEFAULTS.workerName
       const outDir = mkdtempSync(join(tmpdir(), 'airingcal-wrangler-'))
-      const outToml = join(outDir, 'wrangler-v3-read-development.toml')
+      const outToml = join(outDir, `wrangler-v3-read-${isProduction ? 'production' : 'development'}.toml`)
       const sourceToml = join(ROOT, 'apps/v3-read-worker/wrangler.toml')
       const gitSha =
         String(env.BANGUMI_GIT_COMMIT_SHA ?? '').trim() ||
@@ -1979,6 +2025,14 @@ export function createLiveDevelopmentApplyIo({
     },
 
     async runSingleWriterTest(ctx = {}) {
+      if (isProduction) {
+        return {
+          dispatched: false,
+          skipped: true,
+          reason:
+            'production first Full Sync is an explicit Owner dispatch (bootstrap flag + workflow_dispatch) outside apply',
+        }
+      }
       if (ctx.developmentWriterEnabled) {
         throw new Error(
           'Refusing single-writer test while developmentWriterEnabled=true in runner ctx',

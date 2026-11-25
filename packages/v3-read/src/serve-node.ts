@@ -55,7 +55,7 @@ export function startPortableReadServer(options: {
       // (If-None-Match, Origin, Accept, …) reaches the handlers verbatim.
       const forwardedHeaders = Object.entries(req.headers ?? {})
         .filter(([key, value]) => value != null && key !== 'content-length' && key !== 'transfer-encoding')
-        .map(([key, value]) => [key, String(value)])
+        .map(([key, value]) => [key, String(value)] as [string, string])
       const request = new Request(url.toString(), { method: req.method ?? 'GET', headers: forwardedHeaders })
       const buildSha = options.gitSha ?? process.env.BANGUMI_GIT_COMMIT_SHA?.trim()
       const staticResponse = handlePortableStaticRequest(request, {
