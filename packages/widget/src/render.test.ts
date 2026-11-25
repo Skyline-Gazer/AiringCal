@@ -96,6 +96,7 @@ function loadWidgetProductionRenderers() {
         setAttribute: function () {},
         removeAttribute: function () {},
         getAttribute: function () { return null },
+        querySelector: function () { return null },
         appendChild: function (child) {
           el.children.push(child)
           return child
@@ -108,7 +109,10 @@ function loadWidgetProductionRenderers() {
       renderSubjectCard,
       renderCalendar(days) {
         var cal = mockElement()
+        var nav = mockElement()
         var todayId = 1
+        var didScrollToday = false
+        function isStandalonePage() { return false }
         ${extractFunction(widgetJs, 'renderCalendar')}
         renderCalendar(days)
         return cal.children.map(function (section) {
