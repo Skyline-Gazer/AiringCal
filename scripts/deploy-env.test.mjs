@@ -720,7 +720,6 @@ function createRecordingApplyIo(overrides = {}) {
     deriveAndVerifyS3: record('derive-s3', async () => ({
       accessKeyId: 'AKIA_TEST',
       secretAccessKey: 'secret',
-      keyIdPrinted: 'AKIA_TEST',
     })),
     freezeWriter: record('writer-freeze', async () => ({
       lever: 'workflow-disable',
@@ -927,6 +926,20 @@ test('runProductionApply aborts before any mutation fan-out when isolation fails
   assert.equal(result.exitCode, 1)
   assert.equal(io.calls.includes('sync-gh-env'), false, 'no GitHub writes after isolation failure')
   assert.equal(io.calls.includes('deploy-cloudflare'), false, 'no deploys after isolation failure')
+})
+
+test('production apply reports completed effects when a later adapter throws', async () => {
+  const plan = buildProductionPlan({ target: 'cloudflare', mode: 'apply', zoneId: 'zone' })
+  const token = 'test-production-token'
+  const io = createRecordingApplyIo({
+    deployCloudflareReader: async () => { throw new Error(`deployment refused ${token}`) },
+  })
+  const result = await runProductionApply({ plan, env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: token }, io })
+  assert.equal(result.ok, false)
+  assert.equal(result.exitCode, 1)
+  assert.match(result.reason, /deployment refused/)
+  assert.ok(!JSON.stringify(result).includes(token))
+  assert.deepEqual(result.completed, ['token-probe', 'derive-s3', 'ensure-bucket-empty', 'disable-r2-dev', 'sync-gh-env'])
 })
 
 test('runProductionApply refuses non-production and copyable plans', async () => {
@@ -1217,6 +1230,7 @@ test('createLiveDevelopmentApplyIo deriveAndVerifyS3 uses overrides without Crea
   assert.equal(derived.verified, true)
   assert.equal(storeCalls[0]?.accessKeyId, 'AKIA_OVERRIDE')
   assert.ok(!printed.includes('override rejected'), 'valid override must not announce fall-through')
+  assert.ok(!printed.includes('AKIA_OVERRIDE'), 'credential identifier must not be printed')
 })
 
 test('deriveAndVerifyS3 falls through to management-token self-derivation when the S3 override is rejected', async () => {
@@ -2777,7 +2791,6 @@ test('deriveAndVerifyS3 derives S3 creds from the management token without creat
   assert.equal(result.source, 'management-token')
   assert.equal(result.verified, true)
   assert.equal(result.accessKeyId, VERIFY_TOKEN_ID)
-  assert.equal(result.keyIdPrinted, VERIFY_TOKEN_ID)
   assert.equal(storeConfigs[0].accessKeyId, VERIFY_TOKEN_ID)
   assert.equal(storeConfigs[0].secretAccessKey, expectedSecret)
   assert.equal(storeConfigs[0].endpoint, 'https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com')
@@ -2785,9 +2798,27 @@ test('deriveAndVerifyS3 derives S3 creds from the management token without creat
   assert.ok(fetchLog.some(([m, u]) => m === 'GET' && u.endsWith('/user/tokens/verify')))
   assert.ok(!printed.includes(expectedSecret), 'SHA-256 secret must never be printed')
   assert.ok(!printed.includes(parentToken), 'parent token value must never be printed')
-  assert.ok(printed.includes(VERIFY_TOKEN_ID), 'key id is printed')
+  assert.ok(!printed.includes(VERIFY_TOKEN_ID), 'credential identifier must not be printed')
   // The creds land in ctx.s3 with the secret for the later GH Environment sync.
   assert.equal(result.secretAccessKey, expectedSecret)
+})
+
+test('production S3 derivation never enters the shared credential rotation fallback', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const requests = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'test-management-token',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+    },
+    plan: buildProductionPlan({ target: 'cloudflare', mode: 'apply', zoneId: 'zone' }),
+    fetchImpl: async (url, init) => {
+      requests.push([init?.method ?? 'GET', new URL(url).pathname])
+      return Response.json({ success: false, errors: [] }, { status: 403 })
+    },
+  })
+  await assert.rejects(() => io.deriveAndVerifyS3(), /independently scoped Production S3 credentials/i)
+  assert.deepEqual(requests, [['GET', '/client/v4/user/tokens/verify']])
 })
 
 test('deriveAndVerifyS3 continues to scoped-token fallback when parent token cannot verify', async () => {
@@ -4536,10 +4567,10 @@ test('worker-mode probeAnonymousAccess targets deployed reader origins and fails
   assert.ok(urls.every((u) => u.includes('_isolation-probe')))
 })
 
-test('writeIsolationProbe fails closed when the written object cannot be proven', async () => {
+test('production removes the written isolation probe if authenticated HEAD cannot prove it', async () => {
   const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
-  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', mode: 'apply' })
-  const state = { putDone: false }
+  const plan = buildProductionPlan({ target: 'cloudflare', mode: 'apply', zoneId: 'zone' })
+  let probePresent = false
   const io = createLiveDevelopmentApplyIo({
     env: {
       AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
@@ -4551,14 +4582,28 @@ test('writeIsolationProbe fails closed when the written object cannot be proven'
     spawnSyncImpl: () => ({ status: 0, stdout: '{}', stderr: '', error: null }),
     createObjectStore: () => ({
       async list() { return [] },
-      async put() { state.putDone = true; return { etag: 'x' } },
-      async head() { return state.putDone ? null : { etag: 'v', size: 1 } },
-      async delete() { return { deleted: true } },
+      async put() { probePresent = true; return { etag: 'x' } },
+      async head() {
+        if (probePresent) throw new Error('authenticated probe HEAD failed')
+        return null
+      },
+      async delete() { probePresent = false; return { deleted: true } },
       close() {},
     }),
   })
-  await io.deriveAndVerifyS3({})
-  await assert.rejects(() => io.writeIsolationProbe({}), /returned no object/)
+  const result = await runProductionApply({
+    plan,
+    io: createRecordingApplyIo({
+      deriveAndVerifyS3: io.deriveAndVerifyS3,
+      writeIsolationProbe: io.writeIsolationProbe,
+      deleteIsolationProbe: io.deleteIsolationProbe,
+      verifyImageRouting: async () => ({ status: 'skipped-no-release' }),
+    }),
+  })
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /authenticated probe HEAD failed/)
+  assert.deepEqual(result.completed.slice(-2), ['isolation-probe-write', 'isolation-probe-cleanup'])
+  assert.equal(probePresent, false)
 })
 
 test('production ensureBucket removes a provable probe-only residue and keeps refusing foreign objects', async () => {
@@ -4946,15 +4991,18 @@ test('verifyImageRouting fails closed after bounded retries on a persistent stal
 
 test('evaluateIsolationProbe accepts edge-refusal 400 as denial, rejects 5xx and 2xx (D1 live finding)', async () => {
   const { evaluateIsolationProbe } = await import('./deploy-env-lib.mjs')
-  const mk = (status) => [
-    { url: 'https://w.example/a', method: 'GET', status },
-    { url: 'https://w.example/a', method: 'HEAD', status },
+  const plain = 'https://w.example/checkpoints/_isolation-probe.txt'
+  const malformed = 'https://w.example/public/..%2f..%2fcheckpoints/_isolation-probe.txt'
+  const mk = (status, url = plain) => [
+    { url, method: 'GET', status },
+    { url, method: 'HEAD', status },
   ]
-  assert.equal(evaluateIsolationProbe({ r2DevDisabled: true, probes: mk(400) }).ok, true)
+  assert.equal(evaluateIsolationProbe({ r2DevDisabled: true, probes: mk(400, malformed) }).ok, true)
+  assert.equal(evaluateIsolationProbe({ r2DevDisabled: true, probes: mk(400) }).ok, false)
   assert.equal(evaluateIsolationProbe({ r2DevDisabled: true, probes: mk(403) }).ok, true)
   assert.equal(evaluateIsolationProbe({ r2DevDisabled: true, probes: mk(404) }).ok, true)
   assert.equal(evaluateIsolationProbe({ r2DevDisabled: true, probes: mk(200) }).ok, false)
   const serverError = evaluateIsolationProbe({ r2DevDisabled: true, probes: mk(503) })
   assert.equal(serverError.ok, false)
-  assert.equal(serverError.failures[0].expected, '400|403|404')
+  assert.equal(serverError.failures[0].expected, '403|404')
 })

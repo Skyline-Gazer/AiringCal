@@ -42,7 +42,7 @@ All GitHub Actions Environment settings follow `AIRINGCAL_{ENVIRONMENT}_{SERVICE
 | `AIRINGCAL_STAGING_S3_REGION` | **Variable** (auto) | Defaults to `auto` |
 | `AIRINGCAL_STAGING_BARK_URL` | **Secret** (optional) | Optional Bark failure notification URL |
 
-Production uses the corresponding `AIRINGCAL_PRODUCTION_*` names in the `production` Environment (plus repository variable `AIRINGCAL_WRITER_ENABLED=true` only after owner cutover approval).
+Production uses `AIRINGCAL_PRODUCTION_*` settings in the `production` Environment. Follow the separate [D3 First Full Sync procedure](../DEPLOYMENT.md#first-data-load-production) for bootstrap dispatch and gate cleanup. The repository `AIRINGCAL_WRITER_ENABLED` schedule gate stays closed during D2/D3.
 
 ### Legacy Staging initialization (historical / rollback only; not new Development)
 

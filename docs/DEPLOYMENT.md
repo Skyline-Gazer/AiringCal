@@ -46,10 +46,11 @@ development-environment `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED`.
 ## Prerequisites
 
 - Node 24 + `pnpm`, `wrangler` and `gh` CLI authenticated (`gh auth status`).
-- Cloudflare account: R2 + zone (`AIRINGCAL_ZONE_ID`) + account id
-  (32-char hex). API token scopes: `R2:Read`, `R2:Edit`, `R2:Manage`,
-  `Zone:Read`, `Zone:DNS:Edit`, `Zone:WAF:Edit`, `Workers:Write`,
-  `Members:Read` (apply probes them and aborts on gaps).
+- Production needs an independently scoped Cloudflare management token for
+  R2 and Worker deployment, a verified Cloudflare account ID (32-char hex),
+  and the actual `AIRINGCAL_ZONE_ID` for identity preflight. Worker-mode
+  Production does not need DNS or WAF write access. Legacy bucket-domain
+  deploys additionally need permissions for the selected domain, DNS and rules.
 - EdgeOne API token (only when `target` includes `edgeone`).
 - Bangumi token for the writer.
 - DNS ownership of the public base domain (the cutover step creates/points the
@@ -61,9 +62,11 @@ Per-environment dotenv files, never committed: `.env.development`,
 `.env.production` (`deploy-env.mjs` accepts only these two selectors; the
 legacy `.env.staging` belongs solely to the frozen `scripts/setup-staging.sh`
 rollback flow). Production apply requires
-`AIRINGCAL_DOTENV_PATH` to point at a file ending in `.env.production`, and
-refuses to run if any `AIRINGCAL_STAGING_*`/`AIRINGCAL_DEVELOPMENT_*` value is
-present in the process environment.
+`AIRINGCAL_DOTENV_PATH` to point at the gitignored `.env.production`. Use an
+isolated process with no Development/Staging settings or generic credential
+aliases inherited from the shell. Production loads file values over process
+values and rejects nonempty `AIRINGCAL_STAGING_*`/`AIRINGCAL_DEVELOPMENT_*`
+process values. Keep the two apply-confirmation variables out of dotenv.
 
 | Name | Kind | Meaning |
 |---|---|---|
@@ -72,7 +75,7 @@ present in the process environment.
 | `AIRINGCAL_PUBLIC_BASE_URL` | optional | **unset/`*.workers.dev` → `worker` mode** (Worker origin is the public surface, bucket fully private). A non-Worker `https://` origin selects legacy `bucket-domain` mode (custom domain + edge WAF/cache/CORS) and then must be a real R2 custom-domain URL — never a placeholder or `r2.dev`. |
 | `AIRINGCAL_CORS_ORIGINS` | optional (worker mode) | comma-separated **exact** origins allowed cross-origin (`null` for file:// embeds); wildcards refused at config time; unset keeps OPTIONS at 405 and CORS an edge concern |
 | `AIRINGCAL_ZONE_ID` | required for production; required in bucket-domain mode | Cloudflare zone (production preflight identity; domain/WAF rules otherwise) |
-| `AIRINGCAL_CLOUDFLARE_API_TOKEN` | required secret | management token (S3 keys are derived from it) |
+| `AIRINGCAL_CLOUDFLARE_API_TOKEN` | required secret | independently scoped Production management token. Verify permissions and account identity before Apply. |
 | `AIRINGCAL_CLOUDFLARE_ACCOUNT_ID` | required at apply | 32-char hex |
 | `AIRINGCAL_BANGUMI_TOKEN` | required secret | writer token (synced to GitHub, never used by deploy reads) |
 | `AIRINGCAL_EDGEONE_API_TOKEN` | required for target≠cloudflare | EdgeOne token |
@@ -80,7 +83,7 @@ present in the process environment.
 | `AIRINGCAL_PRIMARY_USER_ID` | **required for production**; needed for dev/staging env sync | writer owner uid; production `--apply` sync refuses without it (the first Full Sync validates the derived variable as required) |
 | `AIRINGCAL_USERS_JSON` | **required for production**; optional dev/staging (dev falls back to the verified staging env value) | writer users payload → `AIRINGCAL_PRODUCTION_USERS_JSON`; production sync fails closed when empty |
 | `AIRINGCAL_IMAGE_BASE_URL` | optional | sticky image base override; deploy clears it when unset |
-| `AIRINGCAL_S3_ACCESS_KEY_ID` / `AIRINGCAL_S3_SECRET_ACCESS_KEY` / `AIRINGCAL_S3_REGION` / `AIRINGCAL_S3_ENDPOINT` | optional overrides | otherwise derived from the management token |
+| `AIRINGCAL_S3_ACCESS_KEY_ID` / `AIRINGCAL_S3_SECRET_ACCESS_KEY` / `AIRINGCAL_S3_REGION` | optional overrides | Supply independently scoped Production S3 access when management-token self-derivation is unsuitable. Production Apply does not create or rotate API tokens. |
 | `AIRINGCAL_PRODUCTION_WORKER_NAME` / `AIRINGCAL_EDGEONE_PROJECT` / `AIRINGCAL_EDGEONE_REGION` | optional | resource-name overrides |
 | `AIRINGCAL_WRITER_ENABLED` | GitHub **repo** variable, not dotenv | schedule gate — the only gate scope a job-level `if` can read; deploy never flips it |
 | `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED` | GitHub **development environment** variable | development dispatch gate, checked by the first step inside the job (job-level `if` cannot resolve environment-scoped vars); deploy pins it `false`; `runSingleWriterTest` flips the same environment scope and restores `false` |
@@ -94,13 +97,17 @@ and print a deprecation note; prefer the environment-neutral names above.
 ```bash
 AIRINGCAL_ENV=development node scripts/deploy-env.mjs --dry-run
 AIRINGCAL_ENV=production AIRINGCAL_DOTENV_PATH=.env.production \
-  node scripts/deploy-env.mjs --dry-run
+  node scripts/deploy-env.mjs --dry-run --target cloudflare
 ```
 
 Dry-run prints the full ordered step plan, resource names, derived values and
 `refusedMutations: true`. It never touches Cloudflare, EdgeOne, GitHub or DNS.
-Production dry-run additionally embeds `preflight-identity.gitSha` and refuses
-to plan against staging/development resource names or environment values.
+Production dry-run embeds `preflight-identity.gitSha`; inspect the entire plan
+for Worker mode, an independent Worker and bucket, and no copy, DNS, custom
+domain, EdgeOne, or Writer changes. Separately verify the remote account,
+zone, permissions and GitHub state. Validate `AIRINGCAL_USERS_JSON` against
+the [sync config parser](../apps/node-jobs/src/sync/config.ts) with the
+matching `AIRINGCAL_PRIMARY_USER_ID` before creating resources.
 
 ## Deploy — development (single bucket, live since 2026-11-07)
 
@@ -141,33 +148,48 @@ probes ran before an abort):
 AIRINGCAL_ENV=production AIRINGCAL_DOTENV_PATH=.env.production \
 AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes \
 AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes \
-  node scripts/deploy-env.mjs --apply --i-am-sure-production
+  node scripts/deploy-env.mjs --apply --i-am-sure-production --target cloudflare
 ```
 
 The production sequence is **copy-free**: it never reads or copies staging or
 development data. `ensure-bucket` refuses a non-empty `airingcal-production`
 bucket (the one exception being a provable leftover isolation-probe object,
 verified against the known probe body and deleted before re-checking emptiness
-— an interrupted apply is recovered, the guard is not weakened);
-`checkpoints/` isolation is proven by the anonymous probe with write-`HEAD`
-evidence and guaranteed cleanup — in worker mode after the readers deploy,
-against every deployed reader origin, in bucket-domain mode before anything
-is written; GitHub sync targets the `production` environment with
-`AIRINGCAL_PRODUCTION_*` names and pins
-`AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED=false`. Apply never enables the
-writer and never dispatches the first sync — those are the Owner's separate
-actions below.
+under the clean-bootstrap guard). Leave `AIRINGCAL_PUBLIC_BASE_URL` unset.
+This plan deploys the Production
+Cloudflare Worker without any R2 Custom Domain or DNS changes. `checkpoints/`
+isolation requires authenticated S3 HEAD of the test object, anonymous
+GET/HEAD denial at the Worker and verified cleanup. Check that no public R2
+endpoint exists and the bucket is still empty. A fresh Reader can serve
+static assets while release-dependent APIs return `503 NO_RELEASE` and the
+image routing check records `skipped-no-release`. Apply syncs the `production`
+Environment and pins its bootstrap Writer gate `false`. If Apply aborts,
+record `mutationsExecuted` and inspect the remote state of the incomplete
+operation before any retry.
 
-## First data load (Owner dispatch, per environment)
+## First data load (Production)
 
-1. Development/staging: the writer runs on schedule only when
-   `AIRINGCAL_WRITER_ENABLED=true`; a manual run is a
-   `workflow_dispatch` of `portable-writer.yml`.
-2. Production first Full Sync: Owner sets
-   `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED=true`, dispatches
-   `portable-writer.yml` with `target=production`, `force_mode=full`, then
-   clears the flag. Until it completes, the production reader answers
-   `503 NO_RELEASE` by design.
+After D2 Apply and isolation pass, obtain separate Owner authorization for
+D3. Verify the exact candidate ref/SHA, Production Environment restrictions
+and config, no active Writer and no existing Production release or
+checkpoint. Read the prior Portable Writer workflow state and verify the
+repository `AIRINGCAL_WRITER_ENABLED` gate is closed. Enable the shared
+workflow only if dispatch requires it, with the schedule gate kept closed.
+
+Set the Production Environment variable
+`AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED=true` only for the intended
+`portable-writer.yml` dispatch on that ref, with `target=production` and
+`force_mode=full`. Establish a bounded watchdog and cleanup before opening
+the gate. Close it immediately after the intended job passes
+`Production bootstrap gate (fails closed)`. On timeout, interruption,
+dispatch failure or cancellation, close it first and reconcile the run.
+Verify the gate reads back `false`, record the run ID and SHA, observe it
+through terminal completion, and restore the prior workflow state if it was
+temporarily enabled. Inspect the actual bucket before any recovery from a
+partial publication.
+
+See the [Writer operations guide](v3/gha-portable-writer.md) for other
+environments.
 
 ## Verify
 
@@ -178,6 +200,7 @@ pnpm exec tsx scripts/reader-delivery-accept.mjs --public-base <reader-origin>
 pnpm exec tsx scripts/reader-delivery-bench.mjs --hosts <cf-origin>,<eo-origin> --runs 3
 node scripts/v3-ship-verify.mjs --base https://airingcal.teijp.cn --json   # or --public-dir <mirror>
 node scripts/v3-ship-verify.mjs --base <worker-origin-url> --bucket airingcal-development --json   # positive private-object proof
+node scripts/v3-ship-verify.mjs --base <production-worker-origin> --bucket airingcal-production --json
 ```
 
 `v3-ship-verify.mjs` runs every read-surface probe automatically: static
@@ -190,13 +213,15 @@ same reader base; an anonymous 404 over a bucket that holds nothing proves
 nothing) — and image delivery (original + optional thumb). It is strictly
 read-only and exits non-zero on any failed check; without `--bucket`/mirror
 `checkpoints/` the proof fails closed unless the operator states the skip via
-`--allow-unproven-isolation` (visible in the JSON). Remaining manual item:
-CORS allowlist behavior against a non-allowlisted foreign origin.
+`--allow-unproven-isolation` (visible in the JSON). Production requires
+unskipped proof plus the supplemental checks in the
+[acceptance checklist](v3/production-acceptance.md#7-cloudflare-worker-live-read-contract).
 
 ## Update / rollback
 
-- Config or code change: re-run the environment's `--apply` (idempotent);
-  writer cadence is data-only and needs no deploy.
+- Development config or code change: use its authorized deploy procedure.
+  Production clean-bootstrap Apply refuses a bucket with published data.
+  Writer cadence is data-only and needs no Reader redeploy.
 - Release rollback/roll-forward (pointer flip, CAS-safe):
   [`v3/cutover-rollback.md`](v3/cutover-rollback.md).
 - Production acceptance checklist before Owner GO:
@@ -204,9 +229,8 @@ CORS allowlist behavior against a non-allowlisted foreign origin.
 
 ## What deploy-env automates vs what stays Owner-run
 
-| Automated by one apply command | Owner-run |
+| Automated by Production Apply in Worker mode | Separate Owner authorization |
 |---|---|
-| bucket/domain/cache/CORS/WAF + isolation proof | DNS zone ownership, hostname choice |
-| GitHub env vars/secrets sync (writer gates pinned off) | `AIRINGCAL_WRITER_ENABLED` flip |
-| CF Worker + EdgeOne Makers reader deploys | first production Full Sync dispatch |
-| image routing/CDN verification | `production-acceptance.md` GO/NO-GO |
+| Empty R2 bucket, `r2.dev` disabled, isolation proof | First Production Full Sync |
+| Production GitHub Environment sync, bootstrap gate pinned off | Live rollback/roll-forward and traffic cutover |
+| Cloudflare Worker deployment | Scheduled Writer enablement and formal release |

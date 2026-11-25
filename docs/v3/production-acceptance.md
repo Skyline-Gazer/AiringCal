@@ -2,46 +2,36 @@
 
 **Authoritative Production GO/NO-GO checklist.** Development Live Acceptance ([`development-live-acceptance.md`](./development-live-acceptance.md)) does not authorize Production.
 
-> **This prep change set does not authorize Production Apply, `main` cutover, or enabling `AIRINGCAL_WRITER_ENABLED`.** Gates 2–4 and traffic switch are Owner-executed after separate authorization. Prep proves dry-run plan shape, one-shot parity tooling, and docs only.
+Production acceptance has separate Owner decisions for D2 Apply, D3 First Full Sync, any live rollback/roll-forward drill, and D4 traffic cutover. Record each gate and its evidence on [#73](https://github.com/Skyline-Gazer/AiringCal/issues/73). Leave unexecuted gates pending.
 
-Topology: one new bucket `airingcal-production` (prefixes `checkpoints/**`, `public/**`, `snapshots/**`, `images/**`); independent `.env.production`, CF Worker, EdgeOne overseas project, GitHub `production` Environment; first Release from Bangumi Full Sync into an empty checkpoint (no Development/Staging/v2 object copy).
+Production uses one independent Cloudflare Worker, one private `airingcal-production` R2 bucket, independently scoped credentials and the GitHub `production` Environment. The Worker serves the bundled Reader/Widget, read APIs, allowlisted objects and streamed images. EdgeOne and Netlify are optional consumers. GitHub Actions is the sole Writer. The first Release comes from Bangumi Full Sync with fresh Production state.
 
-## Acceptance order (encode exactly)
+## Acceptance order
 
-Complete in order. Each gate is PASS / FAIL / blocked_not_authorized. Owner records evidence on [#73](https://github.com/Skyline-Gazer/AiringCal/issues/73).
+### 1. Production identity, permissions and dry-run
 
-### 1. Production Preflight identity / token / zone / domain / Git SHA
-
-Dry-run plan must PASS (no cloud mutations).
+Verify remote account and zone identity, R2/Worker permissions and credential scopes independently of the local dry-run. Confirm GitHub authentication, Environment availability and restrictions, both Writer gates closed and no active Writer. Validate the Production Bangumi identity, user configuration and exact clean candidate SHA before creating resources.
 
 ```bash
-# fill Owner placeholders in a gitignored sibling of the example
-cp .env.production.example .env.production
-AIRINGCAL_DOTENV_PATH=.env.production AIRINGCAL_ENV=production \
-  node scripts/deploy-env.mjs --dry-run
+AIRINGCAL_ENV=production AIRINGCAL_DOTENV_PATH=.env.production \
+  node scripts/deploy-env.mjs --dry-run --target cloudflare
 ```
 
-Expect: plan `bucket: airingcal-production`, clean-bootstrap steps (including `preflight-identity`, `ensure-bucket-airingcal-production`, `isolation-probe`), **no** `copy-*` steps, `writerEnabled: false`.
-
-Without `AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes`, `--apply --i-am-sure-production` must still refuse mutations (exit non-zero).
+Use the gitignored config from [the example](../../.env.production.example), with `AIRINGCAL_PUBLIC_BASE_URL` unset. Require `worker` mode, the independent Production Worker and `airingcal-production`, `copyFree: true`, no public R2 domain, no DNS change, no EdgeOne deploy, no existing Release adoption and both Writer gates closed. Compare the ordered plan with the authorized scope before Apply.
 
 ### 2. Create all new Production resources (Owner Apply phase)
 
-Future Owner Apply only — empty `airingcal-production`, GitHub Environment `production`, Production CF Worker, EdgeOne overseas project. Names must not collide with Development/Staging/v2. Not authorized in this prep.
+After explicit D2 authorization, run the three-gate [deployment procedure](../DEPLOYMENT.md#deploy--production-clean-bootstrap-owner-gated) for Cloudflare only. Reuse requires an empty Production bucket after any verified isolation-probe residue is removed under the existing guard. Confirm zero R2 Custom Domains and `r2.dev` disabled. Preserve the completed-step ledger and check remote state if the current operation may have partially succeeded. Before publication, confirm the static Reader and release-dependent `503 NO_RELEASE`. Record image routing as `skipped-no-release` until D3 publishes.
 
 ### 3. Isolation probe PASS on the Production public surface
 
-Worker mode (default, #72): the probe runs **after** the readers deploy and the anonymous `GET`/`HEAD` of the checkpoint probe on **every deployed reader origin** (plain, `%63`-encoded and `..%2f` variants) must be **404** — the allowlisted object interface refuses `checkpoints/**`; the write step must also prove the object exists via private S3 `HEAD`, and the probe is always deleted afterwards. Legacy bucket-domain mode: **403** from the host WAF before any writer publish. Plan step `isolation-probe`; evidence must come from the apply receipt, not a hand-run curl. Mirror Development evidence pattern in [`development-live-acceptance.md`](./development-live-acceptance.md).
+Use the Apply receipt for authenticated S3 HEAD of the temporary checkpoint probe, anonymous GET and HEAD denial through the actual Worker, and deletion verified by authenticated HEAD and a bucket re-list. Require policy denial (403/404) and accept edge 400 for malformed traversal variants only. An unrelated error or a 2xx response fails isolation. Confirm the bucket is empty again before D3.
 
-### 4. Bangumi first Full Sync into empty checkpoint (Owner Apply phase)
+### 4. Bangumi First Full Sync into an empty Production checkpoint
 
-Owner enables the Production Writer gate only under separate authorization, then dispatches. The gate is the **production-environment** variable `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED`, checked fails-closed by the first step inside the production job (`gh variable set AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED --env production --repo Skyline-Gazer/AiringCal --body true`); the repo-level schedule kill-switch `AIRINGCAL_WRITER_ENABLED` stays untouched (it stays `false` until post-acceptance).
+Obtain D3 authorization after gates 2 and 3. Verify the exact workflow ref and SHA, Environment restrictions, Production config, absent release/checkpoint/lease and no active Writer. Use the [dispatch and cleanup procedure](../DEPLOYMENT.md#first-data-load-production) with `.github/workflows/portable-writer.yml`, `target=production`, and `force_mode=full`. Record run ID, URL, source SHA and terminal conclusion.
 
-- Workflow: `.github/workflows/portable-writer.yml`
-- `workflow_dispatch` **target=`production`**, **`force_mode=full`**
-- Immediately after the run appears: clear the bootstrap flag (`--body false`) so no later dispatch can reuse it
-
-First Production Release must come from Bangumi Full Sync into the fresh SQLite checkpoint/lease/release — not imported Development checkpoint bytes. Scoped v2 field import only if a field is proven non-rebuildable ([`legacy-state-import.md`](./legacy-state-import.md)).
+The Production Environment gate is `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED`. Close it immediately after the intended Production job passes `Production bootstrap gate (fails closed)`. Keep the repository schedule gate `AIRINGCAL_WRITER_ENABLED` closed throughout. Read the published pointer, manifest, immutable snapshot, checkpoint and lease to establish the actual generation/hash, required images and fresh Bangumi lineage. On partial publication, reconcile Production state before considering recovery.
 
 ### 5. Data integrity one-shot compare vs v2 core fields
 
@@ -58,25 +48,24 @@ pnpm exec tsx apps/node-jobs/src/cli/portable-shadow-gate.ts \
 pnpm exec tsx apps/node-jobs/src/cli/portable-snapshot-compare.ts <left.json> <right.json>
 ```
 
-PASS when `equal: true` / `diff_count: 0` for core business fields / collections / calendar.
+PASS requires `equal: true` and `diff_count: 0` for core business fields, collections and calendar. Record both source timestamps, reconcile legitimate differences explicitly and leave missing or incomparable v2 evidence pending.
 
 ### 6. R2 checkpoint / release CAS, image completeness, MIME
 
-- Immutable put / pointer CAS / stale `If-Match` conflict behavior on `airingcal-production`
-- Image completeness for the current pointer (originals + required thumbs readable)
-- MIME verification / repair as needed (`portable-image-mime-repair` pattern from Development)
+- Verify Production immutable put, pointer CAS, stale `If-Match` rejection, checkpoint fencing and the single Writer authority. Use isolated verification keys where applicable and obtain specific authorization for any authoritative pointer mutation.
+- Verify snapshot/manifest/pointer identity, references and content hash. Check all required originals and thumbnails for availability and correct MIME.
 
-### 7. Cloudflare / EdgeOne Reader API + generation + image 302 parity
+### 7. Cloudflare Worker live read contract
 
-Both Production readers must agree on generation / content hash; `GET /image/<hash>` → 302 to the Production public image URL. Reuse reader parity / bench tooling documented in [`reader-delivery-cutover.md`](./reader-delivery-cutover.md) and `scripts/reader-delivery-accept.mjs` (Development compose; Production hosts/credentials).
+Run `node scripts/v3-ship-verify.mjs --base <production-worker-origin> --bucket airingcal-production --json` with positive private-object proof. Check deployed build identity, Reader/Widget and API compatibility, pointer/manifest/snapshot consistency, the public object allowlist, GET/HEAD, 405 plus `Allow`, deprecated sync 410, ETag and bodyless 304, exact-origin CORS/OPTIONS and streamed `200 image/*` originals and required thumbnails. Supplement verifier output with direct checks for any uncovered criterion.
 
-### 8. CDN / WAF checkpoint deny + cache correctness
+### 8. Complete Bucket privacy, cache and freshness
 
-Host-scoped WAF deny on `checkpoints/**`, cache rules for `/images/` + `/snapshots/` and pointer bypass — same contract as Development, Production public host only.
+Independently inventory `r2.dev` disabled, zero R2 Custom Domains, and no anonymous direct bucket endpoint. Confirm that images stream through the Worker and the real checkpoint exists by authenticated S3 proof while anonymous Worker GET/HEAD and encoded/traversal variants are denied. Verify immutable cache headers for content-addressed objects and the release pointer's short freshness window. Report observed CDN cache behavior only when measured.
 
 ### 9. Rollback + roll-forward drill PASS
 
-Reuse [`cutover-rollback.md`](./cutover-rollback.md) `portable-release-rollback` receipt flow (dry-run then Owner `--apply --writer-frozen` under freeze). Confirm roll-forward / resume rule before re-enabling Writer.
+Use [`cutover-rollback.md`](./cutover-rollback.md) and the `portable-release-rollback` receipt flow. A live drill requires two legitimate immutable Production releases and separate Owner authorization to create another generation or mutate the pointer. Close both Writer gates and confirm no active writer and a free lease. Record CAS behavior and stale-write rejection, restore the accepted pointer and verify Reader consistency and the checkpoint resume rule. A single release or an unexecuted drill leaves this gate pending.
 
 ### 10. Owner explicit GO / NO-GO before traffic switch
 
@@ -111,13 +100,6 @@ Earlier P4 text required **7 consecutive** Shadow Gate matches and a **14-day** 
 
 ## Governance sync (#73 / Project #7)
 
-- **Issue comment draft (post after merge; do not close #73 from prep):** [`fixtures/issue-73-status-draft.md`](./fixtures/issue-73-status-draft.md)
-- **Machine-readable gate skeleton:** [`fixtures/production-acceptance-checklist.json`](./fixtures/production-acceptance-checklist.json) — prep statuses are `pending_owner` or `blocked_not_authorized` only
-- **Project #7:** Status for #73 stays Todo / In Progress until Owner Apply evidence exists; board Status is **not** mutated by this prep change set
-- **In-repo SoT for the board to link:** this file + [`current-state.md`](./current-state.md)
-
-### CURRENT STATUS blurb (verbatim)
-
-```markdown
-CURRENT STATUS — Production Full Clean Deploy prep: day-timed Shadow/Observation hard gates retired in code+docs; Production remains NOT AUTHORIZED for Apply / main / Writer enable. Acceptance = clean init → Bangumi Full Sync → one-shot v2 core diff → CAS/MIME → CF/EO parity → WAF/cache → rollback drill → Owner GO/NO-GO.
-```
+- [Historical prep issue draft](./fixtures/issue-73-status-draft.md) retains the earlier acceptance proposal.
+- [Machine-readable gates](./fixtures/production-acceptance-checklist.json) and [current state](./current-state.md) reflect the active contract and evidence state.
+- Keep #73 and Project #7 in progress through bootstrap and acceptance. D4 remains a separate Owner decision.

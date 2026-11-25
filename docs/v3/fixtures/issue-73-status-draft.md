@@ -1,6 +1,6 @@
 # Issue #73 — in-repo governance draft (do not auto-post)
 
-**Purpose:** Exact text for Owner / agent with GitHub issue write access to post **after** this prep change set merges. This file is **not** authorization to close #73, enable Writer, run Production Apply, or merge to `main`.
+**Historical prep proposal.** The active [Production acceptance contract](../production-acceptance.md) and [machine-readable checklist](./production-acceptance-checklist.json) supersede the draft wording below.
 
 **Tracking:** [Issue #73](https://github.com/Skyline-Gazer/AiringCal/issues/73) · [Project #7](https://github.com/orgs/Skyline-Gazer/projects/7)
 
