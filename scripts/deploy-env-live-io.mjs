@@ -1026,15 +1026,12 @@ export function createLiveDevelopmentApplyIo({
           await verifyS3Access(creds, bucket, { allowMissingBucket: true })
           s3Creds = creds
           ctx.s3 = { accessKeyId: overrideId, derived: false, verified: true }
-          process.stderr.write(
-            `[deploy-env] S3 override Access Key ID ${overrideId} verified on ${bucket}\n`,
-          )
+          process.stderr.write(`[deploy-env] S3 override verified on ${bucket}\n`)
           return {
             accessKeyId: overrideId,
             secretAccessKey: overrideSecret,
             derived: false,
             verified: true,
-            keyIdPrinted: overrideId,
           }
         } catch (error) {
           // A rejected override key (e.g. a legacy scoped staging token
@@ -1085,34 +1082,41 @@ export function createLiveDevelopmentApplyIo({
               source: 'management-token',
               verified: true,
             }
-            process.stderr.write(
-              `[deploy-env] Derived R2 S3 Access Key ID ${tokenId} from the management token (secret redacted)\n`,
-            )
+            process.stderr.write('[deploy-env] Derived and verified R2 S3 credentials from the management token\n')
             return {
               accessKeyId: tokenId,
               secretAccessKey: creds.secretAccessKey,
               derived: true,
               source: 'management-token',
               verified: true,
-              keyIdPrinted: tokenId,
             }
           } catch (error) {
             // Object-permission (or other) failure with the management token —
             // the dedicated scoped token in step 3 may still work.
             const msg = error instanceof Error ? error.message : String(error)
-            process.stderr.write(
-              `[deploy-env] Management-token S3 derivation not usable (${redactSecrets(msg, secrets)}); trying scoped-token fallback\n`,
-            )
+            if (!isProduction) {
+              process.stderr.write(
+                `[deploy-env] Management-token S3 derivation not usable (${redactSecrets(msg, secrets)}); trying scoped-token fallback\n`,
+              )
+            }
           }
-        } else {
+        } else if (!isProduction) {
           process.stderr.write(
             '[deploy-env] GET /user/tokens/verify returned no token id; trying scoped-token fallback\n',
           )
         }
       } catch {
-        // Verify endpoint denied/unusual shape → fall back to token creation.
-        process.stderr.write(
-          '[deploy-env] Management token could not be verified; trying scoped-token fallback\n',
+        if (!isProduction) {
+          process.stderr.write(
+            '[deploy-env] Management token could not be verified; trying scoped-token fallback\n',
+          )
+        }
+      }
+
+      if (isProduction) {
+        throw new Error(
+          'Independently scoped Production S3 credentials could not be verified. ' +
+          'Supply AIRINGCAL_S3_ACCESS_KEY_ID and AIRINGCAL_S3_SECRET_ACCESS_KEY in .env.production.',
         )
       }
 
@@ -1153,9 +1157,7 @@ export function createLiveDevelopmentApplyIo({
             await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(String(t.id))}`, {
               method: 'DELETE',
             })
-            process.stderr.write(
-              `[deploy-env] Deleted prior R2 S3 token ${t.id} (stable name) before re-creating\n`,
-            )
+            process.stderr.write('[deploy-env] Deleted prior R2 S3 token with the stable fallback name\n')
           } catch {
             // Deletion denied/stale — creation still proceeds; CF enforces.
           }
@@ -1239,15 +1241,12 @@ export function createLiveDevelopmentApplyIo({
 
       s3Creds = creds
       ctx.s3 = { accessKeyId, derived: true, verified: true }
-      process.stderr.write(
-        `[deploy-env] Created scoped R2 S3 token ${accessKeyId} (fallback path; secret redacted)\n`,
-      )
+      process.stderr.write('[deploy-env] Created and verified scoped R2 S3 credentials (fallback path)\n')
       return {
         accessKeyId,
         secretAccessKey,
         derived: true,
         verified: true,
-        keyIdPrinted: accessKeyId,
       }
     },
 
@@ -1548,12 +1547,13 @@ export function createLiveDevelopmentApplyIo({
       }
     },
 
-    async writeIsolationProbe() {
+    async writeIsolationProbe(ctx = {}) {
       const store = objectStoreFor(bucket)
       try {
         await store.put(probeKey, new TextEncoder().encode(probeBody), {
           contentType: 'text/plain; charset=utf-8',
         })
+        ctx.isolationProbeWritten = true
         // Positive proof (§6.3 / mission 4.1): an anonymous 404 only means
         // isolation if the object demonstrably EXISTS in the private bucket.
         // A head that comes back null (or throws) fails the step closed.
@@ -1573,8 +1573,8 @@ export function createLiveDevelopmentApplyIo({
      * - worker mode (§6.3): each deployed reader origin (CF Worker and, when
      *   deployed, EdgeOne) — the allowlisted public object interface must 404
      *   `checkpoints/**` including encoded/traversal variants.
-     * Any status other than 403/404, or a fetch that resolves to 2xx with a
-     * body, fails the probe; thrown network errors retry, then fail.
+     * Policy denial or HTTP 400 on the malformed traversal variant is
+     * evaluated by the runner. Thrown network errors retry, then fail.
      */
     async probeAnonymousAccess(ctx = {}) {
       if (typeof fetchImpl !== 'function') {

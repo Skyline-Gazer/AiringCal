@@ -34,11 +34,9 @@ tsx apps/node-jobs/src/cli/portable-checkpoint-backup.ts
 tsx apps/node-jobs/src/cli/portable-shadow-gate.ts \
   --sqlite "$AIRINGCAL_BUILDER_SQLITE_PATH" --legacy legacy.json --candidate public-snapshot.json
 
-# 3. publish/refresh only under Owner-authorized Production Writer path
-#    (GHA workflow_dispatch target=production force_mode=full preferred for first Release)
-#    local portable publish remains an operator fallback when credentials allow:
-AIRINGCAL_BUILDER=portable AIRINGCAL_BUILDER_PUBLISH=true \
-  tsx apps/node-jobs/src/cli/sync-main.ts
+# 3. Any Production publish/refresh uses the Owner-authorized GHA Portable Writer.
+# Follow the Production acceptance checklist and obtain separate authorization
+# for any later one-shot publication.
 
 # 4. Production readers check — do NOT wrangler-deploy apps/v3-read-worker/wrangler.toml
 #    (that path is Development/staging). Readers come from Production plan step
@@ -73,9 +71,10 @@ policy is [`production-acceptance.md`](./production-acceptance.md).
 Before production pointer rollback, freeze writes and confirm no in-flight run;
 then CAS the pointer back to a chosen prior generation and record a receipt.
 
-1. **Freeze the writer.** Set `AIRINGCAL_WRITER_ENABLED=false` (GitHub repo
-   variable) so neither the schedule nor a manual dispatch can start a
-   production writer run. Confirm the last GHA writer run has finished.
+1. **Freeze the writer.** Verify the repository schedule gate
+   `AIRINGCAL_WRITER_ENABLED` and the Production Environment dispatch gate
+   `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED` are both closed. Confirm no
+   Writer run is active and the Production lease is free.
 2. **Roll back the pointer.** The rollback CLI derives rollback candidates from
    the generation-scoped snapshot/manifest keys already in the store (no
    separate state service), takes the checkpoint lease to fence any in-flight
@@ -99,6 +98,11 @@ tsx apps/node-jobs/src/cli/portable-release-rollback.ts --generation <N> \
 The receipt records the **prior pointer**, the **target generation**
 (`target_generation` / `target_artifact_ref` / `target_manifest_ref`), the image
 gate result, the CAS outcome, and the resume rule. Attach it to #73.
+
+The rollback CLI accepts only a lower generation. Establish an authorized
+restoration path to the accepted newer release before the drill. A dry run
+with checkpoint credentials acquires and releases the lease, so use read-only
+R2 inspection during preflight.
 
 `--receipt` is validated before any store or lease work: its parent directory must
 exist, and the path is resolved to an absolute path. A missing directory fails with

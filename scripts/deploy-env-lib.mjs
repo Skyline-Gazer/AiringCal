@@ -1034,22 +1034,18 @@ export function evaluateIsolationProbe({ r2DevDisabled, probes = [] }) {
       probes: list,
     }
   }
-
-  // Denial = the anonymous surface refused to serve the object. 403/404 are
-  // the policy answers; 400 counts too — Cloudflare's edge rejects encoded
-  // traversal variants (`/public/..%2f..%2fcheckpoints/…`) with 400 BEFORE
-  // routing (live D1 apply 2026-11-25), which is a refusal, not a leak.
-  // 2xx is a real exposure and 5xx proves nothing — both fail closed.
-  const allowedDenied = new Set([400, 403, 404])
   const failures = []
   for (const probe of list) {
     const status = Number(probe.status)
-    if (!allowedDenied.has(status)) {
+    // Cloudflare may reject the malformed traversal variant before routing.
+    const path = typeof probe.url === 'string' ? URL.parse(probe.url)?.pathname : undefined
+    const malformedTraversal = path?.startsWith('/public/..%2f..%2fcheckpoints/') === true
+    if (status !== 403 && status !== 404 && !(malformedTraversal && status === 400)) {
       failures.push({
         url: probe.url,
         method: probe.method,
         status,
-        expected: '400|403|404',
+        expected: malformedTraversal ? '400|403|404' : '403|404',
       })
     }
   }
@@ -1059,7 +1055,7 @@ export function evaluateIsolationProbe({ r2DevDisabled, probes = [] }) {
       ok: false,
       abortCutover: true,
       dualBucketFallback: false,
-      reason: `isolation failed: anonymous checkpoint probe allowed (${failures
+      reason: `isolation failed: anonymous checkpoint probe did not demonstrate denial (${failures
         .map((f) => `${f.method} ${f.url} -> ${f.status}`)
         .join('; ')})`,
       failures,
@@ -1274,20 +1270,24 @@ function requireIoMethod(io, name) {
  * Returns the evaluate verdict; the runner decides the abort payload.
  */
 async function executeIsolationProbeLifecycle({ io, ctx, completed }) {
-  await requireIoMethod(io, 'writeIsolationProbe')(ctx)
-  completed.push('isolation-probe-write')
+  let proof
   let probeResult
   try {
+    proof = await requireIoMethod(io, 'writeIsolationProbe')(ctx)
+    completed.push('isolation-probe-write')
     probeResult = await requireIoMethod(io, 'probeAnonymousAccess')(ctx)
     completed.push('isolation-probe-check')
   } finally {
-    await requireIoMethod(io, 'deleteIsolationProbe')(ctx)
-    completed.push('isolation-probe-cleanup')
+    if (!proof && ctx.isolationProbeWritten) completed.push('isolation-probe-write')
+    if (proof || ctx.isolationProbeWritten) {
+      await requireIoMethod(io, 'deleteIsolationProbe')(ctx)
+      completed.push('isolation-probe-cleanup')
+    }
   }
-  return evaluateIsolationProbe({
-    r2DevDisabled: Boolean(ctx.r2DevDisabled),
-    probes: probeResult?.probes ?? [],
-  })
+  return {
+    ...evaluateIsolationProbe({ r2DevDisabled: Boolean(ctx.r2DevDisabled), probes: probeResult?.probes ?? [] }),
+    positiveProof: proof?.exists === true ? { key: proof.key, size: proof.size } : null,
+  }
 }
 
 /**
@@ -1707,13 +1707,32 @@ export async function runProductionApply({ plan, env = {}, io }) {
       completed,
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = redactSecrets(error instanceof Error ? error.message : String(error), [
+      env.AIRINGCAL_CLOUDFLARE_API_TOKEN,
+      env.CLOUDFLARE_API_TOKEN,
+      env.AIRINGCAL_BANGUMI_TOKEN,
+      env.AIRINGCAL_S3_ACCESS_KEY_ID,
+      env.AIRINGCAL_S3_SECRET_ACCESS_KEY,
+      env.AIRINGCAL_BARK_URL,
+    ])
     const missingCapability = /missing capability:/i.test(message)
     const unsupported =
       /Live I\/O adapter for .+ requires Owner-approved|unsupportedLive|not implemented/i.test(
         message,
       )
-    if (!missingCapability && !unsupported) throw error
+    if (!missingCapability && !unsupported) {
+      return {
+        ok: false,
+        aborted: true,
+        abortCutover: true,
+        dualBucketFallback: false,
+        copyFree: true,
+        productionWriterEnabled: false,
+        exitCode: 1,
+        reason: message,
+        completed,
+      }
+    }
     if (missingCapability) {
       return {
         ok: false,
