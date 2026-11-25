@@ -16,6 +16,7 @@ import {
   assertProductionResourceNames,
   buildCorsAllowedOrigins,
   buildDevelopmentDeployPlan,
+  buildProductionPlan,
   deriveDevelopmentConfig,
   deriveProductionConfig,
   evaluateIsolationProbe,
@@ -24,6 +25,7 @@ import {
   resolveDeployDotenvPath,
   resolveExecutionMode,
   runDevelopmentApply,
+  runProductionApply,
   validateImageCdnConfig,
 } from './deploy-env-lib.mjs'
 import {
@@ -472,7 +474,7 @@ ${result.stdout}`
   }
 })
 
-test('production apply with AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED still refuses mutations and marks refusedMutations', () => {
+test('production apply with AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED but no LIVE_CONFIRM stays owner-gated', () => {
   const { dir, path } = writeTempProductionDotenv()
   try {
     const result = spawnSync(
@@ -492,14 +494,33 @@ test('production apply with AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED still refuses 
     assert.equal(result.status, 2, result.stderr)
     const combined = `${result.stderr}
 ${result.stdout}`
-    assert.match(combined, /not_authorized_in_this_change/)
-    assert.match(combined, /no mutations/i)
-    const plan = JSON.parse(result.stdout)
-    assert.equal(plan.applyAuthorized, true)
-    assert.equal(plan.refusedMutations, true)
-    assert.equal(plan.writerEnabled, false)
-    assert.equal(plan.steps.some((s) => String(s.id).startsWith('copy-')), false)
-    const preflight = plan.steps.find((s) => s.id === 'preflight-identity')
+    assert.match(combined, /AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes not set/)
+    assert.match(combined, /refusing mutations/i)
+    // stdout carries two pretty-printed JSON documents (plan, then pending);
+    // take the last one by counting brace depth from the end.
+    const docs = []
+    let depth = 0
+    let start = -1
+    for (let i = 0; i < result.stdout.length; i++) {
+      const ch = result.stdout[i]
+      if (ch === '{') {
+        if (depth === 0) start = i
+        depth += 1
+      } else if (ch === '}') {
+        depth -= 1
+        if (depth === 0 && start >= 0) {
+          docs.push(result.stdout.slice(start, i + 1))
+          start = -1
+        }
+      }
+    }
+    const pending = JSON.parse(docs[docs.length - 1])
+    assert.equal(pending.status, 'owner-gated')
+    assert.equal(pending.plan.applyAuthorized, true)
+    assert.equal(pending.plan.refusedMutations, true)
+    assert.equal(pending.plan.writerEnabled, false)
+    assert.equal(pending.plan.steps.some((s) => String(s.id).startsWith('copy-')), false)
+    const preflight = pending.plan.steps.find((s) => s.id === 'preflight-identity')
     assert.ok(preflight)
     assert.equal(typeof preflight.gitSha === 'string' && preflight.gitSha.length > 0, true)
   } finally {
@@ -821,6 +842,182 @@ test('runDevelopmentApply executes ordered steps with injectable I/O', async () 
     'image-cdn-validate',
     'single-writer-test',
   ])
+})
+
+test('runProductionApply executes the ordered copy-free production sequence', async () => {
+  const plan = buildProductionPlan({
+    target: 'both',
+    publicBaseUrl: 'https://prod.example.test',
+    mode: 'apply',
+    accountId: 'acct',
+    zoneId: 'zone',
+    applyAuthorized: true,
+    gitSha: 'a'.repeat(40),
+  })
+  const io = createRecordingApplyIo()
+  const result = await runProductionApply({
+    plan,
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'test-token',
+      AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes',
+    },
+    io,
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.aborted, false)
+  assert.equal(result.copyFree, true)
+  assert.equal(result.dualBucketFallback, false)
+  assert.equal(result.productionWriterEnabled, false)
+  assert.equal(result.bootstrapWriterEnabled, false)
+  assert.deepEqual(io.calls, [
+    'token-probe',
+    'derive-s3',
+    'ensure-bucket',
+    'disable-r2-dev',
+    'attach-custom-domain',
+    'cache-rules',
+    'cors',
+    'waf-checkpoints',
+    'isolation-probe-write',
+    'isolation-probe-check',
+    'sync-gh-env',
+    'deploy-cloudflare',
+    'deploy-edgeone',
+    'image-routing-verify',
+    'image-cdn-validate',
+  ])
+  assert.equal(io.calls.includes('writer-freeze'), false, 'production apply must never freeze the shared workflow')
+  assert.equal(io.calls.includes('copy-public'), false, 'production apply must never copy')
+  assert.equal(io.calls.includes('copy-checkpoints'), false, 'production apply must never copy')
+  assert.equal(io.calls.includes('single-writer-test'), false, 'first sync is Owner-dispatched')
+  assert.match(result.pendingOwnerSteps.join('\n'), /AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED/)
+})
+
+test('runProductionApply aborts before any mutation fan-out when isolation fails', async () => {
+  const plan = buildProductionPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://prod.example.test',
+    mode: 'apply',
+    zoneId: 'zone',
+    applyAuthorized: true,
+    gitSha: 'a'.repeat(40),
+  })
+  const io = createRecordingApplyIo({
+    probeAnonymousAccess: async () => ({
+      r2DevDisabled: true,
+      probes: [
+        { url: 'https://prod.example.test/checkpoints/_isolation-probe.txt', method: 'GET', status: 200 },
+      ],
+    }),
+  })
+  const result = await runProductionApply({ plan, env: {}, io })
+  assert.equal(result.ok, false)
+  assert.equal(result.aborted, true)
+  assert.equal(result.abortCutover, true)
+  assert.equal(result.exitCode, 1)
+  assert.equal(io.calls.includes('sync-gh-env'), false, 'no GitHub writes after isolation failure')
+  assert.equal(io.calls.includes('deploy-cloudflare'), false, 'no deploys after isolation failure')
+})
+
+test('runProductionApply refuses non-production and copyable plans', async () => {
+  const devPlan = buildDevelopmentDeployPlan({ target: 'both', publicBaseUrl: 'https://dev.example.test', mode: 'apply' })
+  await assert.rejects(() => runProductionApply({ plan: devPlan, env: {}, io: createRecordingApplyIo() }), /requires a production plan/)
+
+  const prodPlan = buildProductionPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://prod.example.test',
+    mode: 'apply',
+    zoneId: 'zone',
+    applyAuthorized: true,
+  })
+  await assert.rejects(
+    () => runProductionApply({ plan: { ...prodPlan, copyFree: false }, env: {}, io: createRecordingApplyIo() }),
+    /copy-free/,
+  )
+})
+
+test('production live-io adapters refuse staging copy/freeze and require an empty bootstrap bucket', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildProductionPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://prod.example.test',
+    mode: 'apply',
+    accountId: 'acct',
+    zoneId: 'zone',
+    applyAuthorized: true,
+  })
+  let bucketKeys = ['leftover.json']
+  const spawnSyncImpl = (_cmd, args) => {
+    if (args[0] === 'r2' && args[1] === 'bucket' && args[2] === 'info') {
+      return { status: 0, stdout: '{"name":"airingcal-production"}', stderr: '', error: null }
+    }
+    return { status: 0, stdout: '{}', stderr: '', error: null }
+  }
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: 'acct',
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'ak',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'sk',
+    },
+    plan,
+    spawnSyncImpl,
+    createObjectStore: () => ({ list: async () => [...bucketKeys], head: async () => null, close() {} }),
+  })
+  await io.deriveAndVerifyS3({})
+  await assert.rejects(() => io.ensureBucket({}), /empty bucket/)
+  bucketKeys = []
+  const ok = await io.ensureBucket({})
+  assert.equal(ok.emptyVerified, true)
+  await assert.rejects(() => io.copyPublicPrefixes({}), /copy-free/)
+  await assert.rejects(() => io.copyCheckpoints({}), /copy-free/)
+  await assert.rejects(() => io.freezeWriter({}), /must not disable the shared writer workflow/)
+  const wt = await io.runSingleWriterTest({})
+  assert.equal(wt.dispatched, false)
+  assert.match(wt.reason, /Owner dispatch/)
+})
+
+test('production syncGithubEnvironment targets the production environment with production key names', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildProductionPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://prod.example.test',
+    mode: 'apply',
+    accountId: 'acct',
+    zoneId: 'zone',
+    applyAuthorized: true,
+  })
+  const calls = []
+  const spawnSyncImpl = (cmd, args) => {
+    calls.push([cmd, ...args].join(' '))
+    return { status: 0, stdout: '{}', stderr: '', error: null }
+  }
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: 'acct',
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'ak',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'sk',
+      AIRINGCAL_BANGUMI_TOKEN: 'bgm',
+      AIRINGCAL_USERS_JSON: '[{"id":1}]',
+      AIRINGCAL_PRIMARY_USER_ID: '1',
+    },
+    plan,
+    spawnSyncImpl,
+    createObjectStore: () => ({ list: async () => [], head: async () => null, close() {} }),
+  })
+  await io.deriveAndVerifyS3({})
+  const res = await io.syncGithubEnvironment({})
+  const joined = calls.join('\n')
+  assert.match(joined, /environments\/production/)
+  assert.match(joined, /variable set AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED/)
+  assert.match(joined, /variable set AIRINGCAL_PRODUCTION_R2_BUCKET/)
+  assert.match(joined, /variable set AIRINGCAL_PRODUCTION_USERS_JSON/)
+  assert.match(joined, /secret set AIRINGCAL_PRODUCTION_BANGUMI_TOKEN/)
+  assert.equal(joined.includes('environments/staging'), false, 'production sync must never read staging')
+  assert.equal(joined.includes('AIRINGCAL_DEVELOPMENT_'), false, 'production sync must never write development names')
+  assert.equal(res.writerEnabled, false)
 })
 
 test('runDevelopmentApply aborts before copy when isolation fails', async () => {
@@ -3494,7 +3691,14 @@ test('deployEdgeoneOverseas fails closed when the pulled .env is missing a requi
   const io = await makeEdgeoneIo(fake, { imageBaseUrl: 'https://img.example.test' })
   await assert.rejects(io.deployEdgeoneOverseas(), /AIRINGCAL_PUBLIC_BASE_URL|refusing|missing/i)
   assert.equal(fake.state.deployCalls, 0, 'must not deploy when the bundled .env is incomplete')
-  assert.ok(fake.state.pullTarget && !existsSync(fake.state.pullTarget), 'dist/.env must be cleaned up on failure')
+  // `-f .env` is relative to the linked cwd; assert the pulled file inside the
+  // temp link dir is gone, not the literal relative path (which would resolve
+  // against the test process cwd and match the repo's own .env).
+  assert.ok(fake.state.pullTarget && fake.state.linkCwd, 'pull recorded a target inside the linked cwd')
+  assert.ok(
+    !existsSync(resolve(fake.state.linkCwd, fake.state.pullTarget)),
+    'pulled env file must be cleaned up on failure',
+  )
   assert.ok(fake.state.linkCwd && !existsSync(fake.state.linkCwd), 'linked temp dir must be cleaned on failure')
 })
 

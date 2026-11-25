@@ -100,6 +100,28 @@ export function normalizePortableReadPath(pathname: string): string {
   return pathname
 }
 
+/**
+ * Strong validator for snapshot-derived responses: the release identity
+ * (generation + content hash) is the canonical version of every byte the
+ * snapshot routes serve, so it doubles as an ETag. A new publish changes it;
+ * nothing else does.
+ */
+function releaseEtag(loaded: VerifiedPublicSnapshot): string {
+  return `"g${loaded.generation}-${loaded.content_hash}"`
+}
+
+/**
+ * Not-modified short-circuit for conditional GET/HEAD (owner target contract
+ * §6/§7). 304 must carry no body and must repeat the validator plus the same
+ * Cache-Control the 200 would have used.
+ */
+function notModifiedResponse(etag: string, cacheControl: string): Response {
+  return new Response(null, {
+    status: 304,
+    headers: { 'ETag': etag, 'Cache-Control': cacheControl },
+  })
+}
+
 async function handleCollections(url: URL, snapshot: PublicSnapshotV1): Promise<Response> {
   const type = parseCollectionType(singleQueryParameter(url.searchParams, 'type'))
   const page = parsePositiveInteger('page', singleQueryParameter(url.searchParams, 'page'), 1)
@@ -255,6 +277,18 @@ export async function handlePortableReadRequest(
   env: PortableReadEnv,
 ): Promise<Response> {
   try {
+    // Owner target contract §6.2: the public Viewer surface is read-only.
+    // Everything except GET/HEAD is refused before any store read happens;
+    // OPTIONS is refused too because CORS is configured at the edge (bucket /
+    // zone rules), not in this Worker — a permissive OPTIONS here would imply
+    // a CORS policy the Worker does not own.
+    const method = request.method.toUpperCase()
+    if (method !== 'GET' && method !== 'HEAD') {
+      return new Response('Method Not Allowed', {
+        status: 405,
+        headers: { 'Allow': 'GET, HEAD', 'Cache-Control': V2_CACHE_CONTROL.error },
+      })
+    }
     const url = new URL(request.url)
     const path = normalizePortableReadPath(url.pathname)
     if (path === '/config') {
@@ -309,9 +343,22 @@ export async function handlePortableReadRequest(
       return handleHealth(loaded, env)
     }
     const snapshot = loaded!.snapshot
-    if (path === '/collections') return handleCollections(url, snapshot)
-    if (path === '/calendar') return handleCalendar(snapshot)
-    if (path === '/cache') return handleCache(snapshot, url)
+    if (path === '/collections' || path === '/calendar' || path === '/cache') {
+      const etag = releaseEtag(loaded!)
+      const cacheControl = path === '/collections'
+        ? V2_CACHE_CONTROL.collections
+        : path === '/calendar'
+          ? V2_CACHE_CONTROL.calendar
+          : V2_CACHE_CONTROL.defaultJson
+      if (request.headers.get('If-None-Match') === etag) return notModifiedResponse(etag, cacheControl)
+      const response = path === '/collections'
+        ? await handleCollections(url, snapshot)
+        : path === '/calendar'
+          ? await handleCalendar(snapshot)
+          : await handleCache(snapshot, url)
+      response.headers.set('ETag', etag)
+      return response
+    }
     return new Response('Not found', { status: 404 })
   } catch (error) {
     if (error instanceof InvalidQueryError) {

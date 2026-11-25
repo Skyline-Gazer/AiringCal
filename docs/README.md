@@ -25,22 +25,24 @@ Bangumi → GHA Portable Writer
 
 ## Read order for agents
 
-1. **[`v3/current-state.md`](v3/current-state.md) — authoritative status, gates, deployment architecture**
-2. [`../START_HERE_FOR_AI.md`](../START_HERE_FOR_AI.md)
-3. [`plans/phase-0-web-worker.md`](plans/phase-0-web-worker.md) — read Worker
-4. [`plans/phase-1-node-jobs.md`](plans/phase-1-node-jobs.md) — write bundle (**Phase 1 closed**)
-5. [`plans/no-cf-write-path.md`](plans/no-cf-write-path.md) — no CF Cron/Workflow write
-6. [`apps/node-jobs/docs/operator-contract.md`](../apps/node-jobs/docs/operator-contract.md) — env, timeouts, exit codes
-7. GHA writer ops: [`v3/gha-portable-writer.md`](v3/gha-portable-writer.md)
+1. **[`DEPLOYMENT.md`](DEPLOYMENT.md) — the single authoritative deployment guide (prereqs → config → preflight → deploy → first sync → verify → rollback)**
+2. **[`v3/current-state.md`](v3/current-state.md) — authoritative status, gates, deployment architecture**
+3. [`../START_HERE_FOR_AI.md`](../START_HERE_FOR_AI.md)
+4. [`plans/phase-0-web-worker.md`](plans/phase-0-web-worker.md) — read Worker
+5. [`plans/phase-1-node-jobs.md`](plans/phase-1-node-jobs.md) — write bundle (**Phase 1 closed**)
+6. [`plans/no-cf-write-path.md`](plans/no-cf-write-path.md) — no CF Cron/Workflow write
+7. [`apps/node-jobs/docs/operator-contract.md`](../apps/node-jobs/docs/operator-contract.md) — env, timeouts, exit codes
+8. GHA writer ops: [`v3/gha-portable-writer.md`](v3/gha-portable-writer.md)
 
-## v3 (in progress — parallel to v2 production)
+## v3 (Development accepted 2026-11-08; Production awaiting Owner Apply)
 
-v3 is being built on `dev` **without changing v2 production behaviour** until an
+v3 is built on `dev` **without changing v2 production behaviour** until an
 explicit owner-approved cutover. Tracking: [Issue #67](https://github.com/Skyline-Gazer/AiringCal/issues/67)
 and [Project #7](https://github.com/orgs/Skyline-Gazer/projects/7) (authoritative board).
 
 | Doc | Purpose |
 | --- | --- |
+| **[`DEPLOYMENT.md`](DEPLOYMENT.md)** | **Single authoritative deployment procedure for all three environments** |
 | **[`v3/current-state.md`](v3/current-state.md)** | **Current authoritative architecture, engineering vs live acceptance, operator handoff** |
 | [`v3/implementation-baseline.md`](v3/implementation-baseline.md) | Historical implementation baseline; current status supersedes stale 2026-10 SHA/phase text |
 | [`v3/gha-portable-writer.md`](v3/gha-portable-writer.md) | ADR 0003 GHA writer ops + Secrets fill-in list |

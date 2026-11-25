@@ -13,11 +13,35 @@ export interface VerifiedPublicSnapshot {
   artifact_ref: string
 }
 
+/**
+ * Owner target contract §6.3: the read path may only construct keys from
+ * validated parameters — no arbitrary pointer-supplied key passthrough.
+ * `artifact_ref` must be exactly the immutable snapshot key for the pointer's
+ * own generation and content hash, and `manifest_ref` must be a
+ * content-addressed manifest key. Anything else (absolute paths, `..`,
+ * `checkpoints/**`, foreign prefixes) fails closed before any store read.
+ */
+const MANIFEST_REF_PATTERN = /^public\/manifests\/\d+-[0-9a-f]{64}\.json$/
+
+function assertPublicArtifactRef(pointer: { generation: number; content_hash: string; artifact_ref: string }): void {
+  const expected = `snapshots/v1/${pointer.generation}-${pointer.content_hash}.json`
+  if (pointer.artifact_ref !== expected) {
+    throw new Error('Public release pointer artifact_ref is not the content-addressed snapshot key')
+  }
+}
+
+function assertPublicManifestRef(manifestRef: string): void {
+  if (!MANIFEST_REF_PATTERN.test(manifestRef)) {
+    throw new Error('Public release pointer manifest_ref is not a content-addressed manifest key')
+  }
+}
+
 export async function loadVerifiedPublicSnapshot(
   publicStore: PublicStore,
 ): Promise<VerifiedPublicSnapshot | null> {
   const pointer = await publicStore.getCurrentRelease()
   if (!pointer) return null
+  assertPublicArtifactRef(pointer)
   const bytes = await publicStore.getSnapshotBytes(pointer.artifact_ref)
   if (!bytes) return null
   const snapshot = await parsePublicSnapshotV1(JSON.parse(new TextDecoder().decode(bytes)))
@@ -26,6 +50,7 @@ export async function loadVerifiedPublicSnapshot(
   }
   const manifestRef = pointer.manifest_ref
   if (manifestRef) {
+    assertPublicManifestRef(manifestRef)
     // C1: pointers carrying manifest_ref read only that immutable manifest — no fallback.
     const manifestBytes = await publicStore.getSnapshotBytes(manifestRef)
     if (!manifestBytes) {

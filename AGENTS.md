@@ -1,8 +1,10 @@
 # BangumiTV Subagent Constraints
 
-**AiringCal-only architecture (2026-11-05):** GitHub is the development origin; GitHub Actions one-shot Portable Builder is the *approved target* writer with private S3 checkpoint and shared public S3 Release (R2 initially); CF/EdgeOne + future Netlify/Vercel are stateless readers. **No CNB, QingLong or Docker/Compose delivery**. The GHA writer code is merged into `dev` (#146) but **not production-live**: the scheduled writer stays disabled until staging receipts exist; see Issues #67/#147. Do not deploy from a `dev` merge accidentally. This does not modify ADS global rules.
+**AiringCal-only architecture (2026-11-05, status refreshed 2026-11-25):** GitHub is the development origin; GitHub Actions one-shot Portable Builder is the *approved target* writer with private S3 checkpoint and shared public S3 Release (R2 initially); CF/EdgeOne + future Netlify/Vercel are stateless readers. **No CNB, QingLong or Docker/Compose delivery**. The GHA writer code is merged into `dev` (#146); **Development live acceptance passed 2026-11-08** ([#147](https://github.com/Skyline-Gazer/AiringCal/issues/147), `docs/v3/development-live-acceptance.md`). The Production scheduled writer stays disabled until the Owner authorizes the Production clean bootstrap ([#73](https://github.com/Skyline-Gazer/AiringCal/issues/73)); the production apply executor is wired on `dev` but has never run. Do not deploy from a `dev` merge accidentally. This does not modify ADS global rules.
 
-**Doc entry (AI):** [`START_HERE_FOR_AI.md`](START_HERE_FOR_AI.md) → [`docs/README.md`](docs/README.md). node-jobs contract: [`apps/node-jobs/docs/operator-contract.md`](apps/node-jobs/docs/operator-contract.md).
+**Doc entry (AI):** [`START_HERE_FOR_AI.md`](START_HERE_FOR_AI.md) → [`docs/README.md`](docs/README.md). Deployment: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) (single guide). node-jobs contract: [`apps/node-jobs/docs/operator-contract.md`](apps/node-jobs/docs/operator-contract.md).
+
+**Project skills:** mirrored under [`.agents/skills/`](.agents/skills) with upstream provenance + content hashes locked in [`skills-lock.json`](skills-lock.json). If the host does not auto-discover a skill, read its `SKILL.md` explicitly before invoking it.
 
 ## ADS (pinned submodule)
 

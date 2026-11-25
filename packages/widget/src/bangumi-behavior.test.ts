@@ -313,3 +313,18 @@ test('first two first-paint cards use fetchpriority high and eager loading', () 
   assert.match(widgetJs, /loading=["']eager["']/)
   assert.match(widgetJs, /fetchpriority=["']high["']/)
 })
+
+test('calendar view builds a weekday nav and marks today with aria-current', () => {
+  assert.match(widgetJs, /bgm-weekday-nav/)
+  assert.match(widgetJs, /aria-label', '按星期导航'/)
+  const calendarFn = extractFunction(widgetJs, 'renderCalendar')
+  assert.match(calendarFn, /data-bgm-weekday/, 'sections must be addressable by day id')
+  assert.match(calendarFn, /aria-current', 'date'/, 'today nav button must carry aria-current=date')
+  assert.match(calendarFn, /isStandalonePage\(\)/, 'auto-scroll to today only on the standalone page')
+  assert.match(extractFunction(widgetJs, 'isStandalonePage'), /parentElement === document\.body/)
+})
+
+test('weekday nav buttons scroll to their section', () => {
+  const calendarFn = extractFunction(widgetJs, 'renderCalendar')
+  assert.match(calendarFn, /section\.scrollIntoView\(\{ block: 'start' \}\)/)
+})

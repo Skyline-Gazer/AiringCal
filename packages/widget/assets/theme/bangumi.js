@@ -642,9 +642,19 @@
   // ---------------------------------------------------------------
   // 放送日历视图（新增）：fetch /api/calendar，按星期分组渲染
   // ---------------------------------------------------------------
+  function isStandalonePage() {
+    var containers = document.querySelectorAll('.bgm-container')
+    return containers.length === 1 && containers[0].parentElement === document.body
+  }
+
   function buildCalendarView() {
     var view = document.createElement('div')
     view.className = 'bgm-view bgm-view-calendar'
+
+    var nav = document.createElement('nav')
+    nav.className = 'bgm-weekday-nav'
+    nav.setAttribute('aria-label', '按星期导航')
+    view.appendChild(nav)
 
     var cal = document.createElement('div')
     cal.className = 'bgm-calendar'
@@ -652,6 +662,7 @@
 
     var loaded = false
     var lastCalendarDays = null
+    var didScrollToday = false
     // bgm.tv weekday.id: 1=周一 ... 7=周日；JS getDay(): 0=周日
     var todayId = (new Date().getDay() === 0) ? 7 : new Date().getDay()
 
@@ -663,6 +674,7 @@
         calendarLazyObserver = null
       }
       if (!days || !days.length) {
+        nav.innerHTML = ''
         cal.innerHTML = '<p class="bgm-empty">暂无日历数据 — 同步可能尚未执行，数据尚未发布，请稍后再试</p>'
         return
       }
@@ -676,6 +688,10 @@
         var isToday = wd.id === todayId
         var section = document.createElement('section')
         section.className = 'bgm-weekday' + (isToday ? ' is-today' : '')
+        var dayNum = Number(wd.id)
+        if (Number.isSafeInteger(dayNum) && dayNum >= 1 && dayNum <= 7) {
+          section.setAttribute('data-bgm-weekday', String(dayNum))
+        }
         section.innerHTML = '<div class="bgm-weekday-head">' +
           '<span class="cn">' + escapeHtml(wd.cn || '') + '</span>' +
           '<span class="en">' + escapeHtml(wd.en || '') + '</span>' +
@@ -722,6 +738,35 @@
         for (var p = 0; p < pendingGrids.length; p++) {
           calendarLazyObserver.observe(pendingGrids[p].grid)
         }
+      }
+
+      // 星期导航条：7 个跳转按钮，今天标记 aria-current；独立页面首次打开直接定位到今天
+      nav.innerHTML = ''
+      var todaySection = null
+      for (var d = 0; d < days.length; d++) {
+        var wdDef = days[d].weekday || {}
+        var defNum = Number(wdDef.id)
+        if (!Number.isSafeInteger(defNum) || defNum < 1 || defNum > 7) continue
+        var sectionTarget = cal.querySelector('[data-bgm-weekday="' + defNum + '"]')
+        if (!sectionTarget) continue
+        var navBtn = document.createElement('button')
+        navBtn.type = 'button'
+        navBtn.textContent = String(wdDef.cn || '').replace('星期', '周') || String(wdDef.en || '')
+        if (defNum === todayId) {
+          navBtn.setAttribute('aria-current', 'date')
+          navBtn.classList.add('is-today')
+          todaySection = sectionTarget
+        }
+        ;(function (section) {
+          navBtn.addEventListener('click', function () {
+            section.scrollIntoView({ block: 'start' })
+          })
+        })(sectionTarget)
+        nav.appendChild(navBtn)
+      }
+      if (todaySection && !didScrollToday && isStandalonePage()) {
+        didScrollToday = true
+        todaySection.scrollIntoView({ block: 'start' })
       }
     }
 

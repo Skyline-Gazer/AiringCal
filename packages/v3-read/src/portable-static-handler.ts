@@ -25,6 +25,29 @@ export function handlePortableStaticRequest(
   const url = new URL(request.url)
   const path = url.pathname
 
+  // Deprecated sync endpoints answer 410 for every method before the read-only
+  // method guard below: old clients must learn the API is gone, not that GET
+  // would work.
+  if (
+    path === '/api/sync/apply'
+    || path === '/api/sync/compare'
+    || path.startsWith('/api/check/')
+  ) {
+    return new Response(DEPRECATED_SYNC, {
+      status: 410,
+      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': V2_CACHE_CONTROL.error },
+    })
+  }
+
+  // Owner target contract §6.2: the public surface is read-only (GET/HEAD).
+  const method = request.method.toUpperCase()
+  if (method !== 'GET' && method !== 'HEAD') {
+    return new Response('Method Not Allowed', {
+      status: 405,
+      headers: { 'Allow': 'GET, HEAD', 'Cache-Control': V2_CACHE_CONTROL.error },
+    })
+  }
+
   if (path === '/') {
     return new Response(renderIndexPage({ build: env.build }), {
       headers: {
@@ -46,21 +69,6 @@ export function handlePortableStaticRequest(
   if (path === '/src/cache.js') {
     return new Response(cacheJs, {
       headers: { 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': STATIC_CACHE },
-    })
-  }
-  if (
-    path === '/api/sync/apply'
-    || path === '/api/sync/compare'
-  ) {
-    return new Response(DEPRECATED_SYNC, {
-      status: 410,
-      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': V2_CACHE_CONTROL.error },
-    })
-  }
-  if (path.startsWith('/api/check/')) {
-    return new Response(DEPRECATED_SYNC, {
-      status: 410,
-      headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': V2_CACHE_CONTROL.error },
     })
   }
   return null

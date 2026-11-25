@@ -94,6 +94,25 @@ export const DEVELOPMENT_VARIABLE_KEYS = Object.freeze([
   'AIRINGCAL_DEVELOPMENT_WRITER_ENABLED',
 ])
 
+/** Production variable names exactly as the portable-writer.yml production job reads them. */
+export const PRODUCTION_VARIABLE_KEYS = Object.freeze([
+  'AIRINGCAL_PRODUCTION_PRIMARY_USER_ID',
+  'AIRINGCAL_PRODUCTION_USERS_JSON',
+  'AIRINGCAL_PRODUCTION_CLOUDFLARE_ACCOUNT_ID',
+  'AIRINGCAL_PRODUCTION_PUBLIC_BASE_URL',
+  'AIRINGCAL_PRODUCTION_R2_BUCKET',
+  'AIRINGCAL_PRODUCTION_S3_ENDPOINT',
+  'AIRINGCAL_PRODUCTION_S3_REGION',
+  'AIRINGCAL_PRODUCTION_WORKER_NAME',
+  'AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED',
+])
+
+export const PRODUCTION_SECRET_KEYS = Object.freeze([
+  'AIRINGCAL_PRODUCTION_BANGUMI_TOKEN',
+  'AIRINGCAL_PRODUCTION_S3_ACCESS_KEY_ID',
+  'AIRINGCAL_PRODUCTION_S3_SECRET_ACCESS_KEY',
+])
+
 const ACCOUNT_ID_RE = /^[0-9a-f]{32}$/i
 const BUCKET_NAME_RE = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/
 const ALLOWED_TARGETS = new Set(['cloudflare', 'edgeone', 'both'])
@@ -1340,6 +1359,199 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
       abortCutover: true,
       dualBucketFallback: false,
       developmentWriterEnabled: false,
+      exitCode: 2,
+      status: 'owner-gated',
+      reason: `not-implemented: ${message}`,
+      pendingOwnerSteps: plan.ownerGatedLiveSteps ?? [],
+      unimplementedSteps,
+      completed,
+    }
+  }
+}
+
+/**
+ * Production clean-bootstrap apply executor (owner directive 2026-11-25 §10).
+ *
+ * Mirrors runDevelopmentApply's failure semantics with three hard differences:
+ *  - copy-free: no staging/development prefix is ever read or copied; the
+ *    bucket must be empty at ensure-bucket and filled only by the Owner's
+ *    first Full Sync dispatch afterwards;
+ *  - no writer freeze and no single-writer test: the production writer has
+ *    never run, and enabling it (bootstrap flag + schedule var) stays an
+ *    explicit Owner action outside this runner;
+ *  - the first Bangumi Full Sync is returned as a pending Owner step, never
+ *    dispatched here.
+ *
+ * Every mutation still requires the CLI gates: --apply --i-am-sure-production,
+ * AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes and AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes.
+ */
+export async function runProductionApply({ plan, env = {}, io }) {
+  if (!plan || plan.env !== 'production') {
+    throw new Error('runProductionApply requires a production plan')
+  }
+  if (!io || typeof io !== 'object') {
+    throw new Error('runProductionApply requires injectable io adapters')
+  }
+  if (plan.copyFree !== true || plan.dualBucketFallback !== false) {
+    throw new Error('runProductionApply requires a copy-free plan (plan.copyFree=true, dualBucketFallback=false)')
+  }
+
+  /** @type {string[]} */
+  const completed = []
+  const ctx = { plan, env, completed }
+
+  try {
+    const tokenResult = await requireIoMethod(io, 'probeToken')(ctx)
+    completed.push('token-probe')
+    if (tokenResult && tokenResult.ok === false) {
+      const missing = tokenResult.missingScopes ?? []
+      return {
+        ok: false,
+        aborted: true,
+        abortCutover: true,
+        dualBucketFallback: false,
+        copyFree: true,
+        productionWriterEnabled: false,
+        exitCode: 2,
+        reason: missingScopeExitMessage(missing),
+        completed,
+        missingScopes: missing,
+      }
+    }
+
+    try {
+      await requireIoMethod(io, 'deriveAndVerifyS3')(ctx)
+    } catch (error) {
+      if (Array.isArray(error?.missingScopes) && error.missingScopes.length > 0) {
+        completed.push('derive-s3')
+        return {
+          ok: false,
+          aborted: true,
+          abortCutover: true,
+          dualBucketFallback: false,
+          copyFree: true,
+          productionWriterEnabled: false,
+          exitCode: 2,
+          reason: missingScopeExitMessage(error.missingScopes),
+          completed,
+          missingScopes: error.missingScopes,
+        }
+      }
+      throw error
+    }
+    completed.push('derive-s3')
+
+    await requireIoMethod(io, 'ensureBucket')(ctx)
+    completed.push('ensure-bucket-empty')
+
+    const disableResult = await requireIoMethod(io, 'disableR2Dev')(ctx)
+    completed.push('disable-r2-dev')
+    ctx.r2DevDisabled = Boolean(disableResult?.disabled)
+
+    await requireIoMethod(io, 'attachCustomDomain')(ctx)
+    completed.push('attach-custom-domain')
+
+    await requireIoMethod(io, 'applyCacheRules')(ctx)
+    completed.push('cache-rules')
+
+    await requireIoMethod(io, 'applyCors')(ctx)
+    completed.push('cors')
+
+    await requireIoMethod(io, 'configureWaf')(ctx)
+    completed.push('waf-checkpoints')
+
+    await requireIoMethod(io, 'writeIsolationProbe')(ctx)
+    completed.push('isolation-probe-write')
+
+    const probeResult = await requireIoMethod(io, 'probeAnonymousAccess')(ctx)
+    completed.push('isolation-probe-check')
+    const isolation = evaluateIsolationProbe({
+      r2DevDisabled: Boolean(ctx.r2DevDisabled),
+      probes: probeResult?.probes ?? [],
+    })
+
+    if (!isolation.ok) {
+      return {
+        ok: false,
+        aborted: true,
+        abortCutover: true,
+        dualBucketFallback: false,
+        copyFree: true,
+        productionWriterEnabled: false,
+        exitCode: 1,
+        reason: isolation.reason,
+        isolation,
+        completed,
+      }
+    }
+
+    await requireIoMethod(io, 'syncGithubEnvironment')(ctx)
+    completed.push('sync-gh-env')
+
+    if (plan.target === 'cloudflare' || plan.target === 'both') {
+      ctx.cloudflareDeploy = await requireIoMethod(io, 'deployCloudflareReader')(ctx)
+      completed.push('deploy-cloudflare')
+    }
+    if (plan.target === 'edgeone' || plan.target === 'both') {
+      ctx.edgeoneDeploy = await requireIoMethod(io, 'deployEdgeoneOverseas')(ctx)
+      completed.push('deploy-edgeone')
+    }
+
+    const imageRouting = await requireIoMethod(io, 'verifyImageRouting')(ctx)
+    if (imageRouting?.status !== 'skipped-no-images') completed.push('image-routing-verify')
+
+    await requireIoMethod(io, 'validateImageCdn')(ctx)
+    completed.push('image-cdn-validate')
+
+    return {
+      ok: true,
+      aborted: false,
+      abortCutover: false,
+      dualBucketFallback: false,
+      copyFree: true,
+      productionWriterEnabled: false,
+      bootstrapWriterEnabled: false,
+      isolation,
+      imageRouting,
+      pendingOwnerSteps: [
+        'first Bangumi Full Sync: Owner runs portable-writer.yml workflow_dispatch target=production force_mode=full with AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED=true (schedule stays gated by AIRINGCAL_WRITER_ENABLED)',
+        'production cutover sign-off: reader-delivery-accept + docs/v3/production-acceptance.md checklist',
+      ],
+      completed,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    const missingCapability = /missing capability:/i.test(message)
+    const unsupported =
+      /Live I\/O adapter for .+ requires Owner-approved|unsupportedLive|not implemented/i.test(
+        message,
+      )
+    if (!missingCapability && !unsupported) throw error
+    if (missingCapability) {
+      return {
+        ok: false,
+        aborted: true,
+        abortCutover: true,
+        dualBucketFallback: false,
+        copyFree: true,
+        productionWriterEnabled: false,
+        exitCode: 2,
+        status: 'missing-capability',
+        reason: message,
+        completed,
+      }
+    }
+    const stepMatch = message.match(/Live I\/O adapter for ([^\s]+)/i)
+    const unimplementedSteps = stepMatch
+      ? [stepMatch[1], ...(plan.ownerGatedLiveSteps ?? [])]
+      : [...(plan.ownerGatedLiveSteps ?? [])]
+    return {
+      ok: false,
+      aborted: true,
+      abortCutover: true,
+      dualBucketFallback: false,
+      copyFree: true,
+      productionWriterEnabled: false,
       exitCode: 2,
       status: 'owner-gated',
       reason: `not-implemented: ${message}`,
