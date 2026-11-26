@@ -538,8 +538,9 @@ export function buildProductionPlan({
     },
     {
       id: 'materialize-and-deploy-readers',
-      title:
-        'Materialize + deploy Production CF Worker and EdgeOne overseas project (names must differ from Development)',
+      title: target === 'cloudflare'
+        ? 'Materialize + deploy the Production Cloudflare Worker (name must differ from Development)'
+        : 'Materialize + deploy Production CF Worker and EdgeOne overseas project (names must differ from Development)',
       mutates: true,
       workerName: cloudflareWorkerName,
       edgeoneProject,
@@ -641,10 +642,9 @@ export function buildProductionPlan({
       immutable: ['images/*', 'snapshots/*'],
       pointerBypass: ['public/current-release.json'],
     },
-    edgeone: {
-      project: edgeoneProject,
-      region: edgeoneRegion,
-    },
+    edgeone: target === 'cloudflare'
+      ? null
+      : { project: edgeoneProject, region: edgeoneRegion },
     cloudflareWorkerName,
     forbiddenCollisionNames: [...PRODUCTION_FORBIDDEN_COLLISION_NAMES],
     steps,
@@ -998,11 +998,9 @@ export function buildDevelopmentDeployPlan({
     developmentWriterEnabled: false,
     productionWriterEnabled: false,
     stagingSources: { ...DEVELOPMENT_DEFAULTS.stagingSource },
-    edgeone: {
-      project: edgeoneProject,
-      region: edgeoneRegion,
-      keepOldProject: 'airingcal-edgeone-read',
-    },
+    edgeone: target === 'cloudflare'
+      ? null
+      : { project: edgeoneProject, region: edgeoneRegion, keepOldProject: 'airingcal-edgeone-read' },
     cloudflareWorkerName,
     steps,
     ownerGatedLiveSteps: [

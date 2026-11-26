@@ -2896,7 +2896,13 @@ test('deriveAndVerifyS3 continues to scoped-token fallback when parent token can
         return { ok: true, status: 200, async json() { return { success: true, result: [] } } }
       }
       if (u.endsWith('/user/tokens/permission_groups')) {
-        return { ok: true, status: 200, async json() { return { success: true, result: [] } } }
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { success: true, result: [{ id: 'grp-r2w', name: 'Workers R2 Storage Bucket Item Write' }] }
+          },
+        }
       }
       if (u.endsWith('/user/tokens') && method === 'POST') {
         return {
@@ -2960,7 +2966,13 @@ test('deriveAndVerifyS3 falls through to scoped-token creation when management S
         return { ok: true, status: 200, async json() { return { success: true, result: [] } } }
       }
       if (u.endsWith('/user/tokens/permission_groups')) {
-        return { ok: true, status: 200, async json() { return { success: true, result: [] } } }
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { success: true, result: [{ id: 'grp-r2w', name: 'Workers R2 Storage Bucket Item Write' }] }
+          },
+        }
       }
       if (u.endsWith('/user/tokens') && method === 'POST') {
         return {
@@ -3029,7 +3041,13 @@ test('deriveAndVerifyS3 falls through to scoped-token creation when verify omits
         return { ok: true, status: 200, async json() { return { success: true, result: [] } } }
       }
       if (u.endsWith('/user/tokens/permission_groups')) {
-        return { ok: true, status: 200, async json() { return { success: true, result: [] } } }
+        return {
+          ok: true,
+          status: 200,
+          async json() {
+            return { success: true, result: [{ id: 'grp-r2w', name: 'Workers R2 Storage Bucket Item Write' }] }
+          },
+        }
       }
       if (u.endsWith('/user/tokens') && method === 'POST') {
         return {
@@ -3107,7 +3125,7 @@ test('scoped-token fallback never deletes legacy-named tokens before POST', asyn
           ok: true,
           status: 200,
           async json() {
-            return { success: true, result: [{ id: 'grp-r2w', name: 'Workers R2 Storage Write' }] }
+            return { success: true, result: [{ id: 'grp-r2w', name: 'Workers R2 Storage Bucket Item Write' }] }
           },
         }
       }
@@ -3220,7 +3238,7 @@ test('deriveAndVerifyS3 creates stable-named token only after permission probe p
           async json() {
             return {
               success: true,
-              result: [{ id: 'grp-r2w', name: 'Workers R2 Storage Write' }],
+              result: [{ id: 'grp-r2w', name: 'Workers R2 Storage Bucket Item Write' }],
             }
           },
         }
@@ -5203,7 +5221,7 @@ function writerFallbackIo({ plan, tokenList = [], rotationId, s3Fail = false }) 
         return json({ success: true, result: { permissions: ['User API Tokens:Edit'] } })
       }
       if (method === 'GET' && u.endsWith('/user/tokens/permission_groups')) {
-        return json({ success: true, result: [{ id: 'pg-r2w', name: 'Workers R2 Storage Write' }] })
+        return json({ success: true, result: [{ id: 'pg-r2w', name: 'Workers R2 Storage Bucket Item Write' }] })
       }
       if (method === 'GET' && u.endsWith('/user/tokens')) return json({ success: true, result: tokenList })
       if (method === 'DELETE') return json({ success: true, result: { id: u.split('/').pop() } })
@@ -5245,8 +5263,9 @@ test('writer fallback token is per-environment named and bucket-scoped, never de
   const body = JSON.parse(post[2])
   assert.equal(body.name, 'airingcal-development-writer')
   const serialized = JSON.stringify(body)
-  assert.ok(serialized.includes('com.cloudflare.edge.r2.bucket.acct.default.airingcal-development'))
-  assert.equal(serialized.includes('"com.cloudflare.edge.r2.bucket.*"'), false, 'must not be account-wide')
+  assert.ok(serialized.includes('com.cloudflare.edge.r2.bucket.acct_default_airingcal-development'))
+  assert.equal(serialized.includes('com.cloudflare.edge.r2.bucket.*'), false, 'must not be account-wide')
+  assert.equal(serialized.includes('com.cloudflare.api.account.'), false, 'flat bucket resource only')
   assert.equal(requests.some(([m]) => m === 'DELETE'), false, 'no pre-create deletes')
 })
 
@@ -5402,7 +5421,7 @@ test('Production scoped Writer provisioning verifies token identity and bucket-o
       return { ok: true, status: 200, json: async () => ({ success: true, result: { permissions: ['User API Tokens:Edit'] } }) }
     }
     if (method === 'GET' && path === '/client/v4/user/tokens/permission_groups') {
-      return { ok: true, status: 200, json: async () => ({ success: true, result: [{ id: 'pg-r2w', name: 'Workers R2 Storage Write' }] }) }
+      return { ok: true, status: 200, json: async () => ({ success: true, result: [{ id: 'pg-r2w', name: 'Workers R2 Storage Bucket Item Write' }] }) }
     }
     if (method === 'GET' && path === '/client/v4/user/tokens') {
       return { ok: true, status: 200, json: async () => ({ success: true, result: [] }) }
@@ -5425,7 +5444,7 @@ test('Production scoped Writer provisioning verifies token identity and bucket-o
             policies: [{
               effect: 'allow',
               permission_groups: [{ id: 'pg-r2w' }],
-              resources: { [`com.cloudflare.api.account.${account}`]: { [`com.cloudflare.edge.r2.bucket.${account}.default.airingcal-production`]: '*' } },
+              resources: { [`com.cloudflare.edge.r2.bucket.${account}_default_airingcal-production`]: '*' },
             }],
           },
         }),
@@ -5454,7 +5473,7 @@ test('Production scoped Writer provisioning verifies token identity and bucket-o
   assert.equal(result.tokenName, 'airingcal-production-writer')
   const post = requests.find(([m, p]) => m === 'POST' && p.endsWith('/user/tokens'))
   assert.ok(post, 'scoped token created via the official API')
-  assert.ok(JSON.parse(post[2]).policies[0].resources[`com.cloudflare.api.account.${account}`]?.[`com.cloudflare.edge.r2.bucket.${account}.default.airingcal-production`],
+  assert.ok(JSON.parse(post[2]).policies[0].resources[`com.cloudflare.edge.r2.bucket.${account}_default_airingcal-production`],
     'policy is bucket-scoped')
   assert.ok(requests.some(([m, p]) => m === 'GET' && p.endsWith('/user/tokens/scoped-1')), 'actual policy read back')
   assert.ok(requests.some(([m, p]) => m === 'GET' && p.endsWith('/user/tokens/verify')), 'created token identity verified')
@@ -5480,7 +5499,7 @@ test('Production scoped provisioning fails closed when the created token is broa
       if (method === 'GET' && path === '/client/v4/user/tokens/permissions') {
         body.result = { permissions: ['User API Tokens:Edit'] }
       } else if (method === 'GET' && path === '/client/v4/user/tokens/permission_groups') {
-        body.result = [{ id: 'pg-r2w', name: 'Workers R2 Storage Write' }]
+        body.result = [{ id: 'pg-r2w', name: 'Workers R2 Storage Bucket Item Write' }]
       } else if (method === 'GET' && path === '/client/v4/user/tokens') {
         body.result = []
       } else if (method === 'POST' && path === '/client/v4/user/tokens') {
