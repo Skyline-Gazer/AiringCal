@@ -18,7 +18,7 @@ does not deploy it, and no production cutover happens before #73 DoD.
 SQLite, so the Compose scheduler status is not available (contrast the Compose
 web service, which injects a SQLite-backed provider).
 
-Fail-closed behaviour: a missing/misnamed `AIRINGCAL_PUBLIC_R2` binding returns
+Fail-closed behaviour: a missing/misnamed `AIRINGCAL_R2` binding returns
 **503** `NO_PUBLIC_STORE_BINDING` (not a 500 stack), and a `head()` result
 without a usable quoted `httpEtag` throws instead of sending `If-Match: undefined`.
 
@@ -26,7 +26,7 @@ without a usable quoted `httpEtag` throws instead of sending `If-Match: undefine
 
 ```toml
 [[r2_buckets]]
-binding = "AIRINGCAL_PUBLIC_R2"
+binding = "AIRINGCAL_R2"
 bucket_name = "airing-cal-public"
 ```
 
@@ -44,7 +44,7 @@ same block to `apps/web-worker/wrangler.toml` (plus the runtime var), run
 ```toml
 # C7: public Release store for AIRINGCAL_READ_MODE=v3-release (default stays legacy).
 [[r2_buckets]]
-binding = "AIRINGCAL_PUBLIC_R2"
+binding = "AIRINGCAL_R2"
 bucket_name = "airing-cal-public"
 ```
 
@@ -118,7 +118,7 @@ image bytes are proxied from the R2 public store.
   `AIRINGCAL_STAGING_WORKER_NAME` defaulting to `airing-cal-v3-read-staging` and
   `AIRINGCAL_STAGING_PUBLIC_R2_BUCKET` defaulting to `airingcal-staging-public`);
 - `scripts/materialize-v3-read-staging-config.mjs` rewrites the
-  `AIRINGCAL_PUBLIC_R2` bucket to the staging bucket, rejects the production
+  `AIRINGCAL_R2` bucket to the staging bucket, rejects the production
   bucket, injects the verified base URL/sha as vars, and writes a temp config;
 - `wrangler deploy` only ever sees that materialized config, so a staging run
   cannot read the production Release.

@@ -50,13 +50,14 @@ export function runAiringcalSetup(
         bindings_required: [],
       }
     case 'cloudflare':
-      // The Cloudflare read worker declares its R2 binding in wrangler.toml; the
-      // release is still built by the portable/Compose builder.
+      // The Cloudflare read worker declares its R2 binding in the materialized
+      // wrangler config; releases are built by the GHA Portable Writer only
+      // (#195 — no Compose/QingLong paths exist anymore).
       return {
         platform: 'cloudflare',
         env_lines: formatPortableEnvLines({ AIRINGCAL_PLATFORM: 'cloudflare' }),
         secrets_required: PLATFORM_SECRET_ENV_KEYS.cloudflare,
-        bindings_required: ['wrangler.toml: [[r2_buckets]] binding = "AIRINGCAL_PUBLIC_R2"'],
+        bindings_required: ['wrangler.toml: [[r2_buckets]] binding = "AIRINGCAL_R2"'],
       }
     case 'edgeone':
       throw new Error('airingcal setup does not support platform edgeone yet; the EdgeOne adapter is a stub (#72)')

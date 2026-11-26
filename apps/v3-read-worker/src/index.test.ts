@@ -47,7 +47,7 @@ async function publishedBucket(): Promise<MemoryR2Bucket> {
 
 test('worker serves v2 read routes from the R2 public store', async () => {
   const bucket = await publishedBucket()
-  const env = { AIRINGCAL_PUBLIC_R2: bucket, BANGUMI_GIT_COMMIT_SHA: 'd'.repeat(40) }
+  const env = { AIRINGCAL_R2: bucket, BANGUMI_GIT_COMMIT_SHA: 'd'.repeat(40) }
 
   const health = await handleReadWorkerRequest(new Request('https://worker.example/api/health'), env)
   assert.equal(health.status, 200)
@@ -86,7 +86,7 @@ test('worker reuses isolate handler/cache for sequential collections and skips s
     calls.push(`head:${key}`)
     return originalHead(key)
   }
-  const env = { AIRINGCAL_PUBLIC_R2: bucket, PACKAGE_VERSION: '3.0.0-test' }
+  const env = { AIRINGCAL_R2: bucket, PACKAGE_VERSION: '3.0.0-test' }
 
   const first = await handleReadWorkerRequest(
     new Request('https://worker.example/api/collections?type=watching&page=1&limit=24'),
@@ -116,7 +116,7 @@ test('worker reuses isolate handler/cache for sequential collections and skips s
 
 test('worker serves widget assets, 410 sync routes, and R2 images', async () => {
   const bucket = await publishedBucket()
-  const env = { AIRINGCAL_PUBLIC_R2: bucket, BANGUMI_GIT_COMMIT_SHA: 'e'.repeat(40) }
+  const env = { AIRINGCAL_R2: bucket, BANGUMI_GIT_COMMIT_SHA: 'e'.repeat(40) }
 
   const index = await handleReadWorkerRequest(new Request('https://worker.example/'), env)
   assert.equal(index.status, 200)
@@ -144,7 +144,7 @@ test('worker serves widget assets, 410 sync routes, and R2 images', async () => 
 
 test('worker fails closed when the pointer cannot be verified', async () => {
   const bucket = new MemoryR2Bucket()
-  const env = { AIRINGCAL_PUBLIC_R2: bucket }
+  const env = { AIRINGCAL_R2: bucket }
   const collections = await handleReadWorkerRequest(
     new Request('https://worker.example/api/collections?type=watching'),
     env,
@@ -157,7 +157,7 @@ test('worker fails closed when the pointer cannot be verified', async () => {
 test('worker reports a missing R2 binding instead of throwing', async () => {
   const response = await handleReadWorkerRequest(
     new Request('https://worker.example/api/health'),
-    { AIRINGCAL_PUBLIC_R2: undefined as unknown as MemoryR2Bucket },
+    { AIRINGCAL_R2: undefined as unknown as MemoryR2Bucket },
   )
   assert.equal(response.status, 503)
   const body = await response.json() as { error: { code: string } }
@@ -169,7 +169,7 @@ test('worker redirects images through a validated AIRINGCAL_PUBLIC_BASE_URL only
   const store = new CloudflareR2PublicStore(bucket)
   const hash = 'a'.repeat(64)
   const env = {
-    AIRINGCAL_PUBLIC_R2: bucket,
+    AIRINGCAL_R2: bucket,
     AIRINGCAL_PUBLIC_BASE_URL: 'https://cdn.example.com/',
   }
 
@@ -195,7 +195,7 @@ test('worker fails closed on placeholder or non-https AIRINGCAL_PUBLIC_BASE_URL'
     ['http://cdn.example.com', /must use https/],
   ] as const) {
     const response = await handleReadWorkerRequest(new Request('https://worker.example/api/health'), {
-      AIRINGCAL_PUBLIC_R2: bucket,
+      AIRINGCAL_R2: bucket,
       AIRINGCAL_PUBLIC_BASE_URL: baseUrl,
     })
     assert.equal(response.status, 503)
@@ -208,7 +208,7 @@ test('worker fails closed on placeholder or non-https AIRINGCAL_PUBLIC_BASE_URL'
 test('entry-level OPTIONS preflight reaches the read handler (ShipReview #1)', async () => {
   const bucket = await publishedBucket()
   const env = {
-    AIRINGCAL_PUBLIC_R2: bucket,
+    AIRINGCAL_R2: bucket,
     AIRINGCAL_CORS_ORIGINS: 'https://embed.test',
   }
   const pre = await handleReadWorkerRequest(
@@ -236,7 +236,7 @@ test('entry-level OPTIONS preflight reaches the read handler (ShipReview #1)', a
 test('entry-level GET on static assets still short-circuits before the read handler', async () => {
   const bucket = await publishedBucket()
   const res = await handleReadWorkerRequest(new Request('https://worker.test/'), {
-    AIRINGCAL_PUBLIC_R2: bucket,
+    AIRINGCAL_R2: bucket,
   })
   assert.equal(res.status, 200)
   assert.match(res.headers.get('Content-Type') ?? '', /text\/html/)

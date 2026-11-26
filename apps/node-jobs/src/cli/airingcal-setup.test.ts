@@ -42,7 +42,7 @@ test('setup reports Cloudflare bindings and token secret without emitting secret
   assert.equal(result.platform, 'cloudflare')
   assert.deepEqual(result.env_lines, 'AIRINGCAL_PLATFORM=cloudflare\n')
   assert.ok(result.secrets_required.includes('CLOUDFLARE_API_TOKEN'))
-  assert.ok(result.bindings_required.some((entry) => entry.includes('AIRINGCAL_PUBLIC_R2')))
+  assert.ok(result.bindings_required.some((entry) => entry.includes('AIRINGCAL_R2')))
   assert.doesNotMatch(result.env_lines, /TOKEN|SECRET/, 'no secret may appear in the emitted env')
   assert.deepEqual(PLATFORM_SECRET_ENV_KEYS.cloudflare, [
     'BGM_TOKEN',

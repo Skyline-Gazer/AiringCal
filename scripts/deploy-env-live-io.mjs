@@ -929,6 +929,19 @@ export function createLiveDevelopmentApplyIo({
   }
 
   return {
+    /**
+     * #195: the setup wizard's verifier needs the SAME S3 credentials the
+     * apply derived. Read-only accessor — never logged, never persisted.
+     */
+    s3Credentials() {
+      return s3Creds
+        ? {
+          accessKeyId: s3Creds.accessKeyId,
+          secretAccessKey: s3Creds.secretAccessKey,
+          endpoint: s3Creds.endpoint,
+        }
+        : null
+    },
     async probeToken(ctx = {}) {
       const token = tokenFromEnv(env)
       if (!token) {
@@ -2041,18 +2054,33 @@ export function createLiveDevelopmentApplyIo({
       const imageBase = String(env.AIRINGCAL_IMAGE_BASE_URL ?? '').trim()
       const expectedOrigin = new URL(imageBase || publicBase).origin
 
+      // Version-propagation race (same class as the image probes, first seen
+      // in the 2026-11-26 wizard dev apply): right after `wrangler deploy`
+      // in worker mode the workers.dev route can still return 404 for
+      // object paths. Retry the pointer/snapshot reads with bounded backoff
+      // before failing closed; redirect (bucket-domain) mode stays
+      // single-shot.
+      const fetchWithPropagationRetry = async (url) => {
+        const attempts = plan.publicOriginMode === 'worker' ? 6 : 1
+        let response
+        for (let attempt = 1; ; attempt += 1) {
+          response = await withNetworkRetry(
+            () =>
+              fetchImpl(url, {
+                headers: { 'cache-control': 'no-cache' },
+                redirect: 'manual',
+              }),
+            { isRetriable: isThrownNetworkError, sleep: sleepImpl },
+          )
+          if (isOkResponse(response) || attempt >= attempts) return response
+          await sleepImpl(400 * attempt)
+        }
+      }
       // Discovery first: a release with zero image hashes is skipped before
       // any reader-host gating, so a missing EdgeOne host must never mask the
       // legitimate `skipped-no-images` outcome.
       const pointerUrl = `${publicBase}/public/current-release.json`
-      const pointerResponse = await withNetworkRetry(
-        () =>
-          fetchImpl(pointerUrl, {
-            headers: { 'cache-control': 'no-cache' },
-            redirect: 'manual',
-          }),
-        { isRetriable: isThrownNetworkError, sleep: sleepImpl },
-      )
+      const pointerResponse = await fetchWithPropagationRetry(pointerUrl)
       if (!isOkResponse(pointerResponse)) {
         // Clean bootstrap (#73): on a copy-free production plan the pointer
         // CANNOT exist yet — the first Full Sync is an Owner dispatch that
@@ -2080,14 +2108,7 @@ export function createLiveDevelopmentApplyIo({
       const snapshotUrl = /^https?:\/\//i.test(artifactRef)
         ? artifactRef
         : `${publicBase}/${artifactRef.replace(/^\/+/, '')}`
-      const snapshotResponse = await withNetworkRetry(
-        () =>
-          fetchImpl(snapshotUrl, {
-            headers: { 'cache-control': 'no-cache' },
-            redirect: 'manual',
-          }),
-        { isRetriable: isThrownNetworkError, sleep: sleepImpl },
-      )
+      const snapshotResponse = await fetchWithPropagationRetry(snapshotUrl)
       if (!isOkResponse(snapshotResponse)) {
         throw new Error(
           `image routing verification failed: snapshot fetch ${snapshotUrl} -> ${snapshotResponse?.status ?? 'no response'}`,

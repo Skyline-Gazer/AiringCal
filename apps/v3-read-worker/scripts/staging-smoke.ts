@@ -25,8 +25,8 @@ import { V2_CACHE_CONTROL } from '@airing-cal/v3-core/read-contract'
 
 const REPO_ROOT = join(import.meta.dirname, '..', '..', '..')
 const CONFIG = 'apps/v3-read-worker/wrangler.toml'
-// Must match wrangler.toml [[r2_buckets]] and `ReadWorkerEnv.AIRINGCAL_PUBLIC_R2`.
-const PUBLIC_R2_BINDING = 'AIRINGCAL_PUBLIC_R2'
+// Must match wrangler.toml [[r2_buckets]] and `ReadWorkerEnv.AIRINGCAL_R2`.
+const PUBLIC_R2_BINDING = 'AIRINGCAL_R2'
 const BUCKET = 'airing-cal-public'
 const IMAGE_HASH = 'a'.repeat(64)
 const BUILD_SHA = 'f'.repeat(40)

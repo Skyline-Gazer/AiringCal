@@ -128,3 +128,6 @@ reasonix.toml
 
 packages/worker/dist-check/
 deploy/v3/.env
+
+# setup wizard resource inventory (sanitized, machine-local)
+.airingcal/
