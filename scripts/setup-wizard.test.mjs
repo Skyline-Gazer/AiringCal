@@ -327,6 +327,7 @@ test('inventory is sanitized and refuses secret leakage (#195)', () => {
   })
   assert.equal(inventory.environment, 'development')
   assert.equal(inventory.worker.name, 'airingcal-development')
+  assert.equal(inventory.cloudflare.workersDevSubdomain, 'r7a', 'subdomain without the workers.dev suffix')
   assert.equal(inventory.github.gateVariable, gateVariableName('development'))
   assertInventorySanitized(inventory, ['cf-secret', 'bgm-secret'])
   assert.throws(() => assertInventorySanitized(inventory, ['airingcal-development']), /leaked/)
@@ -367,4 +368,22 @@ test('runFirstSync refuses when the schedule gate is enabled, before arming anyt
   const keys = calls.map((c) => c.key)
   assert.equal(keys.some((k) => k.startsWith('gh workflow enable')), false, 'workflow never enabled')
   assert.equal(keys.some((k) => k.includes('--body true')), false, 'gate never opened')
+})
+
+test('writeInventory enforces the value-level secret check with the run secrets (#195)', async () => {
+  const { mkdtempSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const base = mkdtempSync(join(tmpdir(), 'wizard-inv-secret-'))
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', publicBaseUrl: '' })
+  const inventory = buildInventory({
+    plan,
+    account: { id: ACCOUNT, name: 'Main' },
+    identity: { userId: '1', username: 'a' },
+    environment: 'development',
+  })
+  assert.throws(
+    () => writeInventory({ environment: 'development', inventory, baseDir: base, secrets: ['airingcal-development'] }),
+    /leaked/,
+  )
 })

@@ -442,8 +442,10 @@ export function runVerifier({ base, bucket, accountId, s3, spawnSyncImpl = spawn
   return parsed
 }
 
-export function writeInventory({ environment, inventory, baseDir = ROOT }) {
-  assertInventorySanitized(inventory)
+export function writeInventory({ environment, inventory, secrets = [], baseDir = ROOT }) {
+  // Value-level leak check with the run's actual credentials plus the
+  // structural token-shaped check inside assertInventorySanitized.
+  assertInventorySanitized(inventory, secrets)
   const dir = join(baseDir, INVENTORY_DIR)
   mkdirSync(dir, { recursive: true })
   const path = join(dir, `inventory.${environment}.json`)
@@ -576,7 +578,11 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
     deployedAt: new Date().toISOString(),
     verification: verification ? { pass: verification.pass, failed: verification.failed ?? [] } : null,
   })
-  const inventoryPath = writeInventory({ environment, inventory })
+  const inventoryPath = writeInventory({
+    environment,
+    inventory,
+    secrets: [cloudflareToken, bangumiToken, s3?.secretAccessKey ?? ''].filter(Boolean),
+  })
   logFn(`\nReady.\n  Public URL: ${dry.plan.publicBaseUrl ?? dry.plan.workerOrigin}\n  Inventory:  ${inventoryPath}`)
   return { applied: true, result, sync, verification, inventory, inventoryPath }
 }

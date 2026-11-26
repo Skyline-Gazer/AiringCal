@@ -122,7 +122,9 @@ export function buildInventory({
     cloudflare: {
       accountId: account.id,
       accountName: account.name,
-      workersDevSubdomain: plan.workerOrigin ? new URL(plan.workerOrigin).host.split('.').slice(1).join('.') : '',
+      workersDevSubdomain: plan.workerOrigin
+        ? new URL(plan.workerOrigin).host.replace(/\.workers\.dev$/, '').split('.').slice(1).join('.')
+        : '',
     },
     bucket: plan.bucket,
     worker: {
