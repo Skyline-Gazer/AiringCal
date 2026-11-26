@@ -24,8 +24,10 @@ import {
 } from './deploy-env-lib.mjs'
 import {
   assertCheckpointBucketPrivate,
+  parseWranglerWhoamiAccounts,
   parseWranglerWhoamiJson,
 } from './setup-staging-lib.mjs'
+import { isAmbiguousTransportError } from './mutation-ledger.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const requireFromNodeJobs = createRequire(join(ROOT, 'apps/node-jobs/package.json'))
@@ -61,7 +63,88 @@ function tokenCreateDeniedError(detail = '') {
     `Cloudflare API token cannot create R2 S3 API tokens${detail ? ` (${detail})` : ''} — missing scope: ${TOKEN_CREATE_SCOPE}; ${S3_OVERRIDE_WORKAROUND}`,
   )
   err.missingScopes = [TOKEN_CREATE_SCOPE, S3_OVERRIDE_WORKAROUND]
+  err.errorCategory = 'permission-denied'
+  err.code = 'TOKEN_CREATE_DENIED'
+  err.exitCode = 2
   return err
+}
+
+function taggedError(message, { code = null, errorCategory = 'internal-error', missingScopes, exitCode, cleanupFailed } = {}) {
+  const err = new Error(message)
+  if (code) err.code = code
+  if (errorCategory) err.errorCategory = errorCategory
+  if (Array.isArray(missingScopes) && missingScopes.length > 0) err.missingScopes = missingScopes
+  if (exitCode !== undefined) err.exitCode = exitCode
+  if (cleanupFailed !== undefined) err.cleanupFailed = cleanupFailed
+  return err
+}
+
+const NOOP_LEDGER_HANDLE = Object.freeze({
+  confirm() {},
+  alreadyExists() {},
+  fail() {},
+  unknown() {},
+  compensationFailed() {},
+})
+
+function ledgerFor(ctx) {
+  if (ctx?.ledger && typeof ctx.ledger.begin === 'function') return ctx.ledger
+  return {
+    begin: () => NOOP_LEDGER_HANDLE,
+    recordIntended: () => {},
+  }
+}
+
+function classifyCfHttpError(error, defaultCategory = 'provider-incompatibility') {
+  if (error?.errorCategory) return error.errorCategory
+  const status = Number(error?.status ?? error?.$metadata?.httpStatusCode)
+  const msg = String(error?.message ?? '')
+  if (status === 401 || status === 403 || /unauthoriz|forbidden|denied|authentication error/i.test(msg)) {
+    return 'permission-denied'
+  }
+  if (isAmbiguousTransportError(error) || status === 429 || (Number.isFinite(status) && status >= 500)) {
+    return 'transport-failure'
+  }
+  return defaultCategory
+}
+
+/**
+ * #208 Review Finding 2: A prior local inventory establishes bucket ownership
+ * ONLY when it matches environment/bucket/account AND contains affirmative
+ * evidence that AiringCal created, adopted, or deployed that bucket — never
+ * from a failed attempt that was itself refused for unproven ownership.
+ */
+export function hasAffirmativeBucketOwnership(priorInventory, bucket, accountId = '') {
+  if (!priorInventory || typeof priorInventory !== 'object') return false
+  if (priorInventory.environment !== 'production' || priorInventory.bucket !== bucket) return false
+  const normalizedAcct = String(accountId ?? '').trim().toLowerCase()
+  const priorAcct = String(priorInventory.cloudflare?.accountId ?? '').trim().toLowerCase()
+  if (!normalizedAcct || !priorAcct || normalizedAcct !== priorAcct) return false
+
+  const deployedVerdicts = new Set(['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'SYNC_FAILED', 'VERIFICATION_FAILED'])
+  if (deployedVerdicts.has(priorInventory.deployment?.verdict)) return true
+  if (priorInventory.resources?.bucket?.ownershipConfirmed === true) return true
+
+  const receipts = Array.isArray(priorInventory.mutationReceipts) ? priorInventory.mutationReceipts : []
+  for (const receipt of receipts) {
+    const executed = Array.isArray(receipt?.mutationsExecuted) ? receipt.mutationsExecuted : []
+    if (
+      executed.includes('r2-bucket-create') ||
+      executed.includes('ensure-bucket') ||
+      executed.includes('ensure-bucket-empty')
+    ) {
+      return true
+    }
+    const ledgerEntries = Array.isArray(receipt?.mutations) ? receipt.mutations : []
+    if (
+      ledgerEntries.some(
+        (m) => m?.op === 'r2-bucket-create' && (m.status === 'confirmed-success' || m.status === 'already-exists'),
+      )
+    ) {
+      return true
+    }
+  }
+  return false
 }
 
 /**
@@ -378,7 +461,7 @@ async function spawnWithNetworkRetry(spawnOnce, label, secrets, opts = {}) {
       return assertSpawnOk(result, label, secrets)
     },
     {
-      attempts: 3,
+      attempts: opts.attempts ?? 3,
       isRetriable: (error) => Boolean(error?.transientNetwork),
       sleep: opts.sleep ?? defaultSleep,
       delaysMs: SPAWN_RETRY_BACKOFF_MS,
@@ -880,6 +963,8 @@ export function createLiveDevelopmentApplyIo({
 
   /** @type {{ accessKeyId: string, secretAccessKey: string, endpoint: string, region: string, derived: boolean } | null} */
   let s3Creds = null
+  /** @type {((ctx?: object) => Promise<{ cleaned: boolean, error: Error | null }>) | null} */
+  let pendingFreshWriterCleanup = null
 
   function requireS3() {
     if (!s3Creds?.accessKeyId || !s3Creds?.secretAccessKey) {
@@ -957,6 +1042,9 @@ export function createLiveDevelopmentApplyIo({
       if (!token) {
         return {
           ok: false,
+          exitCode: 2,
+          code: 'TOKEN_MISSING',
+          errorCategory: 'permission-denied',
           missingScopes: [
             'Workers R2 Storage Write',
             'Workers Scripts Write',
@@ -969,6 +1057,9 @@ export function createLiveDevelopmentApplyIo({
       const pushTransient = () => {
         if (!missingScopes.includes(TRANSIENT_NETWORK_NOTE)) missingScopes.push(TRANSIENT_NETWORK_NOTE)
       }
+      let transientOnly = true
+      let wrongAccountError = null
+
       try {
         const whoami = await runWrangler(
           spawnSyncImpl,
@@ -976,20 +1067,50 @@ export function createLiveDevelopmentApplyIo({
           { ...env, CLOUDFLARE_API_TOKEN: token },
           { sleep: sleepImpl },
         )
-        const accountId = parseWranglerWhoamiJson(whoami.stdout)
-        ctx.accountId = accountId
-        if (!accountIdFrom(env, plan)) {
-          env.AIRINGCAL_CLOUDFLARE_ACCOUNT_ID = accountId
+        const accounts = parseWranglerWhoamiAccounts(whoami.stdout)
+        const expectedAccountId = accountIdFrom(env, plan)
+        if (expectedAccountId) {
+          if (!accounts.includes(expectedAccountId)) {
+            wrongAccountError = {
+              ok: false,
+              exitCode: 2,
+              code: 'WRONG_ACCOUNT',
+              errorCategory: 'resource-conflict',
+              reason: `Selected Cloudflare account ${expectedAccountId} is not accessible by this API token (visible: ${accounts.join(', ')})`,
+              missingScopes: [],
+            }
+          } else {
+            ctx.accountId = expectedAccountId
+          }
+        } else if (isProduction && accounts.length > 1) {
+          wrongAccountError = {
+            ok: false,
+            exitCode: 2,
+            code: 'WRONG_ACCOUNT',
+            errorCategory: 'resource-conflict',
+            reason: `Multiple Cloudflare accounts visible (${accounts.join(', ')}); explicit AIRINGCAL_CLOUDFLARE_ACCOUNT_ID is required for Production`,
+            missingScopes: [],
+          }
+        } else {
+          ctx.accountId = accounts[0]
+          env.AIRINGCAL_CLOUDFLARE_ACCOUNT_ID = accounts[0]
         }
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error)
         if (isTransientSpawnFailure(error)) {
           pushTransient()
-        } else if (/not authenticated|Unauthorized|403|401|login/i.test(msg)) {
-          missingScopes.push('Cloudflare API token authentication (wrangler whoami)')
         } else {
-          missingScopes.push(`wrangler whoami: ${redactSecrets(msg, secrets)}`)
+          transientOnly = false
+          if (/not authenticated|Unauthorized|403|401|login/i.test(msg)) {
+            missingScopes.push('Cloudflare API token authentication (wrangler whoami)')
+          } else {
+            missingScopes.push(`wrangler whoami: ${redactSecrets(msg, secrets)}`)
+          }
         }
+      }
+
+      if (wrongAccountError) {
+        return wrongAccountError
       }
 
       try {
@@ -1004,6 +1125,7 @@ export function createLiveDevelopmentApplyIo({
         if (isTransientSpawnFailure(error)) {
           pushTransient()
         } else {
+          transientOnly = false
           missingScopes.push(
             /403|401|permission|scope|auth/i.test(msg)
               ? 'Workers R2 Storage Write (wrangler r2 bucket list)'
@@ -1013,7 +1135,13 @@ export function createLiveDevelopmentApplyIo({
       }
 
       if (missingScopes.length > 0) {
-        return { ok: false, missingScopes }
+        return {
+          ok: false,
+          exitCode: transientOnly ? 1 : 2,
+          code: transientOnly ? 'CLOUDFLARE_TRANSPORT_FAILURE' : 'TOKEN_MISSING_SCOPES',
+          errorCategory: transientOnly ? 'transport-failure' : 'permission-denied',
+          missingScopes,
+        }
       }
       return { ok: true, missingScopes: [], tokenPresent: true, accountId: ctx.accountId }
     },
@@ -1021,7 +1149,11 @@ export function createLiveDevelopmentApplyIo({
     async deriveAndVerifyS3(ctx = {}) {
       const accountId = accountIdFrom(env, plan) || ctx.accountId
       if (!accountId) {
-        throw new Error('AIRINGCAL_CLOUDFLARE_ACCOUNT_ID required to derive/verify S3 credentials')
+        throw taggedError('AIRINGCAL_CLOUDFLARE_ACCOUNT_ID required to derive/verify S3 credentials', {
+          code: 'ACCOUNT_ID_MISSING',
+          errorCategory: 'resource-conflict',
+          exitCode: 2,
+        })
       }
       const endpoint = s3EndpointFor(accountId)
       const overrideId = String(env.AIRINGCAL_S3_ACCESS_KEY_ID ?? '').trim()
@@ -1041,33 +1173,56 @@ export function createLiveDevelopmentApplyIo({
           scope: 'operator-supplied-scope-unverified',
         }
         try {
-          await verifyS3Access(creds, bucket, { allowMissingBucket: true })
+          const verified = await verifyS3Access(creds, bucket, { allowMissingBucket: true })
+          ctx.s3BucketNotReady = !verified.bucketReady
           s3Creds = creds
           ctx.s3 = {
             accessKeyId: overrideId,
             derived: false,
-            verified: true,
+            verified: Boolean(verified.bucketReady),
+            pendingBucketAccessProof: !verified.bucketReady,
             source: creds.source,
             scope: creds.scope,
           }
-          process.stderr.write(`[deploy-env] S3 override verified on ${bucket}\n`)
+          if (verified.bucketReady) {
+            process.stderr.write(`[deploy-env] S3 override verified on ${bucket}\n`)
+          } else {
+            process.stderr.write(
+              `[deploy-env] S3 override accepted (bucket ${bucket} does not exist yet; object access will be verified after bucket creation)\n`,
+            )
+          }
           return {
             accessKeyId: overrideId,
             secretAccessKey: overrideSecret,
             derived: false,
-            verified: true,
+            verified: Boolean(verified.bucketReady),
+            pendingBucketAccessProof: !verified.bucketReady,
             source: creds.source,
             scope: creds.scope,
           }
         } catch (error) {
-          // A rejected override key (e.g. a legacy scoped staging token
-          // aliased into AIRINGCAL_S3_*) stays in the documented fallback
-          // chain; any other failure (transport, unknown) fails closed.
-          if (!error?.s3Rejected) throw error
-          overrideRejectionNote =
-            `AIRINGCAL_S3_* override rejected for ${bucket}; continuing with the dedicated credential path`
-          ctx.s3OverrideRejection = overrideRejectionNote
-          process.stderr.write(`[deploy-env] ${overrideRejectionNote}\n`)
+          if (error?.s3Rejected) {
+            if (isProduction) {
+              throw taggedError(
+                `Provided AIRINGCAL_S3_* override credential was rejected for ${bucket}: ${redactSecrets(error.message, secrets)}`,
+                {
+                  code: 'S3_OVERRIDE_REJECTED',
+                  errorCategory: 'permission-denied',
+                  missingScopes: error.missingScopes ?? ['Workers R2 Storage Write'],
+                  exitCode: 2,
+                },
+              )
+            }
+            overrideRejectionNote =
+              `AIRINGCAL_S3_* override rejected for ${bucket}; continuing with the dedicated credential path`
+            ctx.s3OverrideRejection = overrideRejectionNote
+            process.stderr.write(`[deploy-env] ${overrideRejectionNote}\n`)
+          } else {
+            if (error && typeof error === 'object' && !error.errorCategory) {
+              error.errorCategory = isAmbiguousTransportError(error) ? 'transport-failure' : 'provider-incompatibility'
+            }
+            throw error
+          }
         }
       }
 
@@ -1322,47 +1477,70 @@ export function createLiveDevelopmentApplyIo({
 
 
     /**
-     * #195 correction: Production Writer credential is provisioned AFTER the
-     * bucket exists, only when the operator token has the official API
-     * permission to create tokens. The new token's identity and actual
-     * policy are read back; anything broader than the one bucket is deleted
-     * and refused. Never falls back to broad management-derived S3 access.
+     * #195 / #208 BUG-003: Production Writer credential is provisioned AFTER
+     * the bucket exists and ownership/adoption is proven. Never interprets an
+     * absent permission catalogue as verified creation authority, records
+     * create/rotate/cleanup mutations at point of execution, and classifies
+     * permission, transport, scope, provider, and internal errors separately.
      */
     async provisionProductionWriter(ctx = {}) {
       if (!isProduction) {
-        throw new Error('provisionProductionWriter is Production-only')
+        throw taggedError('provisionProductionWriter is Production-only', {
+          code: 'INTERNAL_ENV_MISMATCH',
+          errorCategory: 'internal-error',
+        })
       }
       const accountId = accountIdFrom(env, plan) || ctx.accountId
-      if (!accountId) throw new Error('AIRINGCAL_CLOUDFLARE_ACCOUNT_ID is required for scoped Writer provisioning')
+      if (!accountId) {
+        throw taggedError('AIRINGCAL_CLOUDFLARE_ACCOUNT_ID is required for scoped Writer provisioning', {
+          code: 'ACCOUNT_ID_MISSING',
+          errorCategory: 'resource-conflict',
+          exitCode: 2,
+        })
+      }
       const parentToken = tokenFromEnv(env)
-      if (!parentToken) throw new Error('Cloudflare API token is required for scoped Writer provisioning')
+      if (!parentToken) {
+        throw taggedError('Cloudflare API token is required for scoped Writer provisioning', {
+          code: 'TOKEN_MISSING',
+          errorCategory: 'permission-denied',
+          exitCode: 2,
+        })
+      }
+      const ledger = ledgerFor(ctx)
       const tokenName = 'airingcal-production-writer'
       const rotationId = String(env.AIRINGCAL_WRITER_TOKEN_ROTATION_ID ?? '').trim()
       const endpoint = s3EndpointFor(accountId)
       const bucketResource = r2BucketResourceKey(accountId, bucket)
-      const fail = (message, scopes = ['Workers R2 Storage Write', 'User API Tokens:Edit']) => {
-        const error = new Error(`Production Writer credential: ${message}`)
-        error.missingScopes = scopes
-        error.code = 'WRITER_SCOPE_UNVERIFIED'
-        return error
-      }
 
-      // 1. Official API capability probe — no creation without proven rights.
+      // 1. Advisory permission catalogue probe — undocumented /user/tokens/permissions
+      // may return 404 or inconclusive shapes; only an explicit denial aborts here,
+      // while documented permission_groups + POST /user/tokens remain authoritative.
       let permissionGroupId
       try {
         const permissionsBody = await cfApi(fetchImpl, parentToken, '/user/tokens/permissions')
-        if (classifyTokenCreationPermission(permissionsBody) === 'denied') {
+        const catalogueVerdict = classifyTokenCreationPermission(permissionsBody)
+        ctx.permissionCatalogueStatus = catalogueVerdict
+        if (catalogueVerdict === 'denied') {
           throw tokenCreateDeniedError('permission probe shows no edit/create on user API tokens')
         }
-        permissionGroupId = await resolvePermissionGroupId(fetchImpl, parentToken, R2_BUCKET_ITEM_WRITE)
       } catch (error) {
         if (error?.missingScopes) throw error
-        const status = Number(error?.status)
+        ctx.permissionCatalogueStatus = 'unavailable'
+      }
+
+      try {
+        permissionGroupId = await resolvePermissionGroupId(fetchImpl, parentToken, R2_BUCKET_ITEM_WRITE)
+      } catch (error) {
         const detail = redactSecrets(error instanceof Error ? error.message : String(error), secrets)
-        if (status === 401 || status === 403 || /unauthoriz|forbidden|denied|permission/i.test(detail)) {
-          throw tokenCreateDeniedError(`capability probe: ${detail}`)
+        const category = classifyCfHttpError(error, 'provider-incompatibility')
+        if (category === 'permission-denied') {
+          throw tokenCreateDeniedError(`permission group lookup: ${detail}`)
         }
-        throw error
+        throw taggedError(`Cloudflare R2 permission group lookup failed (${category}): ${detail}`, {
+          code: category === 'transport-failure' ? 'PERMISSION_GROUP_TRANSPORT_ERROR' : 'PERMISSION_GROUP_MISSING',
+          errorCategory: category,
+          exitCode: 1,
+        })
       }
 
       // 2. Collision / explicit rotation — NEVER delete by name alone.
@@ -1373,38 +1551,162 @@ export function createLiveDevelopmentApplyIo({
           (token) => String(token?.name ?? '') === tokenName && token?.id,
         )
       } catch {
-        // Listing may be denied; the POST remains authoritative and no token
-        // can be deleted without an explicitly confirmed id.
+        // Listing may be denied; POST remains authoritative and no token can
+        // be deleted without an explicitly confirmed id.
       }
       if (existing.length > 0) {
         const match = rotationId ? existing.find((token) => String(token.id) === rotationId) : null
         if (!match) {
-          throw fail(
-            `writer token "${tokenName}" already exists (id ${existing.map((t) => t.id).join(', ')}); ` +
-            'reuse it with an explicit AIRINGCAL_S3_* override or rotate the confirmed id with AIRINGCAL_WRITER_TOKEN_ROTATION_ID',
+          throw taggedError(
+            `Production Writer credential: writer token "${tokenName}" already exists (id ${existing.map((t) => t.id).join(', ')}); ` +
+            'supply an independent AIRINGCAL_S3_* credential or rotate the confirmed id with AIRINGCAL_WRITER_TOKEN_ROTATION_ID',
+            {
+              code: 'WRITER_TOKEN_COLLISION',
+              errorCategory: 'resource-conflict',
+              missingScopes: ['Workers R2 Storage Write', 'User API Tokens:Edit'],
+              exitCode: 2,
+            },
           )
         }
-        await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(String(match.id))}`, { method: 'DELETE' })
-        process.stderr.write(`[deploy-env] Rotated operator-confirmed Production writer token ${rotationId}\n`)
+        const rotateEntry = ledger.begin({
+          op: 'writer-token-rotate-delete',
+          stepId: 'provision-writer-credential',
+          resourceType: 'cf-api-token',
+          target: String(match.id),
+        })
+        try {
+          await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(String(match.id))}`, { method: 'DELETE' })
+          rotateEntry.confirm(`rotated ${tokenName}`)
+          process.stderr.write(`[deploy-env] Rotated operator-confirmed Production writer token ${rotationId}\n`)
+        } catch (error) {
+          if (isAmbiguousTransportError(error)) {
+            rotateEntry.unknown(error, `Check whether token ${match.id} was deleted before retrying rotation`)
+          } else {
+            rotateEntry.fail(error)
+          }
+          throw taggedError(
+            `Failed to rotate confirmed writer token ${match.id}: ${redactSecrets(error instanceof Error ? error.message : String(error), secrets)}`,
+            {
+              code: 'WRITER_TOKEN_ROTATION_FAILED',
+              errorCategory: classifyCfHttpError(error, 'provider-incompatibility'),
+              exitCode: 1,
+            },
+          )
+        }
       }
 
-      // 3. Create the bucket-scoped credential via the official API.
-      const created = await cfApi(fetchImpl, parentToken, '/user/tokens', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: tokenName,
-          policies: [{
-            effect: 'allow',
-            resources: { [bucketResource]: '*' },
-            permission_groups: [{ id: permissionGroupId }],
-          }],
-        }),
+      // 3. Create the bucket-scoped credential via the official API (recorded at point of call).
+      const createEntry = ledger.begin({
+        op: 'writer-token-create',
+        stepId: 'provision-writer-credential',
+        resourceType: 'cf-api-token',
+        target: tokenName,
       })
+      let created
+      try {
+        created = await cfApi(fetchImpl, parentToken, '/user/tokens', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: tokenName,
+            policies: [{
+              effect: 'allow',
+              resources: { [bucketResource]: '*' },
+              permission_groups: [{ id: permissionGroupId }],
+            }],
+          }),
+        }, { attempts: 1 })
+      } catch (error) {
+        const detail = redactSecrets(error instanceof Error ? error.message : String(error), secrets)
+        if (isAmbiguousTransportError(error)) {
+          createEntry.unknown(
+            error,
+            `List Cloudflare API tokens for "${tokenName}" to check whether creation succeeded despite the lost response`,
+          )
+          throw taggedError(
+            `Writer token creation had an ambiguous transport failure (${detail}); remote creation state is unknown`,
+            {
+              code: 'WRITER_TOKEN_CREATE_AMBIGUOUS',
+              errorCategory: 'transport-failure',
+              exitCode: 1,
+            },
+          )
+        }
+        createEntry.fail(error)
+        const category = classifyCfHttpError(error, 'provider-incompatibility')
+        if (category === 'permission-denied') {
+          throw tokenCreateDeniedError(`POST /user/tokens: ${detail}`)
+        }
+        throw taggedError(`Cloudflare Create Token API failed (${category}): ${detail}`, {
+          code: 'WRITER_TOKEN_CREATE_FAILED',
+          errorCategory: category,
+          exitCode: 1,
+        })
+      }
+
       const tokenId = String(created?.result?.id ?? '').trim()
       const tokenValue = String(created?.result?.value ?? '').trim()
-      if (!tokenId || !tokenValue) {
-        throw fail('Create Token API did not return id+value')
+
+      const cleanupTokenById = async (idToDelete, cleanupCtx = ctx) => {
+        const cleanupEntry = ledgerFor(cleanupCtx).begin({
+          op: 'writer-token-cleanup',
+          stepId: 'provision-writer-credential',
+          resourceType: 'cf-api-token',
+          target: idToDelete,
+          compensation: true,
+        })
+        try {
+          await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(idToDelete)}`, { method: 'DELETE' })
+          cleanupEntry.confirm('deleted unverified writer token')
+          return { cleaned: true, error: null }
+        } catch (cleanupErr) {
+          cleanupEntry.compensationFailed(
+            cleanupErr,
+            `Manually inspect and delete Cloudflare API token ${idToDelete} (${tokenName}) before retrying`,
+          )
+          return { cleaned: false, error: cleanupErr }
+        }
       }
+
+      if (tokenValue && !secrets.includes(tokenValue)) secrets.push(tokenValue)
+      if (!tokenId) {
+        createEntry.unknown(
+          new Error(
+            tokenValue
+              ? 'Create Token API response missing token id'
+              : 'Create Token API response missing id and value',
+          ),
+          `List Cloudflare API tokens for "${tokenName}" to check whether creation succeeded despite incomplete response`,
+        )
+        throw taggedError(
+          tokenValue
+            ? 'Production Writer credential: Create Token API response missing id'
+            : 'Production Writer credential: Create Token API response missing id+value',
+          {
+            code: 'WRITER_TOKEN_BAD_RESPONSE',
+            errorCategory: 'provider-incompatibility',
+            exitCode: 1,
+          },
+        )
+      }
+      if (!tokenValue) {
+        createEntry.confirm(`tokenId=${tokenId} (missing token value)`)
+        const cleanup = await cleanupTokenById(tokenId)
+        throw taggedError(
+          `Production Writer credential: Create Token API returned id ${tokenId} without secret value; ` +
+          (cleanup.cleaned
+            ? 'the incomplete token was deleted'
+            : `token cleanup FAILED (${redactSecrets(cleanup.error?.message ?? 'unknown', secrets)}) — manual deletion required`),
+          {
+            code: 'WRITER_TOKEN_BAD_RESPONSE',
+            errorCategory: 'provider-incompatibility',
+            exitCode: 1,
+            cleanupFailed: !cleanup.cleaned,
+          },
+        )
+      }
+      // Record confirmed creation IMMEDIATELY before verification steps.
+      createEntry.confirm(`tokenId=${tokenId}`)
+
       const creds = {
         accessKeyId: tokenId,
         secretAccessKey: sha256Hex(tokenValue),
@@ -1416,19 +1718,40 @@ export function createLiveDevelopmentApplyIo({
         tokenName,
         tokenId,
       }
-      const cleanupFresh = async () => {
-        try {
-          await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(tokenId)}`, { method: 'DELETE' })
-        } catch { /* best effort: the apply still fails closed */ }
-      }
+
+      const cleanupFresh = () => cleanupTokenById(tokenId)
+
       try {
         // 4. Identity proof: the freshly minted token must verify to its own id.
-        const identity = await cfApi(fetchImpl, tokenValue, '/user/tokens/verify')
-        if (String(identity?.result?.id ?? '') !== tokenId || String(identity?.result?.status ?? '') !== 'active') {
-          throw fail('created token identity verification failed')
+        let identity
+        try {
+          identity = await cfApi(fetchImpl, tokenValue, '/user/tokens/verify')
+        } catch (error) {
+          const category = classifyCfHttpError(error, 'provider-incompatibility')
+          throw taggedError(
+            `created token identity check failed: ${redactSecrets(error instanceof Error ? error.message : String(error), secrets)}`,
+            { code: 'WRITER_IDENTITY_FAILED', errorCategory: category, exitCode: 1 },
+          )
         }
+        if (String(identity?.result?.id ?? '') !== tokenId || String(identity?.result?.status ?? '') !== 'active') {
+          throw taggedError('created token identity verification mismatch', {
+            code: 'WRITER_IDENTITY_MISMATCH',
+            errorCategory: 'provider-incompatibility',
+            exitCode: 1,
+          })
+        }
+
         // 5. Scope proof: read the actual policy back with the parent token.
-        const details = await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(tokenId)}`)
+        let details
+        try {
+          details = await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(tokenId)}`)
+        } catch (error) {
+          const category = classifyCfHttpError(error, 'transport-failure')
+          throw taggedError(
+            `created token policy readback failed (${category}): ${redactSecrets(error instanceof Error ? error.message : String(error), secrets)}`,
+            { code: 'WRITER_READBACK_FAILED', errorCategory: category, exitCode: 1 },
+          )
+        }
         const policies = Array.isArray(details?.result?.policies) ? details.result.policies : []
         const bucketOnly = policies.length === 1 && (() => {
           const policy = policies[0]
@@ -1442,18 +1765,57 @@ export function createLiveDevelopmentApplyIo({
             && keys[0] === bucketResource
         })()
         if (!bucketOnly) {
-          throw fail('created token policy is not restricted to the intended bucket')
+          throw taggedError('created token policy is not restricted to the intended bucket', {
+            code: 'WRITER_SCOPE_VIOLATION',
+            errorCategory: 'scope-violation',
+            exitCode: 2,
+          })
         }
+
         // 6. Access proof on the intended bucket (not a substitute for 4/5).
-        await verifyS3Access(creds, bucket, { allowMissingBucket: false })
+        try {
+          await verifyS3Access(creds, bucket, { allowMissingBucket: false })
+        } catch (error) {
+          const category = error?.s3Rejected
+            ? 'permission-denied'
+            : isAmbiguousTransportError(error)
+              ? 'transport-failure'
+              : 'provider-incompatibility'
+          throw taggedError(
+            redactSecrets(error instanceof Error ? error.message : String(error), secrets),
+            {
+              code: 'WRITER_S3_ACCESS_FAILED',
+              errorCategory: category,
+              missingScopes: error?.missingScopes,
+              exitCode: category === 'permission-denied' ? 2 : 1,
+            },
+          )
+        }
       } catch (error) {
-        await cleanupFresh()
-        if (error?.missingScopes) throw error
+        const cleanup = await cleanupFresh()
         const detail = redactSecrets(error instanceof Error ? error.message : String(error), secrets)
-        throw fail(`verification failed (${detail}); the new token was removed`)
+        const cleanupNote = cleanup.cleaned
+          ? 'the new token was removed'
+          : `token cleanup FAILED (${redactSecrets(cleanup.error?.message ?? 'unknown', secrets)}) — manual token deletion required`
+        const wrapped = taggedError(`Production Writer credential verification failed (${detail}); ${cleanupNote}`, {
+          code: error?.code ?? 'WRITER_VERIFICATION_FAILED',
+          errorCategory: error?.errorCategory ?? 'provider-incompatibility',
+          missingScopes: error?.missingScopes,
+          exitCode: error?.exitCode ?? 1,
+          cleanupFailed: !cleanup.cleaned,
+        })
+        throw wrapped
       }
 
       s3Creds = creds
+      pendingFreshWriterCleanup = async (cleanupCtx = ctx) => {
+        const res = await cleanupTokenById(tokenId, cleanupCtx)
+        if (res.cleaned) {
+          s3Creds = null
+          pendingFreshWriterCleanup = null
+        }
+        return res
+      }
       ctx.s3 = {
         accessKeyId: tokenId,
         derived: true,
@@ -1467,18 +1829,43 @@ export function createLiveDevelopmentApplyIo({
         verified: true,
       }
     },
+
+    async cleanupFreshWriterToken(ctx = {}) {
+      if (!pendingFreshWriterCleanup) return { cleaned: false, skipped: true }
+      return pendingFreshWriterCleanup(ctx)
+    },
     async freezeWriter(ctx = {}) {
       if (isProduction) {
-        throw new Error(
+        throw taggedError(
           'production apply must not disable the shared writer workflow; the production writer was never enabled and the schedule stays gated by AIRINGCAL_WRITER_ENABLED',
+          { code: 'INTERNAL_ENV_MISMATCH', errorCategory: 'internal-error' },
         )
       }
       const workflow = plan.writerFreeze?.workflow || 'portable-writer.yml'
-      const alreadyFrozen = await runGhWorkflowToggle(
-        spawnSyncImpl,
-        ['workflow', 'disable', workflow, '--repo', repo],
-        env,
-      )
+      const ledger = ledgerFor(ctx)
+      const freezeEntry = ledger.begin({
+        op: 'workflow-state-change',
+        stepId: 'writer-freeze',
+        resourceType: 'github-workflow',
+        target: `${workflow}:disabled`,
+      })
+      let alreadyFrozen = false
+      try {
+        alreadyFrozen = await runGhWorkflowToggle(
+          spawnSyncImpl,
+          ['workflow', 'disable', workflow, '--repo', repo],
+          env,
+        )
+        if (alreadyFrozen) freezeEntry.alreadyExists('workflow already disabled')
+        else freezeEntry.confirm('workflow disabled')
+      } catch (error) {
+        if (isAmbiguousTransportError(error)) {
+          freezeEntry.unknown(error, `Check state of ${workflow} in GitHub Actions`)
+        } else {
+          freezeEntry.fail(error)
+        }
+        throw error
+      }
 
       const deadline = nowImpl() + 15 * 60_000
       let inProgress = -1
@@ -1525,7 +1912,15 @@ export function createLiveDevelopmentApplyIo({
       }
     },
 
-    async ensureBucket() {
+    async ensureBucket(ctx = {}) {
+      const accountId = accountIdFrom(env, plan) || ctx.accountId
+      if (plan.accountId && accountId && String(plan.accountId).toLowerCase() !== String(accountId).toLowerCase()) {
+        throw taggedError(
+          `Wrong-account safety refusal: plan expects ${plan.accountId}, active context resolved ${accountId}`,
+          { code: 'WRONG_ACCOUNT', errorCategory: 'resource-conflict', exitCode: 2 },
+        )
+      }
+      const ledger = ledgerFor(ctx)
       const info = spawnSyncImpl(
         WRANGLER[0],
         [...WRANGLER.slice(1), 'r2', 'bucket', 'info', bucket, '--json', ...ENV_FILE_NULL],
@@ -1536,71 +1931,240 @@ export function createLiveDevelopmentApplyIo({
             ...process.env,
             ...env,
             CLOUDFLARE_API_TOKEN: tokenFromEnv(env),
-            CLOUDFLARE_ACCOUNT_ID: accountIdFrom(env, plan),
+            CLOUDFLARE_ACCOUNT_ID: accountId,
           },
         },
       )
-      let created = false
-      if (info.status !== 0) {
-        await runWrangler(spawnSyncImpl, ['r2', 'bucket', 'create', bucket], env)
-        created = true
+      const infoOut = redactSecrets(`${info.stderr || ''}\n${info.stdout || ''}`.trim(), secrets)
+      if (info.error || TRANSIENT_NETWORK_RE.test(infoOut)) {
+        throw taggedError(
+          `Failed to inspect R2 bucket "${bucket}": ${info.error?.message ?? infoOut}`,
+          { code: 'BUCKET_INFO_TRANSPORT_ERROR', errorCategory: 'transport-failure', exitCode: 1 },
+        )
       }
-      if (s3Creds) {
-        await verifyS3Access(s3Creds, bucket, { allowMissingBucket: false })
+      if (
+        info.status !== 0 &&
+        /401|403|Authentication error|Unauthorized|not authenticated|permission denied|account.*not accessible/i.test(infoOut)
+      ) {
+        throw taggedError(
+          `Permission denied inspecting R2 bucket "${bucket}": ${infoOut}`,
+          { code: 'BUCKET_INFO_DENIED', errorCategory: 'permission-denied', exitCode: 2 },
+        )
       }
-      if (isProduction) {
-        // Clean bootstrap (production plan requireEmptyBucket): the first
-        // Full Sync must find an empty bucket. Reusing a bucket that already
-        // holds objects would silently mix foreign data into the release
-        // lineage, so refuse instead of adopting.
-        // One residue class is provably OURS: an interrupted apply can die
-        // between probe write and probe delete. If (and only if) the bucket
-        // holds exactly the isolation probe key AND the body matches the
-        // known probe body, delete it and continue — the empty guard is not
-        // weakened, it is re-established against a verifiable interruption.
-        const store = objectStoreFor(bucket)
-        let keys = []
-        let probeResidueCleaned = false
-        try {
-          keys = await store.list('')
-          if (keys.length === 1 && keys[0] === probeKey) {
-            const object = await store.get(probeKey)
-            const body = new TextDecoder().decode(object?.body ?? new Uint8Array())
-            if (body === probeBody) {
+
+      if (info.status === 0) {
+        let infoMeta = null
+        try { infoMeta = JSON.parse(String(info.stdout ?? '').trim()) } catch { /* non-JSON info output */ }
+        const observedBucket = {
+          name: bucket,
+          accountId: accountId || null,
+          exists: true,
+          created: false,
+          creationDate: infoMeta?.creation_date ?? infoMeta?.creationDate ?? null,
+          location: infoMeta?.location ?? null,
+        }
+        ctx.observedBucket = observedBucket
+        if (isProduction) {
+          const explicitAdoption =
+            Boolean(ctx?.bucketAdoptionAuthorized) ||
+            String(env.AIRINGCAL_ADOPT_EXISTING_BUCKET ?? '').trim() === 'yes'
+          const inventoryMatch = hasAffirmativeBucketOwnership(ctx?.priorInventory, bucket, accountId)
+          if (!explicitAdoption && !inventoryMatch) {
+            throw taggedError(
+              `Target Production bucket "${bucket}" already exists in account ${accountId || '<unknown>'}, ` +
+              'but AiringCal ownership cannot be safely proven (no matching local inventory receipt and no explicit Owner adoption authorization). ' +
+              'Refusing to adopt an unverified existing bucket.',
+              {
+                code: 'BUCKET_OWNERSHIP_UNPROVEN',
+                errorCategory: 'resource-conflict',
+                exitCode: 2,
+              },
+            )
+          }
+          const reuseEntry = ledger.begin({
+            op: 'r2-bucket-create',
+            stepId: 'ensure-bucket',
+            resourceType: 'r2-bucket',
+            target: bucket,
+          })
+          const proofKind = explicitAdoption ? 'explicit-owner-adoption' : 'prior-inventory-match'
+          reuseEntry.alreadyExists(`reused existing bucket (${proofKind})`)
+          return {
+            bucket,
+            created: false,
+            reused: true,
+            accountId,
+            ownershipProof: proofKind,
+            observedBucket,
+            emptyVerified: false,
+          }
+        }
+        const devReuseEntry = ledger.begin({
+          op: 'r2-bucket-create',
+          stepId: 'ensure-bucket',
+          resourceType: 'r2-bucket',
+          target: bucket,
+        })
+        devReuseEntry.alreadyExists('reused existing development bucket')
+        return { bucket, created: false, reused: true, accountId, observedBucket, emptyVerified: false }
+      }
+
+      const createEntry = ledger.begin({
+        op: 'r2-bucket-create',
+        stepId: 'ensure-bucket',
+        resourceType: 'r2-bucket',
+        target: bucket,
+      })
+      try {
+        await runWrangler(
+          spawnSyncImpl,
+          ['r2', 'bucket', 'create', bucket],
+          { ...env, AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: accountId },
+          { attempts: 1 },
+        )
+      } catch (error) {
+        const detail = redactSecrets(error instanceof Error ? error.message : String(error), secrets)
+        if (isAmbiguousTransportError(error)) {
+          createEntry.unknown(
+            error,
+            `Inspect Cloudflare R2 buckets (wrangler r2 bucket info ${bucket}) or run Reconcile Existing Resources to check whether the bucket was created before retrying`,
+          )
+          throw taggedError(
+            `R2 bucket creation had an ambiguous transport outcome (${detail}); remote state is unknown`,
+            { code: 'BUCKET_CREATE_AMBIGUOUS', errorCategory: 'transport-failure', exitCode: 1 },
+          )
+        }
+        createEntry.fail(error)
+        const category = /401|403|permission|denied|unauthorized/i.test(detail)
+          ? 'permission-denied'
+          : 'provider-incompatibility'
+        throw taggedError(`Failed to create R2 bucket "${bucket}": ${detail}`, {
+          code: 'BUCKET_CREATE_FAILED',
+          errorCategory: category,
+          exitCode: category === 'permission-denied' ? 2 : 1,
+        })
+      }
+      createEntry.confirm(`created bucket ${bucket} in account ${accountId || '<unknown>'}`)
+      const observedBucket = {
+        name: bucket,
+        accountId: accountId || null,
+        exists: true,
+        created: true,
+        creationDate: null,
+        location: null,
+      }
+      ctx.observedBucket = observedBucket
+      return { bucket, created: true, reused: false, accountId, observedBucket, emptyVerified: false }
+    },
+
+    async verifyBucketEmpty(ctx = {}) {
+      if (!isProduction) {
+        return { bucket, emptyVerified: false, skipped: true }
+      }
+      const ledger = ledgerFor(ctx)
+      // Clean bootstrap (production plan requireEmptyBucket): the first Full Sync
+      // must find an empty bucket. Reusing a bucket with foreign objects would
+      // silently mix foreign data into the release lineage, so refuse closed.
+      // One residue class is provably OURS: an interrupted apply between probe
+      // write and probe delete. If (and only if) the bucket holds exactly the
+      // isolation probe key AND the body matches the known probe body, delete it
+      // and verify emptiness again — never weakening the clean-bootstrap guard.
+      const store = objectStoreFor(bucket)
+      let keys = []
+      let probeResidueCleaned = false
+      try {
+        keys = await store.list('')
+        if (keys.length === 1 && keys[0] === probeKey) {
+          const object = await store.get(probeKey)
+          const body = new TextDecoder().decode(object?.body ?? new Uint8Array())
+          if (body === probeBody) {
+            const cleanupEntry = ledger.begin({
+              op: 'probe-residue-delete',
+              stepId: 'verify-bucket-empty',
+              resourceType: 'r2-object',
+              target: `${bucket}/${probeKey}`,
+              compensation: true,
+            })
+            try {
               await store.delete(probeKey)
               const after = await store.list('')
               if (after.length !== 0) {
-                throw new Error(
+                const err = new Error(
                   `probe residue cleanup did not empty ${bucket}: ${after.length} object(s) remain`,
                 )
+                cleanupEntry.compensationFailed(err, `Inspect objects in ${bucket} before retrying`)
+                err.code = 'BUCKET_NOT_EMPTY'
+                err.errorCategory = 'resource-conflict'
+                err.cleanupFailed = true
+                err.exitCode = 1
+                throw err
               }
+              cleanupEntry.confirm('deleted leftover isolation probe and verified bucket empty')
               probeResidueCleaned = true
               keys = after
+            } catch (cleanupErr) {
+              if (!cleanupErr.cleanupFailed) {
+                cleanupEntry.compensationFailed(cleanupErr, `Delete leftover ${probeKey} or inspect ${bucket}`)
+                cleanupErr.cleanupFailed = true
+              }
+              throw cleanupErr
             }
           }
-        } finally {
-          store.close?.()
         }
-        if (keys.length > 0) {
-          const err = new Error(
-            `production bootstrap requires an empty bucket: ${bucket} already holds at least ${keys.length} object(s); refusing a dirty bucket`,
-          )
-          err.exitCode = 1
-          throw err
-        }
-        return { bucket, created, emptyVerified: true, probeResidueCleaned }
+      } catch (error) {
+        if (error?.errorCategory) throw error
+        const detail = redactSecrets(error instanceof Error ? error.message : String(error), secrets)
+        const category = isAccessDenied(error)
+          ? 'permission-denied'
+          : isAmbiguousTransportError(error)
+            ? 'transport-failure'
+            : 'provider-incompatibility'
+        throw taggedError(`Empty-bucket S3 check failed on ${bucket}: ${detail}`, {
+          code: 'BUCKET_EMPTY_CHECK_FAILED',
+          errorCategory: category,
+          exitCode: category === 'permission-denied' ? 2 : 1,
+        })
+      } finally {
+        store.close?.()
       }
-      return { bucket, created, emptyVerified: false }
+      if (keys.length > 0) {
+        throw taggedError(
+          `production bootstrap requires an empty bucket: ${bucket} already holds at least ${keys.length} object(s); refusing a dirty bucket`,
+          {
+            code: 'BUCKET_NOT_EMPTY',
+            errorCategory: 'resource-conflict',
+            exitCode: 1,
+          },
+        )
+      }
+      return { bucket, emptyVerified: true, probeResidueCleaned }
     },
 
-    async disableR2Dev() {
-      await runWrangler(spawnSyncImpl, ['r2', 'bucket', 'dev-url', 'disable', bucket, '-y'], env)
-      const got = await runWrangler(spawnSyncImpl, ['r2', 'bucket', 'dev-url', 'get', bucket], env)
-      assertCheckpointBucketPrivate(got.stdout, bucket)
+    async disableR2Dev(ctx = {}) {
+      const ledger = ledgerFor(ctx)
+      const entry = ledger.begin({
+        op: 'r2-dev-disable',
+        stepId: 'disable-r2-dev',
+        resourceType: 'r2-public-access',
+        target: bucket,
+      })
+      try {
+        await runWrangler(spawnSyncImpl, ['r2', 'bucket', 'dev-url', 'disable', bucket, '-y'], env)
+        const got = await runWrangler(spawnSyncImpl, ['r2', 'bucket', 'dev-url', 'get', bucket], env)
+        assertCheckpointBucketPrivate(got.stdout, bucket)
+        entry.confirm('r2.dev disabled and verified')
+      } catch (error) {
+        if (isAmbiguousTransportError(error)) {
+          entry.unknown(error, `Check r2.dev status for ${bucket} (wrangler r2 bucket dev-url get ${bucket})`)
+        } else {
+          entry.fail(error)
+        }
+        throw error
+      }
       return { disabled: true, bucket }
     },
 
-    async attachCustomDomain() {
+    async attachCustomDomain(ctx = {}) {
       const zoneId = zoneIdFrom(env)
       const domain = plan.publicHost
       if (!zoneId) {
@@ -1613,31 +2177,51 @@ export function createLiveDevelopmentApplyIo({
         throw new Error('plan.publicHost required to attach custom domain')
       }
 
+      const ledger = ledgerFor(ctx)
       const listed = await runWrangler(spawnSyncImpl, ['r2', 'bucket', 'domain', 'list', bucket], env)
       if (listed.stdout && listed.stdout.includes(domain)) {
+        ledger.begin({
+          op: 'r2-custom-domain-attach',
+          stepId: 'attach-custom-domain',
+          resourceType: 'r2-custom-domain',
+          target: domain,
+        }).alreadyExists(`already attached to ${bucket}`)
         return { attached: true, domain, reused: true }
       }
 
-      await runWrangler(
-        spawnSyncImpl,
-        [
-          'r2',
-          'bucket',
-          'domain',
-          'add',
-          bucket,
-          '--domain',
-          domain,
-          '--zone-id',
-          zoneId,
-          '-y',
-        ],
-        env,
-      )
+      const entry = ledger.begin({
+        op: 'r2-custom-domain-attach',
+        stepId: 'attach-custom-domain',
+        resourceType: 'r2-custom-domain',
+        target: domain,
+      })
+      try {
+        await runWrangler(
+          spawnSyncImpl,
+          [
+            'r2',
+            'bucket',
+            'domain',
+            'add',
+            bucket,
+            '--domain',
+            domain,
+            '--zone-id',
+            zoneId,
+            '-y',
+          ],
+          env,
+        )
+        entry.confirm(`attached to ${bucket}`)
+      } catch (error) {
+        if (isAmbiguousTransportError(error)) entry.unknown(error, `Check custom domain ${domain} on ${bucket}`)
+        else entry.fail(error)
+        throw error
+      }
       return { attached: true, domain, reused: false }
     },
 
-    async applyCacheRules() {
+    async applyCacheRules(ctx = {}) {
       const zoneId = zoneIdFrom(env)
       const token = tokenFromEnv(env)
       if (!zoneId) {
@@ -1647,9 +2231,13 @@ export function createLiveDevelopmentApplyIo({
         )
       }
       if (!token) throw new Error('Cloudflare API token required for cache rules')
-      // Host-scoped: zone-wide expressions would alter caching on every other
-      // site in the zone.
       const host = publicHostForRules(plan)
+      const entry = ledgerFor(ctx).begin({
+        op: 'zone-cache-rules',
+        stepId: 'cache-rules',
+        resourceType: 'cf-zone-ruleset',
+        target: `${zoneId}:${host}`,
+      })
 
       try {
         const immutable = await ensureZonePhaseRule({
@@ -1679,8 +2267,12 @@ export function createLiveDevelopmentApplyIo({
             cache: false,
           },
         })
+        if (immutable?.reused && pointer?.reused) entry.alreadyExists('zone cache rules unchanged')
+        else entry.confirm('configured host-scoped cache rules')
         return { ok: true, zoneId, host, immutable, pointer }
       } catch (error) {
+        if (isAmbiguousTransportError(error)) entry.unknown(error, `Inspect cache rules on zone ${zoneId}`)
+        else entry.fail(error)
         if (isZoneScopeError(error)) {
           throw missingCapability('cache-rules', ZONE_SCOPE_CAPABILITY_MESSAGE)
         }
@@ -1688,10 +2280,8 @@ export function createLiveDevelopmentApplyIo({
       }
     },
 
-    async applyCors() {
+    async applyCors(ctx = {}) {
       const origins = plan.cors?.allowedOrigins ?? []
-      // R2 AllowedMethods rejects OPTIONS (preflight is answered by the CORS
-      // mechanism itself); normalizeCorsAllowedMethods throws on it.
       const methods = normalizeCorsAllowedMethods(
         plan.cors?.methods ?? DEVELOPMENT_DEFAULTS.corsMethods,
       )
@@ -1704,8 +2294,6 @@ export function createLiveDevelopmentApplyIo({
         }
       }
 
-      // Wrangler `r2 bucket cors set` requires a { rules: [...] } object, not
-      // the bare REST API array. Verified live against airingcal-development.
       const corsConfig = {
         rules: [
           {
@@ -1718,6 +2306,13 @@ export function createLiveDevelopmentApplyIo({
           },
         ],
       }
+      const ledger = ledgerFor(ctx)
+      const corsEntry = ledger.begin({
+        op: 'r2-cors-set',
+        stepId: 'cors',
+        resourceType: 'r2-cors',
+        target: bucket,
+      })
       const dir = mkdtempSync(join(tmpdir(), 'airingcal-cors-'))
       const file = join(dir, 'cors.json')
       try {
@@ -1727,13 +2322,18 @@ export function createLiveDevelopmentApplyIo({
           ['r2', 'bucket', 'cors', 'set', bucket, '--file', file, '-y'],
           env,
         )
+        corsEntry.confirm('applied exact-origin R2 CORS policy')
+      } catch (error) {
+        if (isAmbiguousTransportError(error)) corsEntry.unknown(error, `Verify R2 CORS rules on ${bucket}`)
+        else corsEntry.fail(error)
+        throw error
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
       return { ok: true, allowedOrigins: origins, methods, corsFileWritten: true }
     },
 
-    async configureWaf() {
+    async configureWaf(ctx = {}) {
       const zoneId = zoneIdFrom(env)
       const token = tokenFromEnv(env)
       if (!zoneId) {
@@ -1744,6 +2344,12 @@ export function createLiveDevelopmentApplyIo({
       }
       if (!token) throw new Error('Cloudflare API token required for WAF rules')
       const host = publicHostForRules(plan)
+      const entry = ledgerFor(ctx).begin({
+        op: 'zone-waf-rule',
+        stepId: 'waf-checkpoints',
+        resourceType: 'cf-zone-ruleset',
+        target: `${zoneId}:${host}`,
+      })
 
       try {
         const rule = await ensureZonePhaseRule({
@@ -1755,8 +2361,12 @@ export function createLiveDevelopmentApplyIo({
           expression: `(http.host eq "${host}" and starts_with(http.request.uri.path, "/checkpoints/"))`,
           action: 'block',
         })
+        if (rule?.reused) entry.alreadyExists('WAF checkpoint rule unchanged')
+        else entry.confirm('configured host-scoped WAF checkpoint deny rule')
         return { ok: true, zoneId, host, rule }
       } catch (error) {
+        if (isAmbiguousTransportError(error)) entry.unknown(error, `Inspect WAF rules on zone ${zoneId}`)
+        else entry.fail(error)
         if (isZoneScopeError(error)) {
           throw missingCapability('waf-checkpoints', ZONE_SCOPE_CAPABILITY_MESSAGE)
         }
@@ -1765,15 +2375,32 @@ export function createLiveDevelopmentApplyIo({
     },
 
     async writeIsolationProbe(ctx = {}) {
+      const ledger = ledgerFor(ctx)
       const store = objectStoreFor(bucket)
+      const entry = ledger.begin({
+        op: 'isolation-probe-write',
+        stepId: 'isolation-probe-write',
+        resourceType: 'r2-object',
+        target: `${bucket}/${probeKey}`,
+      })
       try {
-        await store.put(probeKey, new TextEncoder().encode(probeBody), {
-          contentType: 'text/plain; charset=utf-8',
-        })
-        ctx.isolationProbeWritten = true
+        try {
+          await store.put(probeKey, new TextEncoder().encode(probeBody), {
+            contentType: 'text/plain; charset=utf-8',
+          })
+          ctx.isolationProbeWritten = true
+          entry.confirm('isolation probe written')
+        } catch (error) {
+          if (isAmbiguousTransportError(error)) {
+            ctx.isolationProbeWritten = true
+            entry.unknown(error, `Check whether ${probeKey} was written in ${bucket}`)
+          } else {
+            entry.fail(error)
+          }
+          throw error
+        }
         // Positive proof (§6.3 / mission 4.1): an anonymous 404 only means
         // isolation if the object demonstrably EXISTS in the private bucket.
-        // A head that comes back null (or throws) fails the step closed.
         const head = await store.head(probeKey)
         if (!head) {
           throw new Error(`isolation probe written but S3 HEAD ${probeKey} returned no object`)
@@ -1844,15 +2471,31 @@ export function createLiveDevelopmentApplyIo({
      * invariant on retry and (b) leave a foreign-looking object. Verified
      * gone via HEAD before the receipt is issued.
      */
-    async deleteIsolationProbe() {
+    async deleteIsolationProbe(ctx = {}) {
+      const ledger = ledgerFor(ctx)
       const store = objectStoreFor(bucket)
+      const entry = ledger.begin({
+        op: 'isolation-probe-delete',
+        stepId: 'isolation-probe-cleanup',
+        resourceType: 'r2-object',
+        target: `${bucket}/${probeKey}`,
+        compensation: true,
+      })
       try {
         await store.delete(probeKey)
         const head = await store.head(probeKey)
         if (head) {
-          throw new Error(`isolation probe delete not visible: S3 HEAD ${probeKey} still returns an object`)
+          const err = new Error(`isolation probe delete not visible: S3 HEAD ${probeKey} still returns an object`)
+          entry.compensationFailed(err, `Delete leftover ${probeKey} in ${bucket}`)
+          throw err
         }
+        entry.confirm('isolation probe deleted and HEAD confirmed absent')
         return { key: probeKey, deleted: true }
+      } catch (error) {
+        if (entry.entry.status === 'attempted') {
+          entry.compensationFailed(error, `Verify and delete ${probeKey} in ${bucket}`)
+        }
+        throw error
       } finally {
         store.close?.()
       }
@@ -1910,7 +2553,21 @@ export function createLiveDevelopmentApplyIo({
           )
         }
       }
-      await runGh(spawnSyncImpl, ['api', '--method', 'PUT', `repos/${repo}/environments/${envName}`], env)
+      const ledger = ledgerFor(ctx)
+      const ghEnvEntry = ledger.begin({
+        op: 'github-environment-ensure',
+        stepId: 'sync-gh-env',
+        resourceType: 'github-environment',
+        target: `${repo}/${envName}`,
+      })
+      try {
+        await runGh(spawnSyncImpl, ['api', '--method', 'PUT', `repos/${repo}/environments/${envName}`], env)
+        ghEnvEntry.confirm(`ensured GitHub environment ${envName}`)
+      } catch (error) {
+        if (isAmbiguousTransportError(error)) ghEnvEntry.unknown(error, `Check GitHub environment ${envName} in ${repo}`)
+        else ghEnvEntry.fail(error)
+        throw error
+      }
 
       const accountId = accountIdFrom(env, plan) || ctx.accountId || ''
       const prefix = isProduction ? 'AIRINGCAL_PRODUCTION_' : 'AIRINGCAL_DEVELOPMENT_'
@@ -1960,12 +2617,25 @@ export function createLiveDevelopmentApplyIo({
         if (!allowedVariableKeys.includes(name)) continue
         const writerGateName = isProduction ? `${prefix}BOOTSTRAP_WRITER_ENABLED` : `${prefix}WRITER_ENABLED`
         if (!value && name !== writerGateName) continue
-        await runGh(
-          spawnSyncImpl,
-          ['variable', 'set', name, '--env', envName, '--repo', repo, '--body', String(value)],
-          env,
-        )
-        syncedVars.push(name)
+        const varEntry = ledger.begin({
+          op: 'github-variable-set',
+          stepId: 'sync-gh-env',
+          resourceType: 'github-variable',
+          target: `${envName}:${name}`,
+        })
+        try {
+          await runGh(
+            spawnSyncImpl,
+            ['variable', 'set', name, '--env', envName, '--repo', repo, '--body', String(value)],
+            env,
+          )
+          varEntry.confirm(`set variable ${name}`)
+          syncedVars.push(name)
+        } catch (error) {
+          if (isAmbiguousTransportError(error)) varEntry.unknown(error, `Inspect GitHub variable ${name} on ${envName}`)
+          else varEntry.fail(error)
+          throw error
+        }
       }
 
       const listRes = await runGh(
@@ -1995,13 +2665,26 @@ export function createLiveDevelopmentApplyIo({
       for (const [name, value] of Object.entries(secretMap)) {
         if (!allowedSecretKeys.includes(name)) continue
         if (value) {
-          await runGh(
-            spawnSyncImpl,
-            ['secret', 'set', name, '--env', envName, '--repo', repo],
-            env,
-            { input: value },
-          )
-          syncedSecrets.push(name)
+          const secretEntry = ledger.begin({
+            op: 'github-secret-set',
+            stepId: 'sync-gh-env',
+            resourceType: 'github-secret',
+            target: `${envName}:${name}`,
+          })
+          try {
+            await runGh(
+              spawnSyncImpl,
+              ['secret', 'set', name, '--env', envName, '--repo', repo],
+              env,
+              { input: value },
+            )
+            secretEntry.confirm(`set secret ${name}`)
+            syncedSecrets.push(name)
+          } catch (error) {
+            if (isAmbiguousTransportError(error)) secretEntry.unknown(error, `Inspect GitHub secret ${name} on ${envName}`)
+            else secretEntry.fail(error)
+            throw error
+          }
         } else if (!existing.has(name)) {
           missingSecrets.push(name)
         }
@@ -2021,7 +2704,7 @@ export function createLiveDevelopmentApplyIo({
       }
     },
 
-    async deployCloudflareReader() {
+    async deployCloudflareReader(ctx = {}) {
       const workerName = plan.cloudflareWorkerName || DEVELOPMENT_DEFAULTS.workerName
       const outDir = mkdtempSync(join(tmpdir(), 'airingcal-wrangler-'))
       const outToml = join(outDir, `wrangler-v3-read-${isProduction ? 'production' : 'development'}.toml`)
@@ -2036,6 +2719,7 @@ export function createLiveDevelopmentApplyIo({
           return (r.stdout || '').trim()
         })()
 
+      const ledger = ledgerFor(ctx)
       try {
         const mat = spawnSyncImpl(
           process.execPath,
@@ -2047,13 +2731,9 @@ export function createLiveDevelopmentApplyIo({
               ...process.env,
               ...env,
               AIRINGCAL_STAGING_PUBLIC_R2_BUCKET: bucket,
-              // Empty in §6.3 worker mode: the reader then streams images
-              // and serves the public object interface itself.
               AIRINGCAL_STAGING_PUBLIC_BASE_URL: plan.publicBaseUrl ?? '',
               AIRINGCAL_CORS_ORIGINS:
                 plan.publicOriginMode === 'worker' ? (plan.cors?.allowedOrigins ?? []).join(',') : '',
-              // Explicit (empty when unset) so process.env can never leak an
-              // image base into a deploy where the caller did not configure one.
               AIRINGCAL_IMAGE_BASE_URL: String(env.AIRINGCAL_IMAGE_BASE_URL ?? '').trim(),
               BANGUMI_GIT_COMMIT_SHA: gitSha,
               PACKAGE_VERSION: String(env.PACKAGE_VERSION ?? '').trim(),
@@ -2062,14 +2742,31 @@ export function createLiveDevelopmentApplyIo({
         )
         assertSpawnOk(mat, 'materialize-v3-read-staging-config', secrets)
 
-        const deploy = await runWrangler(
-          spawnSyncImpl,
-          ['deploy', '--config', outToml, '--name', workerName],
-          env,
-        )
+        const deployEntry = ledger.begin({
+          op: 'worker-deploy',
+          stepId: 'deploy-cloudflare',
+          resourceType: 'cloudflare-worker',
+          target: workerName,
+        })
+        let deploy
+        try {
+          deploy = await runWrangler(
+            spawnSyncImpl,
+            ['deploy', '--config', outToml, '--name', workerName],
+            env,
+          )
+        } catch (error) {
+          if (isAmbiguousTransportError(error)) {
+            deployEntry.unknown(error, `Check Cloudflare Workers deployments for "${workerName}"`)
+          } else {
+            deployEntry.fail(error)
+          }
+          throw error
+        }
         const urlMatch = String(deploy.stdout || '').match(
           /https:\/\/[a-z0-9-]+\.[a-z0-9-]+\.workers\.dev/i,
         )
+        deployEntry.confirm(`deployed ${workerName}${urlMatch ? ` (${urlMatch[0]})` : ''}`)
         return {
           deployed: true,
           workerName,
@@ -2080,7 +2777,7 @@ export function createLiveDevelopmentApplyIo({
       }
     },
 
-    async deployEdgeoneOverseas() {
+    async deployEdgeoneOverseas(ctx = {}) {
       const project = plan.edgeone?.project || DEVELOPMENT_DEFAULTS.edgeoneProject
       const region = plan.edgeone?.region || DEVELOPMENT_DEFAULTS.edgeoneRegion
       const token = String(env.AIRINGCAL_EDGEONE_API_TOKEN ?? '').trim()
@@ -2194,10 +2891,24 @@ export function createLiveDevelopmentApplyIo({
         mkdirSync(dirname(distEnvFile), { recursive: true })
         writeFileSync(distEnvFile, envContent)
 
-        const deploy = eoSpawn(
-          ['makers', 'deploy', dist, '-n', project, '-a', region, '-t', token, '-e', 'production', '--json'],
-          `edgeone makers deploy -n ${project}`,
-        )
+        const deployEntry = ledgerFor(ctx).begin({
+          op: 'edgeone-deploy',
+          stepId: 'deploy-edgeone',
+          resourceType: 'edgeone-project',
+          target: project,
+        })
+        let deploy
+        try {
+          deploy = eoSpawn(
+            ['makers', 'deploy', dist, '-n', project, '-a', region, '-t', token, '-e', 'production', '--json'],
+            `edgeone makers deploy -n ${project}`,
+          )
+          deployEntry.confirm(`deployed EdgeOne project ${project}`)
+        } catch (error) {
+          if (isAmbiguousTransportError(error)) deployEntry.unknown(error, `Check EdgeOne deployment status for ${project}`)
+          else deployEntry.fail(error)
+          throw error
+        }
 
         return {
           deployed: true,
@@ -2433,6 +3144,7 @@ export function createLiveDevelopmentApplyIo({
       }
 
       const workflow = plan.writerFreeze?.workflow || 'portable-writer.yml'
+      const ledger = ledgerFor(ctx)
 
       // The writer freeze is lifted ONLY inside this block
       // (enable → repo gate true → dispatch → verify → re-disable). A skipped
@@ -2440,33 +3152,54 @@ export function createLiveDevelopmentApplyIo({
       let receipt = null
       const restoreFailures = []
       try {
-        await runGhWorkflowToggle(
-          spawnSyncImpl,
-          ['workflow', 'enable', workflow, '--repo', repo],
-          env,
-        )
+        const enableEntry = ledger.begin({
+          op: 'workflow-state-change',
+          stepId: 'single-writer-test',
+          resourceType: 'github-workflow',
+          target: `${workflow}:enabled`,
+        })
+        try {
+          const alreadyEnabled = await runGhWorkflowToggle(
+            spawnSyncImpl,
+            ['workflow', 'enable', workflow, '--repo', repo],
+            env,
+          )
+          if (alreadyEnabled) enableEntry.alreadyExists('workflow already active')
+          else enableEntry.confirm('workflow enabled for single-writer test')
+        } catch (error) {
+          if (isAmbiguousTransportError(error)) enableEntry.unknown(error, `Check state of ${workflow}`)
+          else enableEntry.fail(error)
+          throw error
+        }
 
-        // The development job's first-step gate reads
-        // vars.AIRINGCAL_DEVELOPMENT_WRITER_ENABLED at STEP level, which
-        // resolves the ENVIRONMENT-scoped value (falling back to repo when
-        // the environment does not define it). syncGithubEnvironment pins the
-        // environment value 'false', so the toggle must write the SAME scope —
-        // a repository-level flip would be masked by the environment pin.
-        await runGh(
-          spawnSyncImpl,
-          [
-            'variable',
-            'set',
-            DEVELOPMENT_WRITER_GATE_VAR,
-            '--env',
-            'development',
-            '--repo',
-            repo,
-            '--body',
-            'true',
-          ],
-          env,
-        )
+        const openGateEntry = ledger.begin({
+          op: 'authorization-gate-change',
+          stepId: 'single-writer-test',
+          resourceType: 'github-variable',
+          target: `development:${DEVELOPMENT_WRITER_GATE_VAR}=true`,
+        })
+        try {
+          await runGh(
+            spawnSyncImpl,
+            [
+              'variable',
+              'set',
+              DEVELOPMENT_WRITER_GATE_VAR,
+              '--env',
+              'development',
+              '--repo',
+              repo,
+              '--body',
+              'true',
+            ],
+            env,
+          )
+          openGateEntry.confirm('opened development writer gate')
+        } catch (error) {
+          if (isAmbiguousTransportError(error)) openGateEntry.unknown(error, `Verify ${DEVELOPMENT_WRITER_GATE_VAR}=false`)
+          else openGateEntry.fail(error)
+          throw error
+        }
 
         const before = parseGhJson(
           await runGh(
@@ -2586,13 +3319,23 @@ export function createLiveDevelopmentApplyIo({
           ['variable', 'set', DEVELOPMENT_WRITER_GATE_VAR, '--env', 'development', '--repo', repo, '--body', 'false'],
           ['workflow', 'disable', workflow, '--repo', repo],
         ]) {
+          const isDisable = args[0] === 'workflow' && args[1] === 'disable'
+          const restoreEntry = ledger.begin({
+            op: isDisable ? 'workflow-state-change' : 'authorization-gate-change',
+            stepId: 'single-writer-test',
+            resourceType: isDisable ? 'github-workflow' : 'github-variable',
+            target: isDisable ? `${workflow}:disabled` : `development:${DEVELOPMENT_WRITER_GATE_VAR}=false`,
+            compensation: true,
+          })
           try {
-            if (args[0] === 'workflow' && args[1] === 'disable') {
+            if (isDisable) {
               await runGhWorkflowToggle(spawnSyncImpl, args, env)
             } else {
               await runGh(spawnSyncImpl, args, env)
             }
+            restoreEntry.confirm('restored freeze state')
           } catch (error) {
+            restoreEntry.compensationFailed(error, `Manually restore ${isDisable ? workflow : DEVELOPMENT_WRITER_GATE_VAR}`)
             restoreFailures.push(error instanceof Error ? error.message : String(error))
           }
         }

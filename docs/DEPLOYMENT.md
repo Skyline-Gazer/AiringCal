@@ -70,7 +70,7 @@ tokens and `gh auth login`; everything else is discovered or defaulted:
 
 ```bash
 pnpm install
-pnpm run setup                 # menu: install/update, doctor, exit
+pnpm run setup                 # interactive menu loop: install/update, validate, doctor, exit
 pnpm run setup --doctor        # read-only gates/workflows/recent runs
 pnpm run setup --sync          # re-dispatch the first Full Sync (gate-monitored)
 pnpm run setup --headless --environment development   # env/dotenv-driven, no prompts
@@ -79,19 +79,47 @@ pnpm run setup --headless --environment development   # env/dotenv-driven, no pr
 
 Flow: preflight (Node/gh/wrangler) → environment (Production default, with a
 note that Development may reconfigure an existing Development deployment) →
-credential sections with guide links and inline read-only validation (VERIFIED /
-MISSING / NOT_VERIFIED / NOT_APPLICABLE; missing mandatory permissions block and
-offer re-entry/retry/menu/cancel) → account discovery (one auto-selects; multiple
-prompt) → workers.dev subdomain discovery → `/v0/me` identity → `USERS_JSON`
-derivation → optional Worker Custom Domain (zone discovery, DNS occupancy check,
-explicit takeover confirmation) → concise Configuration Review with edit actions
-(credentials/domain/environment; edits revalidate and rebuild the plan) →
-installation confirmation → apply through the same engine and gates as the CLI
-(progress stages; masked S3 fallback when automatic Writer provisioning is
-unavailable) → optional First Full Sync (separate authorization) → live verifier
-→ sanitized inventory at `.airingcal/inventory.<env>.json` (0600, gitignored;
-names/ids only, never credential values). Cloudflare is the default and only
-provider in a normal installation; EdgeOne remains an explicit advanced target.
+credential sections with guide links and inline read-only validation (user-facing
+summary + detailed `VERIFIED` / `MISSING` / `NOT_VERIFIED` / `NOT_APPLICABLE`
+view; missing mandatory permissions block and offer re-entry/retry/menu/cancel;
+validated credentials stay in process memory for reuse in the same session) →
+account discovery (one auto-selects; multiple prompt) → workers.dev subdomain
+discovery → `/v0/me` identity → `USERS_JSON` derivation → optional Worker Custom
+Domain (zone discovery, DNS occupancy check, explicit takeover confirmation) →
+partial-state discovery (`discoverPartialState`: if `airingcal-production`
+already exists, shows observed metadata + prior local inventory match and
+requires explicit Owner adoption confirmation; unrelated buckets stay untouched) →
+concise Configuration Review with edit actions (credentials/domain/environment;
+edits revalidate and rebuild the plan) → installation confirmation → apply
+through the same engine and gates as the CLI (Production order: bucket
+provisioning/adoption → dedicated bucket-scoped Writer token provisioning +
+policy/access readback or masked S3 fallback → object-level empty-bucket check →
+`r2.dev` disable → GitHub Environment sync → Reader deploy → isolation probe;
+point-of-execution mutation ledger records confirmed/failed/unknown/compensation
+outcomes; recoverable failures open an action-gated recovery menu instead of
+terminating) → optional First Full Sync (separate authorization) → live
+verifier → sanitized inventory at `.airingcal/inventory.<env>.json` (0600,
+gitignored; distinguishes `planned` vs `observed` vs `resources`, `attemptedAt`
+vs `deployedAt`, `writerCredentialState`, and `mutationReceipts`; never stores
+secret values). Cloudflare is the default and only provider in a normal
+installation; EdgeOne remains an explicit advanced target.
+
+When `Validate API Credentials` is chosen from the interactive main menu, the
+wizard presents post-action options (`Continue to Installation`, `View Detailed
+Results`, `Revalidate Credentials`, `Return to Main Menu`, `Exit`) instead of
+exiting immediately. When `Doctor` is chosen from the interactive main menu, it
+offers `Return to Main Menu`, `Retry Checks`, `Check Development/Production
+Instead`, or `Exit`. If automatic Writer credential provisioning is unavailable
+after partial apply, masked S3 fallback prompts require explicit
+re-authorization before retrying; recoverable apply failures also open the UX-012
+recovery menu (`Supply or Replace Independent R2 S3 Credential`, `Reconcile
+Existing Resources`, `Retry Failed Operation`, `Return to Configuration Review`,
+`View Detailed Failure Report`, `Exit Safely`; unknown outcomes and unverified
+cleanups suppress automatic retry until resolved through reconciliation or
+manual inspection). Validated credentials remain in process memory only and are
+cleared on exit or replacement; any change to account, environment, or
+custom-domain options triggers revalidation, and installation/sync confirmations
+are never carried over across attempts.
 
 Operator UI environment: `AIRINGCAL_THEME=auto|dark|light` (neutral foreground
 palette; terminal background never changed), `NO_COLOR` (disables color and
@@ -126,10 +154,13 @@ Safety properties:
   and closes it again in cleanup on failure/timeout/cancellation; the
   repo-level schedule gate is never touched. A workflow that was
   `disabled_manually` is re-disabled after the run.
-- Interruption recovery: re-run `pnpm run setup` (resource discovery is
-  idempotent) or `pnpm run setup --doctor` to see gate states and active runs.
-  Resource ownership collisions fail closed; nothing foreign is adopted or
-  deleted.
+- Interruption / partial-init recovery: re-run `pnpm run setup` to reconcile
+  observed resources against `.airingcal/inventory.<env>.json` and adopt an
+  existing empty Production bucket with explicit confirmation (or pass
+  `AIRINGCAL_ADOPT_EXISTING_BUCKET=yes` in explicit headless recovery), or run
+  `pnpm run setup --doctor` to inspect gate states and active runs. Unrelated
+  buckets are never touched, nonempty buckets are refused closed, and
+  unproven existing buckets require explicit Owner adoption confirmation.
 
 ## Configuration
 

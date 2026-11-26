@@ -620,9 +620,9 @@ export async function deriveStagingConfig(
 }
 
 /**
- * Extracts the 32-hex Cloudflare Account ID from `wrangler whoami --json` output.
+ * Extracts all 32-hex Cloudflare Account IDs from `wrangler whoami --json` output.
  */
-export function parseWranglerWhoamiJson(raw) {
+export function parseWranglerWhoamiAccounts(raw) {
   let data
   try {
     data = JSON.parse(raw)
@@ -633,11 +633,20 @@ export function parseWranglerWhoamiJson(raw) {
     throw new Error('Wrangler is not authenticated; set AIRINGCAL_STAGING_CLOUDFLARE_API_TOKEN in .env or run wrangler login')
   }
   const accounts = Array.isArray(data.accounts) ? data.accounts : []
-  const firstId = accounts.find((acc) => typeof acc?.id === 'string' && ACCOUNT_ID_RE.test(acc.id))?.id
-  if (!firstId) {
+  const ids = accounts
+    .map((acc) => (typeof acc?.id === 'string' && ACCOUNT_ID_RE.test(acc.id) ? acc.id.toLowerCase() : null))
+    .filter(Boolean)
+  if (ids.length === 0) {
     throw new Error('Could not resolve a 32-hex Cloudflare Account ID from wrangler whoami')
   }
-  return firstId.toLowerCase()
+  return [...new Set(ids)]
+}
+
+/**
+ * Extracts the 32-hex Cloudflare Account ID from `wrangler whoami --json` output.
+ */
+export function parseWranglerWhoamiJson(raw) {
+  return parseWranglerWhoamiAccounts(raw)[0]
 }
 
 /**

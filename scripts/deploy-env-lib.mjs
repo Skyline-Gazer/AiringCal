@@ -6,8 +6,9 @@
  * alias mapping, isolation verdicts, and production refuse rules.
  */
 import { loadDotEnvFile, parseDotEnvContent, redactSecrets } from './setup-staging-lib.mjs'
+import { MUTATION_STATUSES, createMutationLedger, isAmbiguousTransportError } from './mutation-ledger.mjs'
 
-export { loadDotEnvFile, parseDotEnvContent, redactSecrets }
+export { loadDotEnvFile, parseDotEnvContent, redactSecrets, MUTATION_STATUSES, createMutationLedger, isAmbiguousTransportError }
 
 export const ALLOWED_REPOSITORY = 'Skyline-Gazer/AiringCal'
 
@@ -122,6 +123,7 @@ export const MUTATING_STEP_IDS = Object.freeze([
   'writer-freeze',
   'ensure-bucket',
   'ensure-bucket-empty',
+  'probe-residue-delete',
   'provision-writer-credential',
   'disable-r2-dev',
   'attach-custom-domain',
@@ -140,9 +142,28 @@ export const MUTATING_STEP_IDS = Object.freeze([
   'single-writer-test',
 ])
 
-export function mutationsExecutedFrom(completed) {
+const EXECUTED_LEDGER_STATUSES = new Set([
+  'confirmed-success',
+  'unknown-outcome',
+  'compensation-success',
+  'compensation-failed',
+])
+
+export function mutationsExecutedFrom(completed, ledgerEntries = []) {
+  const executed = []
   const done = Array.isArray(completed) ? completed : []
-  return done.filter((id) => MUTATING_STEP_IDS.includes(id))
+  for (const id of done) {
+    if (MUTATING_STEP_IDS.includes(id) && !executed.includes(id)) {
+      executed.push(id)
+    }
+  }
+  const entries = Array.isArray(ledgerEntries) ? ledgerEntries : []
+  for (const entry of entries) {
+    if (entry && EXECUTED_LEDGER_STATUSES.has(entry.status) && entry.op && !executed.includes(entry.op)) {
+      executed.push(entry.op)
+    }
+  }
+  return executed
 }
 
 export const PRODUCTION_SECRET_KEYS = Object.freeze([
@@ -518,11 +539,24 @@ export function buildProductionPlan({
 
     {
       id: 'ensure-bucket-airingcal-production',
-      title: `Create-or-reuse empty bucket ${bucket} (abort if any object keys already exist)`,
+      title: `Discover, prove ownership/adoption, and create-or-reuse bucket ${bucket} (clean bootstrap: abort if any object keys already exist)`,
       mutates: true,
       bucket,
       requireEmptyBucket: true,
       requireEmptyPrefixes: null,
+    },
+    {
+      id: 'provision-production-writer',
+      title: `Provision or verify independently scoped Production Writer credential for ${bucket}`,
+      mutates: true,
+      bucket,
+    },
+    {
+      id: 'verify-bucket-empty',
+      title: `Verify object-level emptiness on ${bucket} after credential verification (abort if nonempty)`,
+      mutates: false,
+      bucket,
+      requireEmptyBucket: true,
     },
     {
       id: 'disable-r2-dev',
@@ -1290,8 +1324,10 @@ export function missingScopeExitMessage(missingScopes = []) {
  * @typedef {object} DevelopmentApplyIo
  * @property {(ctx: object) => Promise<{ ok: boolean, missingScopes?: string[] }>} probeToken
  * @property {(ctx: object) => Promise<object>} deriveAndVerifyS3
+ * @property {(ctx: object) => Promise<object>} [provisionProductionWriter]
  * @property {(ctx: object) => Promise<object>} freezeWriter
  * @property {(ctx: object) => Promise<object>} ensureBucket
+ * @property {(ctx: object) => Promise<object>} [verifyBucketEmpty]
  * @property {(ctx: object) => Promise<object>} disableR2Dev
  * @property {(ctx: object) => Promise<object>} attachCustomDomain
  * @property {(ctx: object) => Promise<object>} applyCacheRules
@@ -1329,22 +1365,80 @@ function requireIoMethod(io, name) {
 async function executeIsolationProbeLifecycle({ io, ctx, completed }) {
   let proof
   let probeResult
+  let primaryError = null
   try {
     proof = await requireIoMethod(io, 'writeIsolationProbe')(ctx)
     completed.push('isolation-probe-write')
     probeResult = await requireIoMethod(io, 'probeAnonymousAccess')(ctx)
     completed.push('isolation-probe-check')
+  } catch (error) {
+    primaryError = error
   } finally {
     if (!proof && ctx.isolationProbeWritten) completed.push('isolation-probe-write')
     if (proof || ctx.isolationProbeWritten) {
-      await requireIoMethod(io, 'deleteIsolationProbe')(ctx)
-      completed.push('isolation-probe-cleanup')
+      try {
+        await requireIoMethod(io, 'deleteIsolationProbe')(ctx)
+        completed.push('isolation-probe-cleanup')
+      } catch (cleanupError) {
+        if (primaryError) {
+          primaryError.cleanupFailed = true
+          primaryError.message = `${primaryError.message}; probe cleanup ALSO failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`
+        } else {
+          cleanupError.cleanupFailed = true
+          primaryError = cleanupError
+        }
+      }
     }
   }
+  if (primaryError) throw primaryError
   return {
     ...evaluateIsolationProbe({ r2DevDisabled: Boolean(ctx.r2DevDisabled), probes: probeResult?.probes ?? [] }),
     positiveProof: proof?.exists === true ? { key: proof.key, size: proof.size } : null,
   }
+}
+
+function applySecretsFromEnv(env = {}) {
+  return [
+    env.AIRINGCAL_CLOUDFLARE_API_TOKEN,
+    env.CLOUDFLARE_API_TOKEN,
+    env.AIRINGCAL_BANGUMI_TOKEN,
+    env.AIRINGCAL_S3_ACCESS_KEY_ID,
+    env.AIRINGCAL_S3_SECRET_ACCESS_KEY,
+    env.AIRINGCAL_EDGEONE_API_TOKEN,
+    env.AIRINGCAL_BARK_URL,
+  ]
+}
+
+function buildLedgerMeta(completed, ledger, ctx = {}) {
+  const mutations = ledger.entries()
+  return {
+    mutations,
+    mutationsSummary: ledger.summarize(),
+    mutationsExecuted: mutationsExecutedFrom(completed, mutations),
+    writerCredentialState: ctx.writerCredentialState ?? 'not-provisioned',
+    observedBucket: ctx.observedBucket ?? null,
+    bucketEmptyVerified: Boolean(ctx.bucketEmptyVerified),
+    r2DevDisabled: Boolean(ctx.r2DevDisabled),
+  }
+}
+
+function classifyRunnerError(error, message) {
+  if (error?.errorCategory) return error.errorCategory
+  if (/missing capability:/i.test(message)) return 'permission-denied'
+  if (/Live I\/O adapter for .+ requires Owner-approved|unsupportedLive|not implemented/i.test(message)) {
+    return 'provider-incompatibility'
+  }
+  if (isAmbiguousTransportError(error)) return 'transport-failure'
+  if (
+    error instanceof TypeError ||
+    error instanceof ReferenceError ||
+    error instanceof RangeError ||
+    error instanceof SyntaxError
+  ) {
+    return 'internal-error'
+  }
+  if (error?.code) return 'resource-conflict'
+  return 'internal-error'
 }
 
 /**
@@ -1367,7 +1461,9 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
 
   /** @type {string[]} */
   const completed = []
-  const ctx = { plan, env, completed }
+  const secrets = applySecretsFromEnv(env)
+  const ledger = createMutationLedger({ redact: (text) => redactSecrets(text, secrets) })
+  const ctx = { plan, env, completed, ledger }
 
   try {
 
@@ -1385,6 +1481,7 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
         reason: missingScopeExitMessage(missing),
         completed,
         missingScopes: missing,
+        ...buildLedgerMeta(completed, ledger, ctx),
       }
     }
 
@@ -1394,10 +1491,6 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
       if (Array.isArray(error?.missingScopes) && error.missingScopes.length > 0) {
         completed.push('derive-s3')
         const scopeReason = missingScopeExitMessage(error.missingScopes)
-        // Full story for operators: when an AIRINGCAL_S3_* override was
-        // rejected and the derivation chain then failed too, the abort
-        // reason carries the override-rejection note plus the last-chain
-        // missing scopes.
         const overrideNote =
           typeof ctx.s3OverrideRejection === 'string' && ctx.s3OverrideRejection
             ? `${ctx.s3OverrideRejection}; `
@@ -1412,6 +1505,7 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
           reason: `${overrideNote}${scopeReason}`,
           completed,
           missingScopes: error.missingScopes,
+          ...buildLedgerMeta(completed, ledger, ctx),
         }
       }
       throw error
@@ -1426,14 +1520,8 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
 
     const disableResult = await requireIoMethod(io, 'disableR2Dev')(ctx)
     completed.push('disable-r2-dev')
-    // Provenance: only the disable-r2-dev adapter result may claim r2.dev is off.
     ctx.r2DevDisabled = Boolean(disableResult?.disabled)
 
-    // §6.3 architecture split. bucket-domain (legacy) mode keeps the edge
-    // sequence (custom domain / cache / CORS / WAF) and proves isolation
-    // against the bucket domain before any staging copy. worker mode has no
-    // bucket edge surface: sync + deploy come first and the isolation probe
-    // runs against the DEPLOYED reader origins afterwards.
     const workerOriginMode = plan.publicOriginMode === 'worker'
     let isolation = null
 
@@ -1462,6 +1550,7 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
           reason: isolation.reason,
           isolation,
           completed,
+          ...buildLedgerMeta(completed, ledger, ctx),
         }
       }
 
@@ -1484,10 +1573,6 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
       completed.push('deploy-edgeone')
     }
 
-    // Routing evidence (review item 5): a real /image/{hash} 302 from every
-    // deployed reader must land on the configured image origin (or the
-    // public base when the Image CDN is off). `skipped-no-images` is recorded
-    // but never counted as a completed pass; mismatches throw (abort).
     const imageRouting = await requireIoMethod(io, 'verifyImageRouting')(ctx)
     const imageRoutingSkipped = imageRouting?.status === 'skipped-no-images'
     if (!imageRoutingSkipped) completed.push('image-routing-verify')
@@ -1496,9 +1581,6 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
     completed.push('image-cdn-validate')
 
     if (workerOriginMode) {
-      // §6.3: with the bucket private, the deployed readers ARE the
-      // anonymous surface; prove the allowlisted interface denies
-      // checkpoints/** before anything else can touch the bucket.
       isolation = await executeIsolationProbeLifecycle({ io, ctx, completed })
       if (!isolation.ok) {
         return {
@@ -1511,14 +1593,11 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
           reason: isolation.reason,
           isolation,
           completed,
+          ...buildLedgerMeta(completed, ledger, ctx),
         }
       }
     }
 
-    // Writer stays disabled until isolation+copy pass; the I/O adapter may
-    // still record a controlled dispatch, but the runner never flips the flag.
-    // A skipped test (not opted in / development job skipped) is NOT a pass:
-    // it never enters `completed` and is surfaced as a pending Owner step.
     const writerTest = await requireIoMethod(io, 'runSingleWriterTest')({
       ...ctx,
       developmentWriterEnabled: false,
@@ -1549,6 +1628,7 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
           }
         : {}),
       completed,
+      ...buildLedgerMeta(completed, ledger, ctx),
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -1569,6 +1649,7 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
         status: 'missing-capability',
         reason: message,
         completed,
+        ...buildLedgerMeta(completed, ledger, ctx),
       }
     }
     const stepMatch = message.match(/Live I\/O adapter for ([^\s]+)/i)
@@ -1587,27 +1668,30 @@ export async function runDevelopmentApply({ plan, env = {}, io }) {
       pendingOwnerSteps: plan.ownerGatedLiveSteps ?? [],
       unimplementedSteps,
       completed,
+      ...buildLedgerMeta(completed, ledger, ctx),
     }
   }
 }
 
 /**
- * Production clean-bootstrap apply executor (owner directive 2026-11-25 §10).
+ * Production clean-bootstrap apply executor (owner directive 2026-11-25 §10;
+ * #208 BUG-003/BUG-004 dependency order & mutation ledger).
  *
- * Mirrors runDevelopmentApply's failure semantics with three hard differences:
- *  - copy-free: no staging/development prefix is ever read or copied; the
- *    bucket must be empty at ensure-bucket and filled only by the Owner's
- *    first Full Sync dispatch afterwards;
- *  - no writer freeze and no single-writer test: the production writer has
- *    never run, and enabling it (bootstrap flag + schedule var) stays an
- *    explicit Owner action outside this runner;
- *  - the first Bangumi Full Sync is returned as a pending Owner step, never
- *    dispatched here.
- *
- * Every mutation still requires the CLI gates: --apply --i-am-sure-production,
- * AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes and AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes.
+ * Ordered sequence:
+ *  1. probeToken (management token + selected account validation)
+ *  2. deriveAndVerifyS3 (explicit S3 override OR defer until bucket exists; never marks derive-s3 complete when deferred)
+ *  3. ensureBucket (bucket discovery, ownership/adoption proof, create/reuse WITHOUT requiring S3)
+ *  4. provisionProductionWriter (if deferred, mint & identity/policy/S3-verify dedicated bucket-scoped credential)
+ *  5. verifyBucketEmpty (object-level clean-bootstrap emptiness check with verified S3 credentials)
+ *  6. disableR2Dev -> edge steps (bucket-domain) -> syncGithubEnvironment -> reader deploys -> image routing/CDN -> worker isolation probe
  */
-export async function runProductionApply({ plan, env = {}, io }) {
+export async function runProductionApply({
+  plan,
+  env = {},
+  io,
+  priorInventory = null,
+  bucketAdoptionAuthorized = false,
+}) {
   if (!plan || plan.env !== 'production') {
     throw new Error('runProductionApply requires a production plan')
   }
@@ -1620,11 +1704,21 @@ export async function runProductionApply({ plan, env = {}, io }) {
 
   /** @type {string[]} */
   const completed = []
-  const ctx = { plan, env, completed }
+  const secrets = applySecretsFromEnv(env)
+  const ledger = createMutationLedger({ redact: (text) => redactSecrets(text, secrets) })
+  const ctx = {
+    plan,
+    env,
+    completed,
+    ledger,
+    priorInventory,
+    bucketAdoptionAuthorized: Boolean(bucketAdoptionAuthorized) || String(env.AIRINGCAL_ADOPT_EXISTING_BUCKET ?? '').trim() === 'yes',
+    writerCredentialState: 'not-provisioned',
+    observedBucket: null,
+  }
 
   try {
     const tokenResult = await requireIoMethod(io, 'probeToken')(ctx)
-    completed.push('token-probe')
     if (tokenResult && tokenResult.ok === false) {
       const missing = tokenResult.missingScopes ?? []
       return {
@@ -1634,18 +1728,32 @@ export async function runProductionApply({ plan, env = {}, io }) {
         dualBucketFallback: false,
         copyFree: true,
         productionWriterEnabled: false,
-        exitCode: 2,
-        reason: missingScopeExitMessage(missing),
+        exitCode: tokenResult.exitCode ?? 2,
+        code: tokenResult.code ?? 'TOKEN_PROBE_FAILED',
+        errorCategory: tokenResult.errorCategory ?? 'permission-denied',
+        reason: tokenResult.reason || missingScopeExitMessage(missing),
         completed,
         missingScopes: missing,
+        ...buildLedgerMeta(completed, ledger, ctx),
       }
     }
+    completed.push('token-probe')
 
     try {
-      await requireIoMethod(io, 'deriveAndVerifyS3')(ctx)
-    } catch (error) {
-      if (Array.isArray(error?.missingScopes) && error.missingScopes.length > 0) {
+      const deriveResult = await requireIoMethod(io, 'deriveAndVerifyS3')(ctx)
+      if (ctx.writerCredentialDeferred === true || deriveResult?.deferred === true) {
+        ctx.writerCredentialDeferred = true
+        ctx.writerCredentialState = 'deferred-until-bucket'
+      } else if (deriveResult?.pendingBucketAccessProof === true || ctx.s3BucketNotReady === true) {
+        ctx.writerCredentialState = 'override-pending-bucket'
         completed.push('derive-s3')
+      } else {
+        ctx.writerCredentialState = 'override-verified'
+        completed.push('derive-s3')
+      }
+    } catch (error) {
+      ctx.writerCredentialState = 'failed'
+      if (Array.isArray(error?.missingScopes) && error.missingScopes.length > 0 && (!error?.errorCategory || error.errorCategory === 'permission-denied')) {
         return {
           ok: false,
           aborted: true,
@@ -1653,27 +1761,37 @@ export async function runProductionApply({ plan, env = {}, io }) {
           dualBucketFallback: false,
           copyFree: true,
           productionWriterEnabled: false,
-          exitCode: 2,
-          reason: missingScopeExitMessage(error.missingScopes),
+          exitCode: error.exitCode ?? 2,
+          code: error.code ?? 'S3_CREDENTIAL_FAILED',
+          errorCategory: error.errorCategory ?? 'permission-denied',
+          reason: redactSecrets(error.message ?? missingScopeExitMessage(error.missingScopes), secrets),
           completed,
           missingScopes: error.missingScopes,
+          ...buildLedgerMeta(completed, ledger, ctx),
         }
       }
       throw error
     }
-    completed.push('derive-s3')
 
-    await requireIoMethod(io, 'ensureBucket')(ctx)
-    completed.push('ensure-bucket-empty')
+    const bucketResult = await requireIoMethod(io, 'ensureBucket')(ctx)
+    if (bucketResult?.observedBucket) ctx.observedBucket = bucketResult.observedBucket
+    ctx.bucketResult = bucketResult
+    completed.push('ensure-bucket')
 
-    // #195 correction: the Production Writer credential is provisioned only
-    // after the bucket exists and ownership was checked by ensureBucket.
+    // #195 / #208 BUG-003: Production Writer credential is provisioned ONLY after
+    // the bucket exists and ownership/adoption is established by ensureBucket.
     if (ctx.writerCredentialDeferred === true) {
       try {
         await requireIoMethod(io, 'provisionProductionWriter')(ctx)
+        ctx.writerCredentialState = 'provisioned-verified'
+        completed.push('provision-writer-credential')
       } catch (error) {
-        if (Array.isArray(error?.missingScopes) && error.missingScopes.length > 0) {
-          completed.push('provision-writer-credential')
+        ctx.writerCredentialState = 'failed'
+        if (
+          Array.isArray(error?.missingScopes)
+          && error.missingScopes.length > 0
+          && (!error?.errorCategory || error.errorCategory === 'permission-denied')
+        ) {
           return {
             ok: false,
             aborted: true,
@@ -1681,24 +1799,50 @@ export async function runProductionApply({ plan, env = {}, io }) {
             dualBucketFallback: false,
             copyFree: true,
             productionWriterEnabled: false,
-            exitCode: 2,
-            reason: missingScopeExitMessage(error.missingScopes),
+            exitCode: error.exitCode ?? 2,
+            code: error.code ?? 'WRITER_PROVISION_DENIED',
+            errorCategory: 'permission-denied',
+            cleanupFailed: Boolean(error.cleanupFailed),
+            reason: redactSecrets(error.message ?? missingScopeExitMessage(error.missingScopes), secrets),
             completed,
             missingScopes: error.missingScopes,
+            ...buildLedgerMeta(completed, ledger, ctx),
           }
         }
         throw error
       }
-      completed.push('provision-writer-credential')
+    }
+
+    // Object-level emptiness verification ALWAYS runs after credential provisioning/verification.
+    try {
+      await requireIoMethod(io, 'verifyBucketEmpty')(ctx)
+      ctx.bucketEmptyVerified = true
+      if (ctx.writerCredentialState === 'override-pending-bucket') {
+        ctx.writerCredentialState = 'override-verified'
+      }
+      completed.push('verify-bucket-empty')
+    } catch (error) {
+      if (typeof io?.cleanupFreshWriterToken === 'function') {
+        const cleanup = await io.cleanupFreshWriterToken(ctx)
+        if (cleanup && !cleanup.skipped) {
+          ctx.writerCredentialState = 'failed'
+          if (error && typeof error === 'object') {
+            error.cleanupFailed = !cleanup.cleaned
+            if (typeof error.message === 'string') {
+              error.message = cleanup.cleaned
+                ? `${error.message}; the newly minted Writer token was removed`
+                : `${error.message}; fresh Writer token cleanup FAILED — manual deletion required`
+            }
+          }
+        }
+      }
+      throw error
     }
 
     const disableResult = await requireIoMethod(io, 'disableR2Dev')(ctx)
     completed.push('disable-r2-dev')
     ctx.r2DevDisabled = Boolean(disableResult?.disabled)
 
-    // §6.3 architecture split (mirrors runDevelopmentApply): bucket-domain
-    // mode proves isolation against the bucket edge before touching anything
-    // else; worker mode deploys first and probes the live reader origins.
     const workerOriginMode = plan.publicOriginMode === 'worker'
     let isolation = null
 
@@ -1725,9 +1869,12 @@ export async function runProductionApply({ plan, env = {}, io }) {
           copyFree: true,
           productionWriterEnabled: false,
           exitCode: 1,
+          code: 'ISOLATION_FAILED',
+          errorCategory: 'resource-conflict',
           reason: isolation.reason,
           isolation,
           completed,
+          ...buildLedgerMeta(completed, ledger, ctx),
         }
       }
     }
@@ -1766,9 +1913,12 @@ export async function runProductionApply({ plan, env = {}, io }) {
           copyFree: true,
           productionWriterEnabled: false,
           exitCode: 1,
+          code: 'ISOLATION_FAILED',
+          errorCategory: 'resource-conflict',
           reason: isolation.reason,
           isolation,
           completed,
+          ...buildLedgerMeta(completed, ledger, ctx),
         }
       }
     }
@@ -1788,21 +1938,16 @@ export async function runProductionApply({ plan, env = {}, io }) {
         'production cutover sign-off: reader-delivery-accept + docs/v3/production-acceptance.md checklist',
       ],
       completed,
+      ...buildLedgerMeta(completed, ledger, ctx),
     }
   } catch (error) {
-    const message = redactSecrets(error instanceof Error ? error.message : String(error), [
-      env.AIRINGCAL_CLOUDFLARE_API_TOKEN,
-      env.CLOUDFLARE_API_TOKEN,
-      env.AIRINGCAL_BANGUMI_TOKEN,
-      env.AIRINGCAL_S3_ACCESS_KEY_ID,
-      env.AIRINGCAL_S3_SECRET_ACCESS_KEY,
-      env.AIRINGCAL_BARK_URL,
-    ])
+    const message = redactSecrets(error instanceof Error ? error.message : String(error), secrets)
     const missingCapability = /missing capability:/i.test(message)
     const unsupported =
       /Live I\/O adapter for .+ requires Owner-approved|unsupportedLive|not implemented/i.test(
         message,
       )
+    const errorCategory = classifyRunnerError(error, message)
     if (!missingCapability && !unsupported) {
       return {
         ok: false,
@@ -1811,9 +1956,16 @@ export async function runProductionApply({ plan, env = {}, io }) {
         dualBucketFallback: false,
         copyFree: true,
         productionWriterEnabled: false,
-        exitCode: 1,
+        exitCode: error?.exitCode ?? 1,
+        code: error?.code ?? null,
+        errorCategory,
+        cleanupFailed: Boolean(error?.cleanupFailed),
+        ...(Array.isArray(error?.missingScopes) && error.missingScopes.length > 0
+          ? { missingScopes: error.missingScopes }
+          : {}),
         reason: message,
         completed,
+        ...buildLedgerMeta(completed, ledger, ctx),
       }
     }
     if (missingCapability) {
@@ -1826,8 +1978,11 @@ export async function runProductionApply({ plan, env = {}, io }) {
         productionWriterEnabled: false,
         exitCode: 2,
         status: 'missing-capability',
+        code: error?.code ?? 'MISSING_CAPABILITY',
+        errorCategory,
         reason: message,
         completed,
+        ...buildLedgerMeta(completed, ledger, ctx),
       }
     }
     const stepMatch = message.match(/Live I\/O adapter for ([^\s]+)/i)
@@ -1843,10 +1998,13 @@ export async function runProductionApply({ plan, env = {}, io }) {
       productionWriterEnabled: false,
       exitCode: 2,
       status: 'owner-gated',
+      code: error?.code ?? 'OWNER_GATED',
+      errorCategory,
       reason: `not-implemented: ${message}`,
       pendingOwnerSteps: plan.ownerGatedLiveSteps ?? [],
       unimplementedSteps,
       completed,
+      ...buildLedgerMeta(completed, ledger, ctx),
     }
   }
 }

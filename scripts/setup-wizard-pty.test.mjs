@@ -28,6 +28,7 @@ function runSetupPty({ answers, env = {}, timeoutMs = 120_000 }) {
       LINES: '48',
       AIRINGCAL_CLOUDFLARE_API_TOKEN: '',
       AIRINGCAL_BANGUMI_TOKEN: '',
+      AIRINGCAL_INVENTORY_DIR: workDir,
       AIRINGCAL_WIZARD_TEST_HOOKS: 'scripts/fixtures/wizard-acceptance-hooks.mjs',
       AIRINGCAL_WIZARD_TEST_RESULT: resultPath,
       ...env,
@@ -35,6 +36,7 @@ function runSetupPty({ answers, env = {}, timeoutMs = 120_000 }) {
     stdio: ['pipe', 'pipe', 'pipe'],
   })
   let output = ''
+  let cursor = 0
   let index = 0
   const seen = []
   const stripAnsi = (text) => text
@@ -42,8 +44,11 @@ function runSetupPty({ answers, env = {}, timeoutMs = 120_000 }) {
     .replace(/\u001b\][^\u0007]*\u0007/g, '')
   const feed = () => {
     const clean = stripAnsi(output)
-    while (index < answers.length && clean.includes(answers[index].wait)) {
+    while (index < answers.length) {
+      const idx = clean.indexOf(answers[index].wait, cursor)
+      if (idx === -1) break
       const step = answers[index]
+      cursor = idx + step.wait.length
       seen.push(step.label)
       // Give the prompt renderer a tick to attach its key listener before
       // typing; clack swallows keypresses that arrive during the first frame.
@@ -86,6 +91,7 @@ test('CLI entrypoint: approved Production installation reaches the apply-mode ex
       { wait: 'Supply an independently scoped R2 credential', answer: '\r', label: 'fallback: accepted' },
       { wait: 'Cloudflare R2 S3 Access Key ID', answer: `${S3_KEY}\r`, label: 'fallback key masked' },
       { wait: 'Cloudflare R2 S3 Secret Access Key', answer: `${S3_SECRET}\r`, label: 'fallback secret masked' },
+      { wait: 'Re-authorize and retry', answer: '\r', label: 'fallback: reauthorized' },
       { wait: 'Run the First Full Sync now', answer: '\r', label: 'first sync: requested' },
       { wait: 'Dispatch the Writer', answer: '\r', label: 'first sync: confirmed' },
     ],
@@ -150,6 +156,30 @@ test('CLI entrypoint: declined credential fallback reports DEPLOY_FAILED with pa
     const output = run.output()
     assert.equal(code, 1, output.slice(-1200))
     assert.match(output, /DEPLOY_FAILED/)
+    assert.match(output, /Planned Public URL — not yet deployed or verified/)
     assert.match(output, /Completed effects/)
+  } finally { run.cleanup() }
+})
+
+test('CLI entrypoint: Validate API Credentials returns to interactive menu instead of exiting (#208 BUG-002 / UX-010)', SKIP ? { skip: SKIP } : {}, async () => {
+  const run = runSetupPty({
+    answers: [
+      { wait: 'Validate API Credentials', answer: '\u001b[B\r', label: 'menu: validate' },
+      { wait: 'Paste your Cloudflare API Token', answer: 'cf-synthetic-token\r', label: 'cf token masked' },
+      { wait: 'Paste your Bangumi Personal Access Token', answer: 'bgm-synthetic-token\r', label: 'bgm token masked' },
+      { wait: 'Next Action', answer: '\u001b[B\r', label: 'post-validate: view details' },
+      { wait: 'Next Action', answer: '\u001b[B\u001b[B\u001b[B\r', label: 'post-validate: return to main menu' },
+      { wait: 'AiringCal Setup', answer: '\u001b[B\u001b[B\u001b[B\r', label: 'menu: exit' },
+    ],
+  })
+  try {
+    const code = await run.exitCode
+    const output = run.output()
+    assert.equal(code, 0, output.slice(-1500))
+    assert.match(output, /Validation Summary/)
+    assert.match(output, /Detailed Validation Results/)
+    assert.equal(run.seen.includes('menu: exit'), true, 'returned to main menu after validation before exiting')
+    assert.equal(output.includes('cf-synthetic-token'), false)
+    assert.equal(output.includes('bgm-synthetic-token'), false)
   } finally { run.cleanup() }
 })

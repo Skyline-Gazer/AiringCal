@@ -130,6 +130,109 @@ export function assertApplyPlanMatchesReview(reviewedPlan, applyPlan) {
   return applyPlan
 }
 
+/** Redact email addresses from account display names before writing public/local receipts. */
+export function sanitizeAccountName(name) {
+  return String(name ?? '')
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '<redacted-email>')
+    .trim()
+}
+
+/**
+ * #208 UX-013: Explicit terminal URL formatting so failed/un-deployed
+ * installations never report a proposed Worker URL as a live verified endpoint.
+ */
+export function formatTerminalEndpointLine({ verdict, applied = false, publicBaseUrl = null, plannedPublicBaseUrl = null }) {
+  const planned = plannedPublicBaseUrl || publicBaseUrl || '(none)'
+  if (!applied || verdict === 'DEPLOY_FAILED' || verdict === 'CANCELLED') {
+    return `Planned Public URL — not yet deployed or verified: ${planned}`
+  }
+  if (verdict === 'READY') {
+    return `Verified Public URL: ${publicBaseUrl ?? planned}`
+  }
+  return `Deployed Public URL (not yet verified ready): ${publicBaseUrl ?? planned}`
+}
+
+/**
+ * #208 UX-012: Classify an aborted apply result into safe recovery actions.
+ * Never allows blind retry on internal errors, unknown remote outcomes,
+ * unverified cleanups, dirty buckets, wrong accounts, or unproven ownership.
+ */
+export function classifyFailureRecovery({ result, environment = 'production' }) {
+  const summary = result?.mutationsSummary ?? {
+    confirmed: [],
+    alreadyExists: [],
+    failed: [],
+    unknown: [],
+    compensations: [],
+    unverifiedCleanups: [],
+    executedOps: Array.isArray(result?.mutationsExecuted) ? result.mutationsExecuted : [],
+  }
+  const errorCategory = result?.errorCategory ?? 'internal-error'
+  const code = result?.code ?? null
+  const hasUnknown = Array.isArray(summary.unknown) && summary.unknown.length > 0
+  const hasUnverifiedCleanup =
+    Boolean(result?.cleanupFailed) ||
+    (Array.isArray(summary.unverifiedCleanups) && summary.unverifiedCleanups.length > 0)
+
+  const existingResources = []
+  if (result?.observedBucket?.exists) {
+    existingResources.push(`R2 bucket ${result.observedBucket.name} (account ${result.observedBucket.accountId ?? 'unknown'})`)
+  }
+  for (const entry of summary.confirmed ?? []) {
+    if (entry.op === 'r2-bucket-create' && !existingResources.some((r) => r.includes(entry.target))) {
+      existingResources.push(`R2 bucket ${entry.target} (created in this attempt)`)
+    } else if (entry.op === 'writer-token-create') {
+      existingResources.push(`Cloudflare API token ${entry.target} (${entry.detail ?? 'created'})`)
+    } else if (entry.op === 'github-environment-ensure') {
+      existingResources.push(`GitHub Environment ${entry.target}`)
+    } else if (entry.op === 'worker-deploy') {
+      existingResources.push(`Cloudflare Worker ${entry.target}`)
+    }
+  }
+  for (const entry of summary.alreadyExists ?? []) {
+    if (entry.op === 'r2-bucket-create' && !existingResources.some((r) => r.includes(entry.target))) {
+      existingResources.push(`R2 bucket ${entry.target} (pre-existing, adopted/reused)`)
+    }
+  }
+
+  let allowedActions
+  if (errorCategory === 'internal-error') {
+    allowedActions = ['details', 'exit']
+  } else if (hasUnverifiedCleanup || hasUnknown) {
+    allowedActions = ['reconcile', 'details', 'exit']
+  } else if (code === 'BUCKET_NOT_EMPTY' || code === 'WRONG_ACCOUNT') {
+    allowedActions = ['review', 'details', 'exit']
+  } else if (code === 'BUCKET_OWNERSHIP_UNPROVEN') {
+    allowedActions = ['reconcile', 'review', 'details', 'exit']
+  } else if (
+    (Array.isArray(result?.missingScopes) && result.missingScopes.length > 0) ||
+    code === 'S3_OVERRIDE_REJECTED' ||
+    code === 'WRITER_TOKEN_COLLISION' ||
+    code === 'WRITER_SCOPE_VIOLATION'
+  ) {
+    allowedActions = ['supply-s3', 'reconcile', 'review', 'details', 'exit']
+  } else if (errorCategory === 'transport-failure') {
+    allowedActions = ['retry', 'reconcile', 'review', 'details', 'exit']
+  } else {
+    allowedActions = ['reconcile', 'review', 'details', 'exit']
+  }
+
+  return {
+    environment,
+    errorCategory,
+    code,
+    hasUnknown,
+    hasUnverifiedCleanup,
+    requiresFreshAuthorization: true,
+    confirmedMutations: summary.confirmed ?? [],
+    existingResources,
+    failedMutations: summary.failed ?? [],
+    unknownOutcomes: summary.unknown ?? [],
+    unverifiedCleanups: summary.unverifiedCleanups ?? [],
+    allowedActions,
+  }
+}
+
 /** Sanitized per-environment inventory (no credential values, ever). */
 export function buildInventory({
   plan,
@@ -138,19 +241,29 @@ export function buildInventory({
   environment,
   customDomain = '',
   buildSha,
-  deployedAt,
+  attemptedAt = null,
+  deployedAt = null,
   writerCredential = null,
+  writerCredentialState = null,
   verification = null,
   verdict = null,
+  reason = null,
+  observed = null,
+  resources = null,
   mutationReceipts = [],
 }) {
+  const plannedPublicBaseUrl = plan.publicBaseUrl ?? plan.workerOrigin
+  const applied = verdict !== 'DEPLOY_FAILED' && verdict !== 'CANCELLED' && Boolean(deployedAt || verdict)
+  const resolvedAttemptedAt = attemptedAt ?? deployedAt ?? new Date().toISOString()
+  const resolvedDeployedAt = applied ? (deployedAt ?? resolvedAttemptedAt) : null
+
   return {
     schema: 'airingcal.inventory.v1',
     environment,
     repository: plan.repository,
     cloudflare: {
       accountId: account.id,
-      accountName: account.name,
+      accountName: sanitizeAccountName(account.name),
       workersDevSubdomain: plan.workerOrigin
         ? new URL(plan.workerOrigin).host.replace(/\.workers\.dev$/, '').split('.').slice(1).join('.')
         : '',
@@ -158,10 +271,13 @@ export function buildInventory({
     bucket: plan.bucket,
     worker: {
       name: plan.cloudflareWorkerName,
-      origin: plan.workerOrigin,
+      deployed: applied,
+      origin: applied ? plan.workerOrigin : null,
+      plannedOrigin: plan.workerOrigin,
       customDomain: customDomain || null,
     },
-    publicBaseUrl: plan.publicBaseUrl ?? plan.workerOrigin,
+    publicBaseUrl: applied ? plannedPublicBaseUrl : null,
+    plannedPublicBaseUrl,
     originMode: plan.publicOriginMode,
     github: {
       environment: environment,
@@ -171,7 +287,23 @@ export function buildInventory({
       primaryUserId: identity.userId,
       username: identity.username,
     },
-    // #195 correction: record what the engine ACTUALLY provisioned/verified,
+    planned: {
+      bucket: plan.bucket,
+      workerName: plan.cloudflareWorkerName,
+      workerOrigin: plan.workerOrigin,
+      publicBaseUrl: plannedPublicBaseUrl,
+      customDomain: customDomain || null,
+      originMode: plan.publicOriginMode,
+      githubEnvironment: environment,
+      gateVariable: gateVariableName(environment),
+    },
+    observed: observed ?? null,
+    resources: resources ?? {
+      bucket: { name: plan.bucket, state: applied ? 'verified-empty' : 'unknown' },
+      worker: { name: plan.cloudflareWorkerName, state: applied ? 'deployed' : 'not-deployed', url: applied ? plan.workerOrigin : null },
+      githubEnvironment: { name: environment, state: applied ? 'synced' : 'unknown' },
+    },
+    // #195 / #208 UX-013: record what the engine ACTUALLY provisioned/verified,
     // never the desired canonical name when no such token exists.
     writerCredential: writerCredential
       ? {
@@ -182,10 +314,13 @@ export function buildInventory({
           tokenId: writerCredential.tokenId ?? null,
         }
       : null,
+    writerCredentialState: writerCredentialState ?? (writerCredential ? 'verified' : 'not-provisioned'),
     deployment: {
       gitSha: buildSha ?? null,
-      deployedAt: deployedAt ?? null,
+      attemptedAt: resolvedAttemptedAt,
+      deployedAt: resolvedDeployedAt,
       verdict,
+      reason: reason ?? null,
     },
     mutationReceipts,
     verification: verification ?? null,

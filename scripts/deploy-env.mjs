@@ -143,7 +143,7 @@ async function applyDevelopment({ env, plan, derived, io }) {
   const applyIo = io ?? createLiveDevelopmentApplyIo({ env, plan })
   const result = await runDevelopmentApply({ plan, env, io: applyIo })
   process.stdout.write(
-    `${JSON.stringify({ status: result.ok ? 'applied' : 'aborted', ...result, mutationsExecuted: mutationsExecutedFrom(result.completed) }, null, 2)}\n`,
+    `${JSON.stringify({ status: result.ok ? 'applied' : 'aborted', ...result, mutationsExecuted: mutationsExecutedFrom(result.completed, result.mutations) }, null, 2)}\n`,
   )
   if (!result.ok) {
     process.exitCode = result.exitCode ?? 1
@@ -311,7 +311,7 @@ async function main(argv = process.argv, options = {}) {
     const applyIo = options.io ?? createLiveDevelopmentApplyIo({ env, plan })
     const result = await runProductionApply({ plan, env, io: applyIo })
     process.stdout.write(
-      `${JSON.stringify({ status: result.ok ? 'applied' : 'aborted', ...result, mutationsExecuted: mutationsExecutedFrom(result.completed) }, null, 2)}\n`,
+      `${JSON.stringify({ status: result.ok ? 'applied' : 'aborted', ...result, mutationsExecuted: mutationsExecutedFrom(result.completed, result.mutations) }, null, 2)}\n`,
     )
     if (!result.ok) {
       process.exitCode = result.exitCode ?? 1

@@ -732,6 +732,7 @@ function createRecordingApplyIo(overrides = {}) {
       leaseClear: true,
     })),
     ensureBucket: record('ensure-bucket', async () => ({ bucket: DEVELOPMENT_DEFAULTS.bucket })),
+    verifyBucketEmpty: record('verify-bucket-empty', async () => ({ bucket: DEVELOPMENT_DEFAULTS.bucket, emptyVerified: true })),
     disableR2Dev: record('disable-r2-dev', async () => ({ disabled: true })),
     attachCustomDomain: record('attach-custom-domain', async () => ({ attached: true })),
     applyCacheRules: record('cache-rules', async () => ({ ok: true })),
@@ -790,6 +791,7 @@ function createRecordingApplyIo(overrides = {}) {
         deriveAndVerifyS3: 'derive-s3',
         freezeWriter: 'writer-freeze',
         ensureBucket: 'ensure-bucket',
+        verifyBucketEmpty: 'verify-bucket-empty',
         disableR2Dev: 'disable-r2-dev',
         attachCustomDomain: 'attach-custom-domain',
         applyCacheRules: 'cache-rules',
@@ -888,6 +890,7 @@ test('runProductionApply executes the ordered copy-free production sequence', as
     'token-probe',
     'derive-s3',
     'ensure-bucket',
+    'verify-bucket-empty',
     'disable-r2-dev',
     'attach-custom-domain',
     'cache-rules',
@@ -947,7 +950,7 @@ test('production apply reports completed effects when a later adapter throws', a
   assert.equal(result.exitCode, 1)
   assert.match(result.reason, /deployment refused/)
   assert.ok(!JSON.stringify(result).includes(token))
-  assert.deepEqual(result.completed, ['token-probe', 'derive-s3', 'ensure-bucket-empty', 'disable-r2-dev', 'sync-gh-env'])
+  assert.deepEqual(result.completed, ['token-probe', 'derive-s3', 'ensure-bucket', 'verify-bucket-empty', 'disable-r2-dev', 'sync-gh-env'])
 })
 
 test('runProductionApply refuses non-production and copyable plans', async () => {
@@ -992,15 +995,18 @@ test('production live-io adapters refuse staging copy/freeze and require an empt
       AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: 'acct',
       AIRINGCAL_S3_ACCESS_KEY_ID: 'ak',
       AIRINGCAL_S3_SECRET_ACCESS_KEY: 'sk',
+      AIRINGCAL_ADOPT_EXISTING_BUCKET: 'yes',
     },
     plan,
     spawnSyncImpl,
     createObjectStore: () => ({ list: async () => [...bucketKeys], head: async () => null, close() {} }),
   })
   await io.deriveAndVerifyS3({})
-  await assert.rejects(() => io.ensureBucket({}), /empty bucket/)
+  const ensured = await io.ensureBucket({})
+  assert.equal(ensured.reused, true)
+  await assert.rejects(() => io.verifyBucketEmpty({}), /empty bucket/)
   bucketKeys = []
-  const ok = await io.ensureBucket({})
+  const ok = await io.verifyBucketEmpty({})
   assert.equal(ok.emptyVerified, true)
   await assert.rejects(() => io.copyPublicPrefixes({}), /copy-free/)
   await assert.rejects(() => io.copyCheckpoints({}), /copy-free/)
@@ -4702,6 +4708,7 @@ test('production ensureBucket removes a provable probe-only residue and keeps re
       AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: 'acct',
       AIRINGCAL_S3_ACCESS_KEY_ID: 'ak',
       AIRINGCAL_S3_SECRET_ACCESS_KEY: 'sk',
+      AIRINGCAL_ADOPT_EXISTING_BUCKET: 'yes',
     },
     plan,
     spawnSyncImpl: (_cmd, args) => {
@@ -4720,18 +4727,21 @@ test('production ensureBucket removes a provable probe-only residue and keeps re
   })
   const probeOnly = makeIo({ keys: [probeKey], body: probeBody })
   await probeOnly.deriveAndVerifyS3({})
-  const cleaned = await probeOnly.ensureBucket({})
+  await probeOnly.ensureBucket({})
+  const cleaned = await probeOnly.verifyBucketEmpty({})
   assert.equal(cleaned.emptyVerified, true)
   assert.equal(cleaned.probeResidueCleaned, true)
   assert.deepEqual(probeOnly.lastList, undefined)
 
   const foreign = makeIo({ keys: [probeKey], body: 'someone-elses-bytes' })
   await foreign.deriveAndVerifyS3({})
-  await assert.rejects(() => foreign.ensureBucket({}), /empty bucket/)
+  await foreign.ensureBucket({})
+  await assert.rejects(() => foreign.verifyBucketEmpty({}), /empty bucket/)
 
   const mixed = makeIo({ keys: [probeKey, 'other.json'], body: probeBody })
   await mixed.deriveAndVerifyS3({})
-  await assert.rejects(() => mixed.ensureBucket({}), /empty bucket/)
+  await mixed.ensureBucket({})
+  await assert.rejects(() => mixed.verifyBucketEmpty({}), /empty bucket/)
 })
 
 test('syncGithubEnvironment records the Worker origin when the plan has no bucket base', async () => {
@@ -5542,7 +5552,11 @@ test('Production Writer credential provisioning happens after the bucket ownersh
   assert.equal(result.ok, true, JSON.stringify(result))
   const bucketIndex = io.calls.indexOf('ensure-bucket')
   const credentialIndex = io.calls.indexOf('provisionProductionWriter')
+  const emptyCheckIndex = io.calls.indexOf('verify-bucket-empty')
   assert.ok(bucketIndex >= 0 && credentialIndex > bucketIndex,
     `credential must follow bucket ownership proof; calls: ${io.calls.join(' → ')}`)
+  assert.ok(emptyCheckIndex > credentialIndex,
+    `empty-bucket check must follow credential provisioning; calls: ${io.calls.join(' → ')}`)
   assert.ok(result.completed.includes('provision-writer-credential'))
+  assert.ok(result.completed.includes('verify-bucket-empty'))
 })

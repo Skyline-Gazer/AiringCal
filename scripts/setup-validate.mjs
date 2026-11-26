@@ -114,6 +114,7 @@ export async function validateCredentials({
   fetchImpl = globalThis.fetch,
   cloudflareToken,
   bangumiToken,
+  accountId = null,
   s3 = null,
   customDomain = false,
   edgeone = false,
@@ -133,10 +134,13 @@ export async function validateCredentials({
       const verified = await verifyCloudflareToken(fetchImpl, cloudflareToken)
       checks.push(check('cloudflare.token', 'Cloudflare API Token', 'VERIFIED', `token ${verified.status}`))
       const accounts = await fetchCloudflareAccounts(fetchImpl, cloudflareToken, { secrets: [cloudflareToken] })
-      checks.push(check('cloudflare.accounts', 'Cloudflare account discovery', accounts.length === 1 ? 'VERIFIED' : 'VERIFIED',
+      checks.push(check('cloudflare.accounts', 'Cloudflare account discovery', 'VERIFIED',
         accounts.length === 1 ? accounts[0].name : `${accounts.length} eligible accounts`))
-      if (accounts.length === 1) {
-        account = accounts[0]
+      const selected = accountId
+        ? accounts.find((entry) => entry.id.toLowerCase() === String(accountId).toLowerCase()) ?? null
+        : (accounts.length === 1 ? accounts[0] : null)
+      if (selected) {
+        account = selected
         workersSubdomain = await fetchWorkersSubdomain(fetchImpl, cloudflareToken, account.id, { secrets: [cloudflareToken] })
         checks.push(check('cloudflare.subdomain', 'workers.dev subdomain', 'VERIFIED', workersSubdomain))
         checks.push(...await probeCloudflareCapabilities({ fetchImpl, token: cloudflareToken, accountId: account.id }))
@@ -190,4 +194,131 @@ export async function validateCredentials({
   const blocking = failures.map((entry) => entry.id)
   for (const entry of checks) log(`${entry.state.padEnd(14)} ${entry.label}${entry.detail ? ` — ${entry.detail}` : ''}`)
   return { ok: blocking.length === 0, checks, blocking, identity, account, workersSubdomain }
+}
+
+/**
+ * #208 UX-010: user-facing credential validation summary.
+ * Never converts NOT_VERIFIED into VERIFIED; explains confirmed capabilities,
+ * missing mandatory capabilities, unverified write/provisioning steps, and
+ * expected fallback requirements in clear operator language.
+ */
+export function summarizeValidation(validation) {
+  const checks = Array.isArray(validation?.checks) ? validation.checks : []
+  const byId = (id) => checks.find((entry) => entry.id === id) ?? null
+  const confirmed = []
+  const missing = []
+  const unverified = []
+
+  const cfToken = byId('cloudflare.token')
+  const cfAccounts = byId('cloudflare.accounts')
+  const cfSubdomain = byId('cloudflare.subdomain')
+  const workersRead = byId('workers.read')
+  const r2Read = byId('r2.read')
+  const writerProv = byId('writer.provision')
+  const r2Write = byId('r2.write')
+  const bgmToken = byId('bangumi.token')
+  const bgmCollections = byId('bangumi.collections')
+  const bgmEpisodes = byId('bangumi.episodes')
+  const s3Override = byId('writer.s3')
+
+  if (cfToken?.state === 'VERIFIED') confirmed.push('Cloudflare API Token is valid.')
+  else if (cfToken) missing.push(`Cloudflare API Token: ${cfToken.detail ?? cfToken.state}.`)
+
+  if (cfAccounts?.state === 'VERIFIED') {
+    confirmed.push(`Cloudflare account discovery succeeded (${cfAccounts.detail ?? 'verified'}).`)
+  } else if (cfAccounts && cfAccounts.state !== 'NOT_APPLICABLE') {
+    missing.push(`Cloudflare account discovery failed: ${cfAccounts.detail ?? cfAccounts.state}.`)
+  }
+
+  if (cfSubdomain?.state === 'VERIFIED') {
+    confirmed.push(`workers.dev subdomain resolved (${cfSubdomain.detail}).`)
+  }
+  if (workersRead?.state === 'VERIFIED') confirmed.push('Workers scripts read permission verified.')
+  else if (workersRead?.state === 'MISSING') {
+    unverified.push(`Workers scripts read returned ${workersRead.detail ?? 'missing'} (write permission will be tested at apply).`)
+  }
+
+  if (r2Read?.state === 'VERIFIED') confirmed.push('R2 buckets read permission verified.')
+  else if (r2Read?.state === 'MISSING') {
+    unverified.push(`R2 buckets read returned ${r2Read.detail ?? 'missing'} (write permission will be tested at apply).`)
+  }
+
+  if (bgmToken?.state === 'VERIFIED' && bgmCollections?.state === 'VERIFIED') {
+    confirmed.push(`Bangumi PAT and anime collection access verified (${bgmCollections.detail ?? 'ok'}).`)
+  } else {
+    if (bgmToken && bgmToken.state !== 'VERIFIED') {
+      missing.push(`Bangumi Personal Access Token failed: ${bgmToken.detail ?? bgmToken.state}.`)
+    }
+    if (bgmCollections && bgmCollections.state !== 'VERIFIED') {
+      missing.push(`Bangumi anime collection read failed: ${bgmCollections.detail ?? bgmCollections.state}.`)
+    }
+  }
+
+  if (bgmEpisodes?.state === 'VERIFIED') {
+    confirmed.push('Bangumi episode progress read verified.')
+  } else if (bgmEpisodes && bgmEpisodes.state !== 'NOT_APPLICABLE' && bgmEpisodes.state !== 'VERIFIED') {
+    unverified.push(`Bangumi episode progress read is ${bgmEpisodes.state} (${bgmEpisodes.detail ?? 'unverified'}).`)
+  }
+
+  let fallbackNote = null
+  if (writerProv?.state === 'VERIFIED') {
+    confirmed.push('Cloudflare token permission catalogue shows API Token Edit capability.')
+  } else if (writerProv?.state === 'MISSING') {
+    unverified.push('Automatic Writer token creation is not listed in the token permission catalogue.')
+    fallbackNote = 'Deployment may require an independently scoped R2 S3 credential (masked fallback prompt is available during installation).'
+  } else if (writerProv?.state === 'NOT_VERIFIED') {
+    unverified.push(`Automatic Writer credential creation could not be verified read-only (${writerProv.detail ?? 'catalogue unavailable'}).`)
+    fallbackNote = 'Deployment will attempt automatic bucket-scoped Writer provisioning and offer a masked R2 S3 fallback if unavailable.'
+  }
+
+  if (r2Write?.state === 'NOT_VERIFIED') {
+    unverified.push('Write permissions (bucket, Worker deploy, GitHub Environment) are NOT tested read-only and will be confirmed during authorized installation.')
+  }
+  if (s3Override?.state === 'VERIFIED') {
+    confirmed.push('Supplied independent R2 S3 credential passed read-only list check.')
+  } else if (s3Override?.state === 'MISSING') {
+    missing.push(`Supplied independent R2 S3 credential failed: ${s3Override.detail ?? 'rejected'}.`)
+  }
+
+  const blocked = !validation?.ok
+  const status = blocked ? 'blocked' : (fallbackNote ? 'ready-with-notes' : 'ready')
+  const headline = blocked
+    ? 'Credentials are missing mandatory access — fix the blocking items below before installing.'
+    : fallbackNote
+      ? 'Mandatory read-only checks passed; installation can continue (independent R2 credential fallback may be needed).'
+      : 'Mandatory read-only checks passed; ready to continue to installation.'
+  const nextAction = blocked
+    ? 'Re-enter the failing token(s) or fix their permissions, then revalidate.'
+    : 'Choose "Continue to Installation" to reuse these validated credentials in this session.'
+
+  return { status, headline, confirmed, missing, unverified, fallbackNote, nextAction }
+}
+
+export function formatValidationSummary(validation) {
+  const summary = summarizeValidation(validation)
+  const lines = [summary.headline, '']
+  if (summary.confirmed.length > 0) {
+    lines.push('Confirmed:')
+    for (const item of summary.confirmed) lines.push(`  ✓ ${item}`)
+  }
+  if (summary.missing.length > 0) {
+    lines.push('Missing mandatory capabilities (blocking):')
+    for (const item of summary.missing) lines.push(`  ✗ ${item}`)
+  }
+  if (summary.unverified.length > 0) {
+    lines.push('Not verified read-only:')
+    for (const item of summary.unverified) lines.push(`  ! ${item}`)
+  }
+  if (summary.fallbackNote) {
+    lines.push(`Fallback note: ${summary.fallbackNote}`)
+  }
+  lines.push(`Next: ${summary.nextAction}`)
+  return lines.join('\n')
+}
+
+export function formatValidationDetails(validation) {
+  const checks = Array.isArray(validation?.checks) ? validation.checks : []
+  return checks
+    .map((entry) => `${String(entry.state).padEnd(14)} ${entry.label}${entry.detail ? ` — ${entry.detail}` : ''}`)
+    .join('\n')
 }
