@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import test from 'node:test'
-import { applyPlan, discoverIdentity, planCustomDomain, runFirstSync, writeInventory } from './setup-wizard.mjs'
+import { applyPlan, discoverIdentity, planCustomDomain, resolveApplyEnvironment, runFirstSync, writeInventory } from './setup-wizard.mjs'
 import {
   assertInventorySanitized,
   buildInventory,
@@ -385,5 +385,137 @@ test('writeInventory enforces the value-level secret check with the run secrets 
   assert.throws(
     () => writeInventory({ environment: 'development', inventory, baseDir: base, secrets: ['airingcal-development'] }),
     /leaked/,
+  )
+})
+
+// ---------------------------------------------------------------------------
+// #195 reviewer findings: apply-env gates, engine inputs, domain hints
+// ---------------------------------------------------------------------------
+
+const WIZARD_ENV_BASE = Object.freeze({ AIRINGCAL_ENV: 'production', AIRINGCAL_CLOUDFLARE_API_TOKEN: 'cf' })
+
+test('headless production never synthesizes the apply gates from the wizard confirmation (#195 review)', () => {
+  assert.throws(
+    () => resolveApplyEnvironment({
+      environment: 'production',
+      headless: true,
+      approved: true,
+      wizardEnv: WIZARD_ENV_BASE,
+      sourceEnv: { AIRINGCAL_WIZARD_CONFIRM: 'yes' },
+    }),
+    /AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes and AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes/,
+  )
+  const headless = resolveApplyEnvironment({
+    environment: 'production',
+    headless: true,
+    approved: true,
+    wizardEnv: WIZARD_ENV_BASE,
+    sourceEnv: {
+      AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED: 'yes',
+      AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes',
+    },
+  })
+  assert.equal(headless.AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED, 'yes')
+  assert.equal(headless.AIRINGCAL_DEPLOY_LIVE_CONFIRM, 'yes')
+  const interactive = resolveApplyEnvironment({
+    environment: 'production',
+    headless: false,
+    approved: true,
+    wizardEnv: WIZARD_ENV_BASE,
+    sourceEnv: {},
+  })
+  assert.equal(interactive.AIRINGCAL_DEPLOY_LIVE_CONFIRM, 'yes', 'interactive confirmation is the only synthesis')
+  assert.throws(
+    () => resolveApplyEnvironment({ environment: 'development', headless: false, approved: false, wizardEnv: {} }),
+    /not authorized/,
+  )
+})
+
+test('apply env forwards engine inputs (S3 overrides, writer rotation id) (#195 review)', () => {
+  const env = resolveApplyEnvironment({
+    environment: 'development',
+    headless: true,
+    approved: true,
+    wizardEnv: { AIRINGCAL_ENV: 'development' },
+    sourceEnv: {
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'ak',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'sk',
+      AIRINGCAL_S3_ENDPOINT: 'https://acct.r2.cloudflarestorage.com',
+      AIRINGCAL_S3_REGION: 'auto',
+      AIRINGCAL_WRITER_TOKEN_ROTATION_ID: 'tok-9',
+      AIRINGCAL_WIZARD_CONFIRM: 'yes',
+    },
+  })
+  assert.equal(env.AIRINGCAL_S3_ACCESS_KEY_ID, 'ak')
+  assert.equal(env.AIRINGCAL_WRITER_TOKEN_ROTATION_ID, 'tok-9')
+  assert.equal(env.AIRINGCAL_WIZARD_CONFIRM, undefined, 'wizard-only flags are not forwarded')
+})
+
+test('env-supplied custom domain is the hostname that gets DNS-checked, without prompts (#195 review)', async () => {
+  const { io, input } = fakeIo()
+  const fetchFake = fakeFetch([
+    [/\/zones\?/, () => ({ body: { success: true, result: [{ id: 'zone-1', name: 'example.com', status: 'active' }] } })],
+    [/dns_records\?name=anime\.example\.com/, () => ({ body: { success: true, result: [] } })],
+  ])
+  const result = await planCustomDomain({
+    fetchImpl: fetchFake.impl,
+    cloudflareToken: 'cf',
+    account: { id: ACCOUNT, name: 'A' },
+    io,
+    log: () => {},
+    assume: true,
+    hostnameHint: 'anime.example.com',
+    zoneHint: 'zone-1',
+  })
+  assert.equal(result.customDomain, 'anime.example.com')
+  assert.equal(result.zoneId, 'zone-1')
+  assert.equal(input.written.length, 0, 'no prompts when both hints are supplied')
+  assert.ok(fetchFake.calls.some((c) => c.url.includes('name=anime.example.com')), 'DNS checked for the exact name')
+})
+
+test('non-interactive takeover of an env-supplied domain is refused without the explicit flag (#195 review)', async () => {
+  const fetchFake = fakeFetch([
+    [/\/zones\?/, () => ({ body: { success: true, result: [{ id: 'zone-1', name: 'example.com', status: 'active' }] } })],
+    [/dns_records\?name=anime\.example\.com/, () => ({ body: { success: true, result: [{ id: 'r1', name: 'anime.example.com', type: 'CNAME', content: 'old.example.net' }] } })],
+  ])
+  await assert.rejects(
+    () => planCustomDomain({
+      fetchImpl: fetchFake.impl,
+      cloudflareToken: 'cf',
+      account: { id: ACCOUNT, name: 'A' },
+      io: { input: { isTTY: false }, output: { write() {} } },
+      log: () => {},
+      assume: true,
+      hostnameHint: 'anime.example.com',
+      zoneHint: 'zone-1',
+    }),
+    /non-interactively/,
+  )
+  const authorised = await planCustomDomain({
+    fetchImpl: fetchFake.impl,
+    cloudflareToken: 'cf',
+    account: { id: ACCOUNT, name: 'A' },
+    io: { input: { isTTY: false }, output: { write() {} } },
+    log: () => {},
+    assume: true,
+    hostnameHint: 'anime.example.com',
+    zoneHint: 'zone-1',
+    allowTakeover: true,
+  })
+  assert.equal(authorised.customDomain, 'anime.example.com')
+})
+
+test('inventory sanitizer rejects token-shaped fields outside writerToken (#195 review)', () => {
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', publicBaseUrl: '' })
+  const base = buildInventory({
+    plan,
+    account: { id: ACCOUNT, name: 'Main' },
+    identity: { userId: '1', username: 'a' },
+    environment: 'development',
+  })
+  assert.doesNotThrow(() => assertInventorySanitized(base))
+  assert.throws(
+    () => assertInventorySanitized({ ...base, extra: { token: 'x'.repeat(32) } }),
+    /token-shaped/,
   )
 })

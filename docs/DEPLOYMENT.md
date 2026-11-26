@@ -91,6 +91,17 @@ Safety properties:
 - Production apply still runs the three existing gates; the interactive
   confirmation translates into `AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes` +
   `AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes` for that execution only.
+- Headless is strictly env-driven: it never prompts (missing tokens fail with
+  the exact variable names). `--headless --environment production` additionally
+  requires `AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes` and
+  `AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes` in `.env.production`/the shell — the
+  wizard never manufactures them from `AIRINGCAL_WIZARD_CONFIRM`.
+- An environment-supplied `AIRINGCAL_WORKER_CUSTOM_DOMAIN`/`AIRINGCAL_ZONE_ID`
+  is checked and bound as exactly that value (DNS occupancy included); replacing
+  an existing record non-interactively requires
+  `AIRINGCAL_ALLOW_CUSTOM_DOMAIN_TAKEOVER=yes`. S3 overrides and
+  `AIRINGCAL_WRITER_TOKEN_ROTATION_ID` from the source env are forwarded to the
+  engine unchanged.
 - First sync verifies the remote ref head, opens only the environment's
   temporary gate variable, closes it as soon as the run passes its gate step,
   and closes it again in cleanup on failure/timeout/cancellation; the

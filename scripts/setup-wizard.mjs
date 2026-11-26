@@ -158,6 +158,9 @@ export async function planCustomDomain({
   io,
   log: logFn = log,
   assume,
+  hostnameHint = '',
+  zoneHint = '',
+  allowTakeover = false,
 }) {
   const wantsCustom =
     assume ?? (await askConfirm('Attach a custom domain to the Worker? (default: workers.dev URL only)', io))
@@ -170,29 +173,54 @@ export async function planCustomDomain({
       'Add the zone (or use the default workers.dev URL) and retry.',
     )
   }
-  const zone = await askSelect(
-    'Select the zone for the custom domain',
-    zones.map((entry) => ({ title: entry.name, hint: entry.status, value: entry })),
-    io,
-  )
-  const hostname = await askText(`Hostname under ${zone.name} (e.g. anime.${zone.name})`, io, {
-    validate: (value) =>
-      /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(value)
-        ? null
-        : 'Enter a valid lowercase hostname',
-  })
+  // #195 review: an environment-supplied zone/hostname must be the values the
+  // checkout and DNS-occupancy check operate on — never a prompt answer that
+  // is then discarded in favour of the env value.
+  let zone
+  if (zoneHint) {
+    zone = zones.find((entry) => entry.id === zoneHint || entry.name === zoneHint)
+    if (!zone) {
+      throw new IdentityError(
+        'CF_ZONE_NOT_FOUND',
+        `AIRINGCAL_ZONE_ID "${zoneHint}" is not visible to this token (visible zones: ${zones.map((z) => `${z.name}/${z.id}`).join(', ')})`,
+      )
+    }
+  } else {
+    zone = await askSelect(
+      'Select the zone for the custom domain',
+      zones.map((entry) => ({ title: entry.name, hint: entry.status, value: entry })),
+      io,
+    )
+  }
+  const hostname = hostnameHint
+    ? String(hostnameHint).trim().toLowerCase()
+    : await askText(`Hostname under ${zone.name} (e.g. anime.${zone.name})`, io, {
+        validate: (value) =>
+          /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(value)
+            ? null
+            : 'Enter a valid lowercase hostname',
+      })
   const records = await fetchDnsRecordsForName(fetchImpl, cloudflareToken, zone.id, hostname, {
     secrets: [cloudflareToken],
   })
   if (records.length > 0) {
     logFn(`Existing DNS records for ${hostname}: ${records.map((r) => `${r.type} -> ${r.content}`).join(', ')}`)
-    const takeOver = await askConfirm(
-      `DNS name ${hostname} is already in use. Bind this Worker to it anyway (Cloudflare will replace the record)?`,
-      io,
-    )
-    if (!takeOver) {
+    if (allowTakeover) {
+      logFn(`Takeover of ${hostname} explicitly authorised (AIRINGCAL_ALLOW_CUSTOM_DOMAIN_TAKEOVER=yes).`)
+    } else if (io?.input?.isTTY) {
+      const takeOver = await askConfirm(
+        `DNS name ${hostname} is already in use. Bind this Worker to it anyway (Cloudflare will replace the record)?`,
+        io,
+      )
+      if (!takeOver) {
+        throw new WizardAbort(
+          `Refusing to take over ${hostname}. Choose another hostname, or remove the existing record first.`,
+        )
+      }
+    } else {
       throw new WizardAbort(
-        `Refusing to take over ${hostname}. Choose another hostname, or remove the existing record first.`,
+        `Refusing to take over ${hostname} non-interactively. Remove the existing record, choose another hostname, ` +
+        'or set AIRINGCAL_ALLOW_CUSTOM_DOMAIN_TAKEOVER=yes to authorise replacing it.',
       )
     }
   }
@@ -235,6 +263,49 @@ export async function applyPlan({ env, plan, log: logFn = log, spawnSyncImpl = s
     ? `Apply ${isProduction ? 'finished' : 'completed'}: ${(result.completed ?? []).join(' → ')}`
     : `Apply aborted: ${result.reason} (completed: ${(result.completed ?? []).join(', ')})`)
   return { result, io }
+}
+
+/**
+ * Engine inputs the wizard must forward from the resolved source
+ * environment: S3 credential overrides and the explicit writer-token
+ * rotation id are read by the live adapters, and their own remediation
+ * messages point at these variables (#195 review).
+ */
+const ENGINE_INPUT_KEYS = Object.freeze([
+  'AIRINGCAL_S3_ACCESS_KEY_ID',
+  'AIRINGCAL_S3_SECRET_ACCESS_KEY',
+  'AIRINGCAL_S3_ENDPOINT',
+  'AIRINGCAL_S3_REGION',
+  'AIRINGCAL_WRITER_TOKEN_ROTATION_ID',
+])
+
+/**
+ * Assemble the env handed to the apply runners. Interactive confirmation is
+ * the ONLY place the production gates are synthesized; headless runs must
+ * carry both documented gates themselves (never manufactured from the
+ * wizard confirmation flag).
+ */
+export function resolveApplyEnvironment({ environment, headless, approved, wizardEnv, sourceEnv = {} }) {
+  if (!approved) throw new Error('Apply is not authorized')
+  const applyEnv = { ...wizardEnv }
+  for (const key of ENGINE_INPUT_KEYS) {
+    if (sourceEnv[key] !== undefined) applyEnv[key] = sourceEnv[key]
+  }
+  if (environment === 'production') {
+    if (headless) {
+      const authorized = String(sourceEnv.AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED ?? '') === 'yes'
+      const liveConfirmed = String(sourceEnv.AIRINGCAL_DEPLOY_LIVE_CONFIRM ?? '') === 'yes'
+      if (!authorized || !liveConfirmed) {
+        throw new Error(
+          'Headless production apply requires AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes and AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes ' +
+          'in the environment (.env.production or shell); the wizard never synthesizes them non-interactively',
+        )
+      }
+    }
+    applyEnv.AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED = 'yes'
+    applyEnv.AIRINGCAL_DEPLOY_LIVE_CONFIRM = 'yes'
+  }
+  return applyEnv
 }
 
 /**
@@ -480,6 +551,14 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
     const loaded = loadHeadlessEnvironment({ environment })
     resolvedEnv = loaded.env
     dotenvPath = loaded.dotenvPath
+    // #195 review: headless is env-driven by contract — never fall through
+    // to an interactive secret prompt (it would block on a pty, or abort
+    // with a misleading TTY message).
+    const missingTokens = ['AIRINGCAL_CLOUDFLARE_API_TOKEN', 'AIRINGCAL_BANGUMI_TOKEN']
+      .filter((key) => !String(resolvedEnv[key] ?? '').trim())
+    if (missingTokens.length > 0) {
+      throw new Error(`Headless setup needs ${missingTokens.join(', ')} in the environment/dotenv`)
+    }
   }
   const { cloudflareToken, bangumiToken } = await resolveTokens({ io, env: resolvedEnv, log: logFn })
   const discovery = await discoverIdentity({
@@ -490,8 +569,12 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
     env: resolvedEnv,
     log: logFn,
   })
+  // #195 review: an env-supplied custom domain/zone is checked and bound as
+  // exactly that value (no prompt whose answer would be discarded).
+  const hostnameHint = String(resolvedEnv.AIRINGCAL_WORKER_CUSTOM_DOMAIN ?? '').trim()
+  const zoneHint = String(resolvedEnv.AIRINGCAL_ZONE_ID ?? '').trim()
   const domain =
-    headless && !resolvedEnv.AIRINGCAL_WORKER_CUSTOM_DOMAIN
+    headless && !hostnameHint
       ? { customDomain: '', zoneId: '' }
       : await planCustomDomain({
           fetchImpl,
@@ -499,10 +582,13 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
           account: discovery.account,
           io,
           log: logFn,
-          assume: resolvedEnv.AIRINGCAL_WORKER_CUSTOM_DOMAIN ? true : undefined,
+          assume: hostnameHint ? true : undefined,
+          hostnameHint,
+          zoneHint,
+          allowTakeover: String(resolvedEnv.AIRINGCAL_ALLOW_CUSTOM_DOMAIN_TAKEOVER ?? '') === 'yes',
         })
-  const customDomain = String(resolvedEnv.AIRINGCAL_WORKER_CUSTOM_DOMAIN ?? domain.customDomain ?? '').trim()
-  const zoneId = String(resolvedEnv.AIRINGCAL_ZONE_ID ?? domain.zoneId ?? '').trim()
+  const customDomain = String(hostnameHint || domain.customDomain || '').trim()
+  const zoneId = String(zoneHint || domain.zoneId || '').trim()
   const wizardEnv = wizardEnvironment({
     environment,
     cloudflareToken,
@@ -524,12 +610,13 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
     logFn('Plan not applied. Re-run `pnpm setup` when ready.')
     return { applied: false }
   }
-  const applyEnv = { ...wizardEnv }
-  if (environment === 'production') {
-    applyEnv.AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED = 'yes'
-    applyEnv.AIRINGCAL_DEPLOY_LIVE_CONFIRM = 'yes'
-  }
-  const applyDerived = buildPlanForEnvironment(applyEnv, { mode: 'apply' })
+  const applyEnv = resolveApplyEnvironment({
+    environment,
+    headless,
+    approved,
+    wizardEnv,
+    sourceEnv: resolvedEnv,
+  })
   const { result, io: liveIo } = await applyPlan({
     env: applyEnv,
     plan: applyDerived.plan,
@@ -558,7 +645,9 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
     })
   }
   let verification = null
-  if (s3) {
+  // A release exists only after the first Full Sync; verifying an intentionally
+  // unpublished install would persist spurious failures into the inventory.
+  if (s3 && sync) {
     verification = runVerifier({
       base: dry.plan.workerOrigin,
       bucket: dry.plan.bucket,

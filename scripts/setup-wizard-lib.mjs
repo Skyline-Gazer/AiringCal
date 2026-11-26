@@ -161,8 +161,12 @@ export function assertInventorySanitized(inventory, secrets = []) {
       throw new Error('Refusing to write inventory: a credential value leaked into it')
     }
   }
-  if (/"token"\s*:\s*"[A-Za-z0-9_-]{20,}"/.test(json) && !json.includes('"writerToken"')) {
-    throw new Error('Refusing to write inventory: token-shaped value detected')
+  // Exempt only the legitimate writerToken block (name/id/scope); any other
+  // token-shaped string field is a leak. The previous form was unreachable
+  // because buildInventory always emits a writerToken key (#195 review).
+  const { writerToken: _writerToken, ...rest } = inventory
+  if (/"token"\s*:\s*"[A-Za-z0-9_-]{20,}"/.test(JSON.stringify(rest))) {
+    throw new Error('Refusing to write inventory: token-shaped value detected outside writerToken')
   }
   return inventory
 }
