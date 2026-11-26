@@ -104,7 +104,11 @@ function validConfig(config: CompleteFetchConfig): boolean {
 }
 
 export function createUpstreamBgmClient(token?: string): BgmClient {
-  return new BgmClient(token, { maxGetRetries: 0 })
+  // GitHub-runner egress to api.bgm.tv is regularly slow (live 2026-11-26
+  // sync: page 3 timed out three times at the 10s default). The retry loop
+  // still bounds total work (maxAttempts 3), but each GET gets a realistic
+  // budget for the upstream's known overload windows.
+  return new BgmClient(token, { maxGetRetries: 0, requestTimeoutMs: 30_000 })
 }
 
 export async function fetchCompleteInput(
