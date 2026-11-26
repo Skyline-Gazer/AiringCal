@@ -43,6 +43,11 @@ export default {
     if (u.includes('/workers/subdomain')) return json({ success: true, result: { subdomain: 'r7a' } })
     if (u.includes('/zones?')) return json({ success: true, result: [] })
     if (u.endsWith('api.bgm.tv/v0/me')) return json({ id: 857123, username: 'synthetic-owner' })
+    if (u.includes('/v0/users/synthetic-owner/collections')) return json({ total: 1, data: [{ subject_id: 900 }] })
+    if (u.includes('/v0/users/-/collections/900/episodes')) return json({ total: 1, data: [] })
+    if (u.endsWith('/user/tokens/permissions')) {
+      return json({ success: true, result: { permissions: ['User API Tokens:Edit'] } })
+    }
     return json({ success: true, result: null })
   },
   spawnSyncImpl: (cmd, args) => {

@@ -35,13 +35,18 @@ pnpm install
 pnpm run setup
 ```
 
-`pnpm run setup` is the canonical installation experience (#195): it asks for
-a Cloudflare API token and a Bangumi personal access token (both masked), then
+`pnpm run setup` is the canonical installation experience: it opens an
+arrow-key menu (Install or Update / Validate API Credentials / Doctor / Exit),
+guides you through the two masked credentials with inline permission checks,
 discovers the Cloudflare account, workers.dev subdomain and Bangumi identity,
-derives `USERS_JSON`, asks whether to attach a Worker custom domain, shows the
-complete ordered plan for confirmation, provisions through the same engine as
-the headless CLI, asks separately for the first Full Sync, runs the applicable
-live verifier and writes a sanitized resource inventory to `.airingcal/`.
+derives `USERS_JSON`, asks about an optional Worker Custom Domain, shows a
+concise Configuration Review (edit any section before installing), provisions
+through the same engine as the headless CLI, asks separately for the First Full
+Sync, runs the applicable live verifier and writes a sanitized inventory to
+`.airingcal/`. Cloudflare is the only provider in a normal installation
+(EdgeOne is optional legacy delivery, never implied). Terminal styling follows
+your theme (`AIRINGCAL_THEME=auto|dark|light`), honors `NO_COLOR`, and prints no
+ANSI in non-TTY/headless runs.
 **No manual dotenv editing is required** — Account ID, Primary User ID and
 `USERS_JSON` are discovered/derived in-memory. Headless dotenv configuration
 (`node scripts/deploy-env.mjs ...`, `pnpm run setup --headless`) remains an
