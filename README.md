@@ -7,9 +7,10 @@
 ## Current production and v3 delivery
 
 **Current production remains the legacy v2 read path.** **Development live
-acceptance passed 2026-11-08** (single bucket `airingcal-development`, R2 custom
-domain, WAF `checkpoints/` isolation, CF + EdgeOne readers, DNS cutover, live
-Full Sync generation 4) — evidence in
+acceptance passed 2026-11-08 and was re-verified 2026-11-26** (single private
+bucket `airingcal-development`, canonical Worker `airingcal-development`,
+worker-origin public interface with `checkpoints/` denied, CF + EdgeOne
+readers, live Full Sync generation 6) — evidence in
 [`docs/v3/development-live-acceptance.md`](docs/v3/development-live-acceptance.md).
 The remaining gates are the Owner-approved **Production clean bootstrap**
 (one-shot Full Sync, no v2 copy) and the `dev` → `main` release integration. The
@@ -21,7 +22,7 @@ scheduled job remains disabled until the Owner flips the gates.
 | Read in Production | Existing `apps/web-worker` Worker `airing-cal-frontend` in v2 mode until explicit GO/NO-GO |
 | Read in v3 Development | Cloudflare Worker and EdgeOne Makers overseas readers consuming one R2 Release — **live, accepted 2026-11-08** |
 | Write in v3 | GitHub Actions `portable-writer.yml` → `apps/node-jobs` Portable Builder (sole Writer); no QingLong/CNB/Docker |
-| Storage target | One R2 Bucket per environment, public Release/images via R2 custom domain, `checkpoints/` denied publicly; Viewer routes additionally enforce GET/HEAD-only, ETag/304 and pointer-ref allowlists in the shared read gateway |
+| Storage target | One **private** R2 Bucket per environment; the v3 Worker is the public origin (Worker custom domain optional), serving only the allowlisted object interface; `checkpoints/**` denied; GET/HEAD-only, ETag/304 and pointer-ref allowlists enforced in the shared read gateway |
 | Image CDN | Optional independent base URL; off by default |
 | Next gate | Issue [#73](https://github.com/Skyline-Gazer/AiringCal/issues/73) — Production Full Clean Deploy (apply executor wired; awaiting Owner Apply + first-sync dispatch); then `dev` → `main` release integration |
 
@@ -31,22 +32,28 @@ scheduled job remains disabled until the Owner flips the gates.
 
 ```bash
 pnpm install
-pnpm setup
+pnpm run setup
 ```
 
-`pnpm setup` is the canonical installation experience (#195): it asks for a
-Cloudflare API token and a Bangumi personal access token (both masked), then
-discovers the account, workers.dev subdomain and Bangumi identity, derives
-`USERS_JSON`, asks whether to attach a Worker custom domain, shows the complete
-ordered plan for confirmation, provisions through the same engine as the
-headless CLI, offers the first Full Sync (separate confirmation), runs the live
-verifier and writes a sanitized resource inventory to `.airingcal/`.
+`pnpm run setup` is the canonical installation experience (#195): it asks for
+a Cloudflare API token and a Bangumi personal access token (both masked), then
+discovers the Cloudflare account, workers.dev subdomain and Bangumi identity,
+derives `USERS_JSON`, asks whether to attach a Worker custom domain, shows the
+complete ordered plan for confirmation, provisions through the same engine as
+the headless CLI, asks separately for the first Full Sync, runs the applicable
+live verifier and writes a sanitized resource inventory to `.airingcal/`.
+**No manual dotenv editing is required** — Account ID, Primary User ID and
+`USERS_JSON` are discovered/derived in-memory. Headless dotenv configuration
+(`node scripts/deploy-env.mjs ...`, `pnpm run setup --headless`) remains an
+advanced alternative for automation.
+
+Note: `pnpm setup` (without `run`) is pnpm's own built-in shell-configuration
+command and does NOT start the wizard — always use `pnpm run setup`.
 
 Production is the default environment, needs no Zone ID in Worker mode, and
-keeps the same Owner gates: nothing is applied before the interactive
-confirmation, and the first sync opens only a temporary, self-closing gate.
-Headless/automation paths (`node scripts/deploy-env.mjs ...`) remain fully
-supported — see the [deployment guide](docs/DEPLOYMENT.md).
+keeps the same gates: nothing is applied before the interactive confirmation,
+and the first sync opens only a temporary, self-closing gate. See the
+[deployment guide](docs/DEPLOYMENT.md) for the advanced/headless path.
 
 ## Dev
 

@@ -33,6 +33,14 @@ export function askLine(label, io, { secret = false } = {}) {
       ))
       return
     }
+    // #195 correction: raw mode MUST be enabled before the prompt is echoed,
+    // otherwise a fast typist's secret can be echoed in plaintext by the TTY.
+    try {
+      input.setRawMode(true)
+    } catch (error) {
+      reject(new WizardAbort(`${label}: cannot enter secure input mode (${error.message})`))
+      return
+    }
     output.write(`${label}: `)
     let value = ''
     let settled = false
@@ -88,12 +96,6 @@ export function askLine(label, io, { secret = false } = {}) {
     const onClose = () => {
       cleanup()
       reject(new WizardAbort(`${label}: input closed (EOF)`))
-    }
-    try { input.setRawMode(true) } catch (error) {
-      settled = false
-      cleanup()
-      reject(new WizardAbort(`${label}: cannot enter secure input mode (${error.message})`))
-      return
     }
     input.on('data', onData)
     input.once('close', onClose)

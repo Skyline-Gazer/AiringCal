@@ -122,6 +122,7 @@ export const MUTATING_STEP_IDS = Object.freeze([
   'writer-freeze',
   'ensure-bucket',
   'ensure-bucket-empty',
+  'provision-writer-credential',
   'disable-r2-dev',
   'attach-custom-domain',
   'cache-rules',
@@ -1666,6 +1667,32 @@ export async function runProductionApply({ plan, env = {}, io }) {
 
     await requireIoMethod(io, 'ensureBucket')(ctx)
     completed.push('ensure-bucket-empty')
+
+    // #195 correction: the Production Writer credential is provisioned only
+    // after the bucket exists and ownership was checked by ensureBucket.
+    if (ctx.writerCredentialDeferred === true) {
+      try {
+        await requireIoMethod(io, 'provisionProductionWriter')(ctx)
+      } catch (error) {
+        if (Array.isArray(error?.missingScopes) && error.missingScopes.length > 0) {
+          completed.push('provision-writer-credential')
+          return {
+            ok: false,
+            aborted: true,
+            abortCutover: true,
+            dualBucketFallback: false,
+            copyFree: true,
+            productionWriterEnabled: false,
+            exitCode: 2,
+            reason: missingScopeExitMessage(error.missingScopes),
+            completed,
+            missingScopes: error.missingScopes,
+          }
+        }
+        throw error
+      }
+      completed.push('provision-writer-credential')
+    }
 
     const disableResult = await requireIoMethod(io, 'disableR2Dev')(ctx)
     completed.push('disable-r2-dev')

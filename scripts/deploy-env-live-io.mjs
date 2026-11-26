@@ -939,6 +939,11 @@ export function createLiveDevelopmentApplyIo({
           accessKeyId: s3Creds.accessKeyId,
           secretAccessKey: s3Creds.secretAccessKey,
           endpoint: s3Creds.endpoint,
+          // Actual source/scope — not the desired canonical name.
+          source: s3Creds.source ?? 'unknown',
+          scope: s3Creds.scope ?? 'unverified',
+          tokenName: s3Creds.tokenName ?? null,
+          tokenId: s3Creds.tokenId ?? null,
         }
         : null
     },
@@ -1025,28 +1030,51 @@ export function createLiveDevelopmentApplyIo({
           endpoint,
           region: String(env.AIRINGCAL_S3_REGION ?? 'auto').trim() || 'auto',
           derived: false,
+          // #195 correction: an operator-supplied key cannot be scope-proven
+          // through the Cloudflare API (its secret is not the API token).
+          source: 'operator-override',
+          scope: 'operator-supplied-scope-unverified',
         }
         try {
           await verifyS3Access(creds, bucket, { allowMissingBucket: true })
           s3Creds = creds
-          ctx.s3 = { accessKeyId: overrideId, derived: false, verified: true }
+          ctx.s3 = {
+            accessKeyId: overrideId,
+            derived: false,
+            verified: true,
+            source: creds.source,
+            scope: creds.scope,
+          }
           process.stderr.write(`[deploy-env] S3 override verified on ${bucket}\n`)
           return {
             accessKeyId: overrideId,
             secretAccessKey: overrideSecret,
             derived: false,
             verified: true,
+            source: creds.source,
+            scope: creds.scope,
           }
         } catch (error) {
           // A rejected override key (e.g. a legacy scoped staging token
-          // aliased into AIRINGCAL_S3_*) must not brick the whole cutover:
-          // notice and continue to management-token self-derivation below.
-          // Any other failure (transport, unknown) stays fail-closed.
+          // aliased into AIRINGCAL_S3_*) stays in the documented fallback
+          // chain; any other failure (transport, unknown) fails closed.
           if (!error?.s3Rejected) throw error
           overrideRejectionNote =
-            `AIRINGCAL_S3_* override rejected for ${bucket}; falling through to management-token self-derivation`
+            `AIRINGCAL_S3_* override rejected for ${bucket}; continuing with the dedicated credential path`
           ctx.s3OverrideRejection = overrideRejectionNote
           process.stderr.write(`[deploy-env] ${overrideRejectionNote}\n`)
+        }
+      }
+
+      // #195 correction: Production never uses management-token self-derived
+      // S3 access as evidence of a bucket-only Writer. Defer the dedicated,
+      // bucket-scoped credential to the post-bucket step (which also proves
+      // resource ownership) so it can be created and scope-verified there.
+      if (isProduction) {
+        ctx.writerCredentialDeferred = true
+        return {
+          deferred: true,
+          reason: 'Production Writer credential must be provisioned and scope-verified after bucket creation',
         }
       }
 
@@ -1076,6 +1104,8 @@ export function createLiveDevelopmentApplyIo({
             region: 'auto',
             derived: true,
             source: 'management-token',
+            // Account-wide by construction — never presented as bucket-only.
+            scope: 'account-wide-derived',
           }
           try {
             await verifyS3Access(creds, bucket, { allowMissingBucket: true })
@@ -1084,6 +1114,7 @@ export function createLiveDevelopmentApplyIo({
               accessKeyId: tokenId,
               derived: true,
               source: 'management-token',
+              scope: creds.scope,
               verified: true,
             }
             process.stderr.write('[deploy-env] Derived and verified R2 S3 credentials from the management token\n')
@@ -1092,6 +1123,7 @@ export function createLiveDevelopmentApplyIo({
               secretAccessKey: creds.secretAccessKey,
               derived: true,
               source: 'management-token',
+              scope: creds.scope,
               verified: true,
             }
           } catch (error) {
@@ -1117,12 +1149,8 @@ export function createLiveDevelopmentApplyIo({
         }
       }
 
-      if (isProduction) {
-        throw new Error(
-          'Independently scoped Production S3 credentials could not be verified. ' +
-          'Supply AIRINGCAL_S3_ACCESS_KEY_ID and AIRINGCAL_S3_SECRET_ACCESS_KEY in .env.production.',
-        )
-      }
+      // Production returns earlier (deferred credential); this block is
+      // Development-only. A scoped-token fallback is still its last resort.
 
       // 3. Fallback — dedicated scoped token. Probe the parent token's ability
       //    to create tokens BEFORE POSTing, so a scope-less token fails with
@@ -1245,6 +1273,10 @@ export function createLiveDevelopmentApplyIo({
         endpoint,
         region: 'auto',
         derived: true,
+        source: 'scoped-token',
+        scope: 'bucket-scoped',
+        tokenName,
+        tokenId: accessKeyId,
       }
 
       try {
@@ -1272,16 +1304,172 @@ export function createLiveDevelopmentApplyIo({
       }
 
       s3Creds = creds
-      ctx.s3 = { accessKeyId, derived: true, verified: true }
+      ctx.s3 = {
+        accessKeyId,
+        derived: true,
+        verified: true,
+        source: creds.source,
+        scope: creds.scope,
+      }
       process.stderr.write('[deploy-env] Created and verified scoped R2 S3 credentials (fallback path)\n')
       return {
         accessKeyId,
         secretAccessKey,
         derived: true,
         verified: true,
+        source: creds.source,
+        scope: creds.scope,
       }
     },
 
+
+    /**
+     * #195 correction: Production Writer credential is provisioned AFTER the
+     * bucket exists, only when the operator token has the official API
+     * permission to create tokens. The new token's identity and actual
+     * policy are read back; anything broader than the one bucket is deleted
+     * and refused. Never falls back to broad management-derived S3 access.
+     */
+    async provisionProductionWriter(ctx = {}) {
+      if (!isProduction) {
+        throw new Error('provisionProductionWriter is Production-only')
+      }
+      const accountId = accountIdFrom(env, plan) || ctx.accountId
+      if (!accountId) throw new Error('AIRINGCAL_CLOUDFLARE_ACCOUNT_ID is required for scoped Writer provisioning')
+      const parentToken = tokenFromEnv(env)
+      if (!parentToken) throw new Error('Cloudflare API token is required for scoped Writer provisioning')
+      const tokenName = 'airingcal-production-writer'
+      const rotationId = String(env.AIRINGCAL_WRITER_TOKEN_ROTATION_ID ?? '').trim()
+      const endpoint = s3EndpointFor(accountId)
+      const bucketResource = `com.cloudflare.edge.r2.bucket.${accountId}.default.${bucket}`
+      const fail = (message, scopes = ['Workers R2 Storage Write', 'User API Tokens:Edit']) => {
+        const error = new Error(`Production Writer credential: ${message}`)
+        error.missingScopes = scopes
+        error.code = 'WRITER_SCOPE_UNVERIFIED'
+        return error
+      }
+
+      // 1. Official API capability probe — no creation without proven rights.
+      let permissionGroupId
+      try {
+        const permissionsBody = await cfApi(fetchImpl, parentToken, '/user/tokens/permissions')
+        if (classifyTokenCreationPermission(permissionsBody) === 'denied') {
+          throw tokenCreateDeniedError('permission probe shows no edit/create on user API tokens')
+        }
+        permissionGroupId = await resolvePermissionGroupId(fetchImpl, parentToken, 'Workers R2 Storage Write')
+      } catch (error) {
+        if (error?.missingScopes) throw error
+        const status = Number(error?.status)
+        const detail = redactSecrets(error instanceof Error ? error.message : String(error), secrets)
+        if (status === 401 || status === 403 || /unauthoriz|forbidden|denied|permission/i.test(detail)) {
+          throw tokenCreateDeniedError(`capability probe: ${detail}`)
+        }
+        throw error
+      }
+
+      // 2. Collision / explicit rotation — NEVER delete by name alone.
+      let existing = []
+      try {
+        const listed = await cfApi(fetchImpl, parentToken, '/user/tokens')
+        existing = (Array.isArray(listed?.result) ? listed.result : []).filter(
+          (token) => String(token?.name ?? '') === tokenName && token?.id,
+        )
+      } catch {
+        // Listing may be denied; the POST remains authoritative and no token
+        // can be deleted without an explicitly confirmed id.
+      }
+      if (existing.length > 0) {
+        const match = rotationId ? existing.find((token) => String(token.id) === rotationId) : null
+        if (!match) {
+          throw fail(
+            `writer token "${tokenName}" already exists (id ${existing.map((t) => t.id).join(', ')}); ` +
+            'reuse it with an explicit AIRINGCAL_S3_* override or rotate the confirmed id with AIRINGCAL_WRITER_TOKEN_ROTATION_ID',
+          )
+        }
+        await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(String(match.id))}`, { method: 'DELETE' })
+        process.stderr.write(`[deploy-env] Rotated operator-confirmed Production writer token ${rotationId}\n`)
+      }
+
+      // 3. Create the bucket-scoped credential via the official API.
+      const created = await cfApi(fetchImpl, parentToken, '/user/tokens', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: tokenName,
+          policies: [{
+            effect: 'allow',
+            resources: { [`com.cloudflare.api.account.${accountId}`]: { [bucketResource]: '*' } },
+            permission_groups: [{ id: permissionGroupId }],
+          }],
+        }),
+      })
+      const tokenId = String(created?.result?.id ?? '').trim()
+      const tokenValue = String(created?.result?.value ?? '').trim()
+      if (!tokenId || !tokenValue) {
+        throw fail('Create Token API did not return id+value')
+      }
+      const creds = {
+        accessKeyId: tokenId,
+        secretAccessKey: sha256Hex(tokenValue),
+        endpoint,
+        region: 'auto',
+        derived: true,
+        source: 'scoped-token',
+        scope: 'bucket-scoped',
+        tokenName,
+        tokenId,
+      }
+      const cleanupFresh = async () => {
+        try {
+          await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(tokenId)}`, { method: 'DELETE' })
+        } catch { /* best effort: the apply still fails closed */ }
+      }
+      try {
+        // 4. Identity proof: the freshly minted token must verify to its own id.
+        const identity = await cfApi(fetchImpl, tokenValue, '/user/tokens/verify')
+        if (String(identity?.result?.id ?? '') !== tokenId || String(identity?.result?.status ?? '') !== 'active') {
+          throw fail('created token identity verification failed')
+        }
+        // 5. Scope proof: read the actual policy back with the parent token.
+        const details = await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(tokenId)}`)
+        const policies = Array.isArray(details?.result?.policies) ? details.result.policies : []
+        const bucketOnly = policies.length > 0 && policies.every((policy) => {
+          const resources = policy?.resources ?? {}
+          const entries = Object.entries(resources)
+          if (entries.length === 0) return false
+          return entries.every(([key, value]) => {
+            if (key === bucketResource) return true
+            if (!key.startsWith('com.cloudflare.api.account.')) return false
+            if (!value || typeof value !== 'object') return false
+            const nested = Object.keys(value)
+            return nested.length === 1 && nested[0] === bucketResource
+          })
+        })
+        if (!bucketOnly) {
+          throw fail('created token policy is not restricted to the intended bucket')
+        }
+        // 6. Access proof on the intended bucket (not a substitute for 4/5).
+        await verifyS3Access(creds, bucket, { allowMissingBucket: false })
+      } catch (error) {
+        await cleanupFresh()
+        if (error?.missingScopes) throw error
+        const detail = redactSecrets(error instanceof Error ? error.message : String(error), secrets)
+        throw fail(`verification failed (${detail}); the new token was removed`)
+      }
+
+      s3Creds = creds
+      ctx.s3 = {
+        accessKeyId: tokenId,
+        derived: true,
+        verified: true,
+        source: creds.source,
+        scope: creds.scope,
+      }
+      process.stderr.write(`[deploy-env] Provisioned and scope-verified Production Writer credential ${tokenName}\n`)
+      return {
+        ...creds,
+        verified: true,
+      }
+    },
     async freezeWriter(ctx = {}) {
       if (isProduction) {
         throw new Error(
