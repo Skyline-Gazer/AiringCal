@@ -1,7 +1,7 @@
 import { BgmHttpError, BgmNetworkError, BgmTimeoutError } from '@airing-cal/bgm-api'
 
 export type UpstreamErrorCategory = 'auth' | 'not_found' | 'rate_limited' | 'upstream' | 'timeout' | 'network' | 'contract'
-export type UpstreamStage = 'config' | 'collections' | 'calendar' | 'complete'
+export type UpstreamStage = 'config' | 'collections' | 'calendar' | 'episodes' | 'complete'
 
 export class UpstreamFetchError extends Error {
   constructor(

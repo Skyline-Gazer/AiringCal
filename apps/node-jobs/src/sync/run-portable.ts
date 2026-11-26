@@ -144,14 +144,43 @@ export async function runPortableBuilderSync(
   const ownerToken = env.AIRINGCAL_BUILDER_OWNER?.trim() || `node-jobs-${runId.slice(0, 8)}`
 
   const client = env.BGM_TOKEN?.trim() ? createUpstreamBgmClient(env.BGM_TOKEN.trim()) : null
+  const episodeProgressEnabled = String(env.AIRINGCAL_EPISODE_PROGRESS ?? 'on').trim().toLowerCase() !== 'off'
   const fetchInput =
     overrides.fetchInput
     ?? (client
-      ? () => fetchCompleteInput(
-        { users: syncConfig.users, primaryUserId: syncConfig.primaryUserId },
-        client,
-        () => Date.now(),
-      )
+      ? async () => {
+        // #195: episode states live on the token-owner-only `users/-` route.
+        // Resolve the PAT identity first; when it is unreachable (or the
+        // operator disabled enrichment) skip episodes — public releases keep
+        // their existing completeness, and once the identity IS known every
+        // per-subject episode fetch is required (a partial fetch throws and
+        // the last valid release is preserved).
+        const token = env.BGM_TOKEN?.trim() ?? ''
+        let tokenUserId: string | undefined
+        if (episodeProgressEnabled && token) {
+          try {
+            const me = await client.getMe(token)
+            const known = syncConfig.users.find((user) => user.userId === String(me.id))
+            if (known) tokenUserId = known.userId
+            else {
+              process.stderr.write(
+                '[run-portable] PAT owner id does not match any configured user; skipping episode progress\n',
+              )
+            }
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error)
+            process.stderr.write(
+              `[run-portable] /v0/me unavailable (${detail.slice(0, 160)}); skipping episode progress\n`,
+            )
+          }
+        }
+        return fetchCompleteInput(
+          { users: syncConfig.users, primaryUserId: syncConfig.primaryUserId },
+          client,
+          () => Date.now(),
+          { tokenUserId, episodeToken: token },
+        )
+      }
       : undefined)
 
   if (!fetchInput) {
