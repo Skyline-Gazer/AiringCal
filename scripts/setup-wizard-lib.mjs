@@ -103,6 +103,33 @@ export function formatPlan(plan) {
   return lines.filter((line) => line !== null).join('\n')
 }
 
+/**
+ * #205 BUG-001: the authorized apply-mode plan must describe exactly the
+ * configuration the Owner reviewed. Only the mode/reason fields may differ;
+ * any identity drift aborts before the executor runs.
+ */
+export function assertApplyPlanMatchesReview(reviewedPlan, applyPlan) {
+  if (!reviewedPlan || !applyPlan) throw new Error('Both reviewed and apply plans are required')
+  if (applyPlan.mode !== 'apply') {
+    throw new Error(`Authorized execution requires an apply-mode plan (got "${applyPlan.mode}")`)
+  }
+  const fields = [
+    'env', 'target', 'bucket', 'cloudflareWorkerName', 'publicBaseUrl',
+    'publicOriginMode', 'workerOrigin', 'repository',
+  ]
+  const drift = fields.filter((field) => reviewedPlan[field] !== applyPlan[field])
+  const reviewedEdgeone = reviewedPlan.target === 'cloudflare' ? null : reviewedPlan.edgeone?.project ?? null
+  const applyEdgeone = applyPlan.target === 'cloudflare' ? null : applyPlan.edgeone?.project ?? null
+  if (reviewedEdgeone !== applyEdgeone) drift.push('edgeone.project')
+  if (drift.length > 0) {
+    throw new Error(
+      `Refusing to apply: configuration drifted after review (${drift.join(', ')}). ` +
+      'Re-run the wizard and review the plan again.',
+    )
+  }
+  return applyPlan
+}
+
 /** Sanitized per-environment inventory (no credential values, ever). */
 export function buildInventory({
   plan,

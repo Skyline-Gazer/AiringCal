@@ -102,7 +102,7 @@ test('unified CI pipeline validates, bundles, and deploys without duplicate qual
   assert.match(workflow, /pull_request:/, 'PRs should run quality gates')
   assert.match(workflow, /workflow_dispatch:/, 'manual redeploy should stay on the same workflow')
   assert.match(workflow, /cancel-in-progress:\s*\$\{\{\s*github\.event_name == 'pull_request'\s*\}\}/, 'only PRs should cancel stale runs')
-  assert.match(workflow, /matrix:[\s\S]*?task:\s*\[typecheck, test, build:check\]/, 'validate should run checks in parallel')
+  assert.match(workflow, /matrix:[\s\S]*?task:\s*\[typecheck, test, build:check, lint:undefined\]/, 'validate should run checks in parallel')
   assert.doesNotMatch(workflow, /-\s+run:\s+pnpm typecheck[\s\S]*-\s+run:\s+pnpm test/, 'validate must not run the full gate serially in one job')
 
   assert.ok(jobs.get('node-jobs-bundle')?.includes('validate'), 'bundle should wait for validate matrix')
