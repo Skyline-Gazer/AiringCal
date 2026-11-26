@@ -4,6 +4,7 @@ import type { PublicCalendarDayV1, PublicCollectionItemV1 } from '@airing-cal/st
 import { buildPublicSnapshot } from './public-snapshot.ts'
 import {
   buildManifest,
+  manifestObjectKey,
   parsePublicSnapshotManifestV1,
   snapshotKey,
 } from './public-manifest.ts'
@@ -72,4 +73,10 @@ test('snapshotKey only accepts a non-negative generation and lowercase SHA-256',
   assert.throws(() => snapshotKey(-1, hash), /Invalid snapshot key/)
   assert.throws(() => snapshotKey(1.5, hash), /Invalid snapshot key/)
   assert.throws(() => snapshotKey(1, hash.toUpperCase()), /Invalid snapshot key/)
+})
+
+test('manifestObjectKey scopes immutable manifests by generation and content hash', () => {
+  assert.equal(manifestObjectKey(7, hash), `public/manifests/7-${hash}.json`)
+  assert.throws(() => manifestObjectKey(-1, hash), /Invalid manifest object key/)
+  assert.throws(() => manifestObjectKey(7, hash.toUpperCase()), /Invalid manifest object key/)
 })

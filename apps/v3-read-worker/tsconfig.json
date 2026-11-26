@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2024"],
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts"]
+}

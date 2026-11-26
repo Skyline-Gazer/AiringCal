@@ -12,10 +12,36 @@ export interface CollectionFetchGroup {
   pageLimit: number
 }
 
+export interface EpisodeProgressRecord {
+  episode_id: number
+  /** User episode collection state: 0 未收藏, 1 想看, 2 看过, 3 抛弃. */
+  collection_type: 0 | 1 | 2 | 3
+  /** Catalog episode type: 0 本篇, 1 SP, 2 OP, 3 ED (specials/OVA) when known. */
+  episode_type?: number
+  sort?: number
+  ep?: number
+  airdate?: string
+  updated_at: number
+}
+
+export interface EpisodeProgressSubject {
+  user_id: string
+  subject_id: number
+  observed_at: number
+  episodes: EpisodeProgressRecord[]
+}
+
 export interface CompleteFullFetch {
   collections: Array<{ user_id: string; collection: BgmCollection }>
   observedUsers: string[]
   calendar: BgmCalendarItem[]
+  /**
+   * #195: per-episode watch states for the authenticated PAT owner, keyed by
+   * the users' configured user_id. Internal checkpoint data only — never
+   * projected into the public snapshot (privacy stays in the public
+   * allowlist). Empty when the operator disabled or skipped episode fetch.
+   */
+  episodeProgress: EpisodeProgressSubject[]
   observedAt: number
   complete: true
 }
@@ -31,24 +57,24 @@ function isSafeNonNegativeInteger(value: unknown): value is number {
 function normalizeCalendarSubject(value: unknown): BgmCalendarItem['items'][number] | null {
   if (!isRecord(value) || !isSafeNonNegativeInteger(value.id) || value.id === 0) return null
   if (![1, 2, 3, 4, 6].includes(value.type as number)) return null
-  for (const field of ['name', 'name_cn', 'summary']) if (value[field] !== undefined && typeof value[field] !== 'string') return null
-  if (value.eps !== undefined && !isSafeNonNegativeInteger(value.eps)) return null
-  if (value.images !== undefined) {
+  for (const field of ['name', 'name_cn', 'summary']) if (value[field] != null && typeof value[field] !== 'string') return null
+  if (value.eps != null && !isSafeNonNegativeInteger(value.eps)) return null
+  if (value.images != null) {
     if (!isRecord(value.images)) return null
-    for (const size of ['large', 'common', 'medium', 'small', 'grid']) if (value.images[size] !== undefined && typeof value.images[size] !== 'string') return null
+    for (const size of ['large', 'common', 'medium', 'small', 'grid']) if (value.images[size] != null && typeof value.images[size] !== 'string') return null
   }
-  if (value.rating !== undefined) {
+  if (value.rating != null) {
     if (!isRecord(value.rating)) return null
-    if (value.rating.score !== undefined && (typeof value.rating.score !== 'number' || !Number.isFinite(value.rating.score))) return null
-    if (value.rating.total !== undefined && !isSafeNonNegativeInteger(value.rating.total)) return null
-    if (value.rating.rank !== undefined && !isSafeNonNegativeInteger(value.rating.rank)) return null
+    if (value.rating.score != null && (typeof value.rating.score !== 'number' || !Number.isFinite(value.rating.score))) return null
+    if (value.rating.total != null && !isSafeNonNegativeInteger(value.rating.total)) return null
+    if (value.rating.rank != null && !isSafeNonNegativeInteger(value.rating.rank)) return null
   }
-  if (value.rank !== undefined && !isSafeNonNegativeInteger(value.rank)) return null
-  if (value.eps_count !== undefined && !isSafeNonNegativeInteger(value.eps_count)) return null
-  if (value.total_episodes !== undefined && !isSafeNonNegativeInteger(value.total_episodes)) return null
-  if (value.nsfw !== undefined && typeof value.nsfw !== 'boolean') return null
-  if (value.date !== undefined && typeof value.date !== 'string') return null
-  if (value.air_date !== undefined && typeof value.air_date !== 'string') return null
+  if (value.rank != null && !isSafeNonNegativeInteger(value.rank)) return null
+  if (value.eps_count != null && !isSafeNonNegativeInteger(value.eps_count)) return null
+  if (value.total_episodes != null && !isSafeNonNegativeInteger(value.total_episodes)) return null
+  if (value.nsfw != null && typeof value.nsfw !== 'boolean') return null
+  if (value.date != null && typeof value.date !== 'string') return null
+  if (value.air_date != null && typeof value.air_date !== 'string') return null
   const images = isRecord(value.images) ? value.images : undefined
   const ratingValue = isRecord(value.rating) ? value.rating : undefined
   const rating = ratingValue && (
@@ -99,12 +125,18 @@ function normalizeCalendar(value: unknown): BgmCalendarItem[] | null {
   return result
 }
 
-export function assembleFullFetch(groups: CollectionFetchGroup[], calendar: unknown, observedAt: number): CompleteFullFetch {
+export function assembleFullFetch(
+  groups: CollectionFetchGroup[],
+  calendar: unknown,
+  observedAt: number,
+  episodeGroups: EpisodeProgressSubject[] = [],
+): CompleteFullFetch {
   const normalizedCalendar = normalizeCalendar(calendar)
   if (normalizedCalendar === null) throw new Error('Incomplete calendar fetch')
   if (!isSafeNonNegativeInteger(observedAt)) throw new Error('Invalid full-fetch observation')
   const collections: Array<{ user_id: string; collection: BgmCollection }> = []
   const userIds = new Set<string>()
+  const userSubjects = new Map<string, Set<number>>()
   for (const group of groups) {
     if (typeof group.user_id !== 'string' || group.user_id.length === 0 || !Number.isSafeInteger(group.pageLimit) || group.pageLimit <= 0 || group.pages.length === 0) throw new Error('Incomplete collection fetch')
     if (userIds.has(group.user_id)) throw new Error(`Duplicate collection user: ${group.user_id}`)
@@ -114,6 +146,7 @@ export function assembleFullFetch(groups: CollectionFetchGroup[], calendar: unkn
     const expectedPages = Math.max(1, Math.ceil((declaredTotal as number) / group.pageLimit))
     if (group.pages.length !== expectedPages) throw new Error('Incomplete collection fetch')
     const subjectIds = new Set<number>()
+    userSubjects.set(group.user_id, subjectIds)
     for (let index = 0; index < group.pages.length; index++) {
       const page = group.pages[index]
       const expectedOffset = index * group.pageLimit
@@ -127,5 +160,38 @@ export function assembleFullFetch(groups: CollectionFetchGroup[], calendar: unkn
     }
     if (subjectIds.size !== declaredTotal) throw new Error('Incomplete collection fetch')
   }
-  return { collections, observedUsers: [...userIds], calendar: normalizedCalendar, observedAt, complete: true }
+  // #195: episode progress must be attributable to a fetched collection of the
+  // same user — an episode row that points at an uncollected or unknown
+  // subject is a contract violation, never silently kept.
+  const seenProgressSubjects = new Set<string>()
+  for (const progress of episodeGroups) {
+    if (typeof progress?.user_id !== 'string' || !userIds.has(progress.user_id)) {
+      throw new Error(`Episode progress for unknown user: ${progress?.user_id}`)
+    }
+    if (!Number.isSafeInteger(progress.subject_id) || progress.subject_id <= 0) {
+      throw new Error('Episode progress has an invalid subject id')
+    }
+    const key = `${progress.user_id}/${progress.subject_id}`
+    if (seenProgressSubjects.has(key)) throw new Error(`Duplicate episode progress: ${key}`)
+    seenProgressSubjects.add(key)
+    if (!userSubjects.get(progress.user_id)?.has(progress.subject_id)) {
+      throw new Error(`Episode progress subject ${progress.subject_id} was not in ${progress.user_id}'s collections`)
+    }
+    if (!isSafeNonNegativeInteger(progress.observed_at) || !Array.isArray(progress.episodes)) {
+      throw new Error(`Incomplete episode progress fetch for ${key}`)
+    }
+    const episodeIds = new Set<number>()
+    for (const record of progress.episodes) {
+      if (
+        !Number.isSafeInteger(record?.episode_id) || record.episode_id <= 0 || episodeIds.has(record.episode_id)
+        || ![0, 1, 2, 3].includes(record.collection_type)
+        || !isSafeNonNegativeInteger(record.updated_at)
+        || (record.episode_type !== undefined && !Number.isSafeInteger(record.episode_type))
+      ) {
+        throw new Error(`Invalid episode progress record in ${key}`)
+      }
+      episodeIds.add(record.episode_id)
+    }
+  }
+  return { collections, observedUsers: [...userIds], calendar: normalizedCalendar, episodeProgress: episodeGroups, observedAt, complete: true }
 }

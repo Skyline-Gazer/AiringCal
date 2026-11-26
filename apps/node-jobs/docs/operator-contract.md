@@ -1,102 +1,93 @@
-# node-jobs operator contract (AC-1-08)
+# `@airing-cal/node-jobs` — Portable Writer Operator Contract
 
-Canonical env, timeouts, and exit behavior for **QingLong** and local CLI. QingLong wrapper codes: [QINGLONG errors/airingcal-sync](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/errors/airingcal-sync.md).
+Canonical CLI entrypoints, environment variables, timeouts, exit codes, media retry rules, and garbage-collection behavior for the **GitHub Actions Portable Writer** (`.github/workflows/portable-writer.yml`) and local maintenance CLIs in AiringCal `v3.0.0`.
 
-## CLI
+- Deployment & gate operations: [`docs/DEPLOYMENT.md`](../../../docs/DEPLOYMENT.md)
+- System architecture & CAS lease model: [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)
+- Legacy recoverability record: [`docs/v3/release-acceptance-evidence.md`](../../../docs/v3/release-acceptance-evidence.md)
 
-| Command | Entry |
-| --- | --- |
-| Sync | `airingcal-sync.mjs` → `runSync()` |
-| Backup | `airingcal-backup.mjs` → `runBackup()` |
+---
 
-Build: `pnpm -F @airing-cal/node-jobs build` → `dist/qinglong-bundle/`.
+## 1. CLI Entrypoints & Bundle Build
 
-## Timeouts
+Build the standalone Portable Writer bundle:
 
-| Job | Run deadline | Notes |
-| --- | --- | --- |
-| **sync** | **25 min** (`deadlineAt = now + 1_500_000 ms`) | Media stops when under 30s left; snapshot may still publish |
-| **backup** | **10 min** (`600_000 ms`) | D1 export poll + download ≤ **256 MiB** |
-| HTTP (adapters) | Per-request via `RunContext.signal` | Abort → `REQUEST_FAILED` |
-
-Lease default: **`airingcal-data-plane`**, **900s** (sync and backup).
-
-## Process exit codes
-
-| Exit | Meaning |
-| --- | --- |
-| **0** | Last line JSON `status`: `success` or `skipped` |
-| **1** | `status`: `failed`, or uncaught exception |
-
-### JSON summary (`stdout` last line)
-
-```json
-{ "job": "airingcal-sync", "status": "success|skipped|failed", "message": "..." }
+```bash
+pnpm -F @airing-cal/node-jobs build
 ```
 
-`exitCode()` in `src/contracts.ts`: failed → 1, else 0.
+This emits `apps/node-jobs/dist/portable-bundle/`:
+- `gha-portable-writer.mjs` → `runGhaPortableWriter()` (invoked by `apps/node-jobs/scripts/gha-portable-writer.sh` in `.github/workflows/portable-writer.yml`)
+- `airingcal-sync.mjs` → `runSync()` (portable SQLite builder sync)
 
-### Skip (exit 0)
+### Direct TypeScript Maintenance CLIs (`apps/node-jobs/src/cli/`)
 
-| Condition | message hint |
-| --- | --- |
-| `AIRINGCAL_USERS_JSON` empty | not configured |
-| Lease held | `lease_busy` / skipped stage |
+| CLI Script | Purpose |
+| :--- | :--- |
+| `src/cli/gha-portable-writer-main.ts` | GitHub Actions one-shot Writer entrypoint (CAS lease → checkpoint restore → sync → CAS checkpoint upload + lease renew → atomic pointer commit → lease release) |
+| `src/cli/portable-checkpoint-backup.ts` | Download and verify a local backup copy of `checkpoints/builder.sqlite` |
+| `src/cli/portable-checkpoint-restore.ts` | Restore a verified local `.sqlite` backup file to the checkpoint store (`--force` to overwrite) |
+| `src/cli/portable-public-gc.ts` | Snapshot and content-addressed image garbage collection (dry-run by default; `--apply` for snapshots, `--apply-images` for unreferenced images) |
+| `src/cli/portable-release-rollback.ts` | Roll `public/current-release.json` back to a retained prior generation (`--generation <N> --apply --writer-frozen`) |
+| `src/cli/portable-snapshot-compare.ts` | Compare two `PublicSnapshotV1` JSON files for semantic equality (exit `0` when equal, `2` on diff) |
+| `src/cli/portable-shadow-gate.ts` | One-shot parity comparison between legacy export and candidate v3 snapshot |
 
-## Bundle `JobError.code` (sync/backup)
+---
 
-| Code | Typical cause |
-| --- | --- |
-| `CONFIG_INVALID` | Missing/malformed env |
-| `D1_REQUEST_FAILED` | D1 REST error |
-| `D1_EXPORT_*` | Backup export poll/download |
-| `KV_REQUEST_FAILED` | KV write/read (sync publish) |
-| `LEASE_LOST` | Lease expired mid-run |
-| `R2_*` | Snapshot or image bucket S3 |
-| `REQUEST_FAILED` | Bangumi/upstream or deadline |
-| `UPSTREAM_UNAVAILABLE` | BGM client |
+## 2. Timeouts & Lease Discipline
 
-Full enum: `src/adapters/errors.ts`.
+| Parameter | Default Value | Description |
+| :--- | :--- | :--- |
+| **Sync Run Deadline** | `25 min` (`1,500,000 ms`) | Media downloads stop when `< 30s` remain so the snapshot and checkpoint can still commit cleanly |
+| **Checkpoint Lease Key** | `checkpoints/lease.json` | Single-writer compare-and-swap (CAS) lease stored in the private R2 bucket |
+| **Checkpoint Lease TTL** | `45 min` (`2,700 s`) | Acquired before checkpoint restore, renewed immediately before `public/current-release.json` commit, and expired on exit |
 
-## Required env (sync)
+### Lease Cleanup Failure Surfacing
 
-See [`../env.example`](../env.example). Summary:
+If `releaseCheckpointLease` fails in the cleanup phase after a sync run:
+1. A structured error log (`stage: "checkpoint_lease_release_failed"`) is emitted with `owner`, `primary_status`, `error`, and `recovery` hint.
+2. `result.leaseCleanup` is populated with `{ released: false, error, recoveryHint }` while preserving `result.summary`.
+3. The Writer result is marked `status: "failed"` and triggers `notifyBarkFailure` (when `BARK_URL` is configured) so an unreleased lease never passes silently as an unqualified success.
 
-| Variable | Required |
-| --- | --- |
-| `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` | yes |
-| `AIRING_CAL_D1_DATABASE_ID` | yes |
-| `AIRING_CAL_R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | yes |
-| `AIRING_CAL_IMAGE_BUCKET` | default `airing-cal-images` |
-| `AIRING_CAL_KV_NAMESPACE_ID` | **yes for production read path** (writes `public:current`, `public:read-mode`) |
-| `AIRINGCAL_USERS_JSON`, `AIRINGCAL_PRIMARY_USER_ID`, `BANGUMI_GIT_COMMIT_SHA` | yes |
-| `BGM_TOKEN` | optional |
+---
 
-### Cover thumb pipeline (AC-2, optional)
+## 3. Process Exit Codes & Output Format
 
-After sync media refresh persists large covers to R2, node-jobs may **fire-and-forget** batch `POST` to web-worker `/api/thumb-gen`. Failures are logged only; sync does **not** fail on 5xx.
+| Exit Code | Meaning |
+| :--- | :--- |
+| **`0`** | Final JSON line has `"status": "success"` or `"status": "skipped"` (and `leaseCleanup.released !== false`) |
+| **`1`** | Final JSON line has `"status": "failed"` (including lease contention, CAS precondition failure, sync error, or lease release failure) |
+| **`2`** | Snapshot comparison / shadow-gate mismatch (`portable-snapshot-compare.ts`, `portable-shadow-gate.ts`) |
 
-| Variable | Required | Notes |
-| --- | --- | --- |
-| `AIRINGCAL_THUMB_GEN_URL` | no | Full URL to `/api/thumb-gen`; omit to disable |
-| `AIRINGCAL_WEB_ORIGIN` | no | Used when URL unset: `{origin}/api/thumb-gen` |
-| `AIRINGCAL_THUMB_GEN_BEARER` | when URL/origin set | Must match Worker secret **`THUMB_GEN_BEARER`** |
+---
 
-QingLong wrapper preflight (when URL is set) expects unauthenticated `POST` → **401**; see QINGLONG-REPO `AIRINGCAL_SKIP_THUMB_GEN_PROBE`.
+## 4. Environment Variables (`runGhaPortableWriter` & `runSync`)
 
-Backup uses same Cloudflare/R2/D1 vars; no Bangumi user JSON.
+| Variable | Required | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `AIRINGCAL_BUILDER` | No | `portable` | Must be `portable` (or unset); legacy values fail closed |
+| `AIRINGCAL_BUILDER_SQLITE_PATH` | Yes | — | Local temporary path for restored/updated SQLite checkpoint |
+| `AIRINGCAL_BUILDER_MODE` | No | Auto (`incremental` / `full`) | Explicit `full` or `incremental`; when unset, runs `full` every `AIRINGCAL_FULL_EVERY_DAYS` (default `7`) and `incremental` otherwise |
+| `AIRINGCAL_FULL_EVERY_DAYS` | No | `7` | Cadence (in days) for automatic full reconciliation |
+| `AIRINGCAL_USERS_JSON` | Yes | — | JSON array of tracked Bangumi users (`[{"userId":"...","username":"..."}]`) |
+| `AIRINGCAL_PRIMARY_USER_ID` | Yes | — | Primary Bangumi user ID |
+| `BGM_TOKEN` | Yes | — | Bangumi Personal Access Token |
+| `BANGUMI_GIT_COMMIT_SHA` | Yes | — | Git commit SHA recorded in published release manifest metadata |
+| `AIRINGCAL_PUBLIC_BASE_URL` | Yes | — | Reader Worker public origin URL |
+| `AIRINGCAL_CHECKPOINT_S3_BUCKET` | Yes (GHA) | — | Private R2 bucket name (`airingcal-production` or `airingcal-development`) |
+| `AIRINGCAL_CHECKPOINT_S3_ENDPOINT` | Yes (GHA) | — | Cloudflare R2 S3 endpoint (`https://<accountId>.r2.cloudflarestorage.com`) |
+| `AIRINGCAL_CHECKPOINT_S3_REGION` | No | `auto` | S3 region (`auto` for Cloudflare R2) |
+| `AIRINGCAL_CHECKPOINT_S3_ACCESS_KEY_ID` | Yes (GHA) | — | Bucket-scoped Writer S3 Access Key ID |
+| `AIRINGCAL_CHECKPOINT_S3_SECRET_ACCESS_KEY` | Yes (GHA) | — | Bucket-scoped Writer S3 Secret Access Key |
+| `AIRINGCAL_PUBLIC_S3_*` | Yes (GHA) | Same bucket/creds as checkpoint | S3 target for `public/*`, `snapshots/*`, and `images/*` in the single-bucket architecture |
+| `AIRINGCAL_BUILDER_MEDIA_REFRESH` | No | `skip` (`refresh` in GHA) | When `refresh`, downloads cover images, generates `thumb.v1.webp` and `thumb.v2.webp`, and uploads missing hashes before release pointer commit |
+| `BARK_URL` | No | Unset | Optional Bark push notification URL for Writer failure alerts |
 
-## Integration tests (AC-1-06)
+---
 
-Mock D1/R2 pipelines (no live CF/Bangumi):
+## 5. Bounded Media Retry & Garbage Collection
 
-- `src/sync/pipeline.test.ts`
-- `src/backup/pipeline.test.ts`
-- `src/sync/media-refresh.test.ts`
-- `src/integration/lease.integration.test.ts`
-
-Run: `pnpm -F @airing-cal/node-jobs test`.
-
-## D1 setup
-
-[`d1-schema.md`](d1-schema.md)
+- **Exponential Media Backoff**: Failed cover downloads retry with exponential backoff (`6h → 12h → 24h → 48h → 96h`, capped at 7 days). After 5 consecutive failures (`MEDIA_RETRY_LIMIT`), the subject's media row is marked `MEDIA_IMAGE_FAILED_EXHAUSTED` and parked for 30 days.
+- **Snapshot & Image GC (`portable-public-gc.ts`)**:
+  - Retains at least `AIRINGCAL_GC_MIN_GENERATIONS` (default `5`) and snapshots newer than `AIRINGCAL_GC_MIN_AGE_DAYS` (default `30` days), plus rollback candidates (`AIRINGCAL_GC_ROLLBACK_GENERATIONS`, default `2`).
+  - Image GC (`--apply-images`) protects every image hash referenced by any retained snapshot and fails closed if any retained snapshot cannot be parsed.

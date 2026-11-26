@@ -94,9 +94,33 @@ export interface BgmCalendarItem {
 }
 
 export interface BgmEpisodeCollection {
-  episode: { id: number }
+  /**
+   * Full Episode object per docs/example/api/bgm-api.json UserEpisodeCollection
+   * (#195: type 0 本篇/1 SP/2 OP/3 ED, sort, ep, airdate kept so specials/OVA
+   * and non-contiguous progress are representable, not just the id).
+   */
+  episode: {
+    id: number
+    type?: number
+    sort?: number
+    ep?: number
+    name?: string
+    name_cn?: string
+    airdate?: string
+  }
   type: 0 | 1 | 2 | 3
   updated_at: number
+}
+
+/** One row of the public subject episode catalog (`GET /v0/episodes?subject_id=`). */
+export interface BgmCatalogEpisode {
+  id: number
+  type: number
+  sort?: number
+  ep?: number
+  name?: string
+  name_cn?: string
+  airdate?: string
 }
 
 export interface BgmClientOptions {
@@ -352,6 +376,66 @@ export class BgmClient {
       offset += page.data.length
     } while (data.length < total)
     return { data, total }
+  }
+
+  /**
+   * Exhaustively paginate `GET /v0/episodes?subject_id=` (the public episode
+   * catalog, #195 P3) with the same completion proofs as the user episode
+   * collections: stable `total`, exact page lengths, echoed offset/limit,
+   * duplicate/invalid ids and missing types fail closed. Episode `type`
+   * (0 本篇 / 1 SP / 2 OP / 3 ED) is what makes specials/OVA distinguishable
+   * in stored progress; the user collection endpoint alone only proves state.
+   */
+  async getSubjectEpisodeCatalog(
+    subjectId: number,
+    options: { limit?: number } = {},
+  ): Promise<BgmCatalogEpisode[]> {
+    const limit = options.limit ?? 200
+    const episodes: BgmCatalogEpisode[] = []
+    const seen = new Set<number>()
+    let total: number | undefined
+    let offset = 0
+    do {
+      const url = `${BGM_BASE}/v0/episodes?subject_id=${subjectId}&limit=${limit}&offset=${offset}`
+      const page = (await this.fetchJson(url, { headers: this.headers() })) as {
+        data: BgmCatalogEpisode[]
+        total: number
+        limit: number
+        offset: number
+      }
+      if (!Number.isSafeInteger(page.total) || page.total < 0) {
+        throw new BgmPaginationError(subjectId, offset, page.total, `returned invalid total ${page.total}`)
+      }
+      if (total === undefined) total = page.total
+      else if (page.total !== total) {
+        throw new BgmPaginationError(subjectId, offset, total, `changed total from ${total} to ${page.total} at offset ${offset}`)
+      }
+      if (!Array.isArray(page.data)) {
+        throw new BgmPaginationError(subjectId, offset, total, `returned non-array data at offset ${offset}`)
+      }
+      const expectedLength = Math.min(limit, Math.max(0, total - offset))
+      if (page.offset !== offset || page.limit !== limit) {
+        throw new BgmPaginationError(subjectId, offset, total, `echoed offset/limit ${page.offset}/${page.limit} instead of ${offset}/${limit} at offset ${offset}`)
+      }
+      if (page.data.length !== expectedLength) {
+        throw new BgmPaginationError(subjectId, offset, total, `returned ${page.data.length} rows instead of ${expectedLength} at offset ${offset}`)
+      }
+      for (const entry of page.data) {
+        if (!Number.isSafeInteger(entry?.id) || entry.id <= 0 || seen.has(entry.id)) {
+          throw new BgmPaginationError(subjectId, offset, total, `returned invalid or duplicate episode ID ${entry?.id} at offset ${offset}`)
+        }
+        if (!Number.isSafeInteger(entry.type)) {
+          throw new BgmPaginationError(subjectId, offset, total, `episode ${entry.id} has no integer type at offset ${offset}`)
+        }
+        seen.add(entry.id)
+        episodes.push(entry)
+      }
+      offset += page.data.length
+    } while (offset < (total ?? 0))
+    if (episodes.length !== total) {
+      throw new BgmPaginationError(subjectId, offset, total ?? 0, `collected ${episodes.length} of ${total} catalog episodes`)
+    }
+    return episodes
   }
 
   async patchSubjectEpisodeCollections(token: string, subjectId: number, episodeIds: number[], type: 0 | 1 | 2 | 3) {

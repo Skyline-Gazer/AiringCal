@@ -70,7 +70,9 @@ typings/
 
 # dotenv environment variables file
 .env
-.env.test
+.env.*
+!.env.example
+!.env.production.example
 .dev.vars
 
 # parcel-bundler cache (https://parceljs.org/)
@@ -125,3 +127,7 @@ apps/*/wrangler.deploy.toml
 reasonix.toml
 
 packages/worker/dist-check/
+deploy/v3/.env
+
+# setup wizard resource inventory (sanitized, machine-local)
+.airingcal/

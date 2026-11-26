@@ -1,56 +1,29 @@
-# Docs index (for AI & operators)
+# AiringCal v3.0.0 — Documentation Index
 
-## Production architecture (current)
+[English](../README.md) | [简体中文](../README.zh-CN.md)
 
-| Layer | Runtime | Repo path |
-| --- | --- | --- |
-| **Read** | Cloudflare Worker `airing-cal-frontend` | `apps/web-worker` |
-| **Write** | QingLong cron → `qinglong-bundle` | `apps/node-jobs` → artifact; wrappers in **QINGLONG-REPO** |
-| **Removed from repo** | legacy Workers, VPS Postgres | pre-2026-10-15 `apps/*` — see git history / `docs/archive/` |
+---
 
-```text
-Bangumi → node-jobs (bundle) ← QingLong
-            → D1, R2 snapshot + image bucket, KV pointers
-            → web-worker read APIs + /image/:hash
-```
+## 1. Product & Operator Guides
 
-## Read order for agents
+| Document | Language | Purpose |
+| :--- | :--- | :--- |
+| **[`../README.md`](../README.md)** | English | Product overview, screenshots, prerequisites, quick start (`pnpm run setup`), and AI-native setup prompt |
+| **[`../README.zh-CN.md`](../README.zh-CN.md)** | 简体中文 | 中文产品总览、架构图、前置要求、快速安装/更新指南与 AI 原生复制指令 |
+| **[`DEPLOYMENT.md`](DEPLOYMENT.md)** | English | Authoritative installation (`install`), existing-installation update (`update`), recovery (`recover`), headless CLI, live verification, and Writer gate operations |
+| **[`DEPLOYMENT.zh-CN.md`](DEPLOYMENT.zh-CN.md)** | 简体中文 | 权威部署、安全更新、中断恢复、无头模式、线上验收与定时同步运维指南 |
+| **[`API_AND_WIDGET.md`](API_AND_WIDGET.md)** | English | Read-only HTTP API reference (`/api/collections`, `/api/calendar`, `/api/health`, `/image/:hash`), public object routes, and blog Widget embedding |
+| **[`API_AND_WIDGET.zh-CN.md`](API_AND_WIDGET.zh-CN.md)** | 简体中文 | 只读 HTTP API 参数说明、响应示例、缓存策略与个人博客 Widget 嵌入指南 |
+| **[`ARCHITECTURE.md`](ARCHITECTURE.md)** | English | Write-plane CAS lease/checkpoint pipeline, read-plane snapshot verification cache, private-R2 isolation model, and monorepo package boundaries |
+| **[`../CHANGELOG.md`](../CHANGELOG.md)** | English | Formal release changelog for `v3.0.0` |
 
-1. [`../START_HERE_FOR_AI.md`](../START_HERE_FOR_AI.md)
-2. [`plans/phase-0-web-worker.md`](plans/phase-0-web-worker.md) — read Worker
-3. [`plans/phase-1-node-jobs.md`](plans/phase-1-node-jobs.md) — write bundle (**Phase 1 closed**)
-4. [`plans/no-cf-write-path.md`](plans/no-cf-write-path.md) — no CF Cron/Workflow write
-5. [`apps/node-jobs/docs/operator-contract.md`](../apps/node-jobs/docs/operator-contract.md) — env, timeouts, exit codes
-6. QingLong panel: [QINGLONG airingcal-operator-checklist](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/usage/airingcal-operator-checklist.md)
+---
 
-## Plans (`docs/plans/`)
+## 2. Engineering Contracts & Governance Records
 
-| File | Purpose |
-| --- | --- |
-| `phase-0-web-worker.md` | Single read Worker |
-| `phase-1-node-jobs.md` | node-jobs + bundle |
-| `no-cf-write-path.md` | AC-3-01 confirmation |
-| `kv-binding-decision.md` | AC-3-03 — keep KV binding |
-| `abandoned-vps-route.md` | Do not use VPS write |
-
-## Runbooks (`docs/runbook/`)
-
-| File | Purpose |
-| --- | --- |
-| `m2-read-surface.md` | Deploy web-worker, verify APIs/covers (**homelab M2 done 2026-10-13**) |
-| `migrate-public-reads.md` | KV → R2 read-mode (optional ops) |
-
-Homelab closure (QingLong): [QINGLONG governance](https://github.com/Skyline-Gazer/QINGLONG-REPO/blob/ql/docs/governance/2026-10-13-homelab-closure.md)
-
-## Archive
-
-[`archive/README.md`](archive/README.md) — `superpowers/`, `job-transfer/`, old VPS docs (**not production**).
-
-## Packages (code truth)
-
-| Path | Role |
-| --- | --- |
-| `apps/web-worker` | Public HTTP |
-| `apps/node-jobs` | Sync/backup pipelines, `schema.sql` |
-| `packages/storage` | Snapshot types, read-mode |
-| `migrations/` | D1 authoritative schema (apply before node-jobs) |
+| Document | Purpose |
+| :--- | :--- |
+| **[`../apps/node-jobs/docs/operator-contract.md`](../apps/node-jobs/docs/operator-contract.md)** | Portable Writer CLI entrypoints, environment variables, timeouts, exit codes, media retry policy, and snapshot/image GC |
+| **[`v3/release-acceptance-evidence.md`](v3/release-acceptance-evidence.md)** | Reconciled Production initialization receipt (`e5b3c98e` / run `45833583842`), legacy Git SHA recoverability record (Amendment D), and ADS `v0.8.0` consumer evidence (`#183`) |
+| **[`rules/docs-sync.md`](rules/docs-sync.md)** | Rule §零 (Verify Before Writing), structured commit context requirements (§一), documentation sync (§二), and release audit checklist (§三) |
+| **[`example/api/bgm-api.json`](example/api/bgm-api.json)** | Canonical Bangumi (`api.bgm.tv`) OpenAPI specification |

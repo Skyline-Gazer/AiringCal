@@ -1,11 +1,12 @@
 {
   "name": "@airing-cal/node-jobs",
-  "version": "0.1.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node ./scripts/build-qinglong-bundle.mjs",
-    "build:check": "tsc --noEmit",
+    "build": "node ./scripts/build-portable-bundle.mjs",
+    "build:check": "node ./scripts/build-portable-bundle.mjs",
+    "portable-image-mime-repair": "tsx ./src/cli/portable-image-mime-repair.ts",
     "test": "tsx --test 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },
@@ -13,7 +14,11 @@
     "@airing-cal/bgm-api": "workspace:*",
     "@airing-cal/domain": "workspace:*",
     "@airing-cal/storage": "workspace:*",
-    "@aws-sdk/client-s3": "3.1124.0"
+    "@airing-cal/v3-adapters": "workspace:*",
+    "@airing-cal/v3-builder": "workspace:*",
+    "@airing-cal/v3-core": "workspace:*",
+    "@aws-sdk/client-s3": "3.1124.0",
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",

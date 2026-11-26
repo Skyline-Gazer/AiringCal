@@ -1,4 +1,6 @@
 export const packageBoundary = '@airing-cal/storage'
+export { sniffImage, type SniffedImageMime } from './sniff-image.ts'
+
 
 export {
   canonicalJson,
@@ -8,22 +10,12 @@ export {
   sha256Canonical,
 } from './canonical-json.ts'
 export {
-  D1StateStore,
+  SUBJECT_MEDIA_COLUMNS,
   StaleCollectionDiffError,
   SyncRunCheckpointConflictError,
+  decodeSubjectMediaRow,
+  subjectMediaValues,
 } from './d1-state-store.ts'
-export {
-  claimDailyBudgetReservation,
-  markBudgetSubmission,
-  reserveDailyBudget,
-  transitionBudgetSubmission,
-} from './d1-budget.ts'
-export type {
-  BudgetReservationClaim,
-  BudgetReservationRequest,
-  BudgetReservationResult,
-  BudgetSubmissionTransition,
-} from './d1-budget.ts'
 export type {
   CollectionContentInput,
   PersistedCollectionSubject,
@@ -87,13 +79,6 @@ export type {
   ReadModeV1,
   ShadowStreakV1,
 } from './legacy-migration-types.ts'
-export {
-  importLegacySubjectBatch,
-  readLegacySubjectRecords,
-  type LegacyKvReader,
-  type LegacyMigrationD1,
-  type LegacySubjectRecords,
-} from './legacy-migration.ts'
 export {
   buildLegacyPublicResult,
   compareShadowSnapshots,

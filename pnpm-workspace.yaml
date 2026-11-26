@@ -1,10 +1,9 @@
 packages:
-  - 'apps/web-worker'
   - 'apps/node-jobs'
+  - 'apps/v3-read-worker'
   - 'packages/*'
 
 allowBuilds:
-  '@fission-ai/openspec': true
   esbuild: true
   sharp: true
   workerd: true

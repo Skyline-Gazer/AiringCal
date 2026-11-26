@@ -1,22 +1,25 @@
 # START HERE FOR AI
 
-**Prompt（中文）：** 先读 [`docs/README.md`](docs/README.md) 了解 monorepo 结构、生产读/写路径、部署与 D1/R2/KV；改代码前读 [`AGENTS.md`](AGENTS.md) 与 [`docs/rules/docs-sync.md`](docs/rules/docs-sync.md)。写路径在 `apps/node-jobs` + 青龙 [QINGLONG-REPO](https://github.com/Skyline-Gazer/QINGLONG-REPO) 薄脚本；勿把业务逻辑复制进青龙库。
+**Prompt（中文）：** 先读 [`AGENTS.md`](AGENTS.md) 与 [`docs/README.md`](docs/README.md)。AiringCal `v3.0.0` 已收敛为唯一架构：**GitHub Actions 一次性 Portable Writer（`.github/workflows/portable-writer.yml`）→ 私有 Cloudflare R2 单桶（`airingcal-production` / `airingcal-development`，禁用 `r2.dev`）→ 无状态 Cloudflare Reader Worker（`apps/v3-read-worker`）**。安装、更新与恢复统一通过 `pnpm run setup`（或 `scripts/deploy-env.mjs`）执行。修改任何命令、环境变量或 API 前必须先查源码与 [`docs/example/api/bgm-api.json`](docs/example/api/bgm-api.json)（`AGENTS.md` §零）。
 
-**Prompt (EN):** Read `docs/README.md` first for layout and production architecture; follow `AGENTS.md` before edits. Write path = `apps/node-jobs` → CI `qinglong-bundle` → QingLong wrappers only.
+**Prompt (EN):** Read [`AGENTS.md`](AGENTS.md) and [`docs/README.md`](docs/README.md) first. AiringCal `v3.0.0` is converged on a single supported topology: **GitHub Actions one-shot Portable Writer (`.github/workflows/portable-writer.yml`) → Private Cloudflare R2 single bucket (`airingcal-production` / `airingcal-development`, `r2.dev` disabled) → Stateless Cloudflare Reader Worker (`apps/v3-read-worker`)**. Installation, safe update, and recovery run through `pnpm run setup` (or `scripts/deploy-env.mjs`). Verify every CLI flag, config key, and API in source before writing (`AGENTS.md` §零).
 
-## Mandatory before code changes
+## Mandatory Before Code or Operational Changes
 
-1. Verify CLI flags, env keys, and APIs in source — do not guess (`AGENTS.md` §零).
-2. Production write path is **QingLong + node-jobs**, not Workers Cron/Workflow (`docs/plans/no-cf-write-path.md`).
-3. Commit docs with code; run `pnpm test` / relevant package tests before done.
+1. **Verify Before Writing (`AGENTS.md` §零)**: Check `--help`, TypeScript definitions, and [`docs/example/api/bgm-api.json`](docs/example/api/bgm-api.json).
+2. **Respect Lifecycle Boundaries**: Never mutate live Production or Development infrastructure, rotate live tokens, or dispatch `portable-writer.yml` without explicit user authorization.
+3. **Use Project Skills**: Follow [`.ads/STANDARD.md`](.ads/STANDARD.md), [`.ads/SAFETY.md`](.ads/SAFETY.md), [`.ads/QUALITY.md`](.ads/QUALITY.md), Ponytail Full-mode skills (`.agents/skills/ponytail*`), and Cloudflare Workers best practices (`.agents/skills/workers-best-practices`).
 
-## Quick map
+## Quick Map
 
 | Need | Path |
-| --- | --- |
-| AI doc index | `docs/README.md` |
-| Phase 1 (node-jobs) | `docs/plans/phase-1-node-jobs.md` |
-| D1 apply order | `apps/node-jobs/docs/d1-schema.md` |
-| Env / exit codes (canonical) | `apps/node-jobs/docs/operator-contract.md` |
-| Read surface deploy (M2) | `docs/runbook/m2-read-surface.md` |
-| Historical / abandoned | `docs/archive/README.md` |
+| :--- | :--- |
+| English Product Overview & Quick Start | [`README.md`](README.md) |
+| Simplified Chinese Product Overview & Quick Start | [`README.zh-CN.md`](README.zh-CN.md) |
+| Documentation Index | [`docs/README.md`](docs/README.md) |
+| Deployment, Update & Recovery Guide (EN / ZH) | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) / [`docs/DEPLOYMENT.zh-CN.md`](docs/DEPLOYMENT.zh-CN.md) |
+| HTTP Read API & Widget Integration Guide (EN / ZH) | [`docs/API_AND_WIDGET.md`](docs/API_AND_WIDGET.md) / [`docs/API_AND_WIDGET.zh-CN.md`](docs/API_AND_WIDGET.zh-CN.md) |
+| System Architecture & Security Model | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Portable Writer Operator Contract | [`apps/node-jobs/docs/operator-contract.md`](apps/node-jobs/docs/operator-contract.md) |
+| Release Acceptance & Legacy Recoverability Evidence | [`docs/v3/release-acceptance-evidence.md`](docs/v3/release-acceptance-evidence.md) |
+| Documentation & Commit Rules | [`docs/rules/docs-sync.md`](docs/rules/docs-sync.md) |

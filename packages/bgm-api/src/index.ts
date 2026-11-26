@@ -6,9 +6,16 @@ export type {
   BgmCalendarItem,
   BgmCollection,
   BgmEpisodeCollection,
+  BgmCatalogEpisode,
   BgmSlimSubject,
   TokenStatus,
 } from './bgm-client.ts'
 export { fetchAllCollections } from './utils.ts'
 export { assembleFullFetch } from './full-fetch-boundary.ts'
-export type { CollectionFetchGroup, CollectionFetchPage, CompleteFullFetch } from './full-fetch-boundary.ts'
+export type {
+  CollectionFetchGroup,
+  CollectionFetchPage,
+  CompleteFullFetch,
+  EpisodeProgressRecord,
+  EpisodeProgressSubject,
+} from './full-fetch-boundary.ts'

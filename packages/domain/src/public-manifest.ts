@@ -50,6 +50,14 @@ export function snapshotKey(generation: number, hash: string): string {
   return `snapshots/v1/${generation}-${hash}.json`
 }
 
+/** Immutable, generation-scoped manifest object key (ADR 0003 C1). */
+export function manifestObjectKey(generation: number, manifestContentHash: string): string {
+  if (!isNonNegativeInteger(generation) || !LOWERCASE_SHA256.test(manifestContentHash)) {
+    throw new Error('Invalid manifest object key')
+  }
+  return `public/manifests/${generation}-${manifestContentHash}.json`
+}
+
 export function buildManifest(
   snapshot: PublicSnapshotV1,
   metadata: PublicSnapshotManifestMetadata,

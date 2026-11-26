@@ -1,0 +1,80 @@
+const SNAPSHOT_PREFIX = 'snapshots/v1/'
+
+export interface PublicSnapshotGcOptions {
+  /** Relative object keys under the public store root (e.g. snapshots/v1/3-abc.json). */
+  snapshotKeys: readonly string[]
+  currentArtifactRef: string | null
+  pinnedArtifactRefs?: ReadonlySet<string>
+  /** Minimum distinct snapshot generations to retain (includes current). */
+  minGenerations?: number
+  /** Also retain snapshots newer than this many UTC days (when published_at is known). */
+  minAgeDays?: number
+  nowUnix?: number
+  publishedAtUnixByKey?: ReadonlyMap<string, number>
+  /**
+   * C9 rollback candidates: always retain this many distinct generations strictly
+   * BELOW the current pointer generation (including their images). Default 2;
+   * 0 disables. Candidates are relative to the current pointer so abandoned
+   * generations newer than a rolled-back pointer stay collectable.
+   */
+  rollbackGenerations?: number
+}
+
+export interface PublicSnapshotGcPlan {
+  keep: string[]
+  delete: string[]
+}
+
+function parseGenerationFromSnapshotKey(key: string): number | null {
+  if (!key.startsWith(SNAPSHOT_PREFIX) || !key.endsWith('.json')) return null
+  const stem = key.slice(SNAPSHOT_PREFIX.length, -'.json'.length)
+  const dash = stem.indexOf('-')
+  if (dash <= 0) return null
+  const generation = Number(stem.slice(0, dash))
+  return Number.isSafeInteger(generation) && generation > 0 ? generation : null
+}
+
+export function planPublicSnapshotGc(options: PublicSnapshotGcOptions): PublicSnapshotGcPlan {
+  const minGenerations = options.minGenerations ?? 5
+  const minAgeDays = options.minAgeDays ?? 30
+  const nowUnix = options.nowUnix ?? Math.floor(Date.now() / 1000)
+  const minAgeSeconds = minAgeDays * 86_400
+  const publishedAt = options.publishedAtUnixByKey ?? new Map<string, number>()
+  const pinned = options.pinnedArtifactRefs ?? new Set<string>()
+  const candidates = options.snapshotKeys.filter((key) => parseGenerationFromSnapshotKey(key) !== null)
+  const byGeneration = new Map<number, string>()
+  for (const key of candidates) {
+    const generation = parseGenerationFromSnapshotKey(key)!
+    if (!byGeneration.has(generation)) byGeneration.set(generation, key)
+  }
+  const sortedGenerations = [...byGeneration.keys()].sort((a, b) => b - a)
+  const keepGenerations = new Set(sortedGenerations.slice(0, minGenerations))
+  const keep = new Set<string>()
+  if (options.currentArtifactRef) keep.add(options.currentArtifactRef)
+  for (const key of pinned) keep.add(key)
+  const currentGeneration = parseGenerationFromSnapshotKey(options.currentArtifactRef ?? '')
+  const rollbackCount = options.rollbackGenerations ?? 2
+  const rollbackGenerations = sortedGenerations
+    .filter((generation) => currentGeneration === null || generation < currentGeneration)
+    .slice(0, rollbackCount)
+  for (const generation of rollbackGenerations) {
+    const key = byGeneration.get(generation)
+    if (key) keep.add(key)
+  }
+  for (const generation of keepGenerations) {
+    const key = byGeneration.get(generation)
+    if (key) keep.add(key)
+  }
+  for (const key of candidates) {
+    const published = publishedAt.get(key)
+    if (published !== undefined && nowUnix - published < minAgeSeconds) {
+      keep.add(key)
+    }
+  }
+  const deleteKeys = candidates.filter((key) => !keep.has(key)).sort()
+  return { keep: [...keep].sort(), delete: deleteKeys }
+}
+
+export function listSnapshotObjectKeys(relativePaths: readonly string[]): string[] {
+  return relativePaths.filter((key) => parseGenerationFromSnapshotKey(key) !== null)
+}

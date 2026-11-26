@@ -10,9 +10,10 @@ import { noopMediaRefresh } from './media-port.ts'
 import {
   createSubjectMediaRefresh,
   loadSubjectImageMap,
+  MEDIA_IMAGE_FAILED_EXHAUSTED,
+  mediaRetryDelaySeconds,
   mediaSubjectsFromFetch,
 } from './media-refresh.ts'
-import { runSyncPipeline } from './pipeline.ts'
 
 const COMMON_URL = 'https://lain.bgm.tv/pic/cover/c/common.jpg'
 const LARGE_URL = 'https://lain.bgm.tv/pic/cover/l/large.jpg'
@@ -291,45 +292,54 @@ test('mediaSubjectsFromFetch ignores private collections and keeps calendar imag
   assert.deepEqual(mediaSubjectsFromFetch(input).map((subject) => subject.subjectId), [9])
 })
 
-test('runSyncPipeline publishes cached image refs and bumps generation', async () => {
+test('media retry is bounded: exponential backoff then a 30-day cooldown', async () => {
   const store = new MemoryR2()
   const db = new MemoryD1()
-  const input = fetchInput(collection(42, { common: COMMON_URL, large: LARGE_URL }))
-  const base = {
-    run: createRunContext({ runId: 'run-pub', deadlineAt: Date.now() + 60_000 }),
-    db,
-    store,
-    syncConfig: { users: [{ userId: '1', username: 'u' }], primaryUserId: '1', gitSha },
-    leaseName: 'airingcal-data-plane',
-    leaseSeconds: 900,
-    fetchInput: async () => input,
-    now: () => 1_700_000_000_000,
-  }
-  const first = await runSyncPipeline({ ...base, media: noopMediaRefresh })
-  assert.equal(first.generation, 1)
-  assert.equal(first.media.selected, 0)
-
   const refresh = createSubjectMediaRefresh({
     db,
     store,
-    fetchImage: async (url) => imageResponse(url),
+    fetchImage: async () => new Response('bad', { status: 500 }),
   })
-  const second = await runSyncPipeline({
-    ...base,
-    run: createRunContext({ runId: 'run-pub-2', deadlineAt: Date.now() + 60_000 }),
-    media: refresh,
-  })
-  assert.equal(second.status, 'ok')
-  assert.equal(second.generation, 2)
-  assert.equal(second.media.selected, 1)
-  assert.equal(second.media.succeeded, 1)
+  const subjects = mediaSubjectsFromFetch(fetchInput(collection(120224, { common: COMMON_URL, large: LARGE_URL })))
+  const logs: string[] = []
+  const originalLog = console.log
+  console.log = (...args: unknown[]) => {
+    logs.push(args.map((value) => (typeof value === 'string' ? value : JSON.stringify(value))).join(' '))
+  }
+  try {
+    // Retry delays grow 6h → 12h → 24h → 48h → 96h, so each run needs a later clock.
+    const runAt = async (iso: string) => refresh.refresh(
+      { ...createRunContext({ runId: `run-${iso}`, deadlineAt: Date.now() + 60_000 }), observedAt: iso },
+      { subjects },
+    )
+    const attempts = [
+      '2023-11-14T00:00:00.000Z',
+      '2023-11-14T06:00:01.000Z',
+      '2023-11-14T18:00:02.000Z',
+      '2023-11-15T18:00:03.000Z',
+      '2023-11-17T18:00:04.000Z',
+    ]
+    const results = []
+    for (const iso of attempts) results.push(await runAt(iso))
 
-  const snapshotKey = [...store.objects.keys()].find((key) => key.startsWith('snapshots/v1/2-'))
-  assert.ok(snapshotKey)
-  const snapshot = await parsePublicSnapshotV1(JSON.parse(new TextDecoder().decode(store.objects.get(snapshotKey!)!.bytes)))
-  const item = snapshot.collections.watching[0]
-  assert.equal(item?.images.common?.hash, sha256(COMMON_BYTES))
-  assert.equal(item?.images.common?.uri, `/image/${sha256(COMMON_BYTES)}`)
-  assert.equal(item?.image_status.common, 'cached')
-  assert.equal(item?.image_status.large, 'cached')
+    assert.deepEqual(results.map((result) => result.selected), [1, 1, 1, 1, 1])
+    assert.equal(results.at(-1)?.failures[0]?.error_code, MEDIA_IMAGE_FAILED_EXHAUSTED)
+    assert.ok(logs.some((line) => line.includes('"stage":"media_failed_exhausted"') && line.includes('"retry_limit":5')))
+
+    // After exhaustion the subject is parked for 30 days: an immediate re-run selects nothing.
+    const parked = await refresh.refresh(
+      { ...createRunContext({ runId: 'run-parked', deadlineAt: Date.now() + 60_000 }), observedAt: '2023-11-22T18:00:06.000Z' },
+      { subjects },
+    )
+    assert.equal(parked.selected, 0, 'exhausted retries must not run on every sync')
+  } finally {
+    console.log = originalLog
+  }
+})
+
+test('mediaRetryDelaySeconds caps at seven days', () => {
+  assert.equal(mediaRetryDelaySeconds(1), 6 * 3_600)
+  assert.equal(mediaRetryDelaySeconds(2), 12 * 3_600)
+  assert.equal(mediaRetryDelaySeconds(3), 24 * 3_600)
+  assert.equal(mediaRetryDelaySeconds(10), 7 * 86_400)
 })

@@ -67,10 +67,28 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
   gap: 18px;
+  min-height: 0;
 }
 
-.bgm-grid.bgm-grid-pending {
-  min-height: 120px;
+.bgm-grid.bgm-grid-pending,
+.bgm-grid.bgm-grid-skeleton {
+  min-height: 480px;
+}
+
+.bgm-card-skeleton {
+  pointer-events: none;
+  background: var(--nb-surface);
+  border: var(--nb-border);
+  box-shadow: var(--nb-shadow);
+}
+.bgm-card-skeleton .bgm-card-cover {
+  aspect-ratio: 3/4;
+  background: linear-gradient(90deg, #f3f3f3 25%, #ececec 37%, #f3f3f3 63%);
+  background-size: 400% 100%;
+}
+.bgm-card-skeleton .bgm-card-info h3 {
+  background: #ececec;
+  color: transparent;
 }
 
 /* ---------- 卡片 ---------- */
@@ -316,6 +334,42 @@ body {
 }
 
 /* 星期标题条 */
+.bgm-weekday-nav {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  background: var(--nb-bg);
+  border-bottom: var(--nb-border);
+}
+.bgm-weekday-nav button {
+  padding: 4px 12px;
+  border: 2px solid var(--nb-ink);
+  border-radius: 0;
+  background: var(--nb-surface);
+  color: var(--nb-ink);
+  font-size: 13px;
+  font-weight: 900;
+  cursor: pointer;
+  box-shadow: var(--nb-shadow-sm);
+  transition: transform 0.08s ease, box-shadow 0.08s ease, background 0.08s ease;
+}
+.bgm-weekday-nav button:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 0 var(--nb-ink);
+}
+.bgm-weekday-nav button:active {
+  transform: translate(1px, 1px);
+  box-shadow: 0 0 0 0 var(--nb-ink);
+}
+.bgm-weekday-nav button.is-today {
+  background: var(--nb-accent);
+  color: var(--nb-surface);
+}
 .bgm-weekday-head {
   display: flex;
   align-items: baseline;
@@ -385,6 +439,9 @@ body {
 .bgm-status span {
   margin: 0;
   font-weight: 800;
+}
+.bgm-status-bar {
+  min-height: 44px;
 }
 .bgm-status-warn {
   color: var(--nb-ink);
@@ -599,4 +656,22 @@ body {
 @media (max-width: 560px) {
   .sync-token-fields { flex-direction: column; }
   .sync-platform { margin-top: 4px; }
+}
+
+/* ---------- 可访问性 ---------- */
+/* 键盘焦点：统一使用强调色轮廓（仅 :focus-visible，鼠标点击不显示） */
+.bgm-container :focus-visible,
+#bgm-age-modal :focus-visible {
+  outline: 3px solid var(--nb-accent);
+  outline-offset: 2px;
+}
+
+/* 减少动态效果：关闭位移/阴影过渡与骨架屏动画 */
+@media (prefers-reduced-motion: reduce) {
+  .bgm-container *,
+  .bgm-container *::before,
+  .bgm-container *::after {
+    transition: none !important;
+    animation: none !important;
+  }
 }

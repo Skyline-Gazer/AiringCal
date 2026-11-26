@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto'
 import type { CompleteFullFetch } from '@airing-cal/bgm-api'
 import { imageRef, type SubjectImageMap } from '@airing-cal/domain'
+import type { SubjectMediaPublishHint } from '@airing-cal/v3-core'
+import { sniffImage } from '@airing-cal/storage'
+import { SUBJECT_MEDIA_COALESCE_UPSERT } from '@airing-cal/v3-builder'
 import type { CloudflareD1Client } from '../adapters/cloudflare-d1.ts'
 import type { R2Store } from '../adapters/r2-store.ts'
 import type { RunContext } from '../adapters/run-context.ts'
@@ -22,6 +25,21 @@ const PUBLISH_RESERVE_MS = 30_000
 const PROGRESS_EVERY = 5
 const PROGRESS_MIN_MS = 2_000
 const KEY_PATTERN = /^images\/([0-9a-f]{64})\/original$/
+
+/** Bounded media retry: at most this many consecutive failures, then a long cooldown. */
+export const MEDIA_RETRY_LIMIT = 5
+const MEDIA_RETRY_BASE_SECONDS = 6 * 3_600
+const MEDIA_RETRY_MAX_SECONDS = 7 * DAY_SECONDS
+/** After the limit is reached the subject is retried on the normal 30-day cadence, not every run. */
+export const MEDIA_RETRY_EXHAUSTED_SECONDS = 30 * DAY_SECONDS
+export const MEDIA_IMAGE_FAILED = 'MEDIA_IMAGE_FAILED'
+export const MEDIA_IMAGE_FAILED_EXHAUSTED = 'MEDIA_IMAGE_FAILED_EXHAUSTED'
+
+/** Exponential backoff (6h, 12h, 24h, 48h, …) capped at seven days. */
+export function mediaRetryDelaySeconds(retryCount: number): number {
+  const exponent = Math.max(0, retryCount - 1)
+  return Math.min(MEDIA_RETRY_BASE_SECONDS * 2 ** exponent, MEDIA_RETRY_MAX_SECONDS)
+}
 
 function emitMediaProgress(done: number, total: number, succeeded: number, failed: number): void {
   emitProgress('media', 'media_progress', done, total, { succeeded, failed })
@@ -53,26 +71,6 @@ const SELECT_IMAGE_KEYS = 'SELECT subject_id, r2_image_common_key, r2_image_larg
 const COUNT_ACCOUNT_LARGES = `SELECT COUNT(*) AS cnt FROM subject_media
   WHERE r2_image_large_key IS NOT NULL AND trim(r2_image_large_key) != ''`
 
-const UPSERT_SUBJECT_MEDIA = `INSERT INTO subject_media (
-  subject_id, detail_json, detail_hash, media_hash, nsfw,
-  source_image_common_url, source_image_large_url,
-  r2_image_common_key, r2_image_large_key,
-  checked_at, next_refresh_at, retry_count, retry_after, error_code
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(subject_id) DO UPDATE SET
-  detail_json = COALESCE(excluded.detail_json, subject_media.detail_json),
-  detail_hash = COALESCE(excluded.detail_hash, subject_media.detail_hash),
-  media_hash = excluded.media_hash,
-  nsfw = excluded.nsfw,
-  source_image_common_url = excluded.source_image_common_url,
-  source_image_large_url = excluded.source_image_large_url,
-  r2_image_common_key = excluded.r2_image_common_key,
-  r2_image_large_key = excluded.r2_image_large_key,
-  checked_at = excluded.checked_at,
-  next_refresh_at = excluded.next_refresh_at,
-  retry_count = excluded.retry_count,
-  retry_after = excluded.retry_after,
-  error_code = excluded.error_code`
 
 type ImageSize = 'common' | 'large'
 
@@ -93,22 +91,6 @@ export interface SubjectMediaRefreshDeps {
 
 function sha256(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex')
-}
-
-function textAt(bytes: Uint8Array, offset: number, length: number): string {
-  return String.fromCharCode(...bytes.subarray(offset, offset + length))
-}
-
-function sniffImage(bytes: Uint8Array): string | null {
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg'
-  if (bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'image/png'
-  if (bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38) return 'image/gif'
-  if (bytes.length >= 12 && textAt(bytes, 0, 4) === 'RIFF' && textAt(bytes, 8, 4) === 'WEBP') return 'image/webp'
-  if (bytes.length >= 12 && textAt(bytes, 4, 4) === 'ftyp') {
-    const brand = textAt(bytes, 8, 4)
-    if (brand === 'avif' || brand === 'avis') return 'image/avif'
-  }
-  return null
 }
 
 export type BangumiImageSizes = {
@@ -219,11 +201,7 @@ function mediaWorkPriority(
   return 3
 }
 
-export interface SubjectMediaPublishHint {
-  errorCode: string | null
-  hasSourceCommon: boolean
-  hasSourceLarge: boolean
-}
+export type { SubjectMediaPublishHint }
 
 export async function loadSubjectMediaPublishHints(db: CloudflareD1Client): Promise<Map<number, SubjectMediaPublishHint>> {
   await ensureSubjectMedia(db)
@@ -443,10 +421,11 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
 
         const mediaHash = sha256(JSON.stringify({ common: keys.common, large: keys.large }))
         const retryCount = failed ? (current?.retryCount ?? 0) + 1 : 0
+        const exhausted = failed && retryCount >= MEDIA_RETRY_LIMIT
         const nextRefreshAt = failed
-          ? nowSec
+          ? nowSec + (exhausted ? MEDIA_RETRY_EXHAUSTED_SECONDS : mediaRetryDelaySeconds(retryCount))
           : nowSec + 6 * DAY_SECONDS + (subject.subjectId * 997 % SUCCESS_SPREAD_SECONDS)
-        await deps.db.query(UPSERT_SUBJECT_MEDIA, [
+        await deps.db.query(SUBJECT_MEDIA_COALESCE_UPSERT, [
           subject.subjectId,
           null,
           null,
@@ -460,7 +439,7 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
           nextRefreshAt,
           retryCount,
           failed ? nextRefreshAt : null,
-          failed ? 'MEDIA_IMAGE_FAILED' : null,
+          failed ? (exhausted ? MEDIA_IMAGE_FAILED_EXHAUSTED : MEDIA_IMAGE_FAILED) : null,
         ])
         if (!failed && keys.large && !failedSizes.includes('large')) {
           const match = KEY_PATTERN.exec(keys.large)
@@ -470,17 +449,19 @@ export function createSubjectMediaRefresh(deps: SubjectMediaRefreshDeps): MediaR
           summary.failed += 1
           const failure: MediaRefreshFailure = {
             subject_id: subject.subjectId,
-            error_code: 'MEDIA_IMAGE_FAILED',
+            error_code: exhausted ? MEDIA_IMAGE_FAILED_EXHAUSTED : MEDIA_IMAGE_FAILED,
             sizes: failedSizes.length > 0 ? failedSizes : (['common', 'large'] as const).filter((size) => Boolean(sources[size])),
           }
           summary.failures.push(failure)
           console.log(JSON.stringify({
             status: 'info',
-            stage: 'media_failed',
+            stage: exhausted ? 'media_failed_exhausted' : 'media_failed',
             subject_id: failure.subject_id,
             error_code: failure.error_code,
             sizes: failure.sizes,
             retry_count: retryCount,
+            retry_limit: MEDIA_RETRY_LIMIT,
+            next_refresh_at: nextRefreshAt,
           }))
         } else summary.succeeded += 1
         processed += 1

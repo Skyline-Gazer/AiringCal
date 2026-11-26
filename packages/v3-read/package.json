@@ -1,0 +1,30 @@
+{
+  "name": "@airing-cal/v3-read",
+  "version": "3.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./cloudflare-read-handler": "./src/cloudflare-read-handler.ts",
+    "./portable-read-handler": "./src/portable-read-handler.ts",
+    "./portable-static-handler": "./src/portable-static-handler.ts",
+    "./read-config": "./src/read-config.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test"
+  },
+  "dependencies": {
+    "@airing-cal/domain": "workspace:*",
+    "@airing-cal/widget": "workspace:*",
+    "@airing-cal/v3-adapters": "workspace:*",
+    "@airing-cal/v3-builder": "workspace:*",
+    "@airing-cal/v3-core": "workspace:*",
+    "@airing-cal/storage": "workspace:*"
+  },
+  "devDependencies": {
+    "@airing-cal/bgm-api": "workspace:*",
+    "@types/node": "^26.4.0"
+  }
+}

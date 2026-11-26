@@ -1,0 +1,243 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+import { assembleFullFetch } from '@airing-cal/bgm-api'
+import { CloudflareR2PublicStore } from '@airing-cal/v3-adapters/cloudflare-r2-public-store'
+import { MemoryR2Bucket } from '@airing-cal/v3-adapters/memory-r2-binding'
+import {
+  openBuilderDatabase,
+  publishBuilderCheckpoint,
+  runBuilderSyncJob,
+  SqliteBuilderStateStore,
+  SyncRunStore,
+} from '@airing-cal/v3-builder'
+import { V2_CACHE_CONTROL } from '@airing-cal/v3-core/read-contract'
+import { handleReadWorkerRequest } from './index.ts'
+
+function emptyFetch() {
+  return assembleFullFetch(
+    [{ user_id: '1', pageLimit: 50, pages: [{ offset: 0, total: 0, data: [] }] }],
+    [{ weekday: { en: 'Mon', cn: '一', ja: '月', id: 1 }, items: [] }],
+    1_700_000_000,
+  )
+}
+
+/** Publishes a real builder checkpoint into a memory R2 bucket, as the operator publish path does. */
+async function publishedBucket(): Promise<MemoryR2Bucket> {
+  const bucket = new MemoryR2Bucket()
+  const db = openBuilderDatabase(':memory:')
+  const state = new SqliteBuilderStateStore(db)
+  const runs = new SyncRunStore(db)
+  await runBuilderSyncJob({
+    state,
+    runs,
+    runId: 'run-worker',
+    mode: 'incremental',
+    ownerToken: 'worker',
+    fetchInput: async () => emptyFetch(),
+    now: () => 1_700_000_000_000,
+  })
+  await publishBuilderCheckpoint({
+    state,
+    publicStore: new CloudflareR2PublicStore(bucket),
+    manifestMetadata: { source_observed_at: '2026-01-01T00:00:00.000Z', git_sha: 'd'.repeat(40) },
+  })
+  db.close()
+  return bucket
+}
+
+test('worker serves v2 read routes from the R2 public store', async () => {
+  const bucket = await publishedBucket()
+  const env = { AIRINGCAL_R2: bucket, BANGUMI_GIT_COMMIT_SHA: 'd'.repeat(40) }
+
+  const health = await handleReadWorkerRequest(new Request('https://worker.example/api/health'), env)
+  assert.equal(health.status, 200)
+  const healthBody = await health.json() as {
+    data: { cron: { scheduler: string }; publish: { generation: number | null } }
+  }
+  assert.equal(healthBody.data.cron.scheduler, 'external')
+
+  const collections = await handleReadWorkerRequest(
+    new Request('https://worker.example/api/collections?type=watching&page=1&limit=24'),
+    env,
+  )
+  assert.equal(collections.status, 200)
+  assert.equal(collections.headers.get('Cache-Control'), V2_CACHE_CONTROL.collections)
+
+  const calendar = await handleReadWorkerRequest(new Request('https://worker.example/api/calendar'), env)
+  assert.equal(calendar.status, 200)
+  assert.equal(calendar.headers.get('Cache-Control'), V2_CACHE_CONTROL.calendar)
+
+  const version = await handleReadWorkerRequest(new Request('https://worker.example/api/version'), env)
+  const versionBody = await version.json() as { read: string; platform: string }
+  assert.equal(versionBody.read, 'cloudflare')
+  assert.equal(versionBody.platform, 'cloudflare')
+})
+
+test('worker reuses isolate handler/cache for sequential collections and skips snapshot on /image', async () => {
+  const bucket = await publishedBucket()
+  const calls: string[] = []
+  const originalGet = bucket.get.bind(bucket)
+  const originalHead = bucket.head.bind(bucket)
+  bucket.get = async (key: string) => {
+    calls.push(`get:${key}`)
+    return originalGet(key)
+  }
+  bucket.head = async (key: string) => {
+    calls.push(`head:${key}`)
+    return originalHead(key)
+  }
+  const env = { AIRINGCAL_R2: bucket, PACKAGE_VERSION: '3.0.0-test' }
+
+  const first = await handleReadWorkerRequest(
+    new Request('https://worker.example/api/collections?type=watching&page=1&limit=24'),
+    env,
+  )
+  assert.equal(first.status, 200)
+  const firstSnapshotGets = calls.filter((key) => key.startsWith('get:snapshots/')).length
+  assert.equal(firstSnapshotGets, 1)
+  const afterFirst = calls.length
+
+  const second = await handleReadWorkerRequest(
+    new Request('https://worker.example/api/collections?type=watching&page=1&limit=24'),
+    env,
+  )
+  assert.equal(second.status, 200)
+  assert.equal(calls.length, afterFirst)
+
+  const hash = 'a'.repeat(64)
+  bucket.objects.set(`images/${hash}/original`, { bytes: new TextEncoder().encode('image-bytes'), etag: 'seeded' })
+  const beforeImage = calls.length
+  const image = await handleReadWorkerRequest(new Request(`https://worker.example/image/${hash}`), env)
+  assert.equal(image.status, 200)
+  const imageKeys = calls.slice(beforeImage)
+  assert.ok(imageKeys.every((key) => key.includes('images/')), `unexpected image keys: ${imageKeys.join(',')}`)
+  assert.equal(imageKeys.some((key) => key.includes('snapshots/')), false)
+})
+
+test('worker serves widget assets, 410 sync routes, and R2 images', async () => {
+  const bucket = await publishedBucket()
+  const env = { AIRINGCAL_R2: bucket, BANGUMI_GIT_COMMIT_SHA: 'e'.repeat(40) }
+
+  const index = await handleReadWorkerRequest(new Request('https://worker.example/'), env)
+  assert.equal(index.status, 200)
+  assert.equal(index.headers.get('Content-Type'), 'text/html; charset=utf-8')
+  assert.match(await index.text(), /Build e{7}/)
+
+  const widget = await handleReadWorkerRequest(new Request('https://worker.example/src/bangumi.js'), env)
+  assert.equal(widget.status, 200)
+
+  const deprecated = await handleReadWorkerRequest(new Request('https://worker.example/api/sync/apply'), env)
+  assert.equal(deprecated.status, 410)
+  assert.equal(deprecated.headers.get('Cache-Control'), V2_CACHE_CONTROL.error)
+
+  const hash = 'a'.repeat(64)
+  const bytes = new TextEncoder().encode('image-bytes')
+  bucket.objects.set(`images/${hash}/original`, { bytes, etag: 'seeded' })
+  const image = await handleReadWorkerRequest(new Request(`https://worker.example/image/${hash}`), env)
+  assert.equal(image.status, 200)
+  assert.equal(image.headers.get('Cache-Control'), V2_CACHE_CONTROL.image)
+  assert.equal(await image.text(), 'image-bytes')
+
+  const missing = await handleReadWorkerRequest(new Request(`https://worker.example/image/${'b'.repeat(64)}`), env)
+  assert.equal(missing.status, 404)
+})
+
+test('worker fails closed when the pointer cannot be verified', async () => {
+  const bucket = new MemoryR2Bucket()
+  const env = { AIRINGCAL_R2: bucket }
+  const collections = await handleReadWorkerRequest(
+    new Request('https://worker.example/api/collections?type=watching'),
+    env,
+  )
+  assert.equal(collections.status, 503)
+  const health = await handleReadWorkerRequest(new Request('https://worker.example/api/health'), env)
+  assert.equal(health.status, 503)
+})
+
+test('worker reports a missing R2 binding instead of throwing', async () => {
+  const response = await handleReadWorkerRequest(
+    new Request('https://worker.example/api/health'),
+    { AIRINGCAL_R2: undefined as unknown as MemoryR2Bucket },
+  )
+  assert.equal(response.status, 503)
+  const body = await response.json() as { error: { code: string } }
+  assert.equal(body.error.code, 'NO_PUBLIC_STORE_BINDING')
+})
+
+test('worker redirects images through a validated AIRINGCAL_PUBLIC_BASE_URL only when the object exists', async () => {
+  const bucket = await publishedBucket()
+  const store = new CloudflareR2PublicStore(bucket)
+  const hash = 'a'.repeat(64)
+  const env = {
+    AIRINGCAL_R2: bucket,
+    AIRINGCAL_PUBLIC_BASE_URL: 'https://cdn.example.com/',
+  }
+
+  // No thumbnail in the store: the Worker answers 404 itself instead of a CDN 302.
+  const missingThumb = await handleReadWorkerRequest(new Request(`https://worker.example/image/${hash}/thumb`), env)
+  assert.equal(missingThumb.status, 404)
+  assert.equal(missingThumb.headers.get('Location'), null)
+
+  await store.putImmutableObject(`images/${hash}/original`, new Uint8Array([1, 2, 3]), 'image/jpeg')
+  const original = await handleReadWorkerRequest(new Request(`https://worker.example/image/${hash}`), env)
+  assert.equal(original.status, 302)
+  assert.equal(original.headers.get('Location'), `https://cdn.example.com/images/${hash}/original`)
+
+  await store.putImmutableObject(`images/${hash}/thumb.v2.webp`, new Uint8Array([4]), 'image/webp')
+  const thumb = await handleReadWorkerRequest(new Request(`https://worker.example/image/${hash}/thumb`), env)
+  assert.equal(thumb.headers.get('Location'), `https://cdn.example.com/images/${hash}/thumb.v2.webp`)
+})
+
+test('worker fails closed on placeholder or non-https AIRINGCAL_PUBLIC_BASE_URL', async () => {
+  const bucket = await publishedBucket()
+  for (const [baseUrl, pattern] of [
+    ['https://PLACEHOLDER_PUBLIC_CDN', /placeholder value/i],
+    ['http://cdn.example.com', /must use https/],
+  ] as const) {
+    const response = await handleReadWorkerRequest(new Request('https://worker.example/api/health'), {
+      AIRINGCAL_R2: bucket,
+      AIRINGCAL_PUBLIC_BASE_URL: baseUrl,
+    })
+    assert.equal(response.status, 503)
+    const body = await response.json() as { error: { code: string; message: string } }
+    assert.equal(body.error.code, 'INVALID_READ_CONFIG')
+    assert.match(body.error.message, pattern)
+  }
+})
+
+test('entry-level OPTIONS preflight reaches the read handler (ShipReview #1)', async () => {
+  const bucket = await publishedBucket()
+  const env = {
+    AIRINGCAL_R2: bucket,
+    AIRINGCAL_CORS_ORIGINS: 'https://embed.test',
+  }
+  const pre = await handleReadWorkerRequest(
+    new Request('https://worker.test/api/collections', {
+      method: 'OPTIONS',
+      headers: { Origin: 'https://embed.test' },
+    }),
+    env,
+  )
+  assert.equal(pre.status, 204, 'static guard must not shadow the preflight')
+  assert.equal(pre.headers.get('Access-Control-Allow-Origin'), 'https://embed.test')
+  assert.equal(pre.headers.get('Access-Control-Allow-Methods'), 'GET, HEAD')
+
+  const foreign = await handleReadWorkerRequest(
+    new Request('https://worker.test/api/collections', {
+      method: 'OPTIONS',
+      headers: { Origin: 'https://evil.test' },
+    }),
+    env,
+  )
+  assert.equal(foreign.status, 405)
+  assert.equal(foreign.headers.get('Access-Control-Allow-Origin'), null)
+})
+
+test('entry-level GET on static assets still short-circuits before the read handler', async () => {
+  const bucket = await publishedBucket()
+  const res = await handleReadWorkerRequest(new Request('https://worker.test/'), {
+    AIRINGCAL_R2: bucket,
+  })
+  assert.equal(res.status, 200)
+  assert.match(res.headers.get('Content-Type') ?? '', /text\/html/)
+})
