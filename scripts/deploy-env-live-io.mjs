@@ -38,15 +38,6 @@ const ENV_FILE_NULL = ['--env-file', '/dev/null']
 /** Workers R2 Storage Write permission group id (Cloudflare tokens API). */
 const PG_R2_WRITE = 'e086da7e5abe4ad98b80f09ab37601ac'
 
-/**
- * Stable name of the fallback R2 S3 token. Creation is the fallback path:
- * the primary derivation reuses the management token itself (id + SHA-256
- * value), so this token is only minted when the parent token lacks R2
- * object access. To prevent accumulation, an apply that must create this
- * token first deletes any prior token carrying the same stable name.
- */
-const DERIVED_S3_TOKEN_NAME = 'airingcal-development-s3'
-
 /** Repository-level gate variable the development writer job `if` reads. */
 const DEVELOPMENT_WRITER_GATE_VAR = 'AIRINGCAL_DEVELOPMENT_WRITER_ENABLED'
 
@@ -1140,30 +1131,44 @@ export function createLiveDevelopmentApplyIo({
         throw error
       }
 
-      const tokenName = DERIVED_S3_TOKEN_NAME
-
-      // Anti-accumulation: delete any pre-existing token carrying the stable
-      // fallback name before creating a replacement, so repeated applies do
-      // not leave multiple airingcal-development-s3 tokens behind. Listing and
-      // deletion are best effort (a token may not see other users' tokens);
-      // the POST below remains the authoritative enforcement point.
+      // #195 P2.3: per-environment canonical writer token name. Existing
+      // tokens are NEVER deleted on a name match — the secret of a live
+      // token cannot be recovered, so silent rotation would orphan the
+      // Writer environment mid-run. Rotation requires the operator-confirmed
+      // token id (AIRINGCAL_WRITER_TOKEN_ROTATION_ID); otherwise we fail
+      // closed with the reuse/override instructions.
+      const tokenName =
+        isProduction ? 'airingcal-production-writer' : 'airingcal-development-writer'
+      const rotationId = String(env.AIRINGCAL_WRITER_TOKEN_ROTATION_ID ?? '').trim()
+      let existingSameName = []
       try {
         const listed = await cfApi(fetchImpl, parentToken, '/user/tokens')
-        const prior = (Array.isArray(listed?.result) ? listed.result : []).filter(
+        existingSameName = (Array.isArray(listed?.result) ? listed.result : []).filter(
           (t) => String(t?.name ?? '') === tokenName && t?.id,
         )
-        for (const t of prior) {
-          try {
-            await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(String(t.id))}`, {
-              method: 'DELETE',
-            })
-            process.stderr.write('[deploy-env] Deleted prior R2 S3 token with the stable fallback name\n')
-          } catch {
-            // Deletion denied/stale — creation still proceeds; CF enforces.
-          }
-        }
       } catch {
-        // Token listing not permitted for this parent; proceed to create.
+        // Token listing not permitted for this parent; the POST below is the
+        // enforcement point and no deletion can occur without a confirmed id.
+      }
+      if (existingSameName.length > 0) {
+        if (!rotationId) {
+          throw new Error(
+            `Writer token "${tokenName}" already exists and its secret cannot be read back. ` +
+            `Reuse it (keep the GitHub Environment ${isProduction ? 'AIRINGCAL_PRODUCTION' : 'AIRINGCAL_DEVELOPMENT'}_S3_* secrets pointing at it), ` +
+            `supply AIRINGCAL_S3_ACCESS_KEY_ID/_SECRET_ACCESS_KEY overrides, or rotate explicitly with ` +
+            `AIRINGCAL_WRITER_TOKEN_ROTATION_ID=<that token's id>. Auto delete-and-recreate by name is forbidden (#195).`,
+          )
+        }
+        const target = existingSameName.find((t) => String(t.id) === rotationId)
+        if (!target) {
+          throw new Error(
+            `AIRINGCAL_WRITER_TOKEN_ROTATION_ID "${rotationId}" does not match writer token "${tokenName}" (ids: ${existingSameName.map((t) => t.id).join(', ')})`,
+          )
+        }
+        await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(String(target.id))}`, {
+          method: 'DELETE',
+        })
+        process.stderr.write(`[deploy-env] Rotating confirmed writer token ${tokenName} (${rotationId})\n`)
       }
 
       let permissionGroupId = PG_R2_WRITE
@@ -1189,9 +1194,11 @@ export function createLiveDevelopmentApplyIo({
             policies: [
               {
                 effect: 'allow',
+                // #195 P2.3: scope the Writer credential to exactly the one
+                // bucket it may touch, not every bucket in the account.
                 resources: {
                   [`com.cloudflare.api.account.${accountId}`]: {
-                    'com.cloudflare.edge.r2.bucket.*': '*',
+                    [`com.cloudflare.edge.r2.bucket.${accountId}.default.${bucket}`]: '*',
                   },
                 },
                 permission_groups: [{ id: permissionGroupId }],
@@ -1230,6 +1237,18 @@ export function createLiveDevelopmentApplyIo({
       try {
         await verifyS3Access(creds, bucket, { allowMissingBucket: true })
       } catch (error) {
+        // The credential we JUST created does not work (unexpected scope,
+        // provider regression). Remove it so a retry does not accumulate or
+        // leave an orphan token with account-adjacent access. Only the fresh
+        // id is ever deleted here — pre-existing tokens stay untouched.
+        try {
+          await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(accessKeyId)}`, {
+            method: 'DELETE',
+          })
+          process.stderr.write('[deploy-env] Deleted the just-created writer token after failed verification\n')
+        } catch {
+          // Best effort; the operator-facing error below still refuses the apply.
+        }
         if (error?.missingScopes) throw error
         const msg = error instanceof Error ? error.message : String(error)
         const err = new Error(

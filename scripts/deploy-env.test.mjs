@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 
 import {
   DEVELOPMENT_DEFAULTS,
+  PRODUCTION_DEFAULTS,
   PRODUCTION_FORBIDDEN_COLLISION_NAMES,
   STAGING_ALIAS_MAP,
   applyStagingAliases,
@@ -113,7 +114,7 @@ function createFakeEdgeone({
   return { spawn, state, log }
 }
 
-function makeEdgeoneIo(fake, { env = {}, imageBaseUrl, target = 'edgeone', publicBaseUrl = 'https://dev-cdn.example.test' } = {}) {
+function makeEdgeoneIo(fake, { env = {}, imageBaseUrl, target = 'edgeone', publicBaseUrl = 'https://dev-cdn.example.test', publicOriginMode = 'bucket-domain' } = {}) {
   return import('./deploy-env.mjs').then(({ createLiveDevelopmentApplyIo }) =>
     createLiveDevelopmentApplyIo({
       env: {
@@ -122,7 +123,7 @@ function makeEdgeoneIo(fake, { env = {}, imageBaseUrl, target = 'edgeone', publi
         ...(imageBaseUrl ? { AIRINGCAL_IMAGE_BASE_URL: imageBaseUrl } : {}),
         ...env,
       },
-      plan: buildDevelopmentDeployPlan({ target, publicBaseUrl, mode: 'apply' }),
+      plan: buildDevelopmentDeployPlan({ target, publicBaseUrl, mode: 'apply', publicOriginMode }),
       spawnSyncImpl: fake.spawn,
       fetchImpl: async () => {
         throw new Error('no fetch expected')
@@ -268,11 +269,12 @@ const VALID_PROD_ENV = Object.freeze({
   AIRINGCAL_BANGUMI_TOKEN: 'prod-bangumi-token',
   AIRINGCAL_PRIMARY_USER_ID: '900001',
   AIRINGCAL_PUBLIC_BASE_URL: 'https://cdn.airingcal.example',
+  // Legacy bucket-domain topology kept explicit (#195: never inferred).
+  AIRINGCAL_PUBLIC_ORIGIN_MODE: 'bucket-domain',
   AIRINGCAL_EDGEONE_API_TOKEN: 'prod-eo-token',
   AIRINGCAL_EDGEONE_TEAM_ID: 'team-prod',
   AIRINGCAL_EDGEONE_PROJECT: 'airingcal-edgeone-read-production',
   AIRINGCAL_EDGEONE_REGION: 'overseas',
-  AIRINGCAL_PRODUCTION_WORKER_NAME: 'airing-cal-v3-read-production',
 })
 
 function writeTempProductionDotenv(overrides = {}) {
@@ -549,6 +551,7 @@ test('buildDevelopmentDeployPlan is single-bucket and aborts on isolation withou
   const plan = buildDevelopmentDeployPlan({
     target: 'both',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     edgeoneProject: 'airingcal-edgeone-read-overseas',
     edgeoneRegion: 'overseas',
     cloudflareWorkerName: DEVELOPMENT_DEFAULTS.workerName,
@@ -669,6 +672,7 @@ test('deriveDevelopmentConfig prefers explicit CLI --target over AIRINGCAL_DEPLO
       AIRINGCAL_ENV: 'development',
       AIRINGCAL_DEPLOY_TARGET: 'edgeone',
       AIRINGCAL_PUBLIC_BASE_URL: 'https://dev-cdn.example.test',
+      AIRINGCAL_PUBLIC_ORIGIN_MODE: 'bucket-domain',
       AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
     },
     { target: 'cloudflare', mode: 'dry-run' },
@@ -690,6 +694,7 @@ test('CLI --target wins over AIRINGCAL_DEPLOY_TARGET env', () => {
       AIRINGCAL_ENV: 'development',
       AIRINGCAL_DEPLOY_TARGET: 'edgeone',
       AIRINGCAL_PUBLIC_BASE_URL: 'https://dev-cdn.example.test',
+      AIRINGCAL_PUBLIC_ORIGIN_MODE: 'bucket-domain',
       AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
       AIRINGCAL_CLOUDFLARE_API_TOKEN: 'test-token',
     },
@@ -812,6 +817,7 @@ test('runDevelopmentApply executes ordered steps with injectable I/O', async () 
   const plan = buildDevelopmentDeployPlan({
     target: 'both',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const io = createRecordingApplyIo()
@@ -855,6 +861,7 @@ test('runProductionApply executes the ordered copy-free production sequence', as
   const plan = buildProductionPlan({
     target: 'both',
     publicBaseUrl: 'https://prod.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
     accountId: 'acct',
     zoneId: 'zone',
@@ -906,6 +913,7 @@ test('runProductionApply aborts before any mutation fan-out when isolation fails
   const plan = buildProductionPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://prod.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
     zoneId: 'zone',
     applyAuthorized: true,
@@ -943,12 +951,13 @@ test('production apply reports completed effects when a later adapter throws', a
 })
 
 test('runProductionApply refuses non-production and copyable plans', async () => {
-  const devPlan = buildDevelopmentDeployPlan({ target: 'both', publicBaseUrl: 'https://dev.example.test', mode: 'apply' })
+  const devPlan = buildDevelopmentDeployPlan({ target: 'both', publicBaseUrl: 'https://dev.example.test', publicOriginMode: 'bucket-domain', mode: 'apply' })
   await assert.rejects(() => runProductionApply({ plan: devPlan, env: {}, io: createRecordingApplyIo() }), /requires a production plan/)
 
   const prodPlan = buildProductionPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://prod.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
     zoneId: 'zone',
     applyAuthorized: true,
@@ -964,6 +973,7 @@ test('production live-io adapters refuse staging copy/freeze and require an empt
   const plan = buildProductionPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://prod.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
     accountId: 'acct',
     zoneId: 'zone',
@@ -1005,6 +1015,7 @@ test('production syncGithubEnvironment targets the production environment with p
   const plan = buildProductionPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://prod.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
     accountId: 'acct',
     zoneId: 'zone',
@@ -1046,6 +1057,7 @@ test('runDevelopmentApply aborts before copy when isolation fails', async () => 
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const io = createRecordingApplyIo({
@@ -1090,6 +1102,7 @@ test('runDevelopmentApply derives r2DevDisabled from disableR2Dev result, not pr
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const io = createRecordingApplyIo({
@@ -1133,6 +1146,7 @@ test('createLiveDevelopmentApplyIo probeAnonymousAccess does not assume r2DevDis
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const io = createLiveDevelopmentApplyIo({
@@ -1150,6 +1164,7 @@ test('createLiveDevelopmentApplyIo probeToken fails closed on wrangler auth erro
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const calls = []
@@ -1182,6 +1197,7 @@ test('createLiveDevelopmentApplyIo deriveAndVerifyS3 uses overrides without Crea
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const storeCalls = []
@@ -1238,6 +1254,7 @@ test('deriveAndVerifyS3 falls through to management-token self-derivation when t
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const parentToken = 'mgmt-token-value'
@@ -1310,6 +1327,7 @@ test('deriveAndVerifyS3 rethrows non-credential override failures without fallin
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const fetchLog = []
@@ -1352,6 +1370,7 @@ test('runDevelopmentApply aggregates override rejection + chain failure into the
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const io = createLiveDevelopmentApplyIo({
@@ -1419,10 +1438,11 @@ test('createLiveDevelopmentApplyIo applyCors writes Wrangler rules file with exa
   const plan = buildDevelopmentDeployPlan({
     target: 'both',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const EXPECTED_ORIGINS = [
-    'https://airing-cal-v3-read-staging.r7a.workers.dev',
+    'https://airingcal-development.r7a.workers.dev',
     'https://dev-cdn.example.test',
     'http://127.0.0.1:8787',
     'http://localhost:8787',
@@ -1467,6 +1487,7 @@ test('createLiveDevelopmentApplyIo freezeWriter disables workflow and waits for 
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const ghCalls = []
@@ -1497,6 +1518,7 @@ test('freezeWriter treats already-disabled workflow as success and records alrea
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const ghCalls = []
@@ -1535,6 +1557,7 @@ test('freezeWriter fails closed on auth errors from workflow disable', async () 
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const ghCalls = []
@@ -1562,6 +1585,7 @@ test('createLiveDevelopmentApplyIo attachCustomDomain fails closed without ZONE_
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const io = createLiveDevelopmentApplyIo({
@@ -1581,6 +1605,7 @@ test('runDevelopmentApply with live adapters aborts before copy when isolation f
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const copyCalls = []
@@ -1699,6 +1724,7 @@ test('runDevelopmentApply happy path invokes ordered live adapters via doubles',
   const plan = buildDevelopmentDeployPlan({
     target: 'both',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const liveImageHash = 'b'.repeat(64)
@@ -2005,6 +2031,7 @@ function buildWriterTestIo(spawnSyncImpl, extraEnv = {}) {
     const plan = buildDevelopmentDeployPlan({
       target: 'cloudflare',
       publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
       mode: 'apply',
     })
     return createLiveDevelopmentApplyIo({
@@ -2160,6 +2187,7 @@ test('runDevelopmentApply keeps skipped single-writer test out of completed and 
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const io = createRecordingApplyIo()
@@ -2178,6 +2206,7 @@ test('runDevelopmentApply records dispatched single-writer test as completed', a
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const io = createRecordingApplyIo({
@@ -2206,6 +2235,7 @@ test('buildDevelopmentDeployPlan CORS methods are GET/HEAD only (no OPTIONS)', (
   const plan = buildDevelopmentDeployPlan({
     target: 'both',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'dry-run',
   })
   assert.deepEqual(plan.cors.methods, ['GET', 'HEAD'])
@@ -2219,6 +2249,7 @@ test('applyCors throws on OPTIONS in caller-supplied methods without touching wr
     ...buildDevelopmentDeployPlan({
       target: 'both',
       publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
       mode: 'apply',
     }),
     cors: { allowedOrigins: ['https://dev-cdn.example.test'], methods: ['GET', 'HEAD', 'OPTIONS'] },
@@ -2242,6 +2273,7 @@ test('applyCacheRules + configureWaf scope every expression to plan.publicHost v
   const plan = buildDevelopmentDeployPlan({
     target: 'both',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const rulePosts = []
@@ -2360,6 +2392,7 @@ test('configureWaf PATCHes zone-wide rule when description matches but expressio
   const plan = buildDevelopmentDeployPlan({
     target: 'both',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const { writes, fetchImpl } = makeSeededZoneFetch({
@@ -2406,6 +2439,7 @@ test('applyCacheRules PATCHes both stale cache rules (immutable + pointer) on ex
   const plan = buildDevelopmentDeployPlan({
     target: 'both',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const { writes, fetchImpl } = makeSeededZoneFetch({
@@ -2461,6 +2495,7 @@ test('ensureZonePhaseRule reuses with zero writes only when description AND expr
   const plan = buildDevelopmentDeployPlan({
     target: 'both',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const { writes, fetchImpl } = makeSeededZoneFetch({
@@ -2514,6 +2549,7 @@ test('ensureZonePhaseRule still creates via POST when entrypoint has no matching
   const plan = buildDevelopmentDeployPlan({
     target: 'both',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const { writes, fetchImpl } = makeSeededZoneFetch({
@@ -2550,6 +2586,7 @@ test('applyCacheRules + configureWaf refuse when plan.publicHost is missing', as
     ...buildDevelopmentDeployPlan({
       target: 'both',
       publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
       mode: 'apply',
     }),
     publicHost: '',
@@ -2594,6 +2631,7 @@ function zoneScopeLiveIo(fetchImpl) {
       plan: buildDevelopmentDeployPlan({
         target: 'both',
         publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
         mode: 'apply',
       }),
       spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '', error: null }),
@@ -2650,6 +2688,7 @@ test('runner aborts cutover (no dual-bucket fallback) when applyCacheRules hits 
   const plan = buildDevelopmentDeployPlan({
     target: 'both',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const result = await runDevelopmentApply({
@@ -2735,6 +2774,7 @@ test('deriveAndVerifyS3 derives S3 creds from the management token without creat
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const parentToken = 'cf-mgmt-token-value-1234567890abcdef'
@@ -2826,6 +2866,7 @@ test('deriveAndVerifyS3 continues to scoped-token fallback when parent token can
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const io = createLiveDevelopmentApplyIo({
@@ -2882,6 +2923,7 @@ test('deriveAndVerifyS3 falls through to scoped-token creation when management S
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const fetchLog = []
@@ -2955,6 +2997,7 @@ test('deriveAndVerifyS3 falls through to scoped-token creation when verify omits
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const storeKeys = []
@@ -3008,11 +3051,12 @@ test('deriveAndVerifyS3 falls through to scoped-token creation when verify omits
   assert.equal(storeKeys.length, 1, 'only the fallback creds may touch the store')
 })
 
-test('scoped-token fallback deletes the prior stable-named token before POST', async () => {
+test('scoped-token fallback never deletes legacy-named tokens before POST', async () => {
   const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const fetchLog = []
@@ -3083,11 +3127,10 @@ test('scoped-token fallback deletes the prior stable-named token before POST', a
   })
   const result = await io.deriveAndVerifyS3({})
   assert.equal(result.accessKeyId, 'AKIANEW')
-  const deleteIdx = fetchLog.findIndex(([m, u]) => m === 'DELETE' && u.endsWith('/user/tokens/old-token-1'))
+  const deleteIdx = fetchLog.findIndex(([m, u]) => m === 'DELETE')
+  assert.equal(deleteIdx, -1, '#195: legacy-named tokens are never auto-deleted')
   const createIdx = fetchLog.findIndex(([m, u]) => m === 'POST' && u.endsWith('/user/tokens'))
-  assert.ok(deleteIdx >= 0, 'prior stable-named token must be deleted')
   assert.ok(createIdx >= 0)
-  assert.ok(deleteIdx < createIdx, 'delete must precede create')
   assert.ok(!fetchLog.some(([m, u]) => m === 'DELETE' && u.includes('unrelated-token')), 'never delete other tokens')
 })
 
@@ -3096,6 +3139,7 @@ test('deriveAndVerifyS3 probes token-creation permission and exits-2 style on de
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const fetchLog = []
@@ -3145,6 +3189,7 @@ test('deriveAndVerifyS3 creates stable-named token only after permission probe p
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   let createBody = null
@@ -3200,7 +3245,7 @@ test('deriveAndVerifyS3 creates stable-named token only after permission probe p
   const result = await io.deriveAndVerifyS3({})
   assert.equal(result.derived, true)
   assert.equal(result.accessKeyId, 'AKIASTABLE')
-  assert.equal(createBody.name, 'airingcal-development-s3')
+  assert.equal(createBody.name, 'airingcal-development-writer')
 })
 
 test('validateImageCdnConfig defaults off and rejects loops / non-https / same host', () => {
@@ -3251,6 +3296,7 @@ test('CLI --dry-run prints single-bucket development plan JSON', () => {
       AIRINGCAL_BANGUMI_TOKEN: 'bgm-token',
       AIRINGCAL_PRIMARY_USER_ID: '857123',
       AIRINGCAL_PUBLIC_BASE_URL: 'https://dev-cdn.example.test',
+      AIRINGCAL_PUBLIC_ORIGIN_MODE: 'bucket-domain',
       AIRINGCAL_EDGEONE_PROJECT: 'airingcal-edgeone-read-overseas',
       AIRINGCAL_EDGEONE_REGION: 'overseas',
     },
@@ -3312,6 +3358,7 @@ function buildRoutingIo(fetchImpl, extraEnv = {}, target = 'both') {
       plan: buildDevelopmentDeployPlan({
         target,
         publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
         mode: 'apply',
       }),
       spawnSyncImpl: () => {
@@ -3508,6 +3555,7 @@ test('runDevelopmentApply captures deploy receipts into ctx for verifyImageRouti
   const plan = buildDevelopmentDeployPlan({
     target: 'both',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   let seen = null
@@ -3537,6 +3585,7 @@ test('runDevelopmentApply records skipped-no-images without completing the routi
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const io = createRecordingApplyIo({
@@ -3563,6 +3612,7 @@ test('runDevelopmentApply propagates image routing verification failures', async
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const io = createRecordingApplyIo({
@@ -3588,6 +3638,7 @@ test('deployCloudflareReader forwards the trimmed AIRINGCAL_IMAGE_BASE_URL to th
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const runs = []
@@ -4029,6 +4080,7 @@ test('probeToken reports transient network failure instead of a missing-scope cl
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const calls = []
@@ -4073,6 +4125,7 @@ test('probeToken keeps real permission failures labeled as scopes', async () => 
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const io = createLiveDevelopmentApplyIo({
@@ -4104,6 +4157,7 @@ test('probeAnonymousAccess retries a transient fetch failure and records definit
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   let calls = 0
@@ -4138,6 +4192,7 @@ test('probeAnonymousAccess does not retry definitive HTTP statuses', async () =>
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   let calls = 0
@@ -4166,6 +4221,7 @@ test('probeAnonymousAccess still fails closed when the network never recovers', 
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   let calls = 0
@@ -4404,7 +4460,7 @@ test('formatCopyProgress renders the documented shape without leaking keys or se
 
 test('syncGithubEnvironment derives USERS_JSON from the staging Environment when .env omits it', async () => {
   const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
-  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', publicBaseUrl: 'https://dev.example.test', mode: 'apply' })
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', publicBaseUrl: 'https://dev.example.test', publicOriginMode: 'bucket-domain', mode: 'apply' })
   const calls = []
   const spawn = (cmd, args) => {
     calls.push([cmd, ...args])
@@ -4448,14 +4504,18 @@ test('syncGithubEnvironment derives USERS_JSON from the staging Environment when
 // §6.3 private-R2 / worker-origin architecture (owner directive 2026-11-25)
 // ---------------------------------------------------------------------------
 
-test('resolvePublicOriginMode classifies unset, workers.dev, and bucket domains', () => {
+test('resolvePublicOriginMode classifies unset, workers.dev, and explicit bucket domains', () => {
   assert.equal(resolvePublicOriginMode({ publicBaseUrl: '', cloudflareWorkerName: 'w' }), 'worker')
   assert.equal(
     resolvePublicOriginMode({ publicBaseUrl: 'https://w.r7a.workers.dev', cloudflareWorkerName: 'w' }),
     'worker',
   )
   assert.equal(
-    resolvePublicOriginMode({ publicBaseUrl: 'https://cdn.example.test', cloudflareWorkerName: 'w' }),
+    resolvePublicOriginMode({
+      publicBaseUrl: 'https://cdn.example.test',
+      cloudflareWorkerName: 'w',
+      publicOriginMode: 'bucket-domain',
+    }),
     'bucket-domain',
   )
   assert.throws(() => resolvePublicOriginMode({ publicBaseUrl: 'not-a-url', cloudflareWorkerName: 'w' }))
@@ -4473,7 +4533,7 @@ test('development plan without public base is worker-mode: no edge steps, probe 
   const plan = buildDevelopmentDeployPlan({ target: 'both', mode: 'apply' })
   assert.equal(plan.publicOriginMode, 'worker')
   assert.equal(plan.publicBaseUrl, null)
-  assert.equal(plan.publicHost, 'airing-cal-v3-read-staging.r7a.workers.dev')
+  assert.equal(plan.publicHost, 'airingcal-development.r7a.workers.dev')
   const ids = plan.steps.map((step) => step.id)
   for (const absent of ['attach-custom-domain', 'cache-rules', 'cors', 'waf-checkpoints', 'copy-public', 'copy-checkpoints']) {
     assert.equal(ids.includes(absent), false, `worker mode must not include ${absent}`)
@@ -4679,7 +4739,7 @@ test('syncGithubEnvironment records the Worker origin when the plan has no bucke
   await io.deriveAndVerifyS3({})
   await io.syncGithubEnvironment({})
   const joined = calls.join('\n')
-  assert.match(joined, /variable set AIRINGCAL_DEVELOPMENT_PUBLIC_BASE_URL[\s\S]*https:\/\/airing-cal-v3-read-staging\.r7a\.workers\.dev/)
+  assert.match(joined, /variable set AIRINGCAL_DEVELOPMENT_PUBLIC_BASE_URL[\s\S]*https:\/\/airingcal-development\.r7a\.workers\.dev/)
 })
 
 test('verifyImageRouting accepts streamed 200 image responses in worker mode', async () => {
@@ -4769,6 +4829,7 @@ test('verifyImageRouting still fails closed on pointer 404 for non-bootstrap (de
   const plan = buildDevelopmentDeployPlan({
     target: 'cloudflare',
     publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
     mode: 'apply',
   })
   const io = createLiveDevelopmentApplyIo({
@@ -5005,4 +5066,213 @@ test('evaluateIsolationProbe accepts edge-refusal 400 as denial, rejects 5xx and
   const serverError = evaluateIsolationProbe({ r2DevDisabled: true, probes: mk(503) })
   assert.equal(serverError.ok, false)
   assert.equal(serverError.failures[0].expected, '403|404')
+})
+
+// ---------------------------------------------------------------------------
+// #195 canonical naming, zoneless worker mode and per-environment writer tokens
+// ---------------------------------------------------------------------------
+
+test('canonical defaults are airingcal-{environment} workers and legacy names stay forbidden for production (#195)', () => {
+  assert.equal(DEVELOPMENT_DEFAULTS.workerName, 'airingcal-development')
+  assert.equal(PRODUCTION_DEFAULTS.workerName, 'airingcal-production')
+  assert.ok(PRODUCTION_FORBIDDEN_COLLISION_NAMES.includes('airing-cal-v3-read-staging'))
+  assert.ok(PRODUCTION_FORBIDDEN_COLLISION_NAMES.includes('airing-cal-v3-read-production'))
+})
+
+test('resolvePublicOriginMode fails closed on ambiguous hosts and honours explicit overrides (#195)', () => {
+  assert.equal(resolvePublicOriginMode({ publicBaseUrl: '', cloudflareWorkerName: 'w' }), 'worker')
+  assert.equal(
+    resolvePublicOriginMode({ publicBaseUrl: 'https://w.r7a.workers.dev', cloudflareWorkerName: 'w' }),
+    'worker',
+  )
+  assert.throws(
+    () => resolvePublicOriginMode({ publicBaseUrl: 'https://cdn.example.test', cloudflareWorkerName: 'w' }),
+    /AIRINGCAL_PUBLIC_ORIGIN_MODE/,
+  )
+  assert.equal(
+    resolvePublicOriginMode({
+      publicBaseUrl: 'https://cdn.example.test',
+      cloudflareWorkerName: 'w',
+      publicOriginMode: 'bucket-domain',
+    }),
+    'bucket-domain',
+  )
+  assert.equal(
+    resolvePublicOriginMode({
+      publicBaseUrl: 'https://anime.example.test',
+      cloudflareWorkerName: 'w',
+      workerCustomDomain: 'anime.example.test',
+    }),
+    'worker',
+  )
+  assert.equal(
+    resolvePublicOriginMode({
+      publicBaseUrl: 'https://cdn.example.test',
+      cloudflareWorkerName: 'w',
+      publicOriginMode: 'worker',
+    }),
+    'worker',
+  )
+})
+
+test('production worker mode is zoneless; legacy bucket-domain keeps demanding a zone (#195)', () => {
+  const workerPlan = buildProductionPlan({
+    target: 'cloudflare',
+    publicBaseUrl: '',
+    mode: 'apply',
+    applyAuthorized: true,
+  })
+  assert.equal(workerPlan.publicOriginMode, 'worker')
+  assert.equal(workerPlan.zoneId, null)
+  assert.equal(workerPlan.cloudflareWorkerName, 'airingcal-production')
+  assert.equal(workerPlan.workerOrigin, 'https://airingcal-production.r7a.workers.dev')
+  const ids = workerPlan.steps.map((s) => s.id)
+  assert.ok(ids.includes('materialize-and-deploy-readers'))
+  assert.equal(ids.includes('waf-checkpoints'), false)
+
+  assert.throws(
+    () => buildProductionPlan({ target: 'both', publicBaseUrl: '', publicOriginMode: 'bucket-domain', zoneId: '' }),
+    /zone/i,
+  )
+  const legacy = buildProductionPlan({
+    target: 'both',
+    publicBaseUrl: 'https://cdn.airingcal.example',
+    publicOriginMode: 'bucket-domain',
+    zoneId: 'zone-1',
+  })
+  assert.equal(legacy.publicOriginMode, 'bucket-domain')
+  assert.ok(legacy.steps.some((s) => s.id === 'waf-checkpoints'))
+})
+
+test('deriveProductionConfig drops the unconditional zone requirement for the wizard default (#195)', () => {
+  const env = { ...VALID_PROD_ENV }
+  delete env.AIRINGCAL_ZONE_ID
+  delete env.AIRINGCAL_PUBLIC_BASE_URL
+  delete env.AIRINGCAL_PUBLIC_ORIGIN_MODE
+  const config = deriveProductionConfig(env)
+  assert.equal(config.plan.publicOriginMode, 'worker')
+  assert.equal(config.plan.cloudflareWorkerName, 'airingcal-production')
+})
+
+test('workers.dev origin honours a discovered subdomain instead of hardcoding r7a (#195)', () => {
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: '',
+    workersDevSubdomain: 'acme',
+  })
+  assert.equal(plan.cloudflareWorkerName, 'airingcal-development')
+  assert.equal(plan.workerOrigin, 'https://airingcal-development.acme.workers.dev')
+  assert.equal(plan.publicHost, 'airingcal-development.acme.workers.dev')
+})
+
+test('development plan derives the canonical worker name from env override only (#195)', () => {
+  const derived = deriveDevelopmentConfig(
+    { AIRINGCAL_ENV: 'development', AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: 'abcdef0123456789abcdef0123456789' },
+    { target: 'cloudflare' },
+  )
+  assert.equal(derived.plan.cloudflareWorkerName, 'airingcal-development')
+  const legacy = deriveDevelopmentConfig(
+    {
+      AIRINGCAL_ENV: 'development',
+      AIRINGCAL_DEVELOPMENT_WORKER_NAME: 'airing-cal-v3-read-staging',
+    },
+    { target: 'cloudflare' },
+  )
+  assert.equal(legacy.plan.cloudflareWorkerName, 'airing-cal-v3-read-staging')
+})
+
+function writerFallbackIo({ plan, tokenList = [], rotationId, s3Fail = false }) {
+  const requests = []
+  const env = {
+    AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+    AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: 'acct',
+    ...(rotationId ? { AIRINGCAL_WRITER_TOKEN_ROTATION_ID: rotationId } : {}),
+  }
+  const json = (o) => ({ ok: true, status: 200, json: async () => o })
+  const io = createLiveDevelopmentApplyIoForTest({
+    env,
+    plan,
+    spawnSyncImpl: () => ({ status: 0, stdout: '{}', stderr: '', error: null }),
+    fetchImpl: async (url, init = {}) => {
+      const u = String(url)
+      const method = String(init.method ?? 'GET')
+      requests.push([method, u, init.body ?? null])
+      if (method === 'GET' && u.endsWith('/user/tokens/verify')) return json({ success: true, result: {} })
+      if (method === 'GET' && u.endsWith('/user/tokens/permissions')) {
+        return json({ success: true, result: { permissions: ['User API Tokens:Edit'] } })
+      }
+      if (method === 'GET' && u.endsWith('/user/tokens/permission_groups')) {
+        return json({ success: true, result: [{ id: 'pg-r2w', name: 'Workers R2 Storage Write' }] })
+      }
+      if (method === 'GET' && u.endsWith('/user/tokens')) return json({ success: true, result: tokenList })
+      if (method === 'DELETE') return json({ success: true, result: { id: u.split('/').pop() } })
+      if (method === 'POST' && u.endsWith('/user/tokens')) {
+        return json({ success: true, result: { id: 'new-tok', value: 'secret-token-value' } })
+      }
+      return json({ success: true, result: {} })
+    },
+    createObjectStore: () => ({
+      list: async () => {
+        if (s3Fail) {
+          const e = new Error('AccessDenied')
+          e.name = 'AccessDenied'
+          e.Code = 'AccessDenied'
+          throw e
+        }
+        return []
+      },
+      head: async () => null,
+      close() {},
+    }),
+  })
+  return { io, requests }
+}
+
+async function importLiveIo() {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  return createLiveDevelopmentApplyIo
+}
+const createLiveDevelopmentApplyIoForTest = await importLiveIo()
+
+test('writer fallback token is per-environment named and bucket-scoped, never delete-by-name (#195)', async () => {
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', publicBaseUrl: '' })
+  const { io, requests } = writerFallbackIo({ plan })
+  const result = await io.deriveAndVerifyS3({ accountId: 'acct' })
+  assert.equal(result.derived, true)
+  const post = requests.find(([m, u]) => m === 'POST' && u.endsWith('/user/tokens'))
+  assert.ok(post, 'scoped-token fallback must reach Create Token')
+  const body = JSON.parse(post[2])
+  assert.equal(body.name, 'airingcal-development-writer')
+  const serialized = JSON.stringify(body)
+  assert.ok(serialized.includes('com.cloudflare.edge.r2.bucket.acct.default.airingcal-development'))
+  assert.equal(serialized.includes('"com.cloudflare.edge.r2.bucket.*"'), false, 'must not be account-wide')
+  assert.equal(requests.some(([m]) => m === 'DELETE'), false, 'no pre-create deletes')
+})
+
+test('existing writer-name token is preserved; rotation needs the exact operator-confirmed id (#195)', async () => {
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', publicBaseUrl: '' })
+  const collision = [{ name: 'airingcal-development-writer', id: 'old-1' }]
+  const blocked = writerFallbackIo({ plan, tokenList: collision })
+  await assert.rejects(
+    () => blocked.io.deriveAndVerifyS3({ accountId: 'acct' }),
+    /never delete|rotation|AIRINGCAL_WRITER_TOKEN_ROTATION_ID/i,
+  )
+  assert.equal(blocked.requests.some(([m]) => m === 'DELETE'), false)
+  assert.equal(blocked.requests.some(([m]) => m === 'POST'), false)
+
+  const rotated = writerFallbackIo({ plan, tokenList: collision, rotationId: 'old-1' })
+  const res = await rotated.io.deriveAndVerifyS3({ accountId: 'acct' })
+  assert.equal(res.derived, true)
+  const dels = rotated.requests.filter(([m]) => m === 'DELETE')
+  assert.equal(dels.length, 1)
+  assert.ok(dels[0][1].endsWith('/user/tokens/old-1'), 'only the confirmed id may be deleted')
+})
+
+test('a freshly created writer token that fails verification is cleaned up by its own id (#195)', async () => {
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', publicBaseUrl: '' })
+  const { io, requests } = writerFallbackIo({ plan, s3Fail: true })
+  await assert.rejects(() => io.deriveAndVerifyS3({ accountId: 'acct' }))
+  const dels = requests.filter(([m]) => m === 'DELETE')
+  assert.equal(dels.length, 1)
+  assert.ok(dels[0][1].endsWith('/user/tokens/new-tok'), 'only the token just created is removed')
 })
