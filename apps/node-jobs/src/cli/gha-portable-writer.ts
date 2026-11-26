@@ -43,6 +43,11 @@ export interface GhaPortableWriterResult {
   mode: 'incremental' | 'full' | null
   message: string
   summary?: JobSummary
+  leaseCleanup?: {
+    released: boolean
+    error?: string
+    recoveryHint?: string
+  }
 }
 
 function readSqlitePath(env: Record<string, string | undefined>): string {
@@ -112,6 +117,7 @@ export async function runGhaPortableWriter(deps: GhaPortableWriterDeps): Promise
   }
 
   let mode: 'incremental' | 'full' = 'full'
+  let result: GhaPortableWriterResult
   try {
     const restored = await restoreCheckpointToFile(deps.checkpointStore, sqlitePath)
     console.log(JSON.stringify({ status: 'info', stage: 'checkpoint_restore', result: restored }))
@@ -178,26 +184,55 @@ export async function runGhaPortableWriter(deps: GhaPortableWriterDeps): Promise
     const summary = await runSyncImpl(syncEnv, { publishPreCommit })
     if (summary.status === 'failed') {
       await safeNotify(notifyFailure, env, summary.message)
-      return { status: 'failed', mode, message: summary.message, summary }
-    }
-
-    // No pointer commit happened (skipped / no-change / already current): still persist
-    // run-history and any SQLite drift with the same CAS discipline.
-    if (!checkpointUploaded) {
-      await uploadCheckpoint()
-    }
-
-    return {
-      status: summary.status === 'skipped' ? 'skipped' : 'success',
-      mode,
-      message: summary.message,
-      summary,
+      result = { status: 'failed', mode, message: summary.message, summary }
+    } else {
+      // No pointer commit happened (skipped / no-change / already current): still persist
+      // run-history and any SQLite drift with the same CAS discipline.
+      if (!checkpointUploaded) {
+        await uploadCheckpoint()
+      }
+      result = {
+        status: summary.status === 'skipped' ? 'skipped' : 'success',
+        mode,
+        message: summary.message,
+        summary,
+      }
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     await safeNotify(notifyFailure, env, message)
-    return { status: 'failed', mode, message }
-  } finally {
-    await releaseCheckpointLease(deps.checkpointStore, ownerToken)
+    result = { status: 'failed', mode, message }
   }
+
+  try {
+    await releaseCheckpointLease(deps.checkpointStore, ownerToken)
+    result.leaseCleanup = { released: true }
+  } catch (leaseError) {
+    const leaseMessage = leaseError instanceof Error ? leaseError.message : String(leaseError)
+    const recoveryHint =
+      'Inspect checkpoints/lease.json in R2 (delete stale lease if no writer is running) or wait for lease TTL expiry before next run'
+    console.error(
+      JSON.stringify({
+        status: 'error',
+        stage: 'checkpoint_lease_release_failed',
+        owner: ownerToken,
+        primary_status: result.status,
+        error: leaseMessage,
+        recovery: recoveryHint,
+      }),
+    )
+    result.leaseCleanup = {
+      released: false,
+      error: leaseMessage,
+      recoveryHint,
+    }
+    const combinedMessage = `${result.message}; checkpoint lease release failed: ${leaseMessage} (${recoveryHint})`
+    result.message = combinedMessage
+    if (result.status !== 'failed') {
+      result.status = 'failed'
+      await safeNotify(notifyFailure, env, combinedMessage)
+    }
+  }
+
+  return result
 }

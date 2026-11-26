@@ -30,7 +30,7 @@ const PUBLIC_R2_BINDING = 'AIRINGCAL_R2'
 const BUCKET = 'airing-cal-public'
 const IMAGE_HASH = 'a'.repeat(64)
 const BUILD_SHA = 'f'.repeat(40)
-const PACKAGE_VERSION = '3.0.0-alpha.0'
+const PACKAGE_VERSION = '3.0.0'
 const PORT = Number(process.env.V3_READ_SMOKE_PORT ?? 8799)
 const BASE_URL = `http://127.0.0.1:${PORT}`
 

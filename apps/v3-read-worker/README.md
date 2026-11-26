@@ -1,56 +1,25 @@
 # @airing-cal/v3-read-worker
 
-Cloudflare Workers entry for the v3 read gateway (#72): serves the v2-compatible
-`/api/*` public surface, `/image/:hash`, and the widget assets from an R2-backed
-v3 public store.
+Cloudflare Workers entrypoint for the AiringCal `v3.0.0` stateless read gateway: serves the standalone HTML Reader (`/`), Widget assets (`/src/bangumi.js`, `/src/bangumi.css`), read-only JSON APIs (`/api/*`), content-addressed cover images (`/image/:hash`), and the allowlisted public object interface from a private Cloudflare R2 bucket (`AIRINGCAL_R2`).
 
-**Non-production.** `ci.yml` does not deploy this Worker; the only deploy path is
-the dispatch-only staging workflow
-[`.github/workflows/v3-read-worker-staging.yml`](../../.github/workflows/v3-read-worker-staging.yml)
-(Environment `staging`, `AIRINGCAL_STAGING_*` secrets/vars only, staging bucket
-materialized by `scripts/materialize-v3-read-staging-config.mjs`). Production
-cutover is gated on #73 DoD.
+- Deployment, update & recovery guide: [`docs/DEPLOYMENT.md`](../../docs/DEPLOYMENT.md)
+- HTTP Read API & Widget integration guide: [`docs/API_AND_WIDGET.md`](../../docs/API_AND_WIDGET.md)
+- System architecture & security model: [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md)
 
 ## Layout
 
 | File | Responsibility |
 |------|----------------|
-| `src/index.ts` | Worker entry: static/widget and 410 sync routes first, then the R2 read gateway |
-| `src/index.test.ts` | Entry tests over a real builder checkpoint published into a memory R2 double |
-| `wrangler.toml` | Binding `AIRINGCAL_R2` (`airing-cal-public`) |
+| `src/index.ts` | Worker entry: static/widget and `410` sync routes first, then the R2 read gateway |
+| `src/index.test.ts` | Entry tests over a builder checkpoint published into an in-memory R2 binding |
+| `wrangler.toml` | Template R2 binding `AIRINGCAL_R2` (materialized per environment during `pnpm run setup`) |
 | `scripts/staging-smoke.ts` | Local end-to-end smoke over `wrangler dev -l` (no remote resources) |
-| `env.example` | Local vars; bindings live in `wrangler.toml` |
 
-
-`AIRINGCAL_PUBLIC_BASE_URL` (absolute https, placeholders rejected) is validated
-when the read config is built; a bad value fails closed as **503**
-`INVALID_READ_CONFIG`. When set, `/image/:hash` 302s to `{BASE}/images/...`.
-
-## Local
+## Local Verification
 
 ```bash
-pnpm install
 pnpm -F @airing-cal/v3-read-worker dev          # wrangler dev -l
 pnpm -F @airing-cal/v3-read-worker test
-pnpm -F @airing-cal/v3-read-worker smoke        # publish fixture → seed local R2 → assert HTTP surface
-
+pnpm -F @airing-cal/v3-read-worker smoke        # publish fixture -> seed local R2 -> assert HTTP surface
 pnpm -F @airing-cal/v3-read-worker build:check  # wrangler deploy --dry-run (bundle must stay node-free)
 ```
-
-`V3_READ_SMOKE_PORT` overrides the smoke's dev-server port (default `8799`).
-
-The smoke seeds a local R2 emulation with `wrangler r2 object put --local` and
-asserts `/api/version`, `/api/health`, `/api/collections`, `/api/calendar`,
-`/api/config`, `/image/:hash`, `/`, and the 410 sync route.
-
-## Deploy (staging only, operator)
-
-```bash
-pnpm exec wrangler r2 bucket create airing-cal-public      # if absent
-pnpm -F @airing-cal/v3-read-worker exec wrangler deploy --config wrangler.toml
-```
-
-No paid resource is provisioned by CI. See
-[`docs/v3/cloudflare-read-worker.md`](../../docs/v3/cloudflare-read-worker.md)
-for the staging runbook, the R2 ETag/precondition contract, and the remaining
-gaps (#69 matrix, real-bucket verification, EdgeOne).

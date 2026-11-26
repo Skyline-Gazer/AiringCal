@@ -1,24 +1,25 @@
 # START HERE FOR AI
 
-**Prompt（中文）：** 先读 [`docs/README.md`](docs/README.md) 和 [`AGENTS.md`](AGENTS.md)。v3 最终目标：GitHub 为唯一开发主仓库；GitHub Actions 执行一次性 Portable Builder，私有 S3 Checkpoint + 共享公开 S3 Release（初期 R2）；Cloudflare/EdgeOne 负责读取，后续增加 Netlify/Vercel。不使用 CNB、青龙或 Docker/Compose。**Writer 目标已合入 `dev`（#146、#148、#149），生产尚未切换，定时 Writer 保持禁用**；当前追踪见 Issue #67/#147 和 Project #7。修改前确认当前代码/生产事实与目标架构的区别。
+**Prompt（中文）：** 先读 [`AGENTS.md`](AGENTS.md) 与 [`docs/README.md`](docs/README.md)。AiringCal `v3.0.0` 已收敛为唯一架构：**GitHub Actions 一次性 Portable Writer（`.github/workflows/portable-writer.yml`）→ 私有 Cloudflare R2 单桶（`airingcal-production` / `airingcal-development`，禁用 `r2.dev`）→ 无状态 Cloudflare Reader Worker（`apps/v3-read-worker`）**。安装、更新与恢复统一通过 `pnpm run setup`（或 `scripts/deploy-env.mjs`）执行。修改任何命令、环境变量或 API 前必须先查源码与 [`docs/example/api/bgm-api.json`](docs/example/api/bgm-api.json)（`AGENTS.md` §零）。
 
-**Prompt (EN):** Read `docs/README.md` and `AGENTS.md` first. Approved v3 target: GitHub-only development, GHA one-shot Portable Builder, private S3 checkpoint plus one public S3 Release (R2 first), stateless CF/EdgeOne readers followed by Netlify/Vercel. CNB, QingLong, and Docker/Compose are retired. **The Writer target is merged into `dev` (#146, #148, #149); no production cutover is approved and the scheduled writer stays disabled.** See Issues #67/#147 and Project #7.
+**Prompt (EN):** Read [`AGENTS.md`](AGENTS.md) and [`docs/README.md`](docs/README.md) first. AiringCal `v3.0.0` is converged on a single supported topology: **GitHub Actions one-shot Portable Writer (`.github/workflows/portable-writer.yml`) → Private Cloudflare R2 single bucket (`airingcal-production` / `airingcal-development`, `r2.dev` disabled) → Stateless Cloudflare Reader Worker (`apps/v3-read-worker`)**. Installation, safe update, and recovery run through `pnpm run setup` (or `scripts/deploy-env.mjs`). Verify every CLI flag, config key, and API in source before writing (`AGENTS.md` §零).
 
-## Mandatory before code changes
+## Mandatory Before Code or Operational Changes
 
-1. Verify CLI flags, env keys, and APIs in source — do not guess (`AGENTS.md` §零).
-2. **Target** production writer = GHA Portable Builder (merged in #146; gated by #147 staging receipts), not QingLong/CNB/Docker; `dev` still ships the legacy v2 read path by default (`AIRINGCAL_READ_MODE` unset). No Cloudflare Worker Cron/Workflow writes.
-3. Commit docs with code; run `pnpm test` / relevant package tests before done.
+1. **Verify Before Writing (`AGENTS.md` §零)**: Check `--help`, TypeScript definitions, and [`docs/example/api/bgm-api.json`](docs/example/api/bgm-api.json).
+2. **Respect Lifecycle Boundaries**: Never mutate live Production or Development infrastructure, rotate live tokens, or dispatch `portable-writer.yml` without explicit user authorization.
+3. **Use Project Skills**: Follow [`.ads/STANDARD.md`](.ads/STANDARD.md), [`.ads/SAFETY.md`](.ads/SAFETY.md), [`.ads/QUALITY.md`](.ads/QUALITY.md), Ponytail Full-mode skills (`.agents/skills/ponytail*`), and Cloudflare Workers best practices (`.agents/skills/workers-best-practices`).
 
-## Quick map
+## Quick Map
 
 | Need | Path |
-| --- | --- |
-| AI doc index | `docs/README.md` |
-| **v3 work (in progress)** | [Issue #67](https://github.com/Skyline-Gazer/AiringCal/issues/67) + [Project #7](https://github.com/orgs/Skyline-Gazer/projects/7); docs under `docs/v3/` (index in `docs/README.md`) |
-| GHA Writer ops | [`docs/v3/gha-portable-writer.md`](docs/v3/gha-portable-writer.md) — staging gate #147 |
-| Phase 1 (node-jobs) | `docs/plans/phase-1-node-jobs.md` |
-| D1 apply order | `apps/node-jobs/docs/d1-schema.md` |
-| Env / exit codes (canonical) | `apps/node-jobs/docs/operator-contract.md` |
-| Read surface deploy (M2) | `docs/runbook/m2-read-surface.md` |
-| Historical / abandoned | `docs/archive/README.md` |
+| :--- | :--- |
+| English Product Overview & Quick Start | [`README.md`](README.md) |
+| Simplified Chinese Product Overview & Quick Start | [`README.zh-CN.md`](README.zh-CN.md) |
+| Documentation Index | [`docs/README.md`](docs/README.md) |
+| Deployment, Update & Recovery Guide (EN / ZH) | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) / [`docs/DEPLOYMENT.zh-CN.md`](docs/DEPLOYMENT.zh-CN.md) |
+| HTTP Read API & Widget Integration Guide (EN / ZH) | [`docs/API_AND_WIDGET.md`](docs/API_AND_WIDGET.md) / [`docs/API_AND_WIDGET.zh-CN.md`](docs/API_AND_WIDGET.zh-CN.md) |
+| System Architecture & Security Model | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Portable Writer Operator Contract | [`apps/node-jobs/docs/operator-contract.md`](apps/node-jobs/docs/operator-contract.md) |
+| Release Acceptance & Legacy Recoverability Evidence | [`docs/v3/release-acceptance-evidence.md`](docs/v3/release-acceptance-evidence.md) |
+| Documentation & Commit Rules | [`docs/rules/docs-sync.md`](docs/rules/docs-sync.md) |

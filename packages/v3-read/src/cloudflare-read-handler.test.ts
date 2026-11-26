@@ -53,7 +53,7 @@ test('cloudflare read handler serves /api/collections from the R2 PublicStore', 
   const handle = createCloudflareReadHandler({
     publicR2: bucket,
     nsfwShow: false,
-    packageVersion: '3.0.0-alpha.0',
+    packageVersion: '3.0.0',
   })
 
   const response = await handle(

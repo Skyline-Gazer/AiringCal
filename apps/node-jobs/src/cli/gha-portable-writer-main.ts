@@ -17,7 +17,7 @@ async function main(env: Record<string, string | undefined> = process.env): Prom
     const result = await runGhaPortableWriter({ env, checkpointStore })
     console.log(JSON.stringify(result))
     if (result.status === 'failed') {
-      return result.summary ? exitCode(result.summary) : 1
+      return 1
     }
     return 0
   } finally {

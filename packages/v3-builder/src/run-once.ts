@@ -23,16 +23,6 @@ export async function runBuilderOnce(deps: BuilderRunOnceDeps): Promise<BuilderR
   if (!deps.publishAfterSync || sync.status === 'skipped' || sync.status === 'failed') {
     return { sync, publish: null }
   }
-  if (sync.status === 'no_change') {
-    const publish = await publishBuilderCheckpoint({
-      state: deps.state,
-      publicStore: deps.publicStore,
-      manifestMetadata: deps.manifestMetadata,
-      prePublish: deps.prePublish,
-      preCommit: deps.preCommit,
-    })
-    return { sync, publish }
-  }
   const publish = await publishBuilderCheckpoint({
     state: deps.state,
     publicStore: deps.publicStore,

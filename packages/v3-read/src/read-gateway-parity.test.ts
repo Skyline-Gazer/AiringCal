@@ -129,7 +129,7 @@ function filesystemEnv(store: FilesystemPublicStore): PortableReadEnv {
   return {
     publicStore: store,
     nsfwShow: false,
-    packageVersion: '3.0.0-alpha.0',
+    packageVersion: '3.0.0',
     processEnv: { AIRINGCAL_PLATFORM: 'portable' },
   }
 }
@@ -141,7 +141,7 @@ async function readBoth(path: string, stores: PublishedStores) {
   const handleR2 = createCloudflareReadHandler({
     publicR2: stores.r2Bucket,
     nsfwShow: false,
-    packageVersion: '3.0.0-alpha.0',
+    packageVersion: '3.0.0',
   })
   const r2Response = await handleR2(new Request(url))
   return { filesystemResponse, r2Response }
@@ -224,13 +224,13 @@ test('gateway version payload differs only by platform identity', async () => {
   assert.deepEqual(await filesystemResponse.json(), {
     app: 'airingcal',
     read: 'portable',
-    package: '3.0.0-alpha.0',
+    package: '3.0.0',
     platform: 'portable',
   })
   assert.deepEqual(await r2Response.json(), {
     app: 'airingcal',
     read: 'cloudflare',
-    package: '3.0.0-alpha.0',
+    package: '3.0.0',
     platform: 'cloudflare',
   })
 })

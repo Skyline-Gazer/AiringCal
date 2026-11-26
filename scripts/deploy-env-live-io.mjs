@@ -13,20 +13,20 @@ import { fileURLToPath } from 'node:url'
 import { spawnSync as defaultSpawnSync } from 'node:child_process'
 
 import {
+  ALLOWED_REPOSITORY,
   DEVELOPMENT_DEFAULTS,
   DEVELOPMENT_SECRET_KEYS,
   DEVELOPMENT_VARIABLE_KEYS,
+  PRODUCTION_DEFAULTS,
   PRODUCTION_SECRET_KEYS,
   PRODUCTION_VARIABLE_KEYS,
+  assertCheckpointBucketPrivate,
   normalizeCorsAllowedMethods,
+  parseWranglerWhoamiAccounts,
+  parseWranglerWhoamiJson,
   redactSecrets,
   validateImageCdnConfig,
 } from './deploy-env-lib.mjs'
-import {
-  assertCheckpointBucketPrivate,
-  parseWranglerWhoamiAccounts,
-  parseWranglerWhoamiJson,
-} from './setup-staging-lib.mjs'
 import { isAmbiguousTransportError } from './mutation-ledger.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -1018,6 +1018,71 @@ export function createLiveDevelopmentApplyIo({
     }
   }
 
+  async function verifyRepositoryPreflight(_ctx = {}) {
+    const isNonDefaultRepo = repo && repo !== ALLOWED_REPOSITORY
+    if (plan.repositoryExplicit !== true && !isNonDefaultRepo && String(env.AIRINGCAL_VERIFY_REPOSITORY ?? '').trim() !== 'yes') {
+      return { ok: true, repository: repo, skipped: true }
+    }
+    const repoRes = spawnSyncImpl('gh', ['api', `repos/${repo}`], {
+      encoding: 'utf8',
+      cwd: ROOT,
+      env: { ...process.env, ...env },
+    })
+    const repoOut = redactSecrets(`${repoRes?.stderr || ''}\n${repoRes?.stdout || ''}`.trim(), secrets)
+    if (repoRes?.error || TRANSIENT_NETWORK_RE.test(repoOut)) {
+      throw taggedError(`Failed to inspect GitHub repository "${repo}": ${repoRes?.error?.message ?? repoOut}`, {
+        code: 'REPOSITORY_TRANSPORT_ERROR',
+        errorCategory: 'transport-failure',
+        exitCode: 1,
+      })
+    }
+    if (repoRes?.status !== 0) {
+      const isNotFound = /404|Not Found/i.test(repoOut)
+      throw taggedError(
+        isNotFound
+          ? `Target GitHub repository "${repo}" was not found or is not accessible (HTTP 404)`
+          : `Permission denied inspecting GitHub repository "${repo}": ${repoOut}`,
+        {
+          code: isNotFound ? 'REPOSITORY_NOT_FOUND' : 'REPOSITORY_PERMISSION_DENIED',
+          errorCategory: 'permission-denied',
+          exitCode: 2,
+        },
+      )
+    }
+    let repoMeta = null
+    try { repoMeta = JSON.parse(String(repoRes.stdout ?? '{}')) } catch { repoMeta = null }
+    if (repoMeta?.permissions && repoMeta.permissions.admin !== true && repoMeta.permissions.push !== true) {
+      throw taggedError(
+        `Authenticated GitHub account does not have write/admin permissions on "${repo}"`,
+        {
+          code: 'REPOSITORY_PERMISSION_DENIED',
+          errorCategory: 'permission-denied',
+          exitCode: 2,
+        },
+      )
+    }
+    const wfRes = spawnSyncImpl('gh', ['api', `repos/${repo}/actions/workflows/portable-writer.yml`], {
+      encoding: 'utf8',
+      cwd: ROOT,
+      env: { ...process.env, ...env },
+    })
+    if (wfRes?.status !== 0) {
+      throw taggedError(
+        `Required workflow "portable-writer.yml" is not available on repository "${repo}"`,
+        {
+          code: 'WORKFLOW_UNAVAILABLE',
+          errorCategory: 'resource-conflict',
+          exitCode: 2,
+        },
+      )
+    }
+    return {
+      ok: true,
+      repository: repo,
+      defaultBranch: repoMeta?.default_branch ?? null,
+    }
+  }
+
   return {
     /**
      * #195: the setup wizard's verifier needs the SAME S3 credentials the
@@ -1036,6 +1101,462 @@ export function createLiveDevelopmentApplyIo({
           tokenId: s3Creds.tokenId ?? null,
         }
         : null
+    },
+
+    verifyRepositoryPreflight,
+
+    /**
+     * Amendment A, B & C: Pre-mutation verification of an existing installation before `update`.
+     * Inspects:
+     *  1. Target repository permissions & workflow availability (when verifiable)
+     *  2. Target R2 bucket existence & account ownership
+     *  3. Existing Cloudflare Worker identity and actual R2 binding (`AIRINGCAL_R2` -> `bucket`)
+     *  4. GitHub Environment existence, variables (`R2_BUCKET`, `CLOUDFLARE_ACCOUNT_ID`, `PRIMARY_USER_ID`, `PUBLIC_BASE_URL`), and secrets (`S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `BANGUMI_TOKEN`)
+     *  5. Local inventory consistency (refuses contradictory local inventory)
+     *  6. Existing Writer token status & bucket-scoped policy via Cloudflare API
+     *  7. Existing release pointer / manifest / snapshot state (via S3 if override provided, or via verified bound Worker `/public/current-release.json`)
+     *
+     * Never deploys a Worker first and uses the newly deployed Worker as sole proof!
+     */
+    async verifyExistingInstallation(ctx = {}) {
+      const accountId = accountIdFrom(env, plan) || ctx.accountId
+      const parentToken = tokenFromEnv(env)
+      const envName = isProduction ? 'production' : 'development'
+      const prefix = isProduction ? 'AIRINGCAL_PRODUCTION_' : 'AIRINGCAL_DEVELOPMENT_'
+      const workerName = plan.cloudflareWorkerName || (isProduction ? PRODUCTION_DEFAULTS.workerName : DEVELOPMENT_DEFAULTS.workerName)
+
+      if (plan.publicOriginMode === 'bucket-domain' || String(env.AIRINGCAL_PUBLIC_ORIGIN_MODE ?? '').trim() === 'bucket-domain') {
+        throw taggedError(
+          'Legacy bucket-domain origin mode is unsupported in v3.0.0 update flows; migrate explicitly to worker origin mode before updating.',
+          {
+            code: 'UNSUPPORTED_LEGACY_CONFIG',
+            errorCategory: 'resource-conflict',
+            exitCode: 2,
+          },
+        )
+      }
+
+      // 1. Repository preflight
+      await verifyRepositoryPreflight(ctx)
+
+      // 2. Local inventory consistency check (never blindly trust local inventory; fail closed if it contradicts!)
+      const priorInv = ctx?.priorInventory
+      if (priorInv && typeof priorInv === 'object') {
+        const invRepo = String(priorInv.repository ?? '').trim()
+        const invAcct = String(priorInv.cloudflare?.accountId ?? '').trim().toLowerCase()
+        const invBucket = String(priorInv.bucket ?? '').trim()
+        const invUser = String(priorInv.bangumi?.primaryUserId ?? '').trim()
+        const curUser = String(env.AIRINGCAL_PRIMARY_USER_ID ?? '').trim()
+        if (invRepo && invRepo.toLowerCase() !== repo.toLowerCase()) {
+          throw taggedError(
+            `Local inventory repository mismatch: inventory records "${invRepo}" while target repository is "${repo}". Refusing update.`,
+            { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+          )
+        }
+        if (invAcct && accountId && invAcct !== accountId.toLowerCase()) {
+          throw taggedError(
+            `Local inventory Cloudflare account mismatch: inventory records "${invAcct}" while active account is "${accountId}". Refusing update.`,
+            { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+          )
+        }
+        if (invBucket && invBucket !== bucket) {
+          throw taggedError(
+            `Local inventory bucket mismatch: inventory records "${invBucket}" while target bucket is "${bucket}". Refusing update.`,
+            { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+          )
+        }
+        if (invUser && curUser && invUser !== curUser && String(env.AIRINGCAL_ALLOW_IDENTITY_CHANGE ?? '').trim() !== 'yes') {
+          throw taggedError(
+            `Bangumi primaryUserId mismatch: local inventory records "${invUser}" while current credentials resolve "${curUser}". Refusing update without explicit AIRINGCAL_ALLOW_IDENTITY_CHANGE=yes.`,
+            { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+          )
+        }
+      }
+
+      // 3. Target R2 bucket must exist in the selected account
+      const info = spawnSyncImpl(
+        WRANGLER[0],
+        [...WRANGLER.slice(1), 'r2', 'bucket', 'info', bucket, '--json', ...ENV_FILE_NULL],
+        {
+          encoding: 'utf8',
+          cwd: ROOT,
+          env: {
+            ...process.env,
+            ...env,
+            CLOUDFLARE_API_TOKEN: parentToken,
+            CLOUDFLARE_ACCOUNT_ID: accountId,
+          },
+        },
+      )
+      const infoOut = redactSecrets(`${info?.stderr || ''}\n${info?.stdout || ''}`.trim(), secrets)
+      if (info?.error || TRANSIENT_NETWORK_RE.test(infoOut)) {
+        throw taggedError(
+          `Cannot verify existing R2 bucket "${bucket}" due to transport failure: ${info?.error?.message ?? infoOut}`,
+          { code: 'OWNERSHIP_EVIDENCE_INSUFFICIENT', errorCategory: 'transport-failure', exitCode: 1 },
+        )
+      }
+      if (info?.status !== 0) {
+        if (/401|403|Authentication error|Unauthorized|permission denied/i.test(infoOut)) {
+          throw taggedError(
+            `Cannot verify existing R2 bucket "${bucket}" due to permission error: ${infoOut}`,
+            { code: 'OWNERSHIP_EVIDENCE_INSUFFICIENT', errorCategory: 'permission-denied', exitCode: 2 },
+          )
+        }
+        throw taggedError(
+          `Update requires an existing initialized R2 bucket "${bucket}", but it does not exist in account ${accountId}`,
+          { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+        )
+      }
+      let infoMeta = null
+      try { infoMeta = JSON.parse(String(info.stdout ?? '').trim()) } catch { infoMeta = null }
+      const observedBucket = {
+        name: bucket,
+        accountId: accountId || null,
+        exists: true,
+        created: false,
+        creationDate: infoMeta?.creation_date ?? infoMeta?.creationDate ?? null,
+        location: infoMeta?.location ?? null,
+      }
+
+      // 4. Existing Cloudflare Worker identity & actual R2 binding verification
+      let workerScripts = null
+      try {
+        const scriptsBody = await cfApi(fetchImpl, parentToken, `/accounts/${encodeURIComponent(accountId)}/workers/scripts`)
+        workerScripts = Array.isArray(scriptsBody?.result) ? scriptsBody.result : []
+      } catch (error) {
+        const category = classifyCfHttpError(error, 'transport-failure')
+        throw taggedError(
+          `Cannot verify existing Cloudflare Worker "${workerName}": ${redactSecrets(error?.message ?? String(error), secrets)}`,
+          { code: 'OWNERSHIP_EVIDENCE_INSUFFICIENT', errorCategory: category, exitCode: category === 'permission-denied' ? 2 : 1 },
+        )
+      }
+      const existingWorker = workerScripts.find((w) => String(w?.id ?? w?.name ?? '') === workerName)
+      if (!existingWorker) {
+        throw taggedError(
+          `Update requires existing Cloudflare Worker "${workerName}" to be deployed in account ${accountId}, but it was not found.`,
+          { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+        )
+      }
+      let workerSettings = null
+      try {
+        const settingsBody = await cfApi(
+          fetchImpl,
+          parentToken,
+          `/accounts/${encodeURIComponent(accountId)}/workers/scripts/${encodeURIComponent(workerName)}/settings`,
+        )
+        workerSettings = settingsBody?.result ?? null
+      } catch (error) {
+        const category = classifyCfHttpError(error, 'transport-failure')
+        throw taggedError(
+          `Cannot read R2 bindings for Worker "${workerName}": ${redactSecrets(error?.message ?? String(error), secrets)}`,
+          { code: 'OWNERSHIP_EVIDENCE_INSUFFICIENT', errorCategory: category, exitCode: category === 'permission-denied' ? 2 : 1 },
+        )
+      }
+      if (!workerSettings || !Array.isArray(workerSettings.bindings)) {
+        throw taggedError(
+          `Cannot verify R2 bindings for Worker "${workerName}" (settings payload missing bindings array). Refusing update without positive binding proof.`,
+          { code: 'OWNERSHIP_EVIDENCE_INSUFFICIENT', errorCategory: 'provider-incompatibility', exitCode: 1 },
+        )
+      }
+      const r2Binding = workerSettings.bindings.find(
+        (b) => (b?.type === 'r2_bucket' || b?.name === 'AIRINGCAL_R2') && (b?.name === 'AIRINGCAL_R2' || b?.bucket_name),
+      )
+      const boundBucket = String(r2Binding?.bucket_name ?? r2Binding?.bucketName ?? '').trim()
+      if (!r2Binding || boundBucket !== bucket) {
+        throw taggedError(
+          `Existing Cloudflare Worker "${workerName}" is bound to R2 bucket "${boundBucket || '<none>'}" instead of "${bucket}". Refusing update.`,
+          { code: 'WORKER_BINDING_MISMATCH', errorCategory: 'resource-conflict', exitCode: 2 },
+        )
+      }
+
+      // 5. GitHub Environment & variable/secret consistency verification
+      const envRes = spawnSyncImpl('gh', ['api', `repos/${repo}/environments/${envName}`], {
+        encoding: 'utf8',
+        cwd: ROOT,
+        env: { ...process.env, ...env },
+      })
+      const envOut = redactSecrets(`${envRes?.stderr || ''}\n${envRes?.stdout || ''}`.trim(), secrets)
+      if (envRes?.error || TRANSIENT_NETWORK_RE.test(envOut)) {
+        throw taggedError(
+          `Cannot verify GitHub Environment "${envName}" in "${repo}": ${envRes?.error?.message ?? envOut}`,
+          { code: 'OWNERSHIP_EVIDENCE_INSUFFICIENT', errorCategory: 'transport-failure', exitCode: 1 },
+        )
+      }
+      if (envRes?.status !== 0) {
+        if (/404|Not Found/i.test(envOut)) {
+          throw taggedError(
+            `Update requires existing GitHub Environment "${envName}" in "${repo}", but it does not exist.`,
+            { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+          )
+        }
+        throw taggedError(
+          `Cannot read GitHub Environment "${envName}" in "${repo}": ${envOut}`,
+          { code: 'OWNERSHIP_EVIDENCE_INSUFFICIENT', errorCategory: 'permission-denied', exitCode: 2 },
+        )
+      }
+
+      const readEnvVar = (varName) => {
+        const r = spawnSyncImpl(
+          'gh',
+          ['api', `repos/${repo}/environments/${envName}/variables/${varName}`, '--jq', '.value'],
+          { encoding: 'utf8', cwd: ROOT, env: { ...process.env, ...env } },
+        )
+        if (r?.status === 0) {
+          const raw = String(r.stdout ?? '').trim()
+          try {
+            const parsed = JSON.parse(raw)
+            if (parsed && typeof parsed === 'object' && 'value' in parsed) return String(parsed.value).trim()
+          } catch { /* jq output is already raw value */ }
+          return raw
+        }
+        return null
+      }
+      const remoteBucketVar = readEnvVar(`${prefix}R2_BUCKET`)
+      const remoteAcctVar = readEnvVar(`${prefix}CLOUDFLARE_ACCOUNT_ID`)
+      const remoteUserVar = readEnvVar(`${prefix}PRIMARY_USER_ID`)
+      const remotePublicBaseVar = readEnvVar(`${prefix}PUBLIC_BASE_URL`)
+
+      if (remoteBucketVar && remoteBucketVar !== bucket) {
+        throw taggedError(
+          `GitHub Environment "${envName}" variable ${prefix}R2_BUCKET is "${remoteBucketVar}", which conflicts with target bucket "${bucket}". Refusing update.`,
+          { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+        )
+      }
+      if (remoteAcctVar && accountId && remoteAcctVar.toLowerCase() !== accountId.toLowerCase()) {
+        throw taggedError(
+          `GitHub Environment "${envName}" variable ${prefix}CLOUDFLARE_ACCOUNT_ID is "${remoteAcctVar}", which conflicts with active account "${accountId}". Refusing update.`,
+          { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+        )
+      }
+      const currentUserId = String(env.AIRINGCAL_PRIMARY_USER_ID ?? '').trim()
+      if (remoteUserVar && currentUserId && remoteUserVar !== currentUserId && String(env.AIRINGCAL_ALLOW_IDENTITY_CHANGE ?? '').trim() !== 'yes') {
+        throw taggedError(
+          `GitHub Environment "${envName}" variable ${prefix}PRIMARY_USER_ID is "${remoteUserVar}", which conflicts with Bangumi user "${currentUserId}". Refusing update without AIRINGCAL_ALLOW_IDENTITY_CHANGE=yes.`,
+          { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+        )
+      }
+      const plannedBase = String(plan.publicBaseUrl || plan.workerOrigin || '').trim().replace(/\/+$/, '')
+      if (
+        remotePublicBaseVar &&
+        plannedBase &&
+        remotePublicBaseVar.replace(/\/+$/, '') !== plannedBase &&
+        String(env.AIRINGCAL_ALLOW_DOMAIN_CHANGE ?? '').trim() !== 'yes'
+      ) {
+        throw taggedError(
+          `GitHub Environment "${envName}" variable ${prefix}PUBLIC_BASE_URL is "${remotePublicBaseVar}", which differs from planned "${plannedBase}". Refusing silent custom domain / origin change during update without AIRINGCAL_ALLOW_DOMAIN_CHANGE=yes.`,
+          { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+        )
+      }
+
+      const secretListRes = spawnSyncImpl(
+        'gh',
+        ['secret', 'list', '--env', envName, '--repo', repo, '--json', 'name', '--jq', '.[].name'],
+        { encoding: 'utf8', cwd: ROOT, env: { ...process.env, ...env } },
+      )
+      if (secretListRes?.status !== 0) {
+        throw taggedError(
+          `Cannot list secrets in GitHub Environment "${envName}" on "${repo}"`,
+          { code: 'OWNERSHIP_EVIDENCE_INSUFFICIENT', errorCategory: 'permission-denied', exitCode: 2 },
+        )
+      }
+      const existingSecrets = new Set(
+        String(secretListRes.stdout ?? '')
+          .split(/\r?\n/)
+          .map((s) => s.trim())
+          .filter(Boolean),
+      )
+      const hasGhS3Secrets =
+        existingSecrets.has(`${prefix}S3_ACCESS_KEY_ID`) &&
+        existingSecrets.has(`${prefix}S3_SECRET_ACCESS_KEY`)
+
+      // 6. Amendment B: Writer credential presence, reuse, scope verification & runtime verification
+      const overrideId = String(env.AIRINGCAL_S3_ACCESS_KEY_ID ?? '').trim()
+      const overrideSecret = String(env.AIRINGCAL_S3_SECRET_ACCESS_KEY ?? '').trim()
+      const rotationId = String(env.AIRINGCAL_WRITER_TOKEN_ROTATION_ID ?? '').trim()
+      const tokenName = isProduction ? 'airingcal-production-writer' : 'airingcal-development-writer'
+
+      let credentialVerification = {
+        presence: hasGhS3Secrets || (overrideId && overrideSecret) ? 'present' : 'absent',
+        reuse: 'none',
+        scopeVerification: 'unverified',
+        runtimeVerification: 'not-verified',
+        tokenId: null,
+        tokenName: null,
+      }
+      let writerCredentialState = 'not-provisioned'
+
+      if (!overrideId && !overrideSecret && !rotationId) {
+        if (!hasGhS3Secrets) {
+          throw taggedError(
+            `GitHub Environment "${envName}" is missing ${prefix}S3_ACCESS_KEY_ID or ${prefix}S3_SECRET_ACCESS_KEY, and no S3 override or token rotation was provided. Cannot update without valid Writer credentials.`,
+            { code: 'OWNERSHIP_EVIDENCE_INSUFFICIENT', errorCategory: 'resource-conflict', exitCode: 2 },
+          )
+        }
+        credentialVerification.reuse = 'reused-existing'
+        credentialVerification.runtimeVerification = 'not-verified-github-secret-only'
+        writerCredentialState = 'reused-unverified-runtime'
+
+        // Attempt to verify token presence, active status, and bucket-scoped policy via Cloudflare API
+        try {
+          const listed = await cfApi(fetchImpl, parentToken, '/user/tokens')
+          const tokens = Array.isArray(listed?.result) ? listed.result : []
+          const expectedTokenId = priorInv?.writerCredential?.tokenId ?? null
+          const matchedToken = expectedTokenId
+            ? tokens.find((t) => String(t?.id ?? '') === String(expectedTokenId))
+            : tokens.find((t) => String(t?.name ?? '') === tokenName && t?.id)
+          if (matchedToken) {
+            if (String(matchedToken.status ?? 'active') !== 'active') {
+              throw taggedError(
+                `Existing Writer token "${matchedToken.name}" (${matchedToken.id}) is not active (status: ${matchedToken.status}).`,
+                { code: 'WRITER_TOKEN_INACTIVE', errorCategory: 'permission-denied', exitCode: 2 },
+              )
+            }
+            credentialVerification.tokenId = String(matchedToken.id)
+            credentialVerification.tokenName = String(matchedToken.name)
+            try {
+              const details = await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(String(matchedToken.id))}`)
+              const policies = Array.isArray(details?.result?.policies) ? details.result.policies : []
+              const bucketResource = r2BucketResourceKey(accountId, bucket)
+              const bucketScoped = policies.length === 1 && (() => {
+                const policy = policies[0]
+                const keys = Object.keys(policy?.resources ?? {})
+                return policy?.effect === 'allow' && keys.length === 1 && keys[0] === bucketResource
+              })()
+              if (!bucketScoped) {
+                throw taggedError(
+                  `Existing Writer token "${matchedToken.name}" (${matchedToken.id}) is not restricted to bucket "${bucket}". Refusing update.`,
+                  { code: 'WRITER_SCOPE_VIOLATION', errorCategory: 'scope-violation', exitCode: 2 },
+                )
+              }
+              credentialVerification.scopeVerification = 'verified-bucket-scoped'
+              writerCredentialState = 'reused-scope-verified'
+            } catch (err) {
+              if (err?.code === 'WRITER_SCOPE_VIOLATION') throw err
+              credentialVerification.scopeVerification = 'unverified-readback-unavailable'
+            }
+          } else {
+            credentialVerification.scopeVerification = 'unverified-token-not-listed'
+          }
+        } catch (err) {
+          if (err?.code === 'WRITER_SCOPE_VIOLATION' || err?.code === 'WRITER_TOKEN_INACTIVE') throw err
+          credentialVerification.scopeVerification = 'unverified-token-list-unavailable'
+        }
+      }
+
+      // 7. Verify existing Release Pointer / manifest / snapshot state BEFORE mutating Worker or Bucket
+      let releaseVerified = false
+      let installationState = 'verified-initialized'
+      const publicBase = String(remotePublicBaseVar || plan.publicBaseUrl || plan.workerOrigin || '').trim().replace(/\/+$/, '')
+
+      if (overrideId && overrideSecret) {
+        const store = createObjectStore({
+          endpoint: s3EndpointFor(accountId),
+          region: String(env.AIRINGCAL_S3_REGION ?? 'auto').trim() || 'auto',
+          bucket,
+          accessKeyId: overrideId,
+          secretAccessKey: overrideSecret,
+        })
+        try {
+          const keys = await store.list('')
+          if (keys.length === 0) {
+            installationState = 'verified-empty-pre-sync'
+          } else {
+            const ptrObj = await store.get('public/current-release.json')
+            const hasCheckpoint = keys.some((k) => k.startsWith('checkpoints/'))
+            if (!ptrObj && !hasCheckpoint) {
+              throw taggedError(
+                `Target bucket "${bucket}" is nonempty (${keys.length} object(s)) but contains neither an AiringCal release pointer nor checkpoints. Refusing update of foreign bucket.`,
+                { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+              )
+            }
+            if (ptrObj) {
+              let ptr = null
+              try { ptr = JSON.parse(new TextDecoder().decode(ptrObj.body)) } catch { ptr = null }
+              if (!ptr || typeof ptr.release_id !== 'string' || typeof ptr.artifact_ref !== 'string') {
+                throw taggedError(
+                  `Existing public/current-release.json in "${bucket}" is malformed or foreign. Refusing update.`,
+                  { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+                )
+              }
+              const snapKey = String(ptr.artifact_ref).replace(/^\/+/, '')
+              const snapHead = await store.head(snapKey)
+              if (!snapHead) {
+                throw taggedError(
+                  `Existing release pointer in "${bucket}" references missing snapshot "${snapKey}". Refusing update.`,
+                  { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+                )
+              }
+              releaseVerified = true
+            }
+          }
+        } catch (error) {
+          if (error?.code === 'FOREIGN_OR_INCONSISTENT_INSTALLATION') throw error
+          const category = isAccessDenied(error) ? 'permission-denied' : 'transport-failure'
+          throw taggedError(
+            `Failed to inspect existing objects in "${bucket}": ${redactSecrets(error?.message ?? String(error), secrets)}`,
+            { code: 'OWNERSHIP_EVIDENCE_INSUFFICIENT', errorCategory: category, exitCode: category === 'permission-denied' ? 2 : 1 },
+          )
+        } finally {
+          store.close?.()
+        }
+      } else if (publicBase && typeof fetchImpl === 'function') {
+        // Verify release pointer through the ALREADY-DEPLOYED bound Worker (before deploying any new Worker!)
+        let ptrRes
+        try {
+          ptrRes = await fetchImpl(`${publicBase}/public/current-release.json`, {
+            headers: { 'cache-control': 'no-cache' },
+            redirect: 'manual',
+          })
+        } catch (error) {
+          throw taggedError(
+            `Cannot read release pointer from existing Worker "${publicBase}/public/current-release.json": ${redactSecrets(error?.message ?? String(error), secrets)}`,
+            { code: 'OWNERSHIP_EVIDENCE_INSUFFICIENT', errorCategory: 'transport-failure', exitCode: 1 },
+          )
+        }
+        if (Number(ptrRes?.status) === 200) {
+          let ptr = null
+          try { ptr = await ptrRes.json() } catch { ptr = null }
+          if (!ptr || typeof ptr.release_id !== 'string' || typeof ptr.artifact_ref !== 'string') {
+            throw taggedError(
+              `Existing Worker at "${publicBase}" returned a non-AiringCal /public/current-release.json payload. Refusing update.`,
+              { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
+            )
+          }
+          releaseVerified = true
+          installationState = 'verified-initialized'
+        } else if (Number(ptrRes?.status) === 404) {
+          // Pointer is 404 on the bound Worker -> allowed ONLY if this is a verified-empty-pre-sync installation
+          const priorOwnership = hasAffirmativeBucketOwnership(priorInv, bucket, accountId)
+          const envMatches = remoteBucketVar === bucket && (!remoteAcctVar || remoteAcctVar.toLowerCase() === accountId.toLowerCase())
+          if (!priorOwnership && !envMatches) {
+            throw taggedError(
+              `Existing Worker at "${publicBase}" has no published release pointer (HTTP 404) and ownership cannot be proven from consistent GitHub Environment variables or local inventory.`,
+              { code: 'OWNERSHIP_EVIDENCE_INSUFFICIENT', errorCategory: 'resource-conflict', exitCode: 2 },
+            )
+          }
+          installationState = 'verified-empty-pre-sync'
+        } else {
+          throw taggedError(
+            `Existing Worker at "${publicBase}/public/current-release.json" returned unexpected HTTP ${ptrRes?.status ?? 'error'}; refusing update without verified state.`,
+            { code: 'OWNERSHIP_EVIDENCE_INSUFFICIENT', errorCategory: 'transport-failure', exitCode: 1 },
+          )
+        }
+      } else {
+        throw taggedError(
+          'Cannot verify existing installation state: neither S3 credentials nor a readable Worker origin are available.',
+          { code: 'OWNERSHIP_EVIDENCE_INSUFFICIENT', errorCategory: 'resource-conflict', exitCode: 2 },
+        )
+      }
+
+      ctx.reusedExistingS3Secrets = credentialVerification.reuse === 'reused-existing'
+      return {
+        ok: true,
+        installationState,
+        releaseVerified,
+        observedBucket,
+        credentialVerification,
+        writerCredentialState,
+      }
     },
     async probeToken(ctx = {}) {
       const token = tokenFromEnv(env)
@@ -1965,7 +2486,9 @@ export function createLiveDevelopmentApplyIo({
         }
         ctx.observedBucket = observedBucket
         if (isProduction) {
+          const isUpdate = (ctx?.operation ?? plan?.operation) === 'update'
           const explicitAdoption =
+            isUpdate ||
             Boolean(ctx?.bucketAdoptionAuthorized) ||
             String(env.AIRINGCAL_ADOPT_EXISTING_BUCKET ?? '').trim() === 'yes'
           const inventoryMatch = hasAffirmativeBucketOwnership(ctx?.priorInventory, bucket, accountId)
@@ -1987,7 +2510,9 @@ export function createLiveDevelopmentApplyIo({
             resourceType: 'r2-bucket',
             target: bucket,
           })
-          const proofKind = explicitAdoption ? 'explicit-owner-adoption' : 'prior-inventory-match'
+          const proofKind = isUpdate
+            ? 'verified-existing-installation'
+            : (explicitAdoption ? 'explicit-owner-adoption' : 'prior-inventory-match')
           reuseEntry.alreadyExists(`reused existing bucket (${proofKind})`)
           return {
             bucket,
@@ -2650,17 +3175,26 @@ export function createLiveDevelopmentApplyIo({
           .filter(Boolean),
       )
 
-      const s3 = requireS3()
+      const s3 = s3Creds
+      const reusingExistingGhS3 =
+        !s3 &&
+        (ctx?.reusedExistingS3Secrets === true || (ctx?.operation ?? plan?.operation) === 'update') &&
+        existing.has(`${prefix}S3_ACCESS_KEY_ID`) &&
+        existing.has(`${prefix}S3_SECRET_ACCESS_KEY`)
+      if (!s3 && !reusingExistingGhS3) {
+        requireS3()
+      }
       const secretMap = {
         [`${prefix}BANGUMI_TOKEN`]: String(env.AIRINGCAL_BANGUMI_TOKEN ?? '').trim(),
-        [`${prefix}S3_ACCESS_KEY_ID`]: s3.accessKeyId,
-        [`${prefix}S3_SECRET_ACCESS_KEY`]: s3.secretAccessKey,
+        [`${prefix}S3_ACCESS_KEY_ID`]: s3?.accessKeyId ?? '',
+        [`${prefix}S3_SECRET_ACCESS_KEY`]: s3?.secretAccessKey ?? '',
       }
       if (isProduction && String(env.AIRINGCAL_BARK_URL ?? '').trim()) {
         secretMap[`${prefix}BARK_URL`] = String(env.AIRINGCAL_BARK_URL).trim()
       }
       const allowedSecretKeys = isProduction ? PRODUCTION_SECRET_KEYS : DEVELOPMENT_SECRET_KEYS
       const syncedSecrets = []
+      const preservedSecrets = []
       const missingSecrets = []
       for (const [name, value] of Object.entries(secretMap)) {
         if (!allowedSecretKeys.includes(name)) continue
@@ -2685,7 +3219,9 @@ export function createLiveDevelopmentApplyIo({
             else secretEntry.fail(error)
             throw error
           }
-        } else if (!existing.has(name)) {
+        } else if (existing.has(name)) {
+          preservedSecrets.push(name)
+        } else {
           missingSecrets.push(name)
         }
       }
@@ -2700,6 +3236,7 @@ export function createLiveDevelopmentApplyIo({
         environment: envName,
         variablesSynced: syncedVars,
         secretsSynced: syncedSecrets,
+        secretsPreserved: preservedSecrets,
         writerEnabled: false,
       }
     },

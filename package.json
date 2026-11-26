@@ -1,33 +1,32 @@
 {
   "name": "airing-cal",
-  "version": "3.0.0-alpha.0",
+  "version": "3.0.0",
   "private": true,
   "packageManager": "pnpm@9.15.9",
-  "description": "render your bangumi.tv progress on a static web page",
+  "description": "Personal Bangumi anime airing calendar and viewing-progress presentation application",
   "scripts": {
     "setup": "node scripts/setup-wizard.mjs",
-    "dev": "pnpm -F @airing-cal/web-worker dev",
-    "deploy": "pnpm -F @airing-cal/web-worker deploy",
+    "dev": "pnpm -F @airing-cal/v3-read-worker dev",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test && node --test scripts/*.test.mjs",
+    "test": "pnpm -r --if-present test && node --test scripts/*.test.mjs",
     "build:check": "pnpm -r --if-present build:check",
     "lint:undefined": "node scripts/check-undefined-identifiers.mjs"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/markd3ng/AiringCal.git"
+    "url": "git+https://github.com/Skyline-Gazer/AiringCal.git"
   },
   "keywords": [
     "bangumi",
-    "anime"
+    "anime",
+    "cloudflare-workers",
+    "cloudflare-r2",
+    "github-actions"
   ],
   "author": "markd3ng",
   "license": "MIT",
-  "dependencies": {
-    "@clack/prompts": "^1.9.0",
-    "@fission-ai/openspec": "^1.6.0"
-  },
   "devDependencies": {
+    "@clack/prompts": "^1.9.0",
     "tsx": "^4.23.13",
     "typescript": "^6.0.3",
     "wrangler": "^4.x"

@@ -1,4 +1,6 @@
-# BangumiTV Development Constraints
+# AiringCal Development Constraints
+
+See [`AGENTS.md`](AGENTS.md) and [`START_HERE_FOR_AI.md`](START_HERE_FOR_AI.md) for the complete architecture, governance, and project skill constraints.
 
 ## Verify Before Writing (HIGHEST PRIORITY)
 
@@ -12,10 +14,4 @@ Before writing any CLI flag, config key, or API call: run `--help`, check types,
 
 **Rule §一～四:** [`docs/rules/docs-sync.md`](docs/rules/docs-sync.md)
 
-Every fix/refactor/feat must be committed and pushed immediately. Documentation updates ship in the same or immediately following commit. Before release, a full documentation audit is required — no forward-looking or unimplemented content allowed in docs.
-
-## Comet Phase Guard
-
-**Rule:** [`.claude/rules/comet-phase-guard.md`](.claude/rules/comet-phase-guard.md)
-
-Phase-aware workflow enforcement. When a `.comet.yaml` exists, the current phase determines which operations are permitted.
+Every non-merge commit must include a structured commit body (`Business context`, `Expected behavior`, `Acceptance criteria`, `Constraints and edge cases`, `Verification`). Documentation updates ship with code changes.

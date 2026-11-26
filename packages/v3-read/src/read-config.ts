@@ -52,7 +52,8 @@ export function parseCorsAllowedOrigins(raw: string | null | undefined): string[
     if (value !== 'null' && !/^https?:\/\//i.test(value)) {
       throw new Error(`AIRINGCAL_CORS_ORIGINS entries must be absolute http(s) origins or "null": ${value}`)
     }
-    if (!origins.includes(value)) origins.push(value.replace(/\/+$/, ''))
+    const normalized = value === 'null' ? 'null' : value.replace(/\/+$/, '')
+    if (!origins.includes(normalized)) origins.push(normalized)
   }
   return origins
 }

@@ -222,13 +222,41 @@ export function createControlledProviderSimulator({
 
       const scriptsMatch = path.match(/^\/accounts\/([^/]+)\/workers\/scripts$/)
       if (method === 'GET' && scriptsMatch) {
+        if (state.faults.workerListError) {
+          return jsonResponse(500, { success: false, errors: [{ code: 500, message: 'Worker list failure' }] })
+        }
         const acct = findAccount(decodeURIComponent(scriptsMatch[1]))
         if (!acct || !mgmt.accountIds.includes(acct.id) || !mgmt.workersRead) {
           return jsonResponse(403, { success: false, errors: [{ code: 10000, message: 'Unauthorized' }] })
         }
         return jsonResponse(200, {
           success: true,
-          result: [...acct.workers.values()].map((w) => ({ id: w.name })),
+          result: [...acct.workers.values()].map((w) => ({ id: w.name, name: w.name })),
+        })
+      }
+
+      const scriptSettingsMatch = path.match(/^\/accounts\/([^/]+)\/workers\/scripts\/([^/]+)\/settings$/)
+      if (method === 'GET' && scriptSettingsMatch) {
+        const acct = findAccount(decodeURIComponent(scriptSettingsMatch[1]))
+        const workerName = decodeURIComponent(scriptSettingsMatch[2])
+        if (!acct || !mgmt.accountIds.includes(acct.id) || !mgmt.workersRead) {
+          return jsonResponse(403, { success: false, errors: [{ code: 10000, message: 'Unauthorized' }] })
+        }
+        const worker = acct.workers.get(workerName)
+        if (!worker) {
+          return jsonResponse(404, { success: false, errors: [{ code: 10007, message: 'Worker not found' }] })
+        }
+        return jsonResponse(200, {
+          success: true,
+          result: {
+            bindings: [
+              {
+                type: 'r2_bucket',
+                name: 'AIRINGCAL_R2',
+                bucket_name: worker.bucket,
+              },
+            ],
+          },
         })
       }
 
@@ -414,6 +442,23 @@ export function createControlledProviderSimulator({
         if (!ptr) return jsonResponse(404, { error: 'No release' })
         return jsonResponse(200, JSON.parse(new TextDecoder().decode(ptr.body)))
       }
+      const snapMatch = u.pathname.match(/^\/snapshots\/v1\/(.+)$/)
+      if (snapMatch) {
+        const worker = acct.workers.get(workerName)
+        const bucket = acct.buckets.get(worker.bucket)
+        const snap = bucket?.objects.get(`snapshots/v1/${snapMatch[1]}`)
+        if (!snap) return jsonResponse(404, { error: 'No snapshot' })
+        return jsonResponse(200, JSON.parse(new TextDecoder().decode(snap.body)))
+      }
+      const imgMatch = u.pathname.match(/^\/image\/([0-9a-f]{64})$/i)
+      if (imgMatch) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (h) => (String(h).toLowerCase() === 'content-type' ? 'image/webp' : null) },
+          json: async () => ({}),
+        }
+      }
       if (u.pathname.includes('checkpoints') || u.pathname.includes('%63heckpoints')) {
         if (state.faults.isolationLeakStatus) {
           return { ok: state.faults.isolationLeakStatus < 400, status: state.faults.isolationLeakStatus, headers: { get: () => 'text/plain' }, json: async () => ({}) }
@@ -430,7 +475,17 @@ export function createControlledProviderSimulator({
     state.calls.spawn.push({ cmd, args: [...args] })
 
     if (cmd === 'git' && args[0] === 'rev-parse') {
+      if (args.includes('--abbrev-ref')) {
+        return { status: 0, stdout: `${state.faults.gitCurrentBranch ?? 'dev'}\n`, stderr: '', error: null }
+      }
       return { status: 0, stdout: `${gitSha}\n`, stderr: '', error: null }
+    }
+    if (cmd === 'git' && args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'origin') {
+      if (state.faults.gitOriginMissing) {
+        return { status: 2, stdout: '', stderr: "error: No such remote 'origin'", error: null }
+      }
+      const url = state.faults.gitOriginUrl ?? 'https://github.com/Skyline-Gazer/AiringCal.git'
+      return { status: 0, stdout: `${url}\n`, stderr: '', error: null }
     }
 
     if (cmd === 'node' && String(args[0] ?? '').endsWith('materialize-v3-read-staging-config.mjs')) {
@@ -555,6 +610,58 @@ export function createControlledProviderSimulator({
         const methodIdx = args.indexOf('--method')
         const method = methodIdx >= 0 ? String(args[methodIdx + 1]).toUpperCase() : 'GET'
         const endpoint = args.find((a) => a.startsWith('repos/')) ?? ''
+        const repoOnlyMatch = endpoint.match(/^repos\/([^/]+\/[^/]+)$/)
+        if (repoOnlyMatch && method === 'GET') {
+          if (state.faults.ghRepoNotFound) {
+            return { status: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)', error: null }
+          }
+          if (state.faults.ghRepoPermissionDenied) {
+            return {
+              status: 0,
+              stdout: JSON.stringify({
+                full_name: repoOnlyMatch[1],
+                default_branch: state.faults.ghDefaultBranch ?? 'main',
+                permissions: { admin: false, push: false, pull: true },
+              }),
+              stderr: '',
+              error: null,
+            }
+          }
+          const jqIdx = args.indexOf('--jq')
+          const jq = jqIdx >= 0 ? args[jqIdx + 1] : ''
+          const defaultBranch = state.faults.ghDefaultBranch ?? 'main'
+          if (jq === '.default_branch') {
+            return { status: 0, stdout: `${defaultBranch}\n`, stderr: '', error: null }
+          }
+          return {
+            status: 0,
+            stdout: JSON.stringify({
+              full_name: repoOnlyMatch[1],
+              default_branch: defaultBranch,
+              permissions: { admin: true, push: true, pull: true },
+            }),
+            stderr: '',
+            error: null,
+          }
+        }
+        const envVarMatch = endpoint.match(/\/environments\/([^/]+)\/variables\/([^/]+)$/)
+        if (envVarMatch && method === 'GET') {
+          const envName = envVarMatch[1]
+          const varName = envVarMatch[2]
+          const envObj = state.github.environments.get(envName)
+          if (!envObj || !envObj.variables.has(varName)) {
+            return { status: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)', error: null }
+          }
+          const val = envObj.variables.get(varName)
+          const jqIdx = args.indexOf('--jq')
+          const jq = jqIdx >= 0 ? args[jqIdx + 1] : ''
+          return {
+            status: 0,
+            stdout: jq === '.value' ? `${val}\n` : JSON.stringify({ name: varName, value: val }),
+            stderr: '',
+            error: null,
+          }
+        }
         const envMatch = endpoint.match(/\/environments\/([^/]+)$/)
         if (envMatch) {
           const envName = envMatch[1]
@@ -567,6 +674,9 @@ export function createControlledProviderSimulator({
             }
             return { status: 0, stdout: JSON.stringify({ name: envName }), stderr: '', error: null }
           }
+          if (state.faults.ghEnvReadError) {
+            return { status: 1, stdout: '', stderr: 'HTTP 500 Internal Server Error', error: null }
+          }
           if (!state.github.environments.has(envName)) {
             return { status: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)', error: null }
           }
@@ -574,6 +684,9 @@ export function createControlledProviderSimulator({
         }
         const wfMatch = endpoint.match(/\/actions\/workflows\/([^/]+)$/)
         if (wfMatch) {
+          if (state.faults.ghWorkflowMissing) {
+            return { status: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)', error: null }
+          }
           const wf = state.github.workflows.get(wfMatch[1])
           return wf
             ? { status: 0, stdout: JSON.stringify(wf), stderr: '', error: null }
@@ -717,12 +830,26 @@ export function createControlledProviderSimulator({
     }
   }
 
+  function seedWorker(accountId, workerName, { bucket = 'airingcal-production' } = {}) {
+    const acct = findAccount(accountId)
+    if (!acct) throw new Error(`Unknown simulator account: ${accountId}`)
+    acct.workers.set(workerName, { name: workerName, bucket })
+  }
+
+  function seedGithubEnv(envName, { variables = {}, secrets = [] } = {}) {
+    const varMap = new Map(Object.entries(variables))
+    const secMap = new Map(secrets.map((s) => [s, { configured: true }]))
+    state.github.environments.set(envName, { variables: varMap, secrets: secMap })
+  }
+
   return {
     state,
     fetchImpl,
     spawnSyncImpl,
     createObjectStore,
     seedBucket,
+    seedWorker,
+    seedGithubEnv,
     addOperatorS3Override,
     seedMintedToken,
     hasBucket(accountId, bucketName) {

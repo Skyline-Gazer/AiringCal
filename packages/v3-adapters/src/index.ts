@@ -1,5 +1,4 @@
 import { CloudflareRuntimeAdapter } from './cloudflare.ts'
-import { EdgeOneRuntimeAdapter } from './edgeone.ts'
 import { PortableRuntimeAdapter } from './portable.ts'
 import { normalizeRuntimePlatformId, resolveRuntimePlatformIdFromEnv } from './platform-id.ts'
 import type { RuntimeAdapter } from '@airing-cal/v3-core/ports'
@@ -10,13 +9,6 @@ export {
   CloudflareR2PublicStore,
   type CloudflareR2BucketBinding,
 } from './cloudflare-r2-public-store.ts'
-export {
-  EdgeOnePublicStore,
-  type EdgeOneBlobBinding,
-  type EdgeOneBlobGetOptions,
-  type EdgeOneBlobListResult,
-} from './edgeone-public-store.ts'
-export { EdgeOneRuntimeAdapter } from './edgeone.ts'
 export { HttpPublicStore, type HttpPublicStoreOptions } from './http-public-store.ts'
 export {
   normalizeRuntimePlatformId,
@@ -31,23 +23,12 @@ export function resolveRuntimeAdapter(platformId: string): RuntimeAdapter {
       return new PortableRuntimeAdapter()
     case 'cloudflare':
       return new CloudflareRuntimeAdapter()
-    case 'edgeone':
-      return new EdgeOneRuntimeAdapter()
     default: {
       const unsupported: never = resolved
       throw new Error(`No runtime adapter for platform_id: ${unsupported}`)
     }
   }
 }
-
-export {
-  formatPortableEnvLines,
-  loadAiringcalConfigFromFile,
-  parseAiringcalConfig,
-  portableEnvFromAiringcalConfig,
-  type AiringcalConfigV1,
-  type AiringcalPlatform,
-} from './airingcal-config.ts'
 
 export function resolveRuntimeAdapterFromEnv(env: Record<string, string | undefined> = process.env) {
   return resolveRuntimeAdapter(resolveRuntimePlatformIdFromEnv(env))
