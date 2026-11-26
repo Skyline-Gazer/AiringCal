@@ -5276,3 +5276,71 @@ test('a freshly created writer token that fails verification is cleaned up by it
   assert.equal(dels.length, 1)
   assert.ok(dels[0][1].endsWith('/user/tokens/new-tok'), 'only the token just created is removed')
 })
+
+test('verifyImageRouting retries pointer/snapshot 404s on a fresh worker deploy (#195 live race)', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', publicBaseUrl: '', mode: 'apply' })
+  let snapshotCalls = 0
+  const io = createLiveDevelopmentApplyIo({
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok', AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef' },
+    plan,
+    spawnSyncImpl: () => { throw new Error('spawn must not be used') },
+    sleepImpl: async () => {},
+    fetchImpl: async (url) => {
+      const u = String(url)
+      if (u.endsWith('/public/current-release.json')) {
+        return { ok: true, status: 200, async json() { return { artifact_ref: 'snapshots/v1/9-abc.json' } } }
+      }
+      if (u.includes('/snapshots/v1/')) {
+        snapshotCalls += 1
+        // Propagation race: the fresh workers.dev route 404s twice first.
+        if (snapshotCalls < 3) return { ok: false, status: 404, async json() { return {} } }
+        return { ok: true, status: 200, async json() { return routingSnapshotWithImage(ROUTE_HASH) } }
+      }
+      if (u.includes('/image/')) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (name) => (String(name).toLowerCase() === 'content-type' ? 'image/webp' : null) },
+        }
+      }
+      return { ok: false, status: 404, async json() { return {} } }
+    },
+  })
+  const result = await io.verifyImageRouting({ cloudflareDeploy: { workerUrl: 'https://w.r7a.workers.dev' } })
+  assert.equal(result.hash, ROUTE_HASH)
+  assert.equal(snapshotCalls, 3, 'retried until the new version served the snapshot')
+})
+
+test('verifyImageRouting keeps single-shot snapshot semantics outside worker mode (#195)', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const plan = buildDevelopmentDeployPlan({
+    target: 'cloudflare',
+    publicBaseUrl: 'https://dev-cdn.example.test',
+    publicOriginMode: 'bucket-domain',
+    mode: 'apply',
+  })
+  let snapshotCalls = 0
+  const io = createLiveDevelopmentApplyIo({
+    env: { AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok', AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef' },
+    plan,
+    spawnSyncImpl: () => { throw new Error('spawn must not be used') },
+    sleepImpl: async () => {},
+    fetchImpl: async (url) => {
+      const u = String(url)
+      if (u.endsWith('/public/current-release.json')) {
+        return { ok: true, status: 200, async json() { return { artifact_ref: 'snapshots/v1/9-abc.json' } } }
+      }
+      if (u.includes('/snapshots/v1/')) {
+        snapshotCalls += 1
+        return { ok: false, status: 404, async json() { return {} } }
+      }
+      return { ok: false, status: 404, async json() { return {} } }
+    },
+  })
+  await assert.rejects(
+    () => io.verifyImageRouting({ cloudflareDeploy: { workerUrl: 'https://w.r7a.workers.dev' } }),
+    /snapshot fetch.*404/,
+  )
+  assert.equal(snapshotCalls, 1, 'redirect mode fails closed on the first miss')
+})
