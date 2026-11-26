@@ -46,6 +46,7 @@ import {
   WIZARD_REPOSITORY,
   assertInventorySanitized,
   buildInventory,
+  assertApplyPlanMatchesReview,
   computeVerdict,
   chooseAccount,
   formatPlan,
@@ -727,8 +728,23 @@ export async function askS3CredentialFallback(io) {
   return { AIRINGCAL_S3_ACCESS_KEY_ID: accessKeyId, AIRINGCAL_S3_SECRET_ACCESS_KEY: secretAccessKey }
 }
 
-async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment, headless }) {
-  await preflight({ spawnSyncImpl })
+async function installFlow({
+  io,
+  env = {},
+  fetchImpl,
+  spawnSyncImpl,
+  log: logFn,
+  requestedEnvironment,
+  headless,
+  hooks = {},
+}) {
+  // #205 QA-001: test-only adapter injection (used by the committed PTY
+  // acceptance harness). It never weakens runtime checks: the real engine,
+  // gate checks and verdict logic remain in force.
+  spawnSyncImpl = hooks.spawnSyncImpl ?? spawnSyncImpl
+  fetchImpl = hooks.fetchImpl ?? fetchImpl
+  if (hooks.preflight) await hooks.preflight({ spawnSyncImpl })
+  else await preflight({ spawnSyncImpl })
   let environment = requestedEnvironment
   if (!environment) {
     if (headless) throw new Error('Headless mode needs --environment production|development')
@@ -810,6 +826,13 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
     sourceEnv: resolvedEnv,
   })
 
+  // #205 BUG-001: derive the ACTUAL authorized apply-mode plan from the same
+  // approved configuration, and prove it matches what the Owner reviewed.
+  // The dry-run plan is never handed to the executor.
+  const applyDerived = buildPlanForEnvironment(applyEnv, { mode: 'apply' })
+  assertApplyPlanMatchesReview(dry.plan, applyDerived.plan)
+  const executionPlan = applyDerived.plan
+
   // #195 correction: one finalizer for ALL outcomes after the apply attempt,
   // so partial mutations and their receipts survive a later failure.
   const finalize = ({
@@ -821,7 +844,7 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
     verificationError = null,
   }) => {
     const inventory = buildInventory({
-      plan: dry.plan,
+      plan: executionPlan,
       account: discovery.account,
       identity: discovery.identity,
       environment,
@@ -847,7 +870,7 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
       })
     } catch (error) { logFn(`Inventory could not be persisted: ${error.message}`) }
     logFn(
-      `\n${verdict}. Public URL: ${dry.plan.publicBaseUrl ?? dry.plan.workerOrigin}` +
+      `\n${verdict}. Public URL: ${executionPlan.publicBaseUrl ?? executionPlan.workerOrigin}` +
       `${inventoryPath ? `\nInventory: ${inventoryPath}` : ''}${reason ? `\nReason: ${reason}` : ''}`,
     )
     return {
@@ -864,11 +887,15 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
       inventoryPath,
     }
   }
-  let { result, io: liveIo } = await applyPlan({
-    env: applyEnv,
-    plan: applyDerived.plan,
+  const applyOptions = {
     log: logFn,
     spawnSyncImpl,
+    ...(hooks.createApplyIo ? { createIo: hooks.createApplyIo } : {}),
+  }
+  let { result, io: liveIo } = await applyPlan({
+    env: applyEnv,
+    plan: executionPlan,
+    ...applyOptions,
   })
   const applyReceipts = [result]
   let s3 = liveIo.s3Credentials?.() ?? null
@@ -884,9 +911,8 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
     const fallback = await askS3CredentialFallback(io)
     const retried = await applyPlan({
       env: { ...applyEnv, ...fallback },
-      plan: applyDerived.plan,
-      log: logFn,
-      spawnSyncImpl,
+      plan: executionPlan,
+      ...applyOptions,
     })
     result = retried.result
     liveIo = retried.io
@@ -914,7 +940,8 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
     }
     if (wantSync) {
       try {
-        sync = await runFirstSync({
+        const syncRunner = hooks.syncRunner ?? runFirstSync
+        sync = await syncRunner({
           environment,
           expectedSha: resolveGitSha(spawnSyncImpl),
           spawnSyncImpl,
@@ -931,9 +958,10 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
   // A release exists only after a successful first Full Sync.
   if (s3 && sync) {
     try {
-      verification = runVerifier({
-        base: dry.plan.workerOrigin,
-        bucket: dry.plan.bucket,
+      const verifier = hooks.verifier ?? runVerifier
+      verification = verifier({
+        base: executionPlan.workerOrigin,
+        bucket: executionPlan.bucket,
         accountId: discovery.account.id,
         s3,
         spawnSyncImpl,
@@ -962,6 +990,14 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   const spawnSyncImpl = deps.spawnSyncImpl ?? spawnSync
   const logFn = deps.log ?? log
   const env = deps.env ?? process.env
+  // #205 QA-001: a committed PTY acceptance harness injects deterministic
+  // provider/command adapters through this env-only hook. Normal runs never
+  // set it; all gate/verdict logic stays real.
+  let hooks = deps.hooks ?? {}
+  if (!deps.hooks && env.AIRINGCAL_WIZARD_TEST_HOOKS) {
+    const loaded = await import(new URL(env.AIRINGCAL_WIZARD_TEST_HOOKS, `file://${ROOT}/`).href)
+    hooks = loaded.default ?? loaded
+  }
   const args = {
     mode: 'menu',
     headless: argv.includes('--headless'),
@@ -996,7 +1032,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       return { ok: true, sync: syncResult }
     }
     if (args.headless) {
-      const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, headless: true })
+      const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, headless: true, hooks })
       return { ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'CANCELLED'].includes(result.verdict), verdict: result.verdict, result }
     }
     const choice = await askSelect('AiringCal setup', [
@@ -1009,7 +1045,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       const report = await runDoctor({ environment: 'production', spawnSyncImpl, log: logFn, env })
       return { ok: report.checks.every((check) => check.status !== 'fail'), report }
     }
-    const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, headless: false })
+    const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, headless: false, hooks })
     return { ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'CANCELLED'].includes(result.verdict), verdict: result.verdict, result }
   } catch (error) {
     if (error instanceof WizardAbort || error instanceof IdentityError) {
