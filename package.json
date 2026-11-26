@@ -24,6 +24,7 @@
   "author": "markd3ng",
   "license": "MIT",
   "dependencies": {
+    "@clack/prompts": "^1.9.0",
     "@fission-ai/openspec": "^1.6.0"
   },
   "devDependencies": {

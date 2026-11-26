@@ -35,8 +35,13 @@ const API_TIMEOUT_MS = 15_000
 const WRANGLER = ['pnpm', 'exec', 'wrangler']
 const ENV_FILE_NULL = ['--env-file', '/dev/null']
 
-/** Workers R2 Storage Write permission group id (Cloudflare tokens API). */
-const PG_R2_WRITE = 'e086da7e5abe4ad98b80f09ab37601ac'
+/** Official bucket-scoped R2 object permission group (Cloudflare docs). */
+const R2_BUCKET_ITEM_WRITE = 'Workers R2 Storage Bucket Item Write'
+
+/** Official single-bucket resource key: <acct>_default_<bucket> (flat form). */
+function r2BucketResourceKey(accountId, bucketName) {
+  return `com.cloudflare.edge.r2.bucket.${accountId}_default_${bucketName}`
+}
 
 /** Repository-level gate variable the development writer job `if` reads. */
 const DEVELOPMENT_WRITER_GATE_VAR = 'AIRINGCAL_DEVELOPMENT_WRITER_ENABLED'
@@ -1212,19 +1217,16 @@ export function createLiveDevelopmentApplyIo({
         process.stderr.write(`[deploy-env] Rotating confirmed writer token ${tokenName} (${rotationId})\n`)
       }
 
-      let permissionGroupId = PG_R2_WRITE
+      let permissionGroupId
       try {
         permissionGroupId = await resolvePermissionGroupId(
           fetchImpl,
           parentToken,
-          'Workers R2 Storage Write',
+          R2_BUCKET_ITEM_WRITE,
         )
       } catch (error) {
-        // Fall back to known id from CF docs samples when listing is denied.
-        const msg = error instanceof Error ? error.message : String(error)
-        if (!/permission group not found|403|401|denied/i.test(msg) && !permissionGroupId) {
-          throw error
-        }
+        const detail = redactSecrets(error instanceof Error ? error.message : String(error), secrets)
+        throw tokenCreateDeniedError(`bucket-scoped permission group lookup failed: ${detail}`)
       }
       let created
       try {
@@ -1237,11 +1239,7 @@ export function createLiveDevelopmentApplyIo({
                 effect: 'allow',
                 // #195 P2.3: scope the Writer credential to exactly the one
                 // bucket it may touch, not every bucket in the account.
-                resources: {
-                  [`com.cloudflare.api.account.${accountId}`]: {
-                    [`com.cloudflare.edge.r2.bucket.${accountId}.default.${bucket}`]: '*',
-                  },
-                },
+                resources: { [r2BucketResourceKey(accountId, bucket)]: '*' },
                 permission_groups: [{ id: permissionGroupId }],
               },
             ],
@@ -1341,7 +1339,7 @@ export function createLiveDevelopmentApplyIo({
       const tokenName = 'airingcal-production-writer'
       const rotationId = String(env.AIRINGCAL_WRITER_TOKEN_ROTATION_ID ?? '').trim()
       const endpoint = s3EndpointFor(accountId)
-      const bucketResource = `com.cloudflare.edge.r2.bucket.${accountId}.default.${bucket}`
+      const bucketResource = r2BucketResourceKey(accountId, bucket)
       const fail = (message, scopes = ['Workers R2 Storage Write', 'User API Tokens:Edit']) => {
         const error = new Error(`Production Writer credential: ${message}`)
         error.missingScopes = scopes
@@ -1356,7 +1354,7 @@ export function createLiveDevelopmentApplyIo({
         if (classifyTokenCreationPermission(permissionsBody) === 'denied') {
           throw tokenCreateDeniedError('permission probe shows no edit/create on user API tokens')
         }
-        permissionGroupId = await resolvePermissionGroupId(fetchImpl, parentToken, 'Workers R2 Storage Write')
+        permissionGroupId = await resolvePermissionGroupId(fetchImpl, parentToken, R2_BUCKET_ITEM_WRITE)
       } catch (error) {
         if (error?.missingScopes) throw error
         const status = Number(error?.status)
@@ -1397,7 +1395,7 @@ export function createLiveDevelopmentApplyIo({
           name: tokenName,
           policies: [{
             effect: 'allow',
-            resources: { [`com.cloudflare.api.account.${accountId}`]: { [bucketResource]: '*' } },
+            resources: { [bucketResource]: '*' },
             permission_groups: [{ id: permissionGroupId }],
           }],
         }),
@@ -1432,18 +1430,17 @@ export function createLiveDevelopmentApplyIo({
         // 5. Scope proof: read the actual policy back with the parent token.
         const details = await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(tokenId)}`)
         const policies = Array.isArray(details?.result?.policies) ? details.result.policies : []
-        const bucketOnly = policies.length > 0 && policies.every((policy) => {
+        const bucketOnly = policies.length === 1 && (() => {
+          const policy = policies[0]
           const resources = policy?.resources ?? {}
-          const entries = Object.entries(resources)
-          if (entries.length === 0) return false
-          return entries.every(([key, value]) => {
-            if (key === bucketResource) return true
-            if (!key.startsWith('com.cloudflare.api.account.')) return false
-            if (!value || typeof value !== 'object') return false
-            const nested = Object.keys(value)
-            return nested.length === 1 && nested[0] === bucketResource
-          })
-        })
+          const keys = Object.keys(resources)
+          const groups = Array.isArray(policy?.permission_groups) ? policy.permission_groups : []
+          return policy?.effect === 'allow'
+            && groups.length === 1
+            && String(groups[0]?.id) === String(permissionGroupId)
+            && keys.length === 1
+            && keys[0] === bucketResource
+        })()
         if (!bucketOnly) {
           throw fail('created token policy is not restricted to the intended bucket')
         }

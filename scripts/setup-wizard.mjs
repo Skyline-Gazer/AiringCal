@@ -40,6 +40,9 @@ import {
   verifyCloudflareToken,
 } from './setup-identities.mjs'
 import { askConfirm, askSecret, askSelect, askText, WizardAbort } from './setup-prompt.mjs'
+import { credentialLinks, resolveDocumentation } from './setup-docs.mjs'
+import { createUi, credentialSection } from './setup-ui.mjs'
+import { validateCredentials } from './setup-validate.mjs'
 import {
   INVENTORY_DIR,
   WIZARD_ENVIRONMENTS,
@@ -55,6 +58,11 @@ import {
   gateStepVerdict,
   wizardEnvironment,
 } from './setup-wizard-lib.mjs'
+
+export const ENVIRONMENT_OPTIONS = Object.freeze([
+  { value: 'production', label: 'Production', hint: 'Standard installation for personal use (recommended)' },
+  { value: 'development', label: 'Development', hint: 'Additional environment for developing and testing AiringCal' },
+])
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -87,13 +95,14 @@ export async function preflight({ spawnSyncImpl = spawnSync, nodeVersion = proce
 }
 
 /** Resolve both tokens from env/dotenv (headless) or masked prompts. */
-export async function resolveTokens({ io, env = {}, log: logFn = log }) {
+export async function resolveTokens({ io, env = {}, log: logFn = log, prompts = null }) {
+  const ask = prompts?.password ?? ((message) => askSecret(message, io))
   let cloudflareToken = String(env.AIRINGCAL_CLOUDFLARE_API_TOKEN ?? '').trim()
   let bangumiToken = String(env.AIRINGCAL_BANGUMI_TOKEN ?? '').trim()
   if (cloudflareToken) logFn('Using AIRINGCAL_CLOUDFLARE_API_TOKEN from the environment (in-memory).')
-  else cloudflareToken = await askSecret('Cloudflare API token (R2 + Workers Scripts write)', io)
+  else cloudflareToken = await ask('Cloudflare API Token')
   if (bangumiToken) logFn('Using AIRINGCAL_BANGUMI_TOKEN from the environment (in-memory).')
-  else bangumiToken = await askSecret('Bangumi personal access token', io)
+  else bangumiToken = await ask('Bangumi Personal Access Token')
   if (!cloudflareToken || !bangumiToken) throw new WizardAbort('Both tokens are required')
   return { cloudflareToken, bangumiToken }
 }
@@ -110,6 +119,7 @@ export async function discoverIdentity({
   io,
   env = {},
   log: logFn = log,
+  prompts = null,
 }) {
   await verifyCloudflareToken(fetchImpl, cloudflareToken)
   const accounts = await fetchCloudflareAccounts(fetchImpl, cloudflareToken, { secrets: [cloudflareToken] })
@@ -129,11 +139,16 @@ export async function discoverIdentity({
     const choice = chooseAccount(accounts)
     account = choice.account
     if (!account) {
-      account = await askSelect(
-        'Select the Cloudflare account for AiringCal',
-        choice.prompt.map((entry) => ({ title: entry.name, hint: entry.id, value: entry })),
-        io,
-      )
+      account = prompts?.select
+        ? await prompts.select({
+            message: 'Select the Cloudflare account for AiringCal',
+            options: choice.prompt.map((entry) => ({ label: entry.name, hint: entry.id, value: entry })),
+          })
+        : await askSelect(
+            'Select the Cloudflare account for AiringCal',
+            choice.prompt.map((entry) => ({ title: entry.name, hint: entry.id, value: entry })),
+            io,
+          )
     }
   }
   logFn(`Cloudflare account: ${account.name} (${account.id})`)
@@ -163,9 +178,17 @@ export async function planCustomDomain({
   hostnameHint = '',
   zoneHint = '',
   allowTakeover = false,
+  prompts = null,
 }) {
+  const confirm = prompts?.confirm ?? ((message, initialValue) => askConfirm(message, io, { defaultYes: Boolean(initialValue) }))
+  const select = prompts?.select ?? (({ message, options }) => askSelect(message, options.map((option) => ({
+    title: option.label,
+    hint: option.hint,
+    value: option.value,
+  })), io))
+  const text = prompts?.text ?? (({ message, validate }) => askText(message, io, { validate }))
   const wantsCustom =
-    assume ?? (await askConfirm('Attach a custom domain to the Worker? (default: workers.dev URL only)', io))
+    assume ?? (await confirm('Attach a Custom Domain to the Worker? (default: workers.dev URL only)'))
   if (!wantsCustom) return { customDomain: '', zoneId: '' }
   const zones = await fetchZones(fetchImpl, cloudflareToken, account.id, { secrets: [cloudflareToken] })
   if (zones.length === 0) {
@@ -188,15 +211,15 @@ export async function planCustomDomain({
       )
     }
   } else {
-    zone = await askSelect(
-      'Select the zone for the custom domain',
-      zones.map((entry) => ({ title: entry.name, hint: entry.status, value: entry })),
-      io,
-    )
+    zone = await select({
+      message: 'Select the zone for the Custom Domain',
+      options: zones.map((entry) => ({ label: entry.name, hint: entry.status, value: entry })),
+    })
   }
   const hostname = hostnameHint
     ? String(hostnameHint).trim().toLowerCase()
-    : await askText(`Hostname under ${zone.name} (e.g. anime.${zone.name})`, io, {
+    : await text({
+        message: `Hostname under ${zone.name} (e.g. anime.${zone.name})`,
         validate: (value) =>
           /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(value)
             ? null
@@ -210,9 +233,8 @@ export async function planCustomDomain({
     if (allowTakeover) {
       logFn(`Takeover of ${hostname} explicitly authorised (AIRINGCAL_ALLOW_CUSTOM_DOMAIN_TAKEOVER=yes).`)
     } else if (io?.input?.isTTY) {
-      const takeOver = await askConfirm(
+      const takeOver = await confirm(
         `DNS name ${hostname} is already in use. Bind this Worker to it anyway (Cloudflare will replace the record)?`,
-        io,
       )
       if (!takeOver) {
         throw new WizardAbort(
@@ -728,6 +750,98 @@ export async function askS3CredentialFallback(io) {
   return { AIRINGCAL_S3_ACCESS_KEY_ID: accessKeyId, AIRINGCAL_S3_SECRET_ACCESS_KEY: secretAccessKey }
 }
 
+async function collectCredentials({ ui, docs, fetchImpl, env, initial = {} }) {
+  let cloudflareToken = initial.cloudflareToken ?? ''
+  let bangumiToken = initial.bangumiToken ?? ''
+  let validation = null
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    if (!cloudflareToken) {
+      credentialSection(ui, {
+        title: 'Cloudflare API Token',
+        purpose: 'Needed to create and manage the Worker and the private R2 bucket in your Cloudflare account.',
+        links: credentialLinks('cloudflare', docs),
+      })
+      cloudflareToken = await ui.password({
+        message: 'Paste your Cloudflare API Token (input is masked)',
+        validate: (value) => (String(value ?? '').trim() ? undefined : 'A Cloudflare API Token is required'),
+      })
+    }
+    if (!bangumiToken) {
+      credentialSection(ui, {
+        title: 'Bangumi Personal Access Token',
+        purpose: 'Needed to read your anime collections and episode progress for synchronization.',
+        links: credentialLinks('bangumi', docs),
+      })
+      bangumiToken = await ui.password({
+        message: 'Paste your Bangumi Personal Access Token (input is masked)',
+        validate: (value) => (String(value ?? '').trim() ? undefined : 'A Bangumi Personal Access Token is required'),
+      })
+    }
+    ui.log.step('Validate API Credentials')
+    validation = await validateCredentials({
+      fetchImpl,
+      cloudflareToken,
+      bangumiToken,
+      log: (line) => ui.log.info(line),
+    })
+    if (validation.ok) {
+      ui.log.success('API credentials validated (read-only capability checks).')
+      return { cloudflareToken, bangumiToken, validation }
+    }
+    ui.log.error(`Credential validation failed: ${validation.blocking.join(', ')}`)
+    const action = await ui.select({
+      message: 'How do you want to continue?',
+      options: [
+        { value: 'cloudflare', label: 'Re-enter Cloudflare API Token' },
+        { value: 'bangumi', label: 'Re-enter Bangumi Personal Access Token' },
+        { value: 'retry', label: 'Retry Validation' },
+        { value: 'menu', label: 'Return to Main Menu' },
+        { value: 'cancel', label: 'Cancel' },
+      ],
+      initialValue: 'retry',
+    })
+    if (action === 'cancel') throw new WizardAbort('Installation cancelled during credential validation')
+    if (action === 'menu') throw new WizardAbort('Returned to main menu')
+    if (action === 'cloudflare') cloudflareToken = ''
+    if (action === 'bangumi') bangumiToken = ''
+  }
+  throw new WizardAbort('Credential validation did not succeed after repeated attempts')
+}
+
+function renderReview(ui, { environment, account, identity, workersSubdomain, validation, customDomain, zoneName, plan }) {
+  const v = (id) => validation?.checks.find((entry) => entry.id === id)?.state ?? 'NOT_VERIFIED'
+  const lines = [
+    `Installation: ${plan?.writerEnabled === false ? 'New Installation (owned resources are reused)' : 'Installation'}`,
+    `Environment: ${environment === 'production' ? 'Production' : 'Development'}`,
+    '',
+    'Credentials:',
+    `  Cloudflare API Token: ${v('cloudflare.token')}`,
+    `  Bangumi Personal Access Token: ${v('bangumi.token')}`,
+    `  Bangumi identity: ${identity ? `${identity.username} (id ${identity.userId})` : 'not detected'}`,
+    `  Writer credential: ${plan?.env === 'production' ? 'bucket-scoped Writer token (created after bucket ownership proof), masked S3 fallback available' : 'scoped Writer token / derived engine credential'}`,
+    '',
+    'Cloudflare Deployment:',
+    `  Account: ${account ? `${account.name} (${account.id})` : 'not selected'}`,
+    `  Worker: ${plan?.cloudflareWorkerName ?? '-'}`,
+    `  R2 Bucket: ${plan?.bucket ?? '-'} (private; no anonymous object access)`,
+    `  workers.dev subdomain: ${workersSubdomain ?? 'not detected'}`,
+    '',
+    'Providers:',
+    '  Cloudflare: enabled',
+    '  EdgeOne: disabled (not part of this installation)',
+    '',
+    'Domain:',
+    `  ${customDomain ? `Custom Domain: ${customDomain}${zoneName ? ` (zone ${zoneName})` : ''}` : 'Default workers.dev URL (no DNS changes)'}`,
+    `  Public URL: ${plan?.publicBaseUrl ?? plan?.workerOrigin ?? '-'}`,
+    '',
+    'Data Synchronization:',
+    '  Full personal anime progress (collections + episode states) via GitHub Actions',
+    `  GitHub Environment: ${plan?.env ?? environment}`,
+    '  First Full Sync: separate explicit authorization',
+  ]
+  ui.note(lines.join('\n'), 'Configuration Review')
+}
+
 async function installFlow({
   io,
   env = {},
@@ -737,104 +851,201 @@ async function installFlow({
   requestedEnvironment,
   headless,
   hooks = {},
+  ui: injectedUi = null,
 }) {
-  // #205 QA-001: test-only adapter injection (used by the committed PTY
-  // acceptance harness). It never weakens runtime checks: the real engine,
-  // gate checks and verdict logic remain in force.
+  // #205 QA-001: test-only adapter injection used by the committed PTY harness.
   spawnSyncImpl = hooks.spawnSyncImpl ?? spawnSyncImpl
   fetchImpl = hooks.fetchImpl ?? fetchImpl
+  const ui = injectedUi ?? hooks.ui ?? createUi({ io, env })
+  const docs = resolveDocumentation(env)
   if (hooks.preflight) await hooks.preflight({ spawnSyncImpl })
   else await preflight({ spawnSyncImpl })
+
   let environment = requestedEnvironment
-  if (!environment) {
-    if (headless) throw new Error('Headless mode needs --environment production|development')
-    environment = await askSelect('Environment', [
-      { title: 'production', hint: 'default for a normal installation', value: 'production' },
-      { title: 'development', hint: 'a second, isolated deployment', value: 'development' },
-    ], io)
-  }
   let resolvedEnv = env
   let dotenvPath = null
+  let cloudflareToken = ''
+  let bangumiToken = ''
+  let validation = null
+  let discovery = null
+  let customDomain = ''
+  let zoneId = ''
+  let zoneName = ''
+
   if (headless) {
+    environment = environment ?? String(env.AIRINGCAL_ENV ?? '').trim().toLowerCase()
+    if (!WIZARD_ENVIRONMENTS.includes(environment)) {
+      throw new Error('Headless setup needs --environment production|development')
+    }
     const loaded = loadHeadlessEnvironment({ environment })
     resolvedEnv = loaded.env
     dotenvPath = loaded.dotenvPath
-    // #195 review: headless is env-driven by contract — never fall through
-    // to an interactive secret prompt (it would block on a pty, or abort
-    // with a misleading TTY message).
     const missingTokens = ['AIRINGCAL_CLOUDFLARE_API_TOKEN', 'AIRINGCAL_BANGUMI_TOKEN']
       .filter((key) => !String(resolvedEnv[key] ?? '').trim())
     if (missingTokens.length > 0) {
       throw new Error(`Headless setup needs ${missingTokens.join(', ')} in the environment/dotenv`)
     }
+    const tokens = await resolveTokens({ io, env: resolvedEnv, log: logFn })
+    cloudflareToken = tokens.cloudflareToken
+    bangumiToken = tokens.bangumiToken
+  } else {
+    ui.intro('AiringCal Setup')
+    environment = environment ?? await ui.select({
+      message: 'Environment',
+      options: ENVIRONMENT_OPTIONS.map((option) => ({ ...option })),
+      initialValue: 'production',
+    })
+    if (environment === 'development') {
+      ui.note(
+        'Selecting Development can change the existing Development deployment configuration in this repository. ' +
+        'A separate Cloudflare account does not isolate GitHub Environment state.',
+        'Development Environment',
+      )
+    }
+    const collected = await collectCredentials({ ui, docs, fetchImpl, env })
+    cloudflareToken = collected.cloudflareToken
+    bangumiToken = collected.bangumiToken
+    validation = collected.validation
   }
-  const { cloudflareToken, bangumiToken } = await resolveTokens({ io, env: resolvedEnv, log: logFn })
-  const discovery = await discoverIdentity({
-    fetchImpl,
-    cloudflareToken,
-    bangumiToken,
-    io,
-    env: resolvedEnv,
-    log: logFn,
-  })
-  // #195 review: an env-supplied custom domain/zone is checked and bound as
-  // exactly that value (no prompt whose answer would be discarded).
-  const hostnameHint = String(resolvedEnv.AIRINGCAL_WORKER_CUSTOM_DOMAIN ?? '').trim()
-  const zoneHint = String(resolvedEnv.AIRINGCAL_ZONE_ID ?? '').trim()
-  const domain =
-    headless && !hostnameHint
-      ? { customDomain: '', zoneId: '' }
-      : await planCustomDomain({
-          fetchImpl,
-          cloudflareToken,
-          account: discovery.account,
-          io,
-          log: logFn,
-          assume: hostnameHint ? true : undefined,
-          hostnameHint,
-          zoneHint,
-          allowTakeover: String(resolvedEnv.AIRINGCAL_ALLOW_CUSTOM_DOMAIN_TAKEOVER ?? '') === 'yes',
+
+  let approved = false
+  let applyEnv = null
+  let executionPlan = null
+  let dry = null
+  for (let round = 0; round < 6 && !approved; round += 1) {
+    discovery = await discoverIdentity({
+      fetchImpl,
+      cloudflareToken,
+      bangumiToken,
+      io,
+      env: resolvedEnv,
+      log: logFn,
+      prompts: ui.prompts,
+    })
+    if (!headless) {
+      const hostnameHint = String(resolvedEnv.AIRINGCAL_WORKER_CUSTOM_DOMAIN ?? customDomain ?? '').trim()
+      const zoneHint = String(resolvedEnv.AIRINGCAL_ZONE_ID ?? zoneId ?? '').trim()
+      const domain = hostnameHint
+        ? await planCustomDomain({
+            fetchImpl,
+            cloudflareToken,
+            account: discovery.account,
+            io,
+            log: logFn,
+            assume: true,
+            hostnameHint,
+            zoneHint,
+            allowTakeover: String(resolvedEnv.AIRINGCAL_ALLOW_CUSTOM_DOMAIN_TAKEOVER ?? '') === 'yes',
+            prompts: ui.prompts,
+          })
+        : await planCustomDomain({
+            fetchImpl,
+            cloudflareToken,
+            account: discovery.account,
+            io,
+            log: logFn,
+            prompts: ui.prompts,
+            allowTakeover: String(resolvedEnv.AIRINGCAL_ALLOW_CUSTOM_DOMAIN_TAKEOVER ?? '') === 'yes',
+          })
+      customDomain = String(hostnameHint || domain.customDomain || '').trim()
+      zoneId = String(zoneHint || domain.zoneId || '').trim()
+    }
+    const wizardEnv = wizardEnvironment({
+      environment,
+      cloudflareToken,
+      accountId: discovery.account.id,
+      workersSubdomain: discovery.workersSubdomain,
+      bangumiToken,
+      identity: discovery.identity,
+      usersJson: discovery.usersJson,
+      customDomain,
+      zoneId,
+      dotenvPath,
+    })
+    dry = buildPlanForEnvironment(wizardEnv, { mode: 'dry-run' })
+    if (!headless) {
+      renderReview(ui, {
+        environment,
+        account: discovery.account,
+        identity: discovery.identity,
+        workersSubdomain: discovery.workersSubdomain,
+        validation,
+        customDomain,
+        zoneName,
+        plan: dry.plan,
+      })
+      if (String(env.AIRINGCAL_WIZARD_VERBOSE ?? '') === 'yes') ui.note(formatPlan(dry.plan), 'Detailed Execution Plan')
+      const action = await ui.select({
+        message: 'Review Configuration',
+        options: [
+          { value: 'install', label: 'Confirm and Install' },
+          { value: 'credentials', label: 'Re-enter Credentials' },
+          { value: 'domain', label: 'Edit Domain Configuration' },
+          { value: 'environment', label: 'Edit Environment' },
+          { value: 'cancel', label: 'Cancel' },
+        ],
+        initialValue: 'install',
+      })
+      if (action === 'cancel') {
+        ui.cancel('Installation cancelled; nothing was mutated.')
+        return { applied: false, verdict: 'CANCELLED', reason: 'installation cancelled at configuration review' }
+      }
+      if (action === 'credentials') {
+        const collected = await collectCredentials({ ui, docs, fetchImpl, env, initial: { cloudflareToken, bangumiToken } })
+        cloudflareToken = collected.cloudflareToken
+        bangumiToken = collected.bangumiToken
+        validation = collected.validation
+        continue
+      }
+      if (action === 'domain') { customDomain = ''; zoneId = ''; zoneName = ''; continue }
+      if (action === 'environment') {
+        environment = await ui.select({
+          message: 'Environment',
+          options: ENVIRONMENT_OPTIONS.map((option) => ({ ...option })),
+          initialValue: environment,
         })
-  const customDomain = String(hostnameHint || domain.customDomain || '').trim()
-  const zoneId = String(zoneHint || domain.zoneId || '').trim()
-  const wizardEnv = wizardEnvironment({
-    environment,
-    cloudflareToken,
-    accountId: discovery.account.id,
-    workersSubdomain: discovery.workersSubdomain,
-    bangumiToken,
-    identity: discovery.identity,
-    usersJson: discovery.usersJson,
-    customDomain,
-    zoneId,
-    dotenvPath,
-  })
-  const dry = buildPlanForEnvironment(wizardEnv, { mode: 'dry-run' })
-  logFn(`\n--- Deployment plan (${environment}) ---\n${formatPlan(dry.plan)}\n`)
-  const approved = headless
-    ? String(resolvedEnv.AIRINGCAL_WIZARD_CONFIRM ?? '') === 'yes'
-    : await askConfirm(`Apply this plan to ${environment}?`, io)
-  if (!approved) {
-    logFn('Plan not applied; nothing was mutated. Re-run `pnpm run setup` when ready.')
-    return { applied: false, verdict: 'CANCELLED', reason: 'deployment plan was not approved' }
+        continue
+      }
+      approved = await ui.confirm({ message: `Install AiringCal in ${environment === 'production' ? 'Production' : 'Development'} now?`, initialValue: true })
+      if (!approved) {
+        ui.cancel('Nothing was applied.')
+        return { applied: false, verdict: 'CANCELLED', reason: 'installation not confirmed' }
+      }
+    } else {
+      approved = String(resolvedEnv.AIRINGCAL_WIZARD_CONFIRM ?? '') === 'yes'
+      if (!approved) {
+        logFn('Plan not applied; nothing was mutated. Re-run `pnpm run setup` when ready.')
+        return { applied: false, verdict: 'CANCELLED', reason: 'deployment plan was not approved' }
+      }
+    }
   }
-  const applyEnv = resolveApplyEnvironment({
+  if (!approved) throw new Error('Configuration review did not reach confirmation')
+
+  applyEnv = resolveApplyEnvironment({
     environment,
     headless,
     approved,
-    wizardEnv,
+    wizardEnv: wizardEnvironment({
+      environment,
+      cloudflareToken,
+      accountId: discovery.account.id,
+      workersSubdomain: discovery.workersSubdomain,
+      bangumiToken,
+      identity: discovery.identity,
+      usersJson: discovery.usersJson,
+      customDomain,
+      zoneId,
+      dotenvPath,
+    }),
     sourceEnv: resolvedEnv,
   })
 
   // #205 BUG-001: derive the ACTUAL authorized apply-mode plan from the same
   // approved configuration, and prove it matches what the Owner reviewed.
-  // The dry-run plan is never handed to the executor.
   const applyDerived = buildPlanForEnvironment(applyEnv, { mode: 'apply' })
   assertApplyPlanMatchesReview(dry.plan, applyDerived.plan)
-  const executionPlan = applyDerived.plan
+  executionPlan = applyDerived.plan
 
-  // #195 correction: one finalizer for ALL outcomes after the apply attempt,
-  // so partial mutations and their receipts survive a later failure.
   const finalize = ({
     verdict,
     reason = null,
@@ -869,6 +1080,7 @@ async function installFlow({
         secrets: [cloudflareToken, bangumiToken, s3?.secretAccessKey ?? ''].filter(Boolean),
       })
     } catch (error) { logFn(`Inventory could not be persisted: ${error.message}`) }
+    if (!headless) ui.outro(`${verdict}${reason ? ` — ${reason}` : ''}`)
     logFn(
       `\n${verdict}. Public URL: ${executionPlan.publicBaseUrl ?? executionPlan.workerOrigin}` +
       `${inventoryPath ? `\nInventory: ${inventoryPath}` : ''}${reason ? `\nReason: ${reason}` : ''}`,
@@ -887,78 +1099,84 @@ async function installFlow({
       inventoryPath,
     }
   }
+
   const applyOptions = {
     log: logFn,
     spawnSyncImpl,
     ...(hooks.createApplyIo ? { createIo: hooks.createApplyIo } : {}),
   }
-  let { result, io: liveIo } = await applyPlan({
-    env: applyEnv,
-    plan: executionPlan,
-    ...applyOptions,
-  })
+  const spinner = ui.spinner()
+  spinner.start('Applying approved infrastructure plan')
+  let { result, io: liveIo } = await applyPlan({ env: applyEnv, plan: executionPlan, ...applyOptions })
+  spinner.stop(result.ok ? 'Infrastructure applied' : 'Infrastructure apply aborted')
   const applyReceipts = [result]
   let s3 = liveIo.s3Credentials?.() ?? null
   if (!result.ok && !headless && Array.isArray(result.missingScopes) && result.missingScopes.length > 0) {
-    // Earlier steps may already have mutated remote state; surface that ledger
-    // instead of hiding a partial apply behind a generic failure.
     logFn(
       `Automatic Writer credential provisioning was not available (${result.reason}). ` +
       `Completed effects: ${(result.completed ?? []).join(' → ') || 'none'}.`,
     )
-    const confirmed = await askConfirm('Supply an independently scoped R2 credential now (masked input)?', io)
-    if (!confirmed) return finalize({ verdict: 'DEPLOY_FAILED', reason: 'masked credential fallback declined after a partial apply' })
-    const fallback = await askS3CredentialFallback(io)
-    const retried = await applyPlan({
-      env: { ...applyEnv, ...fallback },
-      plan: executionPlan,
-      ...applyOptions,
+    const confirmed = await ui.confirm({
+      message: 'Supply an independently scoped R2 credential now (masked input)?',
+      initialValue: true,
     })
+    if (!confirmed) return finalize({ verdict: 'DEPLOY_FAILED', reason: 'masked credential fallback declined after a partial apply' })
+    const accessKeyId = (await ui.password({ message: 'Cloudflare R2 S3 Access Key ID (masked)' })).trim()
+    const secretAccessKey = (await ui.password({ message: 'Cloudflare R2 S3 Secret Access Key (masked)' })).trim()
+    if (!accessKeyId || !secretAccessKey) throw new WizardAbort('S3 credential fallback cancelled: both values are required')
+    const fallback = { AIRINGCAL_S3_ACCESS_KEY_ID: accessKeyId, AIRINGCAL_S3_SECRET_ACCESS_KEY: secretAccessKey }
+    spinner.start('Retrying the approved apply with the supplied credential')
+    const retried = await applyPlan({ env: { ...applyEnv, ...fallback }, plan: executionPlan, ...applyOptions })
+    spinner.stop(retried.result.ok ? 'Infrastructure applied' : 'Infrastructure apply aborted')
     result = retried.result
     liveIo = retried.io
     applyReceipts.push(result)
     s3 = retried.io.s3Credentials?.() ?? null
   }
-  if (!result.ok) {
-    return finalize({ verdict: 'DEPLOY_FAILED', reason: result.reason ?? 'apply aborted' })
+  if (!result.ok) return finalize({ verdict: 'DEPLOY_FAILED', reason: result.reason ?? 'apply aborted' })
+
+  let wantSync
+  if (headless) {
+    wantSync = String(resolvedEnv.AIRINGCAL_WIZARD_FIRST_SYNC ?? '') === 'yes'
+  } else {
+    wantSync = await ui.confirm({ message: 'Run the First Full Sync now (GitHub Actions, separate authorization)?', initialValue: true })
+    if (wantSync) {
+      const confirmed = await ui.confirm({
+        message: 'Dispatch the Writer for the first full synchronization? A temporary gate is opened and closed automatically.',
+        initialValue: true,
+      })
+      if (!confirmed) {
+        wantSync = false
+        ui.log.warn('First Full Sync declined; the deployment is intentionally uninitialized (AWAITING_FIRST_SYNC).')
+      }
+    }
   }
-  let wantSync = headless
-    ? String(resolvedEnv.AIRINGCAL_WIZARD_FIRST_SYNC ?? '') === 'yes'
-    : await askConfirm('Run the first Full Sync now (GitHub Actions, separate authorization)?', io)
   let sync = null
   let syncError = null
   if (wantSync) {
-    if (!headless) {
-      const confirmed = await askConfirm(
-        'This dispatches the Writer for the first full synchronization (opens a temporary gate that closes automatically). Continue?',
-        io,
-      )
-      if (!confirmed) {
-        wantSync = false
-        logFn('First sync not authorized; leaving the deployment intentionally uninitialized.')
-      }
-    }
-    if (wantSync) {
-      try {
-        const syncRunner = hooks.syncRunner ?? runFirstSync
-        sync = await syncRunner({
-          environment,
-          expectedSha: resolveGitSha(spawnSyncImpl),
-          spawnSyncImpl,
-          log: logFn,
-        })
-      } catch (error) {
-        syncError = error
-        logFn(`First sync failed: ${error.message?.slice(0, 400) ?? String(error)}`)
-      }
+    try {
+      const syncRunner = hooks.syncRunner ?? runFirstSync
+      const syncSpinner = ui.spinner()
+      syncSpinner.start('Dispatching the First Full Sync (gates are opened, verified and closed automatically)')
+      sync = await syncRunner({
+        environment,
+        expectedSha: resolveGitSha(spawnSyncImpl),
+        spawnSyncImpl,
+        log: logFn,
+      })
+      syncSpinner.stop('First Full Sync completed')
+    } catch (error) {
+      syncError = error
+      ui.log.error(`First Full Sync failed: ${error.message?.slice(0, 400) ?? String(error)}`)
     }
   }
   let verification = null
   let verificationError = null
-  // A release exists only after a successful first Full Sync.
   if (s3 && sync) {
     try {
       const verifier = hooks.verifier ?? runVerifier
+      const verifySpinner = ui.spinner()
+      verifySpinner.start('Verifying the live deployment')
       verification = verifier({
         base: executionPlan.workerOrigin,
         bucket: executionPlan.bucket,
@@ -967,6 +1185,7 @@ async function installFlow({
         spawnSyncImpl,
         log: logFn,
       })
+      verifySpinner.stop(verification?.pass === true ? 'Live verification passed' : 'Live verification failed')
     } catch (error) {
       verificationError = error
     }
@@ -990,6 +1209,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   const spawnSyncImpl = deps.spawnSyncImpl ?? spawnSync
   const logFn = deps.log ?? log
   const env = deps.env ?? process.env
+  const ui = deps.ui ?? createUi({ io, env })
   // #205 QA-001: a committed PTY acceptance harness injects deterministic
   // provider/command adapters through this env-only hook. Normal runs never
   // set it; all gate/verdict logic stays real.
@@ -1014,7 +1234,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     }
     if (args.sync) {
       if (!args.headless) {
-        const confirmed = await askConfirm('Dispatch the first Full Sync now?', io)
+        const confirmed = await ui.confirm({ message: 'Dispatch the First Full Sync now?', initialValue: false })
         if (!confirmed) throw new WizardAbort('Sync not authorized')
       } else if (String(env.AIRINGCAL_WIZARD_SYNC_AUTHORIZED ?? '') !== 'yes') {
         throw new Error(
@@ -1032,20 +1252,40 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       return { ok: true, sync: syncResult }
     }
     if (args.headless) {
-      const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, headless: true, hooks })
+      const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, headless: true, hooks, ui })
       return { ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'CANCELLED'].includes(result.verdict), verdict: result.verdict, result }
     }
-    const choice = await askSelect('AiringCal setup', [
-      { title: 'Install or update a deployment', hint: 'two tokens, plan, apply, first sync', value: 'install' },
-      { title: 'Doctor', hint: 'read-only health, gates and recent runs', value: 'doctor' },
-      { title: 'Exit', value: 'exit' },
-    ], io)
+    const choice = await ui.select({
+      message: 'AiringCal Setup',
+      options: [
+        { value: 'install', label: 'Install or Update', hint: 'two masked tokens, review, apply, First Full Sync' },
+        { value: 'validate', label: 'Validate API Credentials', hint: 'read-only permission preflight' },
+        { value: 'doctor', label: 'Doctor', hint: 'read-only gates, workflows and recent runs' },
+        { value: 'exit', label: 'Exit' },
+      ],
+      initialValue: 'install',
+    })
     if (choice === 'exit') return { ok: true, exit: true }
     if (choice === 'doctor') {
       const report = await runDoctor({ environment: 'production', spawnSyncImpl, log: logFn, env })
       return { ok: report.checks.every((check) => check.status !== 'fail'), report }
     }
-    const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, headless: false, hooks })
+    if (choice === 'validate') {
+      const docs = resolveDocumentation(env)
+      let cloudflareToken = String(env.AIRINGCAL_CLOUDFLARE_API_TOKEN ?? '').trim()
+      let bangumiToken = String(env.AIRINGCAL_BANGUMI_TOKEN ?? '').trim()
+      if (!cloudflareToken) {
+        credentialSection(ui, { title: 'Cloudflare API Token', purpose: 'Validated read-only; nothing is created or changed.', links: credentialLinks('cloudflare', docs) })
+        cloudflareToken = await ui.password({ message: 'Paste your Cloudflare API Token (masked)' })
+      }
+      if (!bangumiToken) {
+        credentialSection(ui, { title: 'Bangumi Personal Access Token', purpose: 'Validated read-only against your own collections.', links: credentialLinks('bangumi', docs) })
+        bangumiToken = await ui.password({ message: 'Paste your Bangumi Personal Access Token (masked)' })
+      }
+      const validation = await validateCredentials({ fetchImpl, cloudflareToken, bangumiToken, log: (line) => logFn(line) })
+      return { ok: validation.ok, validation }
+    }
+    const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, headless: false, hooks, ui })
     return { ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'CANCELLED'].includes(result.verdict), verdict: result.verdict, result }
   } catch (error) {
     if (error instanceof WizardAbort || error instanceof IdentityError) {

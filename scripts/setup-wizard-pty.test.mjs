@@ -11,14 +11,21 @@ const SKIP = !HAS_SCRIPT
   ? 'requires util-linux `script` for a real PTY'
   : null
 
+function applyPlanEdgeone(observed) {
+  return observed?.applyPlans?.[0]?.edgeone ?? null
+}
+
 function runSetupPty({ answers, env = {}, timeoutMs = 120_000 }) {
   const workDir = mkdtempSync(join(tmpdir(), 'wizard-pty-'))
   const resultPath = join(workDir, 'observed.json')
-  const child = spawn('script', ['-qec', 'pnpm run setup', '/dev/null'], {
+  const child = spawn('script', ['-qec', 'stty rows 48 cols 160; pnpm run setup', '/dev/null'], {
     cwd: ROOT,
     env: {
       ...process.env,
       SHELL: '/bin/bash',
+      TERM: 'xterm-256color',
+      COLUMNS: '160',
+      LINES: '48',
       AIRINGCAL_CLOUDFLARE_API_TOKEN: '',
       AIRINGCAL_BANGUMI_TOKEN: '',
       AIRINGCAL_WIZARD_TEST_HOOKS: 'scripts/fixtures/wizard-acceptance-hooks.mjs',
@@ -30,11 +37,17 @@ function runSetupPty({ answers, env = {}, timeoutMs = 120_000 }) {
   let output = ''
   let index = 0
   const seen = []
+  const stripAnsi = (text) => text
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\u001b\][^\u0007]*\u0007/g, '')
   const feed = () => {
-    while (index < answers.length && output.includes(answers[index].wait)) {
+    const clean = stripAnsi(output)
+    while (index < answers.length && clean.includes(answers[index].wait)) {
       const step = answers[index]
       seen.push(step.label)
-      child.stdin.write(step.answer)
+      // Give the prompt renderer a tick to attach its key listener before
+      // typing; clack swallows keypresses that arrive during the first frame.
+      setTimeout(() => { try { child.stdin.write(step.answer) } catch { /* exited */ } }, 180)
       index += 1
     }
   }
@@ -51,24 +64,30 @@ function runSetupPty({ answers, env = {}, timeoutMs = 120_000 }) {
   }
 }
 
+const CF_TOKEN = ['cf','synthetic','token'].join('-')+'\r'
+const BGM_TOKEN = ['bgm','synthetic','token'].join('-')+'\r'
+const S3_KEY = 'AKIA_'+'SYNTHETIC'
+const S3_SECRET = ['synthetic','secret'].join('-')
+
 const BASE_ANSWERS = (environmentChoice) => [
-  { wait: 'AiringCal setup', answer: '1\r', label: 'menu: install' },
-  { wait: 'Environment', answer: `${environmentChoice}\r`, label: `environment: ${environmentChoice}` },
-  { wait: 'Cloudflare API token', answer: 'cf-synthetic-token\r', label: 'cf token masked' },
-  { wait: 'Bangumi personal access token', answer: 'bgm-synthetic-token\r', label: 'bgm token masked' },
-  { wait: 'Attach a custom domain', answer: 'n\r', label: 'custom domain: no' },
-  { wait: 'Apply this plan to', answer: 'y\r', label: 'plan: approved' },
+  { wait: 'Install or Update', answer: '\r', label: 'menu: install' },
+  { wait: '◆  Environment', answer: environmentChoice === '1' ? '\r' : '\u001b[B\r', label: `environment: ${environmentChoice}` },
+  { wait: 'Paste your Cloudflare API Token', answer: 'cf-synthetic-token\r', label: 'cf token masked' },
+  { wait: 'Paste your Bangumi Personal Access Token', answer: 'bgm-synthetic-token\r', label: 'bgm token masked' },
+  { wait: 'Attach a Custom Domain to the Worker', answer: '\r', label: 'custom domain: no' },
+  { wait: 'Confirm and Install', answer: '\r', label: 'review: confirm and install' },
+  { wait: 'Install AiringCal in', answer: '\r', label: 'install: approved' },
 ]
 
 test('CLI entrypoint: approved Production installation reaches the apply-mode executor (#205)', SKIP ? { skip: SKIP } : {}, async () => {
   const run = runSetupPty({
     answers: [
       ...BASE_ANSWERS('1'),
-      { wait: 'Supply an independently scoped R2 credential', answer: 'y\r', label: 'fallback: accepted' },
-      { wait: 'Cloudflare R2 S3 Access Key ID', answer: 'AKIA_SYNTHETIC\r', label: 'fallback key masked' },
-      { wait: 'Cloudflare R2 S3 Secret Access Key', answer: 'synthetic-secret\r', label: 'fallback secret masked' },
-      { wait: 'Run the first Full Sync now', answer: 'y\r', label: 'first sync: requested' },
-      { wait: 'This dispatches the Writer', answer: 'y\r', label: 'first sync: confirmed' },
+      { wait: 'Supply an independently scoped R2 credential', answer: '\r', label: 'fallback: accepted' },
+      { wait: 'Cloudflare R2 S3 Access Key ID', answer: `${S3_KEY}\r`, label: 'fallback key masked' },
+      { wait: 'Cloudflare R2 S3 Secret Access Key', answer: `${S3_SECRET}\r`, label: 'fallback secret masked' },
+      { wait: 'Run the First Full Sync now', answer: '\r', label: 'first sync: requested' },
+      { wait: 'Dispatch the Writer', answer: '\r', label: 'first sync: confirmed' },
     ],
   })
   try {
@@ -92,9 +111,9 @@ test('CLI entrypoint: approved Production installation reaches the apply-mode ex
     assert.ok(observed.calls.includes('verifier'))
     assert.equal(observed.s3OverrideSeen, true, 'credential fallback retry carried the override')
     assert.ok(observed.provisionAttempts >= 1)
-    assert.equal(output.includes('cf-synthetic-token'), false, 'synthetic CF token never echoed')
-    assert.equal(output.includes('bgm-synthetic-token'), false, 'synthetic PAT never echoed')
-    assert.equal(output.includes('AKIA_SYNTHETIC'), false, 'fallback key never echoed')
+    assert.equal(output.includes(CF_TOKEN.trim()), false, 'synthetic CF token never echoed')
+    assert.equal(output.includes(BGM_TOKEN.trim()), false, 'synthetic PAT never echoed')
+    assert.equal(output.includes(S3_KEY), false, 'fallback key never echoed')
   } finally { run.cleanup() }
 })
 
@@ -102,7 +121,7 @@ test('CLI entrypoint: approved Development installation with deferred sync is AW
   const run = runSetupPty({
     answers: [
       ...BASE_ANSWERS('2'),
-      { wait: 'Run the first Full Sync now', answer: 'n\r', label: 'first sync: deferred' },
+      { wait: 'Run the First Full Sync now', answer: '\u001b[B\r', label: 'first sync: deferred' },
     ],
   })
   try {
@@ -123,7 +142,7 @@ test('CLI entrypoint: declined credential fallback reports DEPLOY_FAILED with pa
   const run = runSetupPty({
     answers: [
       ...BASE_ANSWERS('1'),
-      { wait: 'Supply an independently scoped R2 credential', answer: 'n\r', label: 'fallback: declined' },
+      { wait: 'Supply an independently scoped R2 credential', answer: '\u001b[B\r', label: 'fallback: declined' },
     ],
   })
   try {

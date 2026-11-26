@@ -77,16 +77,30 @@ pnpm run setup --headless --environment development   # env/dotenv-driven, no pr
 # headless --sync additionally needs AIRINGCAL_WIZARD_SYNC_AUTHORIZED=yes
 ```
 
-Flow: preflight (Node/gh/wrangler) → environment (Production default) →
-Cloudflare token (masked) → Bangumi PAT (masked) → account discovery (one
-account auto-selects; multiple prompt; an explicit
-`AIRINGCAL_CLOUDFLARE_ACCOUNT_ID` is still verified against the token) →
-workers.dev subdomain discovery → `/v0/me` identity → `USERS_JSON` derivation →
-optional Worker custom domain (zone discovery, DNS occupancy check, explicit
-takeover confirmation — never silent) → ordered plan → confirmation → apply
-through the same engine and gates as the CLI → optional first Full Sync →
-live verifier → sanitized inventory at `.airingcal/inventory.<env>.json`
-(0600, gitignored; names/ids only, never credential values).
+Flow: preflight (Node/gh/wrangler) → environment (Production default, with a
+note that Development may reconfigure an existing Development deployment) →
+credential sections with guide links and inline read-only validation (VERIFIED /
+MISSING / NOT_VERIFIED / NOT_APPLICABLE; missing mandatory permissions block and
+offer re-entry/retry/menu/cancel) → account discovery (one auto-selects; multiple
+prompt) → workers.dev subdomain discovery → `/v0/me` identity → `USERS_JSON`
+derivation → optional Worker Custom Domain (zone discovery, DNS occupancy check,
+explicit takeover confirmation) → concise Configuration Review with edit actions
+(credentials/domain/environment; edits revalidate and rebuild the plan) →
+installation confirmation → apply through the same engine and gates as the CLI
+(progress stages; masked S3 fallback when automatic Writer provisioning is
+unavailable) → optional First Full Sync (separate authorization) → live verifier
+→ sanitized inventory at `.airingcal/inventory.<env>.json` (0600, gitignored;
+names/ids only, never credential values). Cloudflare is the default and only
+provider in a normal installation; EdgeOne remains an explicit advanced target.
+
+Operator UI environment: `AIRINGCAL_THEME=auto|dark|light` (neutral foreground
+palette; terminal background never changed), `NO_COLOR` (disables color and
+hyperlinks), `AIRINGCAL_WIZARD_PLAIN_PROMPTS=1` (line-based prompts),
+`AIRINGCAL_WIZARD_VERBOSE=yes` (prints the detailed execution plan as well as
+the summary). Blog guide URLs are configured with
+`AIRINGCAL_DOC_CLOUDFLARE_SETUP_GUIDE_URL`, `AIRINGCAL_DOC_BANGUMI_SETUP_GUIDE_URL`
+and `AIRINGCAL_DOC_DEPLOYMENT_GUIDE_URL`; until set, the wizard shows the
+repository guide and the official provider pages, never a placeholder URL.
 
 Safety properties:
 
