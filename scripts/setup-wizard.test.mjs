@@ -230,7 +230,7 @@ test('runFirstSync opens only the env gate, closes it after the gate step and re
   const { impl, calls } = scriptedSpawn([
     [/^gh auth status/, () => ({})],
     [/^gh api repos\/Skyline-Gazer\/AiringCal\/git\/ref\/heads\/dev/, () => ({ stdout: `${sha}\n` })],
-    [/^gh workflow list/, () => ({ stdout: JSON.stringify([{ id: 407881922, name: 'Portable writer (GHA)', state: 'disabled_manually' }]) })],
+    [/^gh api repos\/Skyline-Gazer\/AiringCal\/actions\/workflows\/portable-writer\.yml/, () => ({ stdout: JSON.stringify({ id: 407881922, state: 'disabled_manually' }) })],
     [/^gh variable get AIRINGCAL_WRITER_ENABLED/, () => ({ status: 1, stdout: '' })],
     [/^gh workflow enable/, () => ({})],
     [/^gh variable set AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED --env production --repo .* --body true/, () => ({})],
@@ -277,8 +277,8 @@ test('runFirstSync closes the temporary gate even when the gate step fails (#195
   const sha = 'b'.repeat(40)
   const { impl, calls } = scriptedSpawn([
     [/^gh auth status/, () => ({})],
+    [/^gh api repos\/Skyline-Gazer\/AiringCal\/actions\/workflows\/portable-writer\.yml/, () => ({ stdout: JSON.stringify({ id: 7, state: 'active' }) })],
     [/^gh api repos/, () => ({ stdout: `${sha}\n` })],
-    [/^gh workflow list/, () => ({ stdout: JSON.stringify([{ id: 7, name: 'Portable writer (GHA)', state: 'active' }]) })],
     [/^gh variable get AIRINGCAL_WRITER_ENABLED/, () => ({ status: 1 })],
     [/^gh variable set AIRINGCAL_DEVELOPMENT_WRITER_ENABLED .* --body true/, () => ({})],
     [/^gh workflow run/, () => ({})],
@@ -357,8 +357,8 @@ test('runFirstSync refuses when the schedule gate is enabled, before arming anyt
   const sha = 'f'.repeat(40)
   const { impl, calls } = scriptedSpawn([
     [/^gh auth status/, () => ({})],
+    [/^gh api repos\/Skyline-Gazer\/AiringCal\/actions\/workflows\/portable-writer\.yml/, () => ({ stdout: JSON.stringify({ id: 9, state: 'disabled_manually' }) })],
     [/^gh api repos/, () => ({ stdout: `${sha}\n` })],
-    [/^gh workflow list/, () => ({ stdout: JSON.stringify([{ id: 9, name: 'Portable writer (GHA)', state: 'disabled_manually' }]) })],
     [/^gh variable get AIRINGCAL_WRITER_ENABLED/, () => ({ status: 0, stdout: 'true\n' })],
   ])
   await assert.rejects(

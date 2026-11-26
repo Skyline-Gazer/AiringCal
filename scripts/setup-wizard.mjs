@@ -350,9 +350,13 @@ export async function runFirstSync({
         throw new Error(`Remote ${branch} head is ${head}, expected ${expectedSha}; refusing to dispatch an unverified ref`)
       }
     }
-    const workflows = JSON.parse(gh(['workflow', 'list', '--json', 'id,name,state', '--repo', repo]).stdout)
-    const workflow = workflows.find((entry) => entry.name === 'Portable writer (GHA)')
-    if (!workflow) throw new Error('portable-writer.yml not found in the repository')
+    // Resolve by FILE via the Actions API: `gh workflow list` hides
+    // disabled_manually workflows from the default listing.
+    const workflow = JSON.parse(gh([
+      'api', `repos/${repo}/actions/workflows/portable-writer.yml`,
+      '--jq', '{id, state}',
+    ]).stdout)
+    if (!workflow?.id) throw new Error('portable-writer.yml not found in the repository')
     workflowId = String(workflow.id)
     workflowState = String(workflow.state)
     const scheduleGate = gh(['variable', 'get', 'AIRINGCAL_WRITER_ENABLED', '--repo', repo], { allowFailure: true })
@@ -457,11 +461,11 @@ export async function runDoctor({ environment, spawnSyncImpl = spawnSync, log: l
   const gh = (args) => run('gh', args, { spawnSyncImpl, allowFailure: true })
   const auth = gh(['auth', 'status'])
   push('gh auth', auth.status === 0 ? 'ok' : 'fail', auth.status === 0 ? undefined : 'run gh auth login')
-  const workflows = gh(['workflow', 'list', '--json', 'id,name,state', '--repo', WIZARD_REPOSITORY])
-  if (workflows.status === 0) {
-    const writer = JSON.parse(workflows.stdout).find((entry) => entry.name === 'Portable writer (GHA)')
-    push('writer workflow', writer?.state === 'disabled_manually' ? 'warn' : 'ok', writer?.state ?? 'missing')
-  } else push('writer workflow', 'fail', 'cannot list workflows')
+  const workflow = gh(['api', `repos/${WIZARD_REPOSITORY}/actions/workflows/portable-writer.yml`, '--jq', '{id, state}'])
+  if (workflow.status === 0) {
+    const state = String(JSON.parse(workflow.stdout).state ?? 'missing')
+    push('writer workflow', state === 'disabled_manually' ? 'warn' : 'ok', state)
+  } else push('writer workflow', 'fail', 'cannot read the workflow state')
   const gate = gh(['variable', 'get', gateVariableName(environment), '--env', environment, '--repo', WIZARD_REPOSITORY])
   push(`${environment} gate`, gate.status === 0 && /true/i.test(String(gate.stdout)) ? 'warn' : 'ok',
     gate.status === 0 ? String(gate.stdout).trim() : 'unset')
