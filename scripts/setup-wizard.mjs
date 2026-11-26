@@ -27,6 +27,7 @@ import {
   loadProductionDeployEnv,
   redactSecrets,
   resolveDeployDotenvPath,
+  resolveTargetRepository,
   runDevelopmentApply,
   runProductionApply,
 } from './deploy-env-lib.mjs'
@@ -259,17 +260,49 @@ export async function planCustomDomain({
 }
 
 /** Build the plan through the shared derive functions (no remote calls). */
-export function buildPlanForEnvironment(env, { target = 'cloudflare', mode = 'dry-run' } = {}) {
+export function buildPlanForEnvironment(env, { target = 'cloudflare', mode = 'dry-run', operation, repository, spawnSyncImpl } = {}) {
   const derived =
     env.AIRINGCAL_ENV === 'production'
-      ? deriveProductionConfig(env, { target, mode, gitSha: resolveGitSha() })
-      : deriveDevelopmentConfig(env, { target, mode })
+      ? deriveProductionConfig(env, { target, mode, operation, repository, spawnSyncImpl, gitSha: resolveGitSha(spawnSyncImpl) })
+      : deriveDevelopmentConfig(env, { target, mode, operation, repository, spawnSyncImpl })
   return derived
 }
 
 function resolveGitSha(spawnSyncImpl = spawnSync) {
   const result = spawnSyncImpl('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', cwd: ROOT })
   return String(result?.stdout ?? '').trim() || null
+}
+
+/**
+ * Amendment C: Resolve the active branch for workflow_dispatch dynamically
+ * (checked-out git branch -> remote default_branch -> 'dev' fallback).
+ */
+export function resolveActiveBranch({ repo, spawnSyncImpl = spawnSync, explicitBranch = '' } = {}) {
+  const trimmedExplicit = String(explicitBranch ?? '').trim()
+  if (trimmedExplicit) return trimmedExplicit
+  const localRef = spawnSyncImpl('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { encoding: 'utf8', cwd: ROOT })
+  const localBranch = localRef?.status === 0 ? String(localRef.stdout ?? '').trim() : ''
+  // Ignore 40-char hex SHAs (produced by generic test stubs for any `git rev-parse` call) or detached HEAD
+  if (localBranch && localBranch !== 'HEAD' && !/^[0-9a-f]{40}$/i.test(localBranch)) {
+    return localBranch
+  }
+  if (repo) {
+    const repoRes = spawnSyncImpl('gh', ['api', `repos/${repo}`, '--jq', '.default_branch'], { encoding: 'utf8', cwd: ROOT })
+    if (repoRes?.status === 0) {
+      const raw = String(repoRes.stdout ?? '').trim()
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw)
+          if (parsed && typeof parsed === 'object' && typeof parsed.default_branch === 'string' && parsed.default_branch.trim()) {
+            return parsed.default_branch.trim()
+          }
+        } catch {
+          if (!raw.startsWith('{') && !raw.startsWith('[')) return raw
+        }
+      }
+    }
+  }
+  return 'dev'
 }
 
 /**
@@ -316,6 +349,11 @@ const ENGINE_INPUT_KEYS = Object.freeze([
   'AIRINGCAL_S3_REGION',
   'AIRINGCAL_WRITER_TOKEN_ROTATION_ID',
   'AIRINGCAL_ADOPT_EXISTING_BUCKET',
+  'AIRINGCAL_OPERATION',
+  'AIRINGCAL_REPOSITORY',
+  'AIRINGCAL_REPOSITORY_OVERRIDE_CONFIRM',
+  'AIRINGCAL_ALLOW_IDENTITY_CHANGE',
+  'AIRINGCAL_ALLOW_DOMAIN_CHANGE',
 ])
 
 /**
@@ -449,7 +487,7 @@ async function restoreWorkflowWithReadback({ repo, workflowId, spawnSyncImpl, lo
 }
 export async function runFirstSync({
   environment,
-  branch = 'dev',
+  branch = '',
   expectedSha = null,
   spawnSyncImpl = spawnSync,
   log: logFn = log,
@@ -461,6 +499,8 @@ export async function runFirstSync({
   repo = WIZARD_REPOSITORY,
   runId = null,
 }) {
+  const resolvedBranch = resolveActiveBranch({ repo, spawnSyncImpl, explicitBranch: branch })
+  branch = resolvedBranch
   const ghStrict = (args) => run('gh', args, { spawnSyncImpl })
   const gateVariable = gateVariableName(environment)
   const ledger = createMutationLedger()
@@ -713,15 +753,27 @@ export async function runFirstSync({
 
 /** Read-only diagnostics: no mutations, secrets never printed. */
 export async function runDoctor({ environment, spawnSyncImpl = spawnSync, log: logFn = log, env = {} }) {
-  const report = { environment, checks: [] }
+  let resolvedRepo = WIZARD_REPOSITORY
+  let repoResolutionError = null
+  try {
+    resolvedRepo = resolveTargetRepository({ env, spawnSyncImpl, forMutation: false }).repository
+  } catch (err) {
+    repoResolutionError = err instanceof Error ? err.message : String(err)
+  }
+  const report = { environment, repository: resolvedRepo, checks: [] }
   const push = (name, status, detail) => {
     report.checks.push({ name, status, detail })
     logFn(`${status === 'ok' ? '✓' : status === 'warn' ? '!' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`)
   }
+  if (repoResolutionError) {
+    push('target repository', 'fail', repoResolutionError)
+    return report
+  }
+  push('target repository', 'ok', resolvedRepo)
   const gh = (args) => run('gh', args, { spawnSyncImpl, allowFailure: true })
   const auth = gh(['auth', 'status'])
   push('gh auth', auth.status === 0 ? 'ok' : 'fail', auth.status === 0 ? undefined : 'run gh auth login')
-  const workflow = gh(['api', `repos/${WIZARD_REPOSITORY}/actions/workflows/portable-writer.yml`, '--jq', '{id, state}'])
+  const workflow = gh(['api', `repos/${resolvedRepo}/actions/workflows/portable-writer.yml`, '--jq', '{id, state}'])
   if (workflow.status === 0) {
     const state = String(JSON.parse(workflow.stdout).state ?? 'missing')
     push('writer workflow', state === 'disabled_manually' ? 'warn' : 'ok', state)
@@ -729,7 +781,7 @@ export async function runDoctor({ environment, spawnSyncImpl = spawnSync, log: l
 
   // #195 correction: distinguish absent/false (closed) from unreadable.
   const gate = readEnvironmentGate({
-    repo: WIZARD_REPOSITORY,
+    repo: resolvedRepo,
     environment,
     gateVariable: gateVariableName(environment),
     spawnSyncImpl,
@@ -742,7 +794,7 @@ export async function runDoctor({ environment, spawnSyncImpl = spawnSync, log: l
     push(`${environment} gate`, String(gate.value).toLowerCase() === 'true' ? 'warn' : 'ok',
       `verified value ${gate.value}`)
   }
-  const schedule = readScheduleGate({ repo: WIZARD_REPOSITORY, spawnSyncImpl })
+  const schedule = readScheduleGate({ repo: resolvedRepo, spawnSyncImpl })
   if (schedule.kind === 'error') {
     push('schedule gate', 'fail', `UNREADABLE (${schedule.detail ?? 'API error'}); never treat as disabled`)
   } else if (schedule.kind === 'absent') {
@@ -751,7 +803,7 @@ export async function runDoctor({ environment, spawnSyncImpl = spawnSync, log: l
     push('schedule gate', String(schedule.value).toLowerCase() === 'true' ? 'warn' : 'ok',
       `verified value ${schedule.value}`)
   }
-  const runs = gh(['run', 'list', '--workflow', 'portable-writer.yml', '--limit', '3', '--json', 'databaseId,status,conclusion,headSha', '--repo', WIZARD_REPOSITORY])
+  const runs = gh(['run', 'list', '--workflow', 'portable-writer.yml', '--limit', '3', '--json', 'databaseId,status,conclusion,headSha', '--repo', resolvedRepo])
   if (runs.status === 0) {
     const rows = JSON.parse(runs.stdout)
     const active = rows.filter((row) => ['in_progress', 'queued', 'waiting', 'pending'].includes(String(row.status)))
@@ -836,17 +888,25 @@ export async function discoverPartialState({
   accountId,
   environment,
   bucket,
+  workerName = null,
+  workerOrigin = null,
   env = {},
-  repo = WIZARD_REPOSITORY,
+  repo = null,
 }) {
+  const resolvedRepo = repo || resolveTargetRepository({ env, spawnSyncImpl, forMutation: false }).repository
+  const resolvedWorkerName = workerName || (environment === 'production' ? 'airingcal-production' : 'airingcal-development')
   const priorInventory = readInventory({ environment, env })
   let targetBucket = null
   let unrelatedBuckets = []
   let bucketProbeError = null
+  let existingWorker = null
+  let workerProbeError = null
   let existingWriterToken = null
   let tokenProbeStatus = 'unknown'
   let tokenProbeError = null
   let githubEnvironmentExists = null
+  let githubEnvVariables = {}
+  let releasePointerPresent = null
 
   try {
     const response = await fetchImpl(
@@ -881,6 +941,25 @@ export async function discoverPartialState({
   }
 
   try {
+    const scriptsRes = await fetchImpl(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/workers/scripts`,
+      {
+        headers: { Authorization: `Bearer ${cloudflareToken}`, 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(15_000),
+      },
+    )
+    const scriptsBody = await scriptsRes.json().catch(() => ({}))
+    if (scriptsRes.ok && scriptsBody?.success !== false && Array.isArray(scriptsBody?.result)) {
+      const match = scriptsBody.result.find((w) => String(w?.id ?? w?.name ?? '') === resolvedWorkerName)
+      existingWorker = match ? { name: resolvedWorkerName, exists: true } : { name: resolvedWorkerName, exists: false }
+    } else {
+      workerProbeError = `HTTP ${scriptsRes.status}`
+    }
+  } catch (error) {
+    workerProbeError = redactSecrets(error instanceof Error ? error.message : String(error), [cloudflareToken])
+  }
+
+  try {
     const tokenName = environment === 'production' ? 'airingcal-production-writer' : 'airingcal-development-writer'
     const tokRes = await fetchImpl('https://api.cloudflare.com/client/v4/user/tokens', {
       headers: { Authorization: `Bearer ${cloudflareToken}`, 'Content-Type': 'application/json' },
@@ -905,7 +984,7 @@ export async function discoverPartialState({
   }
 
   try {
-    const ghRes = run('gh', ['api', `repos/${repo}/environments/${environment}`], {
+    const ghRes = run('gh', ['api', `repos/${resolvedRepo}/environments/${environment}`], {
       spawnSyncImpl,
       allowFailure: true,
     })
@@ -915,11 +994,59 @@ export async function discoverPartialState({
     githubEnvironmentExists = null
   }
 
+  if (githubEnvironmentExists === true) {
+    const prefix = environment === 'production' ? 'AIRINGCAL_PRODUCTION_' : 'AIRINGCAL_DEVELOPMENT_'
+    for (const suffix of ['R2_BUCKET', 'CLOUDFLARE_ACCOUNT_ID', 'PRIMARY_USER_ID', 'PUBLIC_BASE_URL']) {
+      const key = `${prefix}${suffix}`
+      const readRes = readRemoteVariable(`repos/${resolvedRepo}/environments/${environment}/variables/${key}`, spawnSyncImpl)
+      if (readRes.kind === 'ok' && readRes.value) {
+        githubEnvVariables[key] = readRes.value
+      }
+    }
+  }
+
+  const probeOrigin = String(githubEnvVariables[`AIRINGCAL_${environment.toUpperCase()}_PUBLIC_BASE_URL`] || workerOrigin || '').trim().replace(/\/+$/, '')
+  if (targetBucket?.exists && existingWorker?.exists && probeOrigin) {
+    try {
+      const ptrRes = await fetchImpl(`${probeOrigin}/public/current-release.json`, {
+        headers: { 'cache-control': 'no-cache' },
+        redirect: 'manual',
+      })
+      if (Number(ptrRes?.status) === 200) {
+        const ptr = await ptrRes.json().catch(() => null)
+        releasePointerPresent = Boolean(ptr && typeof ptr.release_id === 'string' && typeof ptr.artifact_ref === 'string')
+      } else if (Number(ptrRes?.status) === 404) {
+        releasePointerPresent = false
+      }
+    } catch {
+      releasePointerPresent = null
+    }
+  }
+
   const ownershipMatch = hasAffirmativeBucketOwnership(priorInventory, bucket, accountId)
 
+  let detectedOperation = String(env.AIRINGCAL_OPERATION ?? '').trim().toLowerCase() || null
+  let installationState = 'clean-install'
+  if (targetBucket?.exists) {
+    const readyInventory = ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'UPDATED_PARTIAL_VERIFICATION'].includes(priorInventory?.deployment?.verdict)
+    const consistentEnv = githubEnvironmentExists === true && (!githubEnvVariables[`AIRINGCAL_${environment.toUpperCase()}_R2_BUCKET`] || githubEnvVariables[`AIRINGCAL_${environment.toUpperCase()}_R2_BUCKET`] === bucket)
+    if (existingWorker?.exists && githubEnvironmentExists === true && (releasePointerPresent === true || readyInventory || consistentEnv)) {
+      installationState = releasePointerPresent === true ? 'verified-initialized' : 'verified-empty-pre-sync'
+      if (!detectedOperation) detectedOperation = 'update'
+    } else {
+      installationState = 'verified-recoverable-partial'
+      if (!detectedOperation) detectedOperation = 'recover'
+    }
+  } else {
+    if (!detectedOperation) detectedOperation = 'install'
+  }
+
   return {
+    repository: resolvedRepo,
     priorInventory,
     targetBucket,
+    existingWorker,
+    workerProbeError,
     unrelatedBuckets,
     unrelatedBucketCount: unrelatedBuckets.length,
     bucketProbeError,
@@ -927,7 +1054,11 @@ export async function discoverPartialState({
     tokenProbeStatus,
     tokenProbeError,
     githubEnvironmentExists,
+    githubEnvVariables,
+    releasePointerPresent,
     ownershipMatch,
+    installationState,
+    detectedOperation,
   }
 }
 
@@ -1383,7 +1514,7 @@ async function installFlow({
         zoneId,
         dotenvPath,
       })
-      dry = buildPlanForEnvironment(wizardEnv, { mode: 'dry-run' })
+      dry = buildPlanForEnvironment(wizardEnv, { mode: 'dry-run', spawnSyncImpl })
 
       partialState = await discoverPartialState({
         fetchImpl,
@@ -1392,11 +1523,24 @@ async function installFlow({
         accountId: discovery.account.id,
         environment,
         bucket: dry.plan.bucket,
+        workerName: dry.plan.cloudflareWorkerName,
+        workerOrigin: dry.plan.workerOrigin,
         env: resolvedEnv,
+        repo: dry.plan.repository,
       })
 
+      if (partialState?.detectedOperation && partialState.detectedOperation !== dry.plan.operation) {
+        dry = buildPlanForEnvironment(wizardEnv, {
+          mode: 'dry-run',
+          operation: partialState.detectedOperation,
+          repository: partialState.repository,
+          spawnSyncImpl,
+        })
+      }
+
       if (!headless) {
-        if (environment === 'production' && partialState?.targetBucket?.exists && !bucketAdoptionAuthorized) {
+        const isUpdateMode = dry.plan.operation === 'update'
+        if (environment === 'production' && partialState?.targetBucket?.exists && !bucketAdoptionAuthorized && !isUpdateMode) {
           const observedLines = [
             `Cloudflare Account: ${sanitizeAccountName(discovery.account.name)} (${discovery.account.id})`,
             `Existing R2 Bucket: ${partialState.targetBucket.name}`,
@@ -1416,6 +1560,8 @@ async function installFlow({
             ui.cancel('Existing bucket adoption declined; nothing was mutated.')
             return { cancelled: true, reason: 'existing Production bucket adoption declined' }
           }
+          bucketAdoptionAuthorized = true
+        } else if (isUpdateMode) {
           bucketAdoptionAuthorized = true
         }
 
@@ -1511,9 +1657,18 @@ async function installFlow({
         zoneId,
         dotenvPath,
       }),
-      sourceEnv: resolvedEnv,
+      sourceEnv: {
+        ...resolvedEnv,
+        ...(dry?.plan?.operation ? { AIRINGCAL_OPERATION: dry.plan.operation } : {}),
+        ...(dry?.plan?.repository ? { AIRINGCAL_REPOSITORY: dry.plan.repository } : {}),
+      },
     })
-    const applyDerived = buildPlanForEnvironment(applyEnvironment, { mode: 'apply' })
+    const applyDerived = buildPlanForEnvironment(applyEnvironment, {
+      mode: 'apply',
+      operation: dry?.plan?.operation,
+      repository: dry?.plan?.repository,
+      spawnSyncImpl,
+    })
     assertApplyPlanMatchesReview(dry.plan, applyDerived.plan)
     return { applyEnvironment, plan: applyDerived.plan }
   }
@@ -1582,6 +1737,9 @@ async function installFlow({
       deployedAt: applied ? new Date().toISOString() : null,
       writerCredential: s3,
       writerCredentialState: lastReceipt?.writerCredentialState ?? (s3 ? 'verified' : 'not-provisioned'),
+      credentialVerification: lastReceipt?.credentialVerification ?? null,
+      operation: lastReceipt?.operation ?? executionPlan.operation ?? 'install',
+      installationState: lastReceipt?.installationState ?? partialState?.installationState ?? null,
       verification: verification ? { pass: verification.pass, failed: verification.failed ?? [] } : null,
       verdict,
       reason,
@@ -1888,9 +2046,16 @@ async function installFlow({
 
   if (!result.ok) return finalize({ verdict: 'DEPLOY_FAILED', reason: result.reason ?? 'apply aborted' })
 
+  const isVerifiedInitializedUpdate =
+    executionPlan.operation === 'update' &&
+    (result?.installationState === 'verified-initialized' || partialState?.installationState === 'verified-initialized')
+
   let wantSync
   if (headless) {
     wantSync = String(resolvedEnv.AIRINGCAL_WIZARD_FIRST_SYNC ?? '') === 'yes'
+  } else if (isVerifiedInitializedUpdate) {
+    // Amendment A: Updates of an already-initialized installation must not re-run First Full Sync automatically.
+    wantSync = false
   } else {
     wantSync = await ui.confirm({ message: 'Run the First Full Sync now (GitHub Actions, separate authorization)?', initialValue: true })
     if (wantSync) {
@@ -1913,6 +2078,7 @@ async function installFlow({
       syncSpinner.start('Dispatching the First Full Sync (gates are opened, verified and closed automatically)')
       sync = await syncRunner({
         environment,
+        repo: executionPlan.repository,
         expectedSha: resolveGitSha(spawnSyncImpl),
         spawnSyncImpl,
         log: logFn,
@@ -1925,7 +2091,7 @@ async function installFlow({
   }
   let verification = null
   let verificationError = null
-  if (s3 && sync) {
+  if (s3 && (sync || isVerifiedInitializedUpdate)) {
     try {
       const verifier = hooks.verifier ?? runVerifier
       const verifySpinner = ui.spinner()
@@ -1947,6 +2113,8 @@ async function installFlow({
     applied: result.ok === true,
     wantSync,
     headless,
+    operation: executionPlan.operation ?? 'install',
+    credentialRuntimeVerification: result?.credentialVerification?.runtimeVerification ?? null,
     sync,
     syncError,
     verification,
@@ -2023,7 +2191,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     }
     if (args.headless) {
       const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, headless: true, hooks, ui })
-      return { ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'CANCELLED'].includes(result.verdict), verdict: result.verdict, result }
+      return { ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'UPDATED_PARTIAL_VERIFICATION', 'CANCELLED'].includes(result.verdict), verdict: result.verdict, result }
     }
 
     const docs = resolveDocumentation(env)
@@ -2068,7 +2236,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       })
       if (result?.returnToMenu) continue
       return {
-        ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'CANCELLED'].includes(result.verdict),
+        ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'UPDATED_PARTIAL_VERIFICATION', 'CANCELLED'].includes(result.verdict),
         verdict: result.verdict,
         result,
       }

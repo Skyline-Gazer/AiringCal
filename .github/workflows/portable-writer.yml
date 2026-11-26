@@ -1,6 +1,6 @@
-# ADR 0003 — portable writer (GitHub Actions one-shot), staging/development/production isolated (C3).
+# ADR 0003 — portable writer (GitHub Actions one-shot), development/production isolated (C3).
 # Schedule: 04:00 Asia/Shanghai == 20:00 UTC — production only, gated by repo-level vars.AIRINGCAL_WRITER_ENABLED
-# (the only scope a job-level `if` can read; schedule stays DISABLED until #73 bootstrap receipts exist).
+# (the only scope a job-level `if` can read; schedule stays DISABLED until explicitly enabled by the Owner).
 # Development writer uses Environment `development` + single bucket `airingcal-development`;
 # dispatch is gated in-job by the ENVIRONMENT-scoped vars.AIRINGCAL_DEVELOPMENT_WRITER_ENABLED
 # (step-level first gate, fails closed; deploy pins it 'false' at every apply).
@@ -8,7 +8,7 @@
 # First Full Sync (workflow_dispatch) is gated in-job by the ENVIRONMENT-scoped
 # vars.AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED (step-level, fails closed —
 # job-level `if` cannot resolve environment-scoped vars).
-# Concurrency group remains global single-flight across staging/development/production.
+# Concurrency group remains global single-flight across development/production.
 name: Portable writer (GHA)
 
 on:
@@ -17,14 +17,13 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: Publish target. Staging unless development/production is explicitly selected.
+        description: Publish target (production or development).
         required: false
-        default: staging
+        default: production
         type: choice
         options:
-          - staging
-          - development
           - production
+          - development
       force_mode:
         description: Optional override (incremental|full). Empty = checkpoint self-judge.
         required: false
@@ -38,126 +37,6 @@ permissions:
   contents: read
 
 jobs:
-  staging:
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.target || 'staging') == 'staging' }}
-    runs-on: ubuntu-latest
-    # A first publish mirrors ~1.4k image objects; keep headroom above the
-    # observed duration (40 minutes was not enough for a sequential upload).
-    timeout-minutes: 90
-    environment: staging
-    steps:
-      - name: Validate required staging config
-        id: config
-        env:
-          AIRINGCAL_STAGING_BANGUMI_TOKEN: ${{ secrets.AIRINGCAL_STAGING_BANGUMI_TOKEN }}
-          AIRINGCAL_STAGING_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_STAGING_S3_ACCESS_KEY_ID }}
-          AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY }}
-          AIRINGCAL_STAGING_USERS_JSON: ${{ vars.AIRINGCAL_STAGING_USERS_JSON }}
-          AIRINGCAL_STAGING_PRIMARY_USER_ID: ${{ vars.AIRINGCAL_STAGING_PRIMARY_USER_ID }}
-          AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID: ${{ vars.AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID }}
-          AIRINGCAL_STAGING_S3_ENDPOINT: ${{ vars.AIRINGCAL_STAGING_S3_ENDPOINT }}
-          AIRINGCAL_STAGING_S3_REGION: ${{ vars.AIRINGCAL_STAGING_S3_REGION }}
-          AIRINGCAL_STAGING_CHECKPOINT_R2_BUCKET: ${{ vars.AIRINGCAL_STAGING_CHECKPOINT_R2_BUCKET }}
-          AIRINGCAL_STAGING_PUBLIC_R2_BUCKET: ${{ vars.AIRINGCAL_STAGING_PUBLIC_R2_BUCKET }}
-          AIRINGCAL_STAGING_PUBLIC_BASE_URL: ${{ vars.AIRINGCAL_STAGING_PUBLIC_BASE_URL }}
-        run: |
-          set -u
-          missing=0
-          for var in \
-            AIRINGCAL_STAGING_BANGUMI_TOKEN \
-            AIRINGCAL_STAGING_USERS_JSON \
-            AIRINGCAL_STAGING_PRIMARY_USER_ID \
-            AIRINGCAL_STAGING_S3_ACCESS_KEY_ID \
-            AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY \
-            AIRINGCAL_STAGING_PUBLIC_BASE_URL
-          do
-            if [ -z "${!var:-}" ]; then
-              echo "::error::Missing required staging config: ${var}"
-              missing=1
-            fi
-          done
-          s3_endpoint="${AIRINGCAL_STAGING_S3_ENDPOINT:-}"
-          if [ -z "$s3_endpoint" ]; then
-            if [ -z "${AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID:-}" ]; then
-              echo "::error::Missing required staging config: set AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID or AIRINGCAL_STAGING_S3_ENDPOINT"
-              missing=1
-            elif ! printf '%s' "$AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID" | grep -Eq '^[0-9a-fA-F]{32}$'; then
-              echo "::error::AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID must be a 32 character Cloudflare account id"
-              missing=1
-            else
-              s3_endpoint="https://${AIRINGCAL_STAGING_CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com"
-            fi
-          fi
-          if [ "$missing" -ne 0 ]; then exit 1; fi
-          s3_region="${AIRINGCAL_STAGING_S3_REGION:-auto}"
-          checkpoint_bucket="${AIRINGCAL_STAGING_CHECKPOINT_R2_BUCKET:-airingcal-staging-checkpoint}"
-          public_bucket="${AIRINGCAL_STAGING_PUBLIC_R2_BUCKET:-airingcal-staging-public}"
-          if [ "$checkpoint_bucket" = "$public_bucket" ]; then
-            echo "::error::Staging checkpoint bucket and public bucket must be distinct"
-            exit 1
-          fi
-          for b in "$checkpoint_bucket" "$public_bucket"; do
-            case "$b" in
-              airing-cal-public|airing-cal-images|airing-cal-data|airing-cal-checkpoint|airingcal-development)
-                echo "::error::Staging job must never target production/development bucket: $b"
-                exit 1
-                ;;
-            esac
-          done
-          {
-            echo "s3_endpoint=$s3_endpoint"
-            echo "s3_region=$s3_region"
-            echo "checkpoint_bucket=$checkpoint_bucket"
-            echo "public_bucket=$public_bucket"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v5
-        with:
-          version: 9.15.9
-
-      - name: Setup Node
-        uses: actions/setup-node@v5
-        with:
-          node-version: '24'
-          cache: pnpm
-
-      - name: Install
-        run: pnpm install --frozen-lockfile
-
-      - name: Build portable bundle
-        run: pnpm -F @airing-cal/node-jobs build
-
-      - name: Run portable writer
-        env:
-          AIRINGCAL_BUILDER: portable
-          AIRINGCAL_BUILDER_SQLITE_PATH: /tmp/airingcal-builder.sqlite
-          AIRINGCAL_BUILDER_IMAGE_DIR: /tmp/airingcal-images
-          AIRINGCAL_BUILDER_PUBLISH: 'true'
-          AIRINGCAL_BUILDER_MEDIA_REFRESH: refresh
-          AIRINGCAL_FULL_EVERY_DAYS: '7'
-          AIRINGCAL_BUILDER_MODE: ${{ github.event.inputs.force_mode || '' }}
-          BGM_TOKEN: ${{ secrets.AIRINGCAL_STAGING_BANGUMI_TOKEN }}
-          AIRINGCAL_USERS_JSON: ${{ vars.AIRINGCAL_STAGING_USERS_JSON }}
-          AIRINGCAL_PRIMARY_USER_ID: ${{ vars.AIRINGCAL_STAGING_PRIMARY_USER_ID }}
-          BANGUMI_GIT_COMMIT_SHA: ${{ github.sha }}
-          BARK_URL: ${{ secrets.AIRINGCAL_STAGING_BARK_URL }}
-          AIRINGCAL_CHECKPOINT_S3_ENDPOINT: ${{ steps.config.outputs.s3_endpoint }}
-          AIRINGCAL_CHECKPOINT_S3_REGION: ${{ steps.config.outputs.s3_region }}
-          AIRINGCAL_CHECKPOINT_S3_BUCKET: ${{ steps.config.outputs.checkpoint_bucket }}
-          AIRINGCAL_CHECKPOINT_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_STAGING_S3_ACCESS_KEY_ID }}
-          AIRINGCAL_CHECKPOINT_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY }}
-          AIRINGCAL_PUBLIC_S3_ENDPOINT: ${{ steps.config.outputs.s3_endpoint }}
-          AIRINGCAL_PUBLIC_S3_REGION: ${{ steps.config.outputs.s3_region }}
-          AIRINGCAL_PUBLIC_S3_BUCKET: ${{ steps.config.outputs.public_bucket }}
-          AIRINGCAL_PUBLIC_S3_ACCESS_KEY_ID: ${{ secrets.AIRINGCAL_STAGING_S3_ACCESS_KEY_ID }}
-          AIRINGCAL_PUBLIC_S3_SECRET_ACCESS_KEY: ${{ secrets.AIRINGCAL_STAGING_S3_SECRET_ACCESS_KEY }}
-          AIRINGCAL_PUBLIC_BASE_URL: ${{ vars.AIRINGCAL_STAGING_PUBLIC_BASE_URL }}
-        run: bash scripts/gha-portable-writer.sh
-
   development:
     # Same scope rule as the production job: the environment-scoped
     # development writer gate (pinned 'false' by deploy-env.mjs sync) is
@@ -222,8 +101,8 @@ jobs:
           # Single-bucket layout: checkpoint + public share airingcal-development with key prefixes.
           bucket="${AIRINGCAL_DEVELOPMENT_R2_BUCKET:-airingcal-development}"
           case "$bucket" in
-            airing-cal-public|airing-cal-images|airing-cal-data|airing-cal-checkpoint|airingcal-staging-checkpoint|airingcal-staging-public)
-              echo "::error::Development job must never target staging/production legacy bucket: $bucket"
+            airing-cal-public|airing-cal-images|airing-cal-data|airing-cal-checkpoint|airingcal-staging-checkpoint|airingcal-staging-public|airingcal-production)
+              echo "::error::Development job must never target production/legacy bucket: $bucket"
               exit 1
               ;;
           esac
@@ -291,7 +170,7 @@ jobs:
     # the job at step level). The environment-scoped bootstrap gate therefore
     # lives in the first step below; the job-level condition only routes the
     # event (schedule via the repo kill-switch, dispatch by selected target).
-    if: ${{ (github.event_name == 'schedule' && vars.AIRINGCAL_WRITER_ENABLED == 'true') || (github.event_name == 'workflow_dispatch' && inputs.target == 'production') }}
+    if: ${{ (github.event_name == 'schedule' && vars.AIRINGCAL_WRITER_ENABLED == 'true') || (github.event_name == 'workflow_dispatch' && (inputs.target || 'production') == 'production') }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: production
@@ -354,10 +233,10 @@ jobs:
           if [ "$missing" -ne 0 ]; then exit 1; fi
           s3_region="${AIRINGCAL_PRODUCTION_S3_REGION:-auto}"
           # Single-bucket layout: checkpoint + public share airingcal-production with key prefixes.
-          # Exact-name gate refuses staging/development/v2 buckets (airing-cal-*, airingcal-staging-*, airingcal-development).
+          # Exact-name gate refuses development/v2/historical buckets.
           bucket="${AIRINGCAL_PRODUCTION_R2_BUCKET:-airingcal-production}"
           if [ "$bucket" != "airingcal-production" ]; then
-            echo "::error::Production job must target airingcal-production (got $bucket); staging/development/v2 names are refused"
+            echo "::error::Production job must target airingcal-production (got $bucket); development/legacy names are refused"
             exit 1
           fi
           {

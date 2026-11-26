@@ -254,3 +254,71 @@ test('checkpoint CAS failure aborts before the deferred pointer commit (C4)', as
     rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('runGhaPortableWriter surfaces checkpoint lease release failure explicitly and preserves primary summary', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-gha-lease-fail-'))
+  const sqlitePath = join(dir, 'builder.sqlite')
+  const baseStore = new MemoryObjectStore()
+  const barkCalls: Array<{ title: string; body: string }> = []
+  let failLeaseRelease = false
+  const failingLeaseStore = {
+    get: baseStore.get.bind(baseStore),
+    head: baseStore.head.bind(baseStore),
+    async put(key: string, body: Uint8Array, options?: Record<string, unknown>) {
+      if (failLeaseRelease && key === 'checkpoints/lease.json') {
+        const text = new TextDecoder().decode(body)
+        if (text.includes('"expires_at_unix":0')) {
+          throw new Error('simulated R2 put timeout on checkpoints/lease.json')
+        }
+      }
+      return baseStore.put(key, body, options)
+    },
+    list: baseStore.list.bind(baseStore),
+    delete: baseStore.delete.bind(baseStore),
+  }
+
+  try {
+    failLeaseRelease = true
+    const result = await runGhaPortableWriter({
+      env: {
+        AIRINGCAL_BUILDER_SQLITE_PATH: sqlitePath,
+        AIRINGCAL_BUILDER_OWNER: 'gha-lease-err',
+        BARK_URL: 'https://api.day.app/key',
+      },
+      nowUnix: 1_700_000_000,
+      checkpointStore: failingLeaseStore,
+      runSync: async () => ({ job: 'airingcal-sync', status: 'success', message: 'sync succeeded' }),
+      notifyFailure: async (_env, payload) => {
+        barkCalls.push(payload)
+      },
+    })
+    assert.equal(result.status, 'failed', 'unreleased lease must not return an unqualified success')
+    assert.equal(result.summary?.status, 'success', 'primary sync summary is preserved')
+    assert.equal(result.leaseCleanup?.released, false)
+    assert.match(result.leaseCleanup?.error ?? '', /simulated R2 put timeout/)
+    assert.match(result.leaseCleanup?.recoveryHint ?? '', /checkpoints\/lease\.json/)
+    assert.match(result.message, /sync succeeded.*checkpoint lease release failed/)
+    assert.equal(barkCalls.length, 1)
+    assert.match(barkCalls[0].body, /checkpoint lease release failed/)
+
+    // When primary sync already failed AND lease release fails, both errors are preserved without crashing
+    const failedBoth = await runGhaPortableWriter({
+      env: {
+        AIRINGCAL_BUILDER_SQLITE_PATH: sqlitePath,
+        AIRINGCAL_BUILDER_OWNER: 'gha-lease-err',
+      },
+      nowUnix: 1_700_003_000,
+      checkpointStore: failingLeaseStore,
+      runSync: async () => ({ job: 'airingcal-sync', status: 'failed', message: 'primary sync failed' }),
+      notifyFailure: async (_env, payload) => {
+        barkCalls.push(payload)
+      },
+    })
+    assert.equal(failedBoth.status, 'failed')
+    assert.equal(failedBoth.leaseCleanup?.released, false)
+    assert.match(failedBoth.message, /primary sync failed.*checkpoint lease release failed/)
+  } finally {
+    failLeaseRelease = false
+    rmSync(dir, { recursive: true, force: true })
+  }
+})

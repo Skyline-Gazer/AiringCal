@@ -1,12 +1,11 @@
 {
   "name": "@airing-cal/node-jobs",
-  "version": "0.1.0",
+  "version": "3.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node ./scripts/build-portable-bundle.mjs",
-    "build:check": "tsc --noEmit",
-    "build:edgeone-read": "tsx ./scripts/build-edgeone-read-bundle.mts",
+    "build:check": "node ./scripts/build-portable-bundle.mjs",
     "portable-image-mime-repair": "tsx ./src/cli/portable-image-mime-repair.ts",
     "test": "tsx --test 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit"

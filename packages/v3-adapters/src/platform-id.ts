@@ -1,12 +1,10 @@
-export type RuntimePlatformId = 'portable' | 'cloudflare' | 'edgeone'
+export type RuntimePlatformId = 'portable' | 'cloudflare'
 
 const RUNTIME_PLATFORM_ALIASES: Record<string, RuntimePlatformId> = {
   portable: 'portable',
   docker: 'portable',
   cloudflare: 'cloudflare',
   cf: 'cloudflare',
-  edgeone: 'edgeone',
-  'tencent-edgeone': 'edgeone',
 }
 
 /**

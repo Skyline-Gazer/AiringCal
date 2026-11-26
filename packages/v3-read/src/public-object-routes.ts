@@ -92,6 +92,10 @@ export async function handlePublicObject(pathname: string, publicStore: PublicSt
       : (sniffImage(bytes) ?? contentType)
   }
   return new Response(new Uint8Array(bytes), {
-    headers: { 'Content-Type': contentType, 'Cache-Control': route.cacheControl },
+    headers: {
+      'Content-Type': contentType,
+      'Cache-Control': route.cacheControl,
+      'X-Content-Type-Options': 'nosniff',
+    },
   })
 }

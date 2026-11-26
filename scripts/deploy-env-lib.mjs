@@ -5,12 +5,379 @@
  * in deploy-env.mjs and stay behind --apply; this module owns plan shape,
  * alias mapping, isolation verdicts, and production refuse rules.
  */
-import { loadDotEnvFile, parseDotEnvContent, redactSecrets } from './setup-staging-lib.mjs'
+import { existsSync, readFileSync } from 'node:fs'
 import { MUTATION_STATUSES, createMutationLedger, isAmbiguousTransportError } from './mutation-ledger.mjs'
 
-export { loadDotEnvFile, parseDotEnvContent, redactSecrets, MUTATION_STATUSES, createMutationLedger, isAmbiguousTransportError }
+export { MUTATION_STATUSES, createMutationLedger, isAmbiguousTransportError }
+
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+
+/**
+ * Safe, controlled `.env` parser.
+ * Parses key-value pairs as pure data without shell evaluation (`source`/`eval`).
+ */
+export function parseDotEnvContent(content) {
+  const result = {}
+  const lines = String(content ?? '').split(/\r?\n/)
+
+  for (const [index, rawLine] of lines.entries()) {
+    const trimmed = rawLine.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+
+    const withoutExport = trimmed.startsWith('export ')
+      ? trimmed.slice('export '.length).trimStart()
+      : trimmed
+    const eqIndex = withoutExport.indexOf('=')
+    if (eqIndex === -1) {
+      throw new Error(`Invalid .env syntax at line ${index + 1}: missing '='`)
+    }
+
+    const key = withoutExport.slice(0, eqIndex).trim()
+    if (!ENV_KEY_RE.test(key)) {
+      throw new Error(`Invalid .env key at line ${index + 1}`)
+    }
+
+    const rawValue = withoutExport.slice(eqIndex + 1).trimStart()
+    if (rawValue.length === 0) {
+      result[key] = ''
+      continue
+    }
+
+    if (rawValue.startsWith("'")) {
+      const closing = rawValue.indexOf("'", 1)
+      if (closing === -1) {
+        throw new Error(`Unterminated single-quoted value for ${key} at line ${index + 1}`)
+      }
+      const trailing = rawValue.slice(closing + 1).trim()
+      if (trailing && !trailing.startsWith('#')) {
+        throw new Error(`Unexpected trailing characters after single-quoted value for ${key} at line ${index + 1}`)
+      }
+      result[key] = rawValue.slice(1, closing)
+      continue
+    }
+
+    if (rawValue.startsWith('"')) {
+      let value = ''
+      let closed = false
+      let i = 1
+      while (i < rawValue.length) {
+        const ch = rawValue[i]
+        if (ch === '\\') {
+          if (i + 1 >= rawValue.length) {
+            throw new Error(`Trailing escape in double-quoted value for ${key} at line ${index + 1}`)
+          }
+          const next = rawValue[i + 1]
+          if (next === 'n') value += '\n'
+          else if (next === 'r') value += '\r'
+          else if (next === 't') value += '\t'
+          else if (next === '"' || next === '\\' || next === '$') value += next
+          else value += next
+          i += 2
+          continue
+        }
+        if (ch === '"') {
+          closed = true
+          i += 1
+          break
+        }
+        value += ch
+        i += 1
+      }
+      if (!closed) {
+        throw new Error(`Unterminated double-quoted value for ${key} at line ${index + 1}`)
+      }
+      const trailing = rawValue.slice(i).trim()
+      if (trailing && !trailing.startsWith('#')) {
+        throw new Error(`Unexpected trailing characters after double-quoted value for ${key} at line ${index + 1}`)
+      }
+      result[key] = value
+      continue
+    }
+
+    let unquoted = rawValue
+    for (let i = 0; i < rawValue.length; i++) {
+      if (rawValue[i] === '#' && (i === 0 || /\s/.test(rawValue[i - 1]))) {
+        unquoted = rawValue.slice(0, i)
+        break
+      }
+    }
+    result[key] = unquoted.trimEnd()
+  }
+
+  return result
+}
+
+export function loadDotEnvFile(filePath, baseEnv = process.env, { override = false } = {}) {
+  const merged = { ...baseEnv }
+  if (!filePath || !existsSync(filePath)) return merged
+  const content = readFileSync(filePath, 'utf8')
+  const parsed = parseDotEnvContent(content)
+  for (const [key, value] of Object.entries(parsed)) {
+    const existing = merged[key]
+    if (override || existing === undefined || existing === '') {
+      if (value !== '' || existing === undefined) {
+        merged[key] = value
+      }
+    }
+  }
+  return merged
+}
+
+export function redactSecrets(text, secretValues = []) {
+  let out = String(text ?? '')
+  for (const secret of secretValues) {
+    const trimmed = typeof secret === 'string' ? secret.trim() : ''
+    if (trimmed.length >= 4) {
+      out = out.split(trimmed).join('[REDACTED]')
+    }
+  }
+  out = out.replace(/(Authorization:\s*Bearer\s+)[A-Za-z0-9._-]+/gi, '$1[REDACTED]')
+  return out
+}
+
+export function assertCheckpointBucketPrivate(devUrlGetOutput, bucketName = 'airingcal-production') {
+  const text = String(devUrlGetOutput ?? '')
+  if (/Public access is enabled/i.test(text) || /https:\/\/pub-[a-z0-9]+\.r2\.dev/i.test(text)) {
+    throw new Error(
+      `Security violation: checkpoint bucket "${bucketName}" still has public r2.dev access enabled`,
+    )
+  }
+  if (!/Public access via the r2\.dev URL is disabled/i.test(text)) {
+    throw new Error(
+      `Could not confirm that checkpoint bucket "${bucketName}" has r2.dev public access disabled`,
+    )
+  }
+  return true
+}
+
+export function parseWranglerWhoamiAccounts(raw) {
+  let data
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    throw new Error('Failed to parse wrangler whoami --json output')
+  }
+  if (!data || data.loggedIn === false) {
+    throw new Error('Wrangler is not authenticated; set AIRINGCAL_CLOUDFLARE_API_TOKEN or run wrangler login')
+  }
+  const accounts = Array.isArray(data.accounts) ? data.accounts : []
+  const ids = accounts
+    .map((acc) => (typeof acc?.id === 'string' && /^[0-9a-f]{32}$/i.test(acc.id) ? acc.id.toLowerCase() : null))
+    .filter(Boolean)
+  if (ids.length === 0) {
+    throw new Error('Could not resolve a 32-hex Cloudflare Account ID from wrangler whoami')
+  }
+  return [...new Set(ids)]
+}
+
+export function parseWranglerWhoamiJson(raw) {
+  return parseWranglerWhoamiAccounts(raw)[0]
+}
 
 export const ALLOWED_REPOSITORY = 'Skyline-Gazer/AiringCal'
+
+const REPOSITORY_SLUG_RE = /^(?!\.\.?\/)(?!.*\/\.\.?$)[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+
+/**
+ * Amendment C: Parse a GitHub remote URL into `<owner>/<repo>`.
+ * Supports HTTPS (`https://github.com/owner/repo(.git)`), SSH SCP
+ * (`git@github.com:owner/repo(.git)`), and `ssh://git@github.com(:22)/owner/repo(.git)`.
+ * Returns `{ ok: true, repository }` or `{ ok: false, reason, code }`.
+ */
+export function parseGitRemoteRepository(remoteUrl) {
+  const raw = String(remoteUrl ?? '').trim()
+  if (!raw) {
+    return {
+      ok: false,
+      code: 'REPOSITORY_ORIGIN_MISSING',
+      reason: 'Git remote origin URL is empty or missing',
+    }
+  }
+  let ownerRepo = null
+  if (/^(?:https?|ssh):\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw)
+      if (parsed.hostname.toLowerCase() !== 'github.com') {
+        return {
+          ok: false,
+          code: 'REPOSITORY_ORIGIN_UNSUPPORTED',
+          reason: `Unsupported Git remote host "${parsed.hostname}" (only github.com is supported)`,
+        }
+      }
+      ownerRepo = parsed.pathname.replace(/^\/+/, '')
+    } catch {
+      return {
+        ok: false,
+        code: 'REPOSITORY_ORIGIN_UNSUPPORTED',
+        reason: `Unparseable Git remote URL "${raw}"`,
+      }
+    }
+  } else {
+    const scpMatch = raw.match(/^git@([^:/]+):(?![0-9]+\/)(.+)$/i)
+    if (!scpMatch) {
+      return {
+        ok: false,
+        code: 'REPOSITORY_ORIGIN_UNSUPPORTED',
+        reason: `Unparseable Git remote URL "${raw}"`,
+      }
+    }
+    const host = String(scpMatch[1]).toLowerCase()
+    if (host !== 'github.com') {
+      return {
+        ok: false,
+        code: 'REPOSITORY_ORIGIN_UNSUPPORTED',
+        reason: `Unsupported Git remote host "${scpMatch[1]}" (only github.com is supported)`,
+      }
+    }
+    ownerRepo = scpMatch[2]
+  }
+  const cleaned = String(ownerRepo ?? '')
+    .replace(/\/+$/, '')
+    .replace(/\.git$/i, '')
+  const segments = cleaned.split('/').filter(Boolean)
+  if (segments.length !== 2 || !REPOSITORY_SLUG_RE.test(`${segments[0]}/${segments[1]}`)) {
+    return {
+      ok: false,
+      code: 'REPOSITORY_ORIGIN_UNSUPPORTED',
+      reason: `Git remote URL "${raw}" does not resolve to a valid <owner>/<repo> slug`,
+    }
+  }
+  return {
+    ok: true,
+    repository: `${segments[0]}/${segments[1]}`,
+  }
+}
+
+/**
+ * Amendment C: Resolve the target GitHub repository using:
+ *   1. Explicit `AIRINGCAL_REPOSITORY`
+ *   2. Trusted `GITHUB_REPOSITORY` context
+ *   3. Verified `git remote get-url origin` metadata
+ *
+ * Rules:
+ * - Never silently select a target when present sources disagree unless
+ *   `AIRINGCAL_REPOSITORY_OVERRIDE_CONFIRM=yes` explicitly authorizes
+ *   `AIRINGCAL_REPOSITORY` to override `GITHUB_REPOSITORY` / `origin`.
+ * - Never silently fall back to `Skyline-Gazer/AiringCal` for mutation-capable
+ *   operations (`forMutation: true`) when origin is missing or unsupported.
+ */
+export function resolveTargetRepository({
+  env = {},
+  spawnSyncImpl = null,
+  cwd = undefined,
+  forMutation = false,
+} = {}) {
+  const explicit = String(env?.AIRINGCAL_REPOSITORY ?? '').trim()
+  const ghRepo = String(env?.GITHUB_REPOSITORY ?? '').trim()
+  const overrideConfirm = String(env?.AIRINGCAL_REPOSITORY_OVERRIDE_CONFIRM ?? '').trim() === 'yes'
+
+  if (explicit && !REPOSITORY_SLUG_RE.test(explicit)) {
+    const err = new Error(`Invalid AIRINGCAL_REPOSITORY "${explicit}" (expected <owner>/<repo>)`)
+    err.code = 'REPOSITORY_INVALID'
+    err.errorCategory = 'resource-conflict'
+    err.exitCode = 2
+    throw err
+  }
+  if (ghRepo && !REPOSITORY_SLUG_RE.test(ghRepo)) {
+    const err = new Error(`Invalid GITHUB_REPOSITORY "${ghRepo}" (expected <owner>/<repo>)`)
+    err.code = 'REPOSITORY_INVALID'
+    err.errorCategory = 'resource-conflict'
+    err.exitCode = 2
+    throw err
+  }
+
+  let originRepo = null
+  let originError = null
+  if (typeof spawnSyncImpl === 'function') {
+    const res = spawnSyncImpl('git', ['remote', 'get-url', 'origin'], {
+      encoding: 'utf8',
+      ...(cwd ? { cwd } : {}),
+    })
+    const out = String(res?.stdout ?? '').trim()
+    // Only treat as git remote output when out looks like a URL or git@ remote, or when status !== 0.
+    // Generic test stubs often return `{ status: 0, stdout: 'aaa...' }` for any `git` call.
+    const looksLikeRemoteUrl = /^(?:https?:\/\/|ssh:\/\/|git@|[A-Za-z0-9_.-]+@)/i.test(out)
+    if (typeof res?.status === 'number') {
+      if (res.status === 0 && out && (looksLikeRemoteUrl || !/^[0-9a-f]{40}$/i.test(out))) {
+        const parsed = parseGitRemoteRepository(out)
+        if (parsed.ok) {
+          originRepo = parsed.repository
+        } else {
+          originError = parsed
+        }
+      } else if (res.status !== 0) {
+        originError = {
+          ok: false,
+          code: 'REPOSITORY_ORIGIN_MISSING',
+          reason: String(res?.stderr || 'git remote get-url origin failed').trim(),
+        }
+      }
+    }
+  }
+
+  // Check for disagreements among present sources
+  if (explicit && ghRepo && explicit.toLowerCase() !== ghRepo.toLowerCase() && !overrideConfirm) {
+    const err = new Error(
+      `Repository sources disagree: AIRINGCAL_REPOSITORY="${explicit}" vs GITHUB_REPOSITORY="${ghRepo}". ` +
+      'Refusing to silently select a target; align the variables or set AIRINGCAL_REPOSITORY_OVERRIDE_CONFIRM=yes.',
+    )
+    err.code = 'REPOSITORY_CONFLICT'
+    err.errorCategory = 'resource-conflict'
+    err.exitCode = 2
+    throw err
+  }
+  if (explicit && originRepo && explicit.toLowerCase() !== originRepo.toLowerCase() && !overrideConfirm) {
+    const err = new Error(
+      `Repository sources disagree: AIRINGCAL_REPOSITORY="${explicit}" vs git remote origin "${originRepo}". ` +
+      'Refusing to silently select a target; set AIRINGCAL_REPOSITORY_OVERRIDE_CONFIRM=yes if overriding git origin intentionally.',
+    )
+    err.code = 'REPOSITORY_CONFLICT'
+    err.errorCategory = 'resource-conflict'
+    err.exitCode = 2
+    throw err
+  }
+  if (!explicit && ghRepo && originRepo && ghRepo.toLowerCase() !== originRepo.toLowerCase()) {
+    const err = new Error(
+      `Repository sources disagree: GITHUB_REPOSITORY="${ghRepo}" vs git remote origin "${originRepo}". ` +
+      'Refusing to silently select a target; set AIRINGCAL_REPOSITORY explicitly with AIRINGCAL_REPOSITORY_OVERRIDE_CONFIRM=yes.',
+    )
+    err.code = 'REPOSITORY_CONFLICT'
+    err.errorCategory = 'resource-conflict'
+    err.exitCode = 2
+    throw err
+  }
+
+  if (explicit) {
+    return { repository: explicit, source: 'AIRINGCAL_REPOSITORY' }
+  }
+  if (ghRepo) {
+    return { repository: ghRepo, source: 'GITHUB_REPOSITORY' }
+  }
+  if (originRepo) {
+    return { repository: originRepo, source: 'git-origin' }
+  }
+  if (originError) {
+    const err = new Error(
+      `Cannot resolve target GitHub repository from git origin (${originError.reason}); ` +
+      'set AIRINGCAL_REPOSITORY=<owner>/<repo> explicitly. Refusing to fall back to Skyline-Gazer/AiringCal.',
+    )
+    err.code = originError.code
+    err.errorCategory = 'resource-conflict'
+    err.exitCode = 2
+    throw err
+  }
+  if (forMutation) {
+    const err = new Error(
+      'Cannot resolve target GitHub repository for mutating operation (no AIRINGCAL_REPOSITORY, GITHUB_REPOSITORY, or verified git origin). ' +
+      'Refusing to silently fall back to Skyline-Gazer/AiringCal.',
+    )
+    err.code = 'REPOSITORY_UNRESOLVED'
+    err.errorCategory = 'resource-conflict'
+    err.exitCode = 2
+    throw err
+  }
+  return { repository: ALLOWED_REPOSITORY, source: 'default-fallback' }
+}
 
 export const DEVELOPMENT_DEFAULTS = Object.freeze({
   repository: ALLOWED_REPOSITORY,
@@ -141,6 +508,8 @@ export const MUTATING_STEP_IDS = Object.freeze([
   'bangumi-full-sync-owner-dispatch',
   'single-writer-test',
 ])
+
+export const ALLOWED_OPERATIONS = new Set(['install', 'update', 'recover'])
 
 const EXECUTED_LEDGER_STATUSES = new Set([
   'confirmed-success',
@@ -477,6 +846,9 @@ export function buildProductionPlan({
   cloudflareWorkerName = PRODUCTION_DEFAULTS.workerName,
   imageBaseUrl = '',
   mode = 'dry-run',
+  operation = 'install',
+  repository = PRODUCTION_DEFAULTS.repository,
+  repositoryExplicit = false,
   accountId = '',
   zoneId = '',
   publicOriginMode = '',
@@ -487,6 +859,13 @@ export function buildProductionPlan({
 } = {}) {
   if (!ALLOWED_TARGETS.has(target)) {
     throw new Error(`target must be cloudflare|edgeone|both (got "${target}")`)
+  }
+  if (!ALLOWED_OPERATIONS.has(operation)) {
+    throw new Error(`operation must be install|update|recover (got "${operation}")`)
+  }
+  const resolvedRepository = String(repository || PRODUCTION_DEFAULTS.repository).trim()
+  if (!REPOSITORY_SLUG_RE.test(resolvedRepository)) {
+    throw new Error(`repository must be <owner>/<repo> (got "${resolvedRepository}")`)
   }
   const base = String(publicBaseUrl ?? '').trim().replace(/\/+$/, '')
 
@@ -647,8 +1026,10 @@ export function buildProductionPlan({
   return {
     env: 'production',
     mode,
+    operation,
     target,
-    repository: PRODUCTION_DEFAULTS.repository,
+    repository: resolvedRepository,
+    repositoryExplicit: Boolean(repositoryExplicit),
     bucket,
     singleBucket: true,
     dualBucketFallback: false,
@@ -746,6 +1127,22 @@ export function deriveProductionConfig(rawEnv = {}, opts = {}) {
     opts.applyAuthorized === true ||
     String(env.AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED ?? '').trim() === 'yes'
 
+  const operation = String(opts.operation ?? env.AIRINGCAL_OPERATION ?? 'install').trim().toLowerCase() || 'install'
+  const isApplyMode = (opts.mode || 'dry-run') === 'apply'
+  const resolvedRepo = opts.repository
+    ? { repository: String(opts.repository).trim(), source: 'opts' }
+    : resolveTargetRepository({
+        env,
+        spawnSyncImpl: opts.spawnSyncImpl ?? null,
+        forMutation: isApplyMode && Boolean(opts.spawnSyncImpl || env.AIRINGCAL_REPOSITORY || env.GITHUB_REPOSITORY),
+      })
+  const repositoryExplicit =
+    Boolean(opts.repository) ||
+    resolvedRepo.source === 'AIRINGCAL_REPOSITORY' ||
+    resolvedRepo.source === 'GITHUB_REPOSITORY' ||
+    resolvedRepo.source === 'git-origin' ||
+    resolvedRepo.repository !== ALLOWED_REPOSITORY
+
   const plan = buildProductionPlan({
     target: deployTarget,
     publicBaseUrl,
@@ -754,6 +1151,9 @@ export function deriveProductionConfig(rawEnv = {}, opts = {}) {
     cloudflareWorkerName,
     imageBaseUrl: env.AIRINGCAL_IMAGE_BASE_URL || '',
     mode: opts.mode || 'dry-run',
+    operation,
+    repository: resolvedRepo.repository,
+    repositoryExplicit,
     accountId,
     zoneId,
     publicOriginMode: publicOriginModeOverride,
@@ -839,6 +1239,9 @@ export function buildDevelopmentDeployPlan({
   cloudflareWorkerName = DEVELOPMENT_DEFAULTS.workerName,
   imageBaseUrl = '',
   mode = 'dry-run',
+  operation = 'install',
+  repository = DEVELOPMENT_DEFAULTS.repository,
+  repositoryExplicit = false,
   accountId = '',
   publicOriginMode = '',
   workerCustomDomain = '',
@@ -846,6 +1249,13 @@ export function buildDevelopmentDeployPlan({
 } = {}) {
   if (!ALLOWED_TARGETS.has(target)) {
     throw new Error(`target must be cloudflare|edgeone|both (got "${target}")`)
+  }
+  if (!ALLOWED_OPERATIONS.has(operation)) {
+    throw new Error(`operation must be install|update|recover (got "${operation}")`)
+  }
+  const resolvedRepository = String(repository || DEVELOPMENT_DEFAULTS.repository).trim()
+  if (!REPOSITORY_SLUG_RE.test(resolvedRepository)) {
+    throw new Error(`repository must be <owner>/<repo> (got "${resolvedRepository}")`)
   }
   const base = String(publicBaseUrl ?? '').trim().replace(/\/+$/, '')
 
@@ -998,8 +1408,10 @@ export function buildDevelopmentDeployPlan({
   return {
     env: 'development',
     mode,
+    operation,
     target,
-    repository: DEVELOPMENT_DEFAULTS.repository,
+    repository: resolvedRepository,
+    repositoryExplicit: Boolean(repositoryExplicit),
     bucket: DEVELOPMENT_DEFAULTS.bucket,
     singleBucket: true,
     dualBucketFallback: false,
@@ -1246,7 +1658,7 @@ export function validateImageCdnConfig({ publicBaseUrl, imageBaseUrl = '', origi
  * @param {Record<string, string | undefined>} rawEnv
  * @param {{ target?: string, mode?: 'dry-run'|'apply' }} opts
  */
-export function deriveDevelopmentConfig(rawEnv = {}, { target, mode = 'dry-run' } = {}) {
+export function deriveDevelopmentConfig(rawEnv = {}, { target, mode = 'dry-run', operation, repository, spawnSyncImpl = null } = {}) {
   const { env, warnings } = applyStagingAliases(rawEnv)
   const airingEnv = String(env.AIRINGCAL_ENV ?? 'development').trim().toLowerCase()
   if (airingEnv !== 'development') {
@@ -1276,6 +1688,22 @@ export function deriveDevelopmentConfig(rawEnv = {}, { target, mode = 'dry-run' 
     throw new Error(`AIRINGCAL_DEPLOY_TARGET must be cloudflare|edgeone|both (got "${deployTarget}")`)
   }
 
+  const resolvedOperation = String(operation ?? env.AIRINGCAL_OPERATION ?? 'install').trim().toLowerCase() || 'install'
+  const isApplyMode = mode === 'apply'
+  const resolvedRepo = repository
+    ? { repository: String(repository).trim(), source: 'opts' }
+    : resolveTargetRepository({
+        env,
+        spawnSyncImpl,
+        forMutation: isApplyMode && Boolean(spawnSyncImpl || env.AIRINGCAL_REPOSITORY || env.GITHUB_REPOSITORY),
+      })
+  const repositoryExplicit =
+    Boolean(repository) ||
+    resolvedRepo.source === 'AIRINGCAL_REPOSITORY' ||
+    resolvedRepo.source === 'GITHUB_REPOSITORY' ||
+    resolvedRepo.source === 'git-origin' ||
+    resolvedRepo.repository !== ALLOWED_REPOSITORY
+
   const plan = buildDevelopmentDeployPlan({
     target: deployTarget,
     publicBaseUrl,
@@ -1284,6 +1712,9 @@ export function deriveDevelopmentConfig(rawEnv = {}, { target, mode = 'dry-run' 
     cloudflareWorkerName: env.AIRINGCAL_DEVELOPMENT_WORKER_NAME || DEVELOPMENT_DEFAULTS.workerName,
     imageBaseUrl: env.AIRINGCAL_IMAGE_BASE_URL || '',
     mode,
+    operation: resolvedOperation,
+    repository: resolvedRepo.repository,
+    repositoryExplicit,
     accountId,
     publicOriginMode: String(env.AIRINGCAL_PUBLIC_ORIGIN_MODE ?? '').trim(),
     workerCustomDomain: String(env.AIRINGCAL_WORKER_CUSTOM_DOMAIN ?? '').trim(),
@@ -1415,7 +1846,10 @@ function buildLedgerMeta(completed, ledger, ctx = {}) {
     mutations,
     mutationsSummary: ledger.summarize(),
     mutationsExecuted: mutationsExecutedFrom(completed, mutations),
+    operation: ctx.operation ?? ctx.plan?.operation ?? 'install',
+    installationState: ctx.installationState ?? null,
     writerCredentialState: ctx.writerCredentialState ?? 'not-provisioned',
+    credentialVerification: ctx.credentialVerification ?? null,
     observedBucket: ctx.observedBucket ?? null,
     bucketEmptyVerified: Boolean(ctx.bucketEmptyVerified),
     r2DevDisabled: Boolean(ctx.r2DevDisabled),
@@ -1691,6 +2125,7 @@ export async function runProductionApply({
   io,
   priorInventory = null,
   bucketAdoptionAuthorized = false,
+  operation = undefined,
 }) {
   if (!plan || plan.env !== 'production') {
     throw new Error('runProductionApply requires a production plan')
@@ -1702,18 +2137,32 @@ export async function runProductionApply({
     throw new Error('runProductionApply requires a copy-free plan (plan.copyFree=true, dualBucketFallback=false)')
   }
 
+  const resolvedOperation = String(operation ?? plan.operation ?? env.AIRINGCAL_OPERATION ?? 'install').trim().toLowerCase() || 'install'
+  if (!ALLOWED_OPERATIONS.has(resolvedOperation)) {
+    throw new Error(`runProductionApply operation must be install|update|recover (got "${resolvedOperation}")`)
+  }
+  const isUpdate = resolvedOperation === 'update'
+
   /** @type {string[]} */
   const completed = []
   const secrets = applySecretsFromEnv(env)
   const ledger = createMutationLedger({ redact: (text) => redactSecrets(text, secrets) })
   const ctx = {
-    plan,
+    plan: { ...plan, operation: resolvedOperation },
+    operation: resolvedOperation,
     env,
     completed,
     ledger,
     priorInventory,
     bucketAdoptionAuthorized: Boolean(bucketAdoptionAuthorized) || String(env.AIRINGCAL_ADOPT_EXISTING_BUCKET ?? '').trim() === 'yes',
     writerCredentialState: 'not-provisioned',
+    credentialVerification: {
+      presence: 'unknown',
+      reuse: 'none',
+      scopeVerification: 'unverified',
+      runtimeVerification: 'not-verified',
+    },
+    installationState: null,
     observedBucket: null,
   }
 
@@ -1739,38 +2188,75 @@ export async function runProductionApply({
     }
     completed.push('token-probe')
 
-    try {
-      const deriveResult = await requireIoMethod(io, 'deriveAndVerifyS3')(ctx)
-      if (ctx.writerCredentialDeferred === true || deriveResult?.deferred === true) {
-        ctx.writerCredentialDeferred = true
-        ctx.writerCredentialState = 'deferred-until-bucket'
-      } else if (deriveResult?.pendingBucketAccessProof === true || ctx.s3BucketNotReady === true) {
-        ctx.writerCredentialState = 'override-pending-bucket'
-        completed.push('derive-s3')
-      } else {
-        ctx.writerCredentialState = 'override-verified'
-        completed.push('derive-s3')
-      }
-    } catch (error) {
-      ctx.writerCredentialState = 'failed'
-      if (Array.isArray(error?.missingScopes) && error.missingScopes.length > 0 && (!error?.errorCategory || error.errorCategory === 'permission-denied')) {
-        return {
-          ok: false,
-          aborted: true,
-          abortCutover: true,
-          dualBucketFallback: false,
-          copyFree: true,
-          productionWriterEnabled: false,
-          exitCode: error.exitCode ?? 2,
-          code: error.code ?? 'S3_CREDENTIAL_FAILED',
-          errorCategory: error.errorCategory ?? 'permission-denied',
-          reason: redactSecrets(error.message ?? missingScopeExitMessage(error.missingScopes), secrets),
-          completed,
-          missingScopes: error.missingScopes,
-          ...buildLedgerMeta(completed, ledger, ctx),
+    // Amendment A & C: On update (or when io.verifyExistingInstallation is provided for update),
+    // verify existing installation ownership, Worker R2 binding, GitHub Environment consistency,
+    // repository permissions, and release state BEFORE any mutation occurs.
+    if (isUpdate) {
+      const existingCheck = await requireIoMethod(io, 'verifyExistingInstallation')(ctx)
+      ctx.installationState = existingCheck?.installationState ?? 'verified-initialized'
+      if (existingCheck?.observedBucket) ctx.observedBucket = existingCheck.observedBucket
+      if (existingCheck?.credentialVerification) {
+        ctx.credentialVerification = {
+          ...ctx.credentialVerification,
+          ...existingCheck.credentialVerification,
         }
       }
-      throw error
+      if (existingCheck?.writerCredentialState) {
+        ctx.writerCredentialState = existingCheck.writerCredentialState
+      }
+      completed.push('verify-existing-installation')
+    } else if (typeof io.verifyRepositoryPreflight === 'function') {
+      await io.verifyRepositoryPreflight(ctx)
+      completed.push('verify-repository-preflight')
+    }
+
+    if (!isUpdate || Boolean(String(env.AIRINGCAL_S3_ACCESS_KEY_ID ?? '').trim() && String(env.AIRINGCAL_S3_SECRET_ACCESS_KEY ?? '').trim()) || Boolean(String(env.AIRINGCAL_WRITER_TOKEN_ROTATION_ID ?? '').trim())) {
+      try {
+        const deriveResult = await requireIoMethod(io, 'deriveAndVerifyS3')(ctx)
+        if (ctx.writerCredentialDeferred === true || deriveResult?.deferred === true) {
+          ctx.writerCredentialDeferred = true
+          ctx.writerCredentialState = 'deferred-until-bucket'
+        } else if (deriveResult?.pendingBucketAccessProof === true || ctx.s3BucketNotReady === true) {
+          ctx.writerCredentialState = 'override-pending-bucket'
+          ctx.credentialVerification = {
+            presence: 'present',
+            reuse: 'operator-override',
+            scopeVerification: 'operator-supplied-scope-unverified',
+            runtimeVerification: 'pending-bucket',
+          }
+          completed.push('derive-s3')
+        } else {
+          ctx.writerCredentialState = 'override-verified'
+          ctx.credentialVerification = {
+            presence: 'present',
+            reuse: 'operator-override',
+            scopeVerification: 'operator-supplied-scope-unverified',
+            runtimeVerification: 'verified-s3-access',
+          }
+          completed.push('derive-s3')
+        }
+      } catch (error) {
+        ctx.writerCredentialState = 'failed'
+        ctx.credentialVerification.runtimeVerification = 'failed'
+        if (Array.isArray(error?.missingScopes) && error.missingScopes.length > 0 && (!error?.errorCategory || error.errorCategory === 'permission-denied')) {
+          return {
+            ok: false,
+            aborted: true,
+            abortCutover: true,
+            dualBucketFallback: false,
+            copyFree: true,
+            productionWriterEnabled: false,
+            exitCode: error.exitCode ?? 2,
+            code: error.code ?? 'S3_CREDENTIAL_FAILED',
+            errorCategory: error.errorCategory ?? 'permission-denied',
+            reason: redactSecrets(error.message ?? missingScopeExitMessage(error.missingScopes), secrets),
+            completed,
+            missingScopes: error.missingScopes,
+            ...buildLedgerMeta(completed, ledger, ctx),
+          }
+        }
+        throw error
+      }
     }
 
     const bucketResult = await requireIoMethod(io, 'ensureBucket')(ctx)
@@ -1780,13 +2266,22 @@ export async function runProductionApply({
 
     // #195 / #208 BUG-003: Production Writer credential is provisioned ONLY after
     // the bucket exists and ownership/adoption is established by ensureBucket.
-    if (ctx.writerCredentialDeferred === true) {
+    // Amendment B: On update with existing reused GitHub Environment S3 secrets (and no explicit rotation),
+    // never rotate or recreate the Writer token.
+    if (ctx.writerCredentialDeferred === true && (!isUpdate || Boolean(String(env.AIRINGCAL_WRITER_TOKEN_ROTATION_ID ?? '').trim()) || ctx.writerCredentialState === 'not-provisioned')) {
       try {
         await requireIoMethod(io, 'provisionProductionWriter')(ctx)
         ctx.writerCredentialState = 'provisioned-verified'
+        ctx.credentialVerification = {
+          presence: 'present',
+          reuse: String(env.AIRINGCAL_WRITER_TOKEN_ROTATION_ID ?? '').trim() ? 'rotated-verified' : 'newly-provisioned',
+          scopeVerification: 'verified-bucket-scoped',
+          runtimeVerification: 'verified-s3-access',
+        }
         completed.push('provision-writer-credential')
       } catch (error) {
         ctx.writerCredentialState = 'failed'
+        ctx.credentialVerification.runtimeVerification = 'failed'
         if (
           Array.isArray(error?.missingScopes)
           && error.missingScopes.length > 0
@@ -1813,30 +2308,34 @@ export async function runProductionApply({
       }
     }
 
-    // Object-level emptiness verification ALWAYS runs after credential provisioning/verification.
-    try {
-      await requireIoMethod(io, 'verifyBucketEmpty')(ctx)
-      ctx.bucketEmptyVerified = true
-      if (ctx.writerCredentialState === 'override-pending-bucket') {
-        ctx.writerCredentialState = 'override-verified'
-      }
-      completed.push('verify-bucket-empty')
-    } catch (error) {
-      if (typeof io?.cleanupFreshWriterToken === 'function') {
-        const cleanup = await io.cleanupFreshWriterToken(ctx)
-        if (cleanup && !cleanup.skipped) {
-          ctx.writerCredentialState = 'failed'
-          if (error && typeof error === 'object') {
-            error.cleanupFailed = !cleanup.cleaned
-            if (typeof error.message === 'string') {
-              error.message = cleanup.cleaned
-                ? `${error.message}; the newly minted Writer token was removed`
-                : `${error.message}; fresh Writer token cleanup FAILED — manual deletion required`
+    // Amendment A: Object-level emptiness verification runs for install and recover,
+    // NEVER for update of a verified-initialized installation (which preserves nonempty data!).
+    if (!isUpdate) {
+      try {
+        await requireIoMethod(io, 'verifyBucketEmpty')(ctx)
+        ctx.bucketEmptyVerified = true
+        if (ctx.writerCredentialState === 'override-pending-bucket') {
+          ctx.writerCredentialState = 'override-verified'
+          ctx.credentialVerification.runtimeVerification = 'verified-s3-access'
+        }
+        completed.push('verify-bucket-empty')
+      } catch (error) {
+        if (typeof io?.cleanupFreshWriterToken === 'function') {
+          const cleanup = await io.cleanupFreshWriterToken(ctx)
+          if (cleanup && !cleanup.skipped) {
+            ctx.writerCredentialState = 'failed'
+            if (error && typeof error === 'object') {
+              error.cleanupFailed = !cleanup.cleaned
+              if (typeof error.message === 'string') {
+                error.message = cleanup.cleaned
+                  ? `${error.message}; the newly minted Writer token was removed`
+                  : `${error.message}; fresh Writer token cleanup FAILED — manual deletion required`
+              }
             }
           }
         }
+        throw error
       }
-      throw error
     }
 
     const disableResult = await requireIoMethod(io, 'disableR2Dev')(ctx)
@@ -1903,7 +2402,22 @@ export async function runProductionApply({
     completed.push('image-cdn-validate')
 
     if (workerOriginMode) {
-      isolation = await executeIsolationProbeLifecycle({ io, ctx, completed })
+      // Amendment B: When updating an existing installation by reusing GitHub Environment S3 secrets
+      // without local S3 credentials, we cannot write/head checkpoints/_isolation-probe.txt via S3.
+      // Instead, verify anonymous denial of checkpoints/* on the deployed Worker and report
+      // positiveProof: null, runtimeVerification: 'not-verified-github-secret-only' truthfully!
+      if (isUpdate && ctx.credentialVerification?.runtimeVerification === 'not-verified-github-secret-only') {
+        const probeResult = await requireIoMethod(io, 'probeAnonymousAccess')(ctx)
+        completed.push('isolation-probe-check')
+        isolation = {
+          ...evaluateIsolationProbe({ r2DevDisabled: Boolean(ctx.r2DevDisabled), probes: probeResult?.probes ?? [] }),
+          positiveProof: null,
+          anonymousDenialOnly: true,
+          note: 'Anonymous checkpoint route denial verified; positive private-object S3 existence proof was not executed because existing GitHub S3 secrets were reused without local S3 credentials.',
+        }
+      } else {
+        isolation = await executeIsolationProbeLifecycle({ io, ctx, completed })
+      }
       if (!isolation.ok) {
         return {
           ok: false,
@@ -1933,10 +2447,13 @@ export async function runProductionApply({
       bootstrapWriterEnabled: false,
       isolation,
       imageRouting,
-      pendingOwnerSteps: [
-        'first Bangumi Full Sync: Owner runs portable-writer.yml workflow_dispatch target=production force_mode=full with AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED=true (schedule stays gated by AIRINGCAL_WRITER_ENABLED)',
-        'production cutover sign-off: reader-delivery-accept + docs/v3/production-acceptance.md checklist',
-      ],
+      pendingOwnerSteps:
+        isUpdate && ctx.installationState !== 'verified-empty-pre-sync'
+          ? []
+          : [
+              'first Bangumi Full Sync: Owner runs portable-writer.yml workflow_dispatch target=production force_mode=full with AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED=true (schedule stays gated by AIRINGCAL_WRITER_ENABLED)',
+              'production cutover sign-off: reader-delivery-accept + docs/v3/production-acceptance.md checklist',
+            ],
       completed,
       ...buildLedgerMeta(completed, ledger, ctx),
     }

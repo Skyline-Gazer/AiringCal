@@ -115,9 +115,9 @@ export function assertApplyPlanMatchesReview(reviewedPlan, applyPlan) {
   }
   const fields = [
     'env', 'target', 'bucket', 'cloudflareWorkerName', 'publicBaseUrl',
-    'publicOriginMode', 'workerOrigin', 'repository',
+    'publicOriginMode', 'workerOrigin', 'repository', 'operation',
   ]
-  const drift = fields.filter((field) => reviewedPlan[field] !== applyPlan[field])
+  const drift = fields.filter((field) => (reviewedPlan[field] ?? 'install') !== (applyPlan[field] ?? 'install'))
   const reviewedEdgeone = reviewedPlan.target === 'cloudflare' ? null : reviewedPlan.edgeone?.project ?? null
   const applyEdgeone = applyPlan.target === 'cloudflare' ? null : applyPlan.edgeone?.project ?? null
   if (reviewedEdgeone !== applyEdgeone) drift.push('edgeone.project')
@@ -200,15 +200,30 @@ export function classifyFailureRecovery({ result, environment = 'production' }) 
     allowedActions = ['details', 'exit']
   } else if (hasUnverifiedCleanup || hasUnknown) {
     allowedActions = ['reconcile', 'details', 'exit']
-  } else if (code === 'BUCKET_NOT_EMPTY' || code === 'WRONG_ACCOUNT') {
+  } else if (
+    code === 'BUCKET_NOT_EMPTY' ||
+    code === 'WRONG_ACCOUNT' ||
+    code === 'FOREIGN_OR_INCONSISTENT_INSTALLATION' ||
+    code === 'WORKER_BINDING_MISMATCH' ||
+    code === 'UNSUPPORTED_LEGACY_CONFIG' ||
+    code === 'REPOSITORY_INVALID' ||
+    code === 'REPOSITORY_CONFLICT' ||
+    code === 'REPOSITORY_UNRESOLVED' ||
+    code === 'REPOSITORY_ORIGIN_MISSING' ||
+    code === 'REPOSITORY_ORIGIN_UNSUPPORTED' ||
+    code === 'REPOSITORY_NOT_FOUND' ||
+    code === 'REPOSITORY_PERMISSION_DENIED' ||
+    code === 'WORKFLOW_UNAVAILABLE'
+  ) {
     allowedActions = ['review', 'details', 'exit']
-  } else if (code === 'BUCKET_OWNERSHIP_UNPROVEN') {
+  } else if (code === 'BUCKET_OWNERSHIP_UNPROVEN' || code === 'OWNERSHIP_EVIDENCE_INSUFFICIENT') {
     allowedActions = ['reconcile', 'review', 'details', 'exit']
   } else if (
     (Array.isArray(result?.missingScopes) && result.missingScopes.length > 0) ||
     code === 'S3_OVERRIDE_REJECTED' ||
     code === 'WRITER_TOKEN_COLLISION' ||
-    code === 'WRITER_SCOPE_VIOLATION'
+    code === 'WRITER_SCOPE_VIOLATION' ||
+    code === 'WRITER_TOKEN_INACTIVE'
   ) {
     allowedActions = ['supply-s3', 'reconcile', 'review', 'details', 'exit']
   } else if (errorCategory === 'transport-failure') {
@@ -245,6 +260,9 @@ export function buildInventory({
   deployedAt = null,
   writerCredential = null,
   writerCredentialState = null,
+  credentialVerification = null,
+  operation = null,
+  installationState = null,
   verification = null,
   verdict = null,
   reason = null,
@@ -260,6 +278,8 @@ export function buildInventory({
   return {
     schema: 'airingcal.inventory.v1',
     environment,
+    operation: operation ?? plan.operation ?? 'install',
+    installationState: installationState ?? null,
     repository: plan.repository,
     cloudflare: {
       accountId: account.id,
@@ -315,6 +335,7 @@ export function buildInventory({
         }
       : null,
     writerCredentialState: writerCredentialState ?? (writerCredential ? 'verified' : 'not-provisioned'),
+    credentialVerification: credentialVerification ?? null,
     deployment: {
       gitSha: buildSha ?? null,
       attemptedAt: resolvedAttemptedAt,
@@ -370,6 +391,8 @@ export function computeVerdict({
   applied,
   wantSync,
   headless = false,
+  operation = 'install',
+  credentialRuntimeVerification = null,
   sync = null,
   syncError = null,
   verification = null,
@@ -381,6 +404,22 @@ export function computeVerdict({
   }
   if (syncError) {
     return { verdict: 'SYNC_FAILED', reason: String(syncError?.message ?? syncError).slice(0, 400) }
+  }
+  if (operation === 'update' && !wantSync) {
+    if (verificationError || (verification && verification.pass !== true)) {
+      return {
+        verdict: 'VERIFICATION_FAILED',
+        reason: String(verificationError?.message ?? verificationError ?? 'live verifier did not pass').slice(0, 400),
+      }
+    }
+    if (credentialRuntimeVerification === 'not-verified-github-secret-only' || !verification) {
+      return {
+        verdict: 'UPDATED_PARTIAL_VERIFICATION',
+        reason:
+          'Existing installation updated and anonymous checkpoint route denial verified; Writer S3 credential runtime access, positive private-object S3 existence proof, and live S3-authenticated verifier were not executed because existing GitHub S3 secrets were reused without local S3 credentials',
+      }
+    }
+    return { verdict: 'READY', reason: null }
   }
   if (!wantSync) {
     return {

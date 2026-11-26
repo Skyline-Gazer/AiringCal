@@ -3,7 +3,6 @@ import {
   SUBJECT_MEDIA_COLUMNS,
   decodeSubjectMediaRow,
   subjectMediaValues,
-  type LegacyMigrationD1,
   type SubjectMediaRow,
 } from '@airing-cal/storage'
 
@@ -42,7 +41,7 @@ ON CONFLICT(subject_id) DO UPDATE SET
  * state import can run against the portable checkpoint (#73) without D1.
  * Rows are decoded with the same strict decoder as the D1 store.
  */
-export class SqliteSubjectMediaStore implements LegacyMigrationD1 {
+export class SqliteSubjectMediaStore {
   constructor(readonly db: DatabaseSync) {}
 
   async getSubjectMediaRow(subjectId: number): Promise<SubjectMediaRow | undefined> {

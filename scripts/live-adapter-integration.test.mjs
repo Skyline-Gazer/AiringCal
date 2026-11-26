@@ -4,14 +4,21 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { buildProductionPlan, mutationsExecutedFrom, runProductionApply } from './deploy-env-lib.mjs'
+import {
+  buildProductionPlan,
+  mutationsExecutedFrom,
+  parseGitRemoteRepository,
+  resolveTargetRepository,
+  runProductionApply,
+} from './deploy-env-lib.mjs'
 import { createLiveDevelopmentApplyIo } from './deploy-env-live-io.mjs'
 import {
   DEFAULT_ACCOUNT_ID,
   SECONDARY_ACCOUNT_ID,
   createControlledProviderSimulator,
 } from './fixtures/controlled-provider-sim.mjs'
-import { main as wizardMain, readInventory } from './setup-wizard.mjs'
+import { main as wizardMain, readInventory, resolveActiveBranch } from './setup-wizard.mjs'
+import { computeVerdict } from './setup-wizard-lib.mjs'
 
 function makeProdEnv(overrides = {}) {
   return {
@@ -637,4 +644,336 @@ test('Regression FA7: S3 override before bucket creation starts override-pending
   const cleanRes = await runProductionApply({ plan, env, io: createSimIo(simClean, env, plan) })
   assert.equal(cleanRes.ok, true, JSON.stringify(cleanRes))
   assert.equal(cleanRes.writerCredentialState, 'override-verified')
+})
+
+// ===========================================================================
+// Owner Amendments A, B, C & Section 5 Mandatory Regression & Acceptance Matrix
+// ===========================================================================
+
+function seedVerifiedExistingInstallation(sim, {
+  accountId = DEFAULT_ACCOUNT_ID,
+  bucket = 'airingcal-production',
+  workerName = 'airingcal-production',
+  boundBucket = 'airingcal-production',
+  primaryUserId = '901234',
+  publicBaseUrl = `https://airingcal-production.primary-sim.workers.dev`,
+  withRelease = true,
+  withS3Secrets = true,
+  withScopedToken = true,
+} = {}) {
+  const objects = withRelease
+    ? {
+        'public/current-release.json': JSON.stringify({
+          schema_version: 1,
+          release_id: '1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          artifact_ref: 'snapshots/v1/1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json',
+          manifest_ref: 'public/manifests/1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json',
+          published_at: '2026-11-26T13:59:30.000Z',
+        }),
+        'snapshots/v1/1-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json': JSON.stringify({
+          schema_version: 1,
+          subjects: [],
+        }),
+        'checkpoints/builder.sqlite': 'SQLite format 3\0checkpoint-data',
+        'images/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/original': 'image-bytes',
+      }
+    : {}
+  sim.seedBucket(accountId, bucket, { objects, r2DevEnabled: false })
+  sim.seedWorker(accountId, workerName, { bucket: boundBucket })
+  sim.seedGithubEnv('production', {
+    variables: {
+      AIRINGCAL_PRODUCTION_R2_BUCKET: bucket,
+      AIRINGCAL_PRODUCTION_CLOUDFLARE_ACCOUNT_ID: accountId,
+      AIRINGCAL_PRODUCTION_PRIMARY_USER_ID: primaryUserId,
+      AIRINGCAL_PRODUCTION_USERS_JSON: `[{"userId":"${primaryUserId}","username":"sim-owner"}]`,
+      AIRINGCAL_PRODUCTION_PUBLIC_BASE_URL: publicBaseUrl,
+      AIRINGCAL_PRODUCTION_WORKER_NAME: workerName,
+      AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED: 'false',
+    },
+    secrets: withS3Secrets
+      ? [
+          'AIRINGCAL_PRODUCTION_BANGUMI_TOKEN',
+          'AIRINGCAL_PRODUCTION_S3_ACCESS_KEY_ID',
+          'AIRINGCAL_PRODUCTION_S3_SECRET_ACCESS_KEY',
+        ]
+      : ['AIRINGCAL_PRODUCTION_BANGUMI_TOKEN'],
+  })
+  if (withScopedToken) {
+    sim.seedMintedToken({
+      id: 'existing-writer-tok-1',
+      name: 'airingcal-production-writer',
+      value: 'existing-writer-secret-1',
+      policies: [
+        {
+          effect: 'allow',
+          resources: { [`com.cloudflare.edge.r2.bucket.${accountId}_default_${bucket}`]: '*' },
+          permission_groups: [{ id: 'pg-r2-item-write' }],
+        },
+      ],
+    })
+  }
+}
+
+test('Section 5 #7 & Amendment A/B: Verified existing AiringCal installation update -> updates safely, preserves bucket/objects/token/secrets, qualifies runtime verification', async () => {
+  const sim = createControlledProviderSimulator()
+  seedVerifiedExistingInstallation(sim)
+  const beforeObjects = sim.listObjects(DEFAULT_ACCOUNT_ID, 'airingcal-production')
+  const beforeUnrelated = sim.snapshotUnrelatedBuckets()
+
+  const env = makeProdEnv({ AIRINGCAL_OPERATION: 'update' })
+  const plan = makeProdPlan({ operation: 'update' })
+  const io = createSimIo(sim, env, plan)
+
+  const result = await runProductionApply({ plan, env, io, operation: 'update' })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  assert.equal(result.operation, 'update')
+  assert.equal(result.installationState, 'verified-initialized')
+  assert.equal(result.completed.includes('verify-existing-installation'), true)
+  assert.equal(result.completed.includes('verify-bucket-empty'), false, 'update must never require or wipe nonempty bucket')
+  assert.equal(result.completed.includes('provision-writer-credential'), false, 'update must not rotate or recreate existing writer token')
+  assert.deepEqual(sim.listObjects(DEFAULT_ACCOUNT_ID, 'airingcal-production'), beforeObjects, 'all release objects, checkpoints, and images preserved')
+  assert.deepEqual(sim.snapshotUnrelatedBuckets(), beforeUnrelated)
+  assert.equal(sim.state.deletedTokens.length, 0, 'existing writer token never deleted')
+  assert.equal(sim.state.mintedTokens.size, 1, 'no new writer token minted')
+
+  // Amendment B: Truthful credential & isolation reporting when reusing GitHub S3 secrets without local S3 credentials
+  assert.equal(result.credentialVerification.presence, 'present')
+  assert.equal(result.credentialVerification.reuse, 'reused-existing')
+  assert.equal(result.credentialVerification.scopeVerification, 'verified-bucket-scoped')
+  assert.equal(result.credentialVerification.runtimeVerification, 'not-verified-github-secret-only')
+  assert.equal(result.isolation.ok, true)
+  assert.equal(result.isolation.positiveProof, null, 'must not claim positive private-object S3 proof without S3 credentials')
+  assert.equal(result.isolation.anonymousDenialOnly, true)
+
+  const verdict = computeVerdict({
+    applied: result.ok,
+    wantSync: false,
+    operation: 'update',
+    credentialRuntimeVerification: result.credentialVerification.runtimeVerification,
+  })
+  assert.equal(verdict.verdict, 'UPDATED_PARTIAL_VERIFICATION')
+})
+
+test('Section 5 #8, #9, #10 & Amendment A: Foreign nonempty bucket, Worker binding mismatch, or inconsistent local inventory fails closed BEFORE any mutation', async () => {
+  // #8: Foreign nonempty bucket (even with Worker deployed, pointer is missing / foreign objects)
+  const simForeign = createControlledProviderSimulator()
+  simForeign.seedBucket(DEFAULT_ACCOUNT_ID, 'airingcal-production', {
+    objects: { 'foreign-app/db.sqlite': 'foreign-bytes' },
+    r2DevEnabled: false,
+  })
+  simForeign.seedWorker(DEFAULT_ACCOUNT_ID, 'airingcal-production', { bucket: 'airingcal-production' })
+  simForeign.seedGithubEnv('production', {
+    variables: { AIRINGCAL_PRODUCTION_R2_BUCKET: 'airingcal-production' },
+    secrets: ['AIRINGCAL_PRODUCTION_S3_ACCESS_KEY_ID', 'AIRINGCAL_PRODUCTION_S3_SECRET_ACCESS_KEY'],
+  })
+  simForeign.addOperatorS3Override({
+    accessKeyId: 'op-s3-1',
+    secretAccessKey: 'op-sec-1',
+    allowedBuckets: ['airingcal-production'],
+  })
+  const envForeign = makeProdEnv({
+    AIRINGCAL_OPERATION: 'update',
+    AIRINGCAL_S3_ACCESS_KEY_ID: 'op-s3-1',
+    AIRINGCAL_S3_SECRET_ACCESS_KEY: 'op-sec-1',
+  })
+  const planForeign = makeProdPlan({ operation: 'update' })
+  const resForeign = await runProductionApply({
+    plan: planForeign,
+    env: envForeign,
+    io: createSimIo(simForeign, envForeign, planForeign),
+    operation: 'update',
+  })
+  assert.equal(resForeign.ok, false)
+  assert.equal(resForeign.code, 'FOREIGN_OR_INCONSISTENT_INSTALLATION')
+  assert.deepEqual(resForeign.mutationsExecuted, [], 'zero mutations on foreign bucket refusal')
+  assert.deepEqual(simForeign.listObjects(DEFAULT_ACCOUNT_ID, 'airingcal-production'), ['foreign-app/db.sqlite'])
+
+  // #9: Existing Worker bound to a different R2 bucket -> fails closed with WORKER_BINDING_MISMATCH
+  const simWrongBind = createControlledProviderSimulator()
+  seedVerifiedExistingInstallation(simWrongBind, { boundBucket: 'unrelated-blog-assets' })
+  const envBind = makeProdEnv({ AIRINGCAL_OPERATION: 'update' })
+  const planBind = makeProdPlan({ operation: 'update' })
+  const resBind = await runProductionApply({
+    plan: planBind,
+    env: envBind,
+    io: createSimIo(simWrongBind, envBind, planBind),
+    operation: 'update',
+  })
+  assert.equal(resBind.ok, false)
+  assert.equal(resBind.code, 'WORKER_BINDING_MISMATCH')
+  assert.deepEqual(resBind.mutationsExecuted, [])
+
+  // #10: Stale or mismatched local inventory (accountId or Bangumi primaryUserId or repository conflict) -> fails closed
+  const simStaleInv = createControlledProviderSimulator()
+  seedVerifiedExistingInstallation(simStaleInv)
+  const envStale = makeProdEnv({ AIRINGCAL_OPERATION: 'update' })
+  const planStale = makeProdPlan({ operation: 'update' })
+  const resStaleAcct = await runProductionApply({
+    plan: planStale,
+    env: envStale,
+    io: createSimIo(simStaleInv, envStale, planStale),
+    operation: 'update',
+    priorInventory: {
+      schema: 'airingcal.inventory.v1',
+      environment: 'production',
+      repository: 'Skyline-Gazer/AiringCal',
+      bucket: 'airingcal-production',
+      cloudflare: { accountId: SECONDARY_ACCOUNT_ID },
+    },
+  })
+  assert.equal(resStaleAcct.ok, false)
+  assert.equal(resStaleAcct.code, 'FOREIGN_OR_INCONSISTENT_INSTALLATION')
+  assert.deepEqual(resStaleAcct.mutationsExecuted, [])
+
+  const resStaleUser = await runProductionApply({
+    plan: planStale,
+    env: envStale,
+    io: createSimIo(simStaleInv, envStale, planStale),
+    operation: 'update',
+    priorInventory: {
+      schema: 'airingcal.inventory.v1',
+      environment: 'production',
+      repository: 'Skyline-Gazer/AiringCal',
+      bucket: 'airingcal-production',
+      cloudflare: { accountId: DEFAULT_ACCOUNT_ID },
+      bangumi: { primaryUserId: '111111' },
+    },
+  })
+  assert.equal(resStaleUser.ok, false)
+  assert.equal(resStaleUser.code, 'FOREIGN_OR_INCONSISTENT_INSTALLATION')
+  assert.deepEqual(resStaleUser.mutationsExecuted, [])
+})
+
+test('Section 5 #11 & Amendment A: Insufficient or unreadable ownership evidence fails closed before any mutation', async () => {
+  const sim = createControlledProviderSimulator({ faults: { workerListError: true } })
+  seedVerifiedExistingInstallation(sim)
+  const env = makeProdEnv({ AIRINGCAL_OPERATION: 'update' })
+  const plan = makeProdPlan({ operation: 'update' })
+  const res = await runProductionApply({
+    plan,
+    env,
+    io: createSimIo(sim, env, plan),
+    operation: 'update',
+  })
+  assert.equal(res.ok, false)
+  assert.equal(res.code, 'OWNERSHIP_EVIDENCE_INSUFFICIENT')
+  assert.deepEqual(res.mutationsExecuted, [])
+})
+
+test('Section 5 #16-#20 & Amendment C: Fork-safe repository resolution (all 11 scenarios) and dynamic branch resolution', async () => {
+  // 1. HTTPS GitHub remote
+  assert.deepEqual(parseGitRemoteRepository('https://github.com/Alice-Fork/AiringCal.git'), {
+    ok: true,
+    repository: 'Alice-Fork/AiringCal',
+  })
+  // 2. SSH SCP GitHub remote
+  assert.deepEqual(parseGitRemoteRepository('git@github.com:Bob-Fork/AiringCal.git'), {
+    ok: true,
+    repository: 'Bob-Fork/AiringCal',
+  })
+  assert.deepEqual(parseGitRemoteRepository('ssh://git@github.com/Carol-Fork/AiringCal'), {
+    ok: true,
+    repository: 'Carol-Fork/AiringCal',
+  })
+  // 3. Explicit AIRINGCAL_REPOSITORY
+  assert.deepEqual(
+    resolveTargetRepository({
+      env: { AIRINGCAL_REPOSITORY: 'Explicit-Owner/AiringCal' },
+    }),
+    { repository: 'Explicit-Owner/AiringCal', source: 'AIRINGCAL_REPOSITORY' },
+  )
+  // 4. Trusted GITHUB_REPOSITORY context
+  assert.deepEqual(
+    resolveTargetRepository({
+      env: { GITHUB_REPOSITORY: 'Actions-Owner/AiringCal' },
+    }),
+    { repository: 'Actions-Owner/AiringCal', source: 'GITHUB_REPOSITORY' },
+  )
+  // 5. Verified Git origin metadata
+  const simFork = createControlledProviderSimulator({
+    faults: { gitOriginUrl: 'git@github.com:Fork-User/AiringCal.git' },
+  })
+  assert.deepEqual(
+    resolveTargetRepository({
+      env: {},
+      spawnSyncImpl: simFork.spawnSyncImpl,
+      forMutation: true,
+    }),
+    { repository: 'Fork-User/AiringCal', source: 'git-origin' },
+  )
+  // 6. Conflicting AIRINGCAL_REPOSITORY vs GITHUB_REPOSITORY -> fails closed
+  assert.throws(
+    () =>
+      resolveTargetRepository({
+        env: {
+          AIRINGCAL_REPOSITORY: 'Repo-A/AiringCal',
+          GITHUB_REPOSITORY: 'Repo-B/AiringCal',
+        },
+      }),
+    (err) => err.code === 'REPOSITORY_CONFLICT',
+  )
+  // 7. Conflicting GITHUB_REPOSITORY vs git origin -> fails closed
+  assert.throws(
+    () =>
+      resolveTargetRepository({
+        env: { GITHUB_REPOSITORY: 'Repo-B/AiringCal' },
+        spawnSyncImpl: simFork.spawnSyncImpl,
+      }),
+    (err) => err.code === 'REPOSITORY_CONFLICT',
+  )
+  // 8. Missing git origin for mutation -> fails closed without falling back to Skyline-Gazer/AiringCal
+  const simNoOrigin = createControlledProviderSimulator({ faults: { gitOriginMissing: true } })
+  assert.throws(
+    () =>
+      resolveTargetRepository({
+        env: {},
+        spawnSyncImpl: simNoOrigin.spawnSyncImpl,
+        forMutation: true,
+      }),
+    (err) => err.code === 'REPOSITORY_ORIGIN_MISSING',
+  )
+  // 9. Unsupported / non-GitHub origin -> fails closed
+  const simGitlab = createControlledProviderSimulator({
+    faults: { gitOriginUrl: 'https://gitlab.com/Other/AiringCal.git' },
+  })
+  assert.throws(
+    () =>
+      resolveTargetRepository({
+        env: {},
+        spawnSyncImpl: simGitlab.spawnSyncImpl,
+        forMutation: true,
+      }),
+    (err) => err.code === 'REPOSITORY_ORIGIN_UNSUPPORTED',
+  )
+  // 10. Nonexistent or permission-denied GitHub repository -> fails closed before mutation
+  const sim404 = createControlledProviderSimulator({ faults: { ghRepoNotFound: true } })
+  const env404 = makeProdEnv({ AIRINGCAL_VERIFY_REPOSITORY: 'yes', AIRINGCAL_REPOSITORY: 'Ghost/AiringCal' })
+  const plan404 = makeProdPlan({ repository: 'Ghost/AiringCal' })
+  const res404 = await runProductionApply({
+    plan: plan404,
+    env: env404,
+    io: createSimIo(sim404, env404, plan404),
+  })
+  assert.equal(res404.ok, false)
+  assert.equal(res404.code, 'REPOSITORY_NOT_FOUND')
+  assert.deepEqual(res404.mutationsExecuted, [])
+
+  const simNoPerm = createControlledProviderSimulator({ faults: { ghRepoPermissionDenied: true } })
+  const resNoPerm = await runProductionApply({
+    plan: plan404,
+    env: env404,
+    io: createSimIo(simNoPerm, env404, plan404),
+  })
+  assert.equal(resNoPerm.ok, false)
+  assert.equal(resNoPerm.code, 'REPOSITORY_PERMISSION_DENIED')
+  assert.deepEqual(resNoPerm.mutationsExecuted, [])
+
+  // 11. Fork on `main` (not `dev`) resolves branch dynamically without hardcoded `dev` failure
+  const simMainBranch = createControlledProviderSimulator({
+    faults: { gitCurrentBranch: 'HEAD', ghDefaultBranch: 'main' },
+  })
+  assert.equal(
+    resolveActiveBranch({ repo: 'Fork-User/AiringCal', spawnSyncImpl: simMainBranch.spawnSyncImpl }),
+    'main',
+  )
 })
