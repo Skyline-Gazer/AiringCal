@@ -17,7 +17,7 @@ cutover is gated on #73 DoD.
 |------|----------------|
 | `src/index.ts` | Worker entry: static/widget and 410 sync routes first, then the R2 read gateway |
 | `src/index.test.ts` | Entry tests over a real builder checkpoint published into a memory R2 double |
-| `wrangler.toml` | Binding `AIRINGCAL_PUBLIC_R2` (`airing-cal-public`) |
+| `wrangler.toml` | Binding `AIRINGCAL_R2` (`airing-cal-public`) |
 | `scripts/staging-smoke.ts` | Local end-to-end smoke over `wrangler dev -l` (no remote resources) |
 | `env.example` | Local vars; bindings live in `wrangler.toml` |
 

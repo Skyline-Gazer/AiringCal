@@ -3,7 +3,7 @@
  *
  * The checked-in `wrangler.toml` points at the production public-release bucket
  * (`airing-cal-public`). A staging deploy must never read it: this script rewrites
- * the `AIRINGCAL_PUBLIC_R2` bucket, injects the verified public base URL as a var,
+ * the `AIRINGCAL_R2` bucket, injects the verified public base URL as a var,
  * and rewrites `main` relative to the output file (Wrangler resolves `main` from
  * the config directory).
  *
@@ -126,9 +126,9 @@ for (const [index, line] of lines.entries()) {
   }
 }
 
-const releaseTable = bucketTables.find((entry) => entry.binding === 'AIRINGCAL_PUBLIC_R2')
+const releaseTable = bucketTables.find((entry) => entry.binding === 'AIRINGCAL_R2')
 if (!releaseTable || releaseTable.line === undefined) {
-  fail('source Wrangler config has no AIRINGCAL_PUBLIC_R2 r2_buckets block')
+  fail('source Wrangler config has no AIRINGCAL_R2 r2_buckets block')
 }
 if (releaseTable.bucketName === BUCKET) {
   fail(`staging bucket must differ from the production bucket "${releaseTable.bucketName}"; staging never reads production`)

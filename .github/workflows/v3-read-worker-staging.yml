@@ -4,7 +4,7 @@
 # schedule, and it must never deploy the production Worker or read the production
 # Release bucket. Only `AIRINGCAL_STAGING_*` secrets/vars are expanded; non-secret
 # infrastructure settings come from `vars.*` with safe staging defaults, and the
-# generated Wrangler config points `AIRINGCAL_PUBLIC_R2` at the staging bucket.
+# generated Wrangler config points `AIRINGCAL_R2` at the staging bucket.
 name: v3 read worker (staging)
 
 on:

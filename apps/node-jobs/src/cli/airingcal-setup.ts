@@ -57,7 +57,7 @@ export function runAiringcalSetup(
         platform: 'cloudflare',
         env_lines: formatPortableEnvLines({ AIRINGCAL_PLATFORM: 'cloudflare' }),
         secrets_required: PLATFORM_SECRET_ENV_KEYS.cloudflare,
-        bindings_required: ['wrangler.toml: [[r2_buckets]] binding = "AIRINGCAL_PUBLIC_R2"'],
+        bindings_required: ['wrangler.toml: [[r2_buckets]] binding = "AIRINGCAL_R2"'],
       }
     case 'edgeone':
       throw new Error('airingcal setup does not support platform edgeone yet; the EdgeOne adapter is a stub (#72)')

@@ -9,7 +9,7 @@ import { readConfigErrorResponse } from '@airing-cal/v3-read/read-config'
 
 export interface ReadWorkerEnv {
   /** R2 binding holding the immutable v3 public store (see `wrangler.toml`). */
-  AIRINGCAL_PUBLIC_R2: CloudflareR2BucketBinding
+  AIRINGCAL_R2: CloudflareR2BucketBinding
   /**
    * Verified public CDN/S3 base URL (C6). Absolute https; a placeholder or
    * non-https value fails closed as `INVALID_READ_CONFIG` when the read
@@ -46,7 +46,7 @@ function readHandlerFingerprint(env: ReadWorkerEnv): string {
 }
 
 function readHandlerFor(env: ReadWorkerEnv): CloudflareReadHandler {
-  const binding = env.AIRINGCAL_PUBLIC_R2
+  const binding = env.AIRINGCAL_R2
   const fingerprint = readHandlerFingerprint(env)
   if (
     cachedReadHandler
@@ -75,12 +75,12 @@ export async function handleReadWorkerRequest(
     build: env.BANGUMI_GIT_COMMIT_SHA ? { commitSha: env.BANGUMI_GIT_COMMIT_SHA } : undefined,
   })
   if (staticResponse) return staticResponse
-  if (!env.AIRINGCAL_PUBLIC_R2) {
+  if (!env.AIRINGCAL_R2) {
     return Response.json({
       ok: false,
       error: {
         code: 'NO_PUBLIC_STORE_BINDING',
-        message: 'AIRINGCAL_PUBLIC_R2 binding is not configured for this Worker',
+        message: 'AIRINGCAL_R2 binding is not configured for this Worker',
       },
     }, { status: 503, headers: { 'Cache-Control': V2_CACHE_CONTROL.error } })
   }
