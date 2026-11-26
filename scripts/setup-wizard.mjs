@@ -31,6 +31,7 @@ import {
   runProductionApply,
 } from './deploy-env-lib.mjs'
 import { createLiveDevelopmentApplyIo } from './deploy-env.mjs'
+import { hasAffirmativeBucketOwnership } from './deploy-env-live-io.mjs'
 import {
   IdentityError,
   deriveUsersConfig,
@@ -903,13 +904,7 @@ export async function discoverPartialState({
     githubEnvironmentExists = null
   }
 
-  const priorAccountId = String(priorInventory?.cloudflare?.accountId ?? '').trim().toLowerCase()
-  const ownershipMatch = Boolean(
-    priorInventory &&
-    priorInventory.environment === environment &&
-    priorInventory.bucket === bucket &&
-    (!priorAccountId || priorAccountId === String(accountId).toLowerCase()),
-  )
+  const ownershipMatch = hasAffirmativeBucketOwnership(priorInventory, bucket, accountId)
 
   return {
     priorInventory,
@@ -1524,10 +1519,14 @@ async function installFlow({
     verdict,
     reason = null,
     verification = null,
+    sync = null,
   }) => {
     const applied = result?.ok === true && verdict !== 'DEPLOY_FAILED' && verdict !== 'CANCELLED'
     const lastReceipt = applyReceipts[applyReceipts.length - 1] ?? result
     const observedBucket = lastReceipt?.observedBucket ?? partialState?.targetBucket ?? null
+    const bucketCreateUnknown = Boolean(
+      lastReceipt?.mutationsSummary?.unknown?.some((e) => e.op === 'r2-bucket-create'),
+    )
     const bucketExists = Boolean(
       observedBucket?.exists ||
       lastReceipt?.mutationsSummary?.confirmed?.some((e) => e.op === 'r2-bucket-create') ||
@@ -1542,6 +1541,19 @@ async function installFlow({
       lastReceipt?.mutationsSummary?.confirmed?.some((e) => e.op === 'github-environment-ensure') ||
       partialState?.githubEnvironmentExists === true,
     )
+
+    let bucketState = 'absent'
+    if (bucketCreateUnknown && !bucketExists) {
+      bucketState = 'unknown-outcome'
+    } else if (applied && sync) {
+      bucketState = lastReceipt?.r2DevDisabled ? 'populated-and-private' : 'populated'
+    } else if (applied && lastReceipt?.bucketEmptyVerified && lastReceipt?.r2DevDisabled) {
+      bucketState = 'verified-empty-and-private'
+    } else if (applied && lastReceipt?.r2DevDisabled) {
+      bucketState = 'provisioned-and-private'
+    } else if (bucketExists) {
+      bucketState = 'exists-unverified'
+    }
 
     return buildInventory({
       plan: executionPlan,
@@ -1566,7 +1578,8 @@ async function installFlow({
       resources: {
         bucket: {
           name: executionPlan.bucket,
-          state: applied ? 'verified-empty-and-private' : (bucketExists ? 'exists-unverified' : 'absent'),
+          state: bucketState,
+          ownershipConfirmed: Boolean(bucketExists && (applied || lastReceipt?.mutationsSummary?.confirmed?.some((e) => e.op === 'r2-bucket-create') || lastReceipt?.mutationsSummary?.alreadyExists?.some((e) => e.op === 'r2-bucket-create'))),
         },
         worker: {
           name: executionPlan.cloudflareWorkerName,
@@ -1619,7 +1632,7 @@ async function installFlow({
     verification = null,
     verificationError = null,
   }) => {
-    const inventory = buildCurrentInventory({ verdict, reason, verification })
+    const inventory = buildCurrentInventory({ verdict, reason, verification, sync })
     const inventoryPath = persistInventory(inventory)
     if (!headless) ui.outro(`${verdict}${reason ? ` — ${reason}` : ''}`)
     const endpointLine = formatTerminalEndpointLine({
@@ -1691,7 +1704,7 @@ async function installFlow({
         `Completed effects: ${(result.completed ?? []).join(' → ') || 'none'}.`,
       )
       const confirmed = await ui.confirm({
-        message: 'Supply an independently scoped R2 credential now (masked input)?',
+        message: 'Supply an independently scoped R2 credential now (masked input; choose No to exit with a DEPLOY_FAILED receipt)?',
         initialValue: true,
       })
       if (!confirmed) {
@@ -1700,6 +1713,13 @@ async function installFlow({
       const accessKeyId = (await ui.password({ message: 'Cloudflare R2 S3 Access Key ID (masked)' })).trim()
       const secretAccessKey = (await ui.password({ message: 'Cloudflare R2 S3 Secret Access Key (masked)' })).trim()
       if (!accessKeyId || !secretAccessKey) throw new WizardAbort('S3 credential fallback cancelled: both values are required')
+      const reauthorized = await ui.confirm({
+        message: `Re-authorize and retry installing AiringCal in ${environment === 'production' ? 'Production' : 'Development'} with the supplied S3 credential?`,
+        initialValue: true,
+      })
+      if (!reauthorized) {
+        return finalize({ verdict: 'DEPLOY_FAILED', reason: 'retry authorization declined after supplying S3 credentials' })
+      }
       if (result.mutationsSummary?.confirmed?.some((entry) => entry.op === 'r2-bucket-create')) {
         bucketAdoptionAuthorized = true
       }
@@ -1760,12 +1780,21 @@ async function installFlow({
           bucket: executionPlan.bucket,
           env: resolvedEnv,
         })
+        const bucketStatusText = partialState.targetBucket === null
+          ? `UNKNOWN (${partialState.bucketProbeError ?? 'probe failed'})`
+          : partialState.targetBucket.exists
+            ? `EXISTS${partialState.targetBucket.creationDate ? ` (created ${partialState.targetBucket.creationDate})` : ''}`
+            : 'ABSENT'
+        const unresolvedOps = (recovery.unknownOutcomes ?? []).map((e) => `${e.op}:${e.target}`)
         const recLines = [
-          `Bucket (${executionPlan.bucket}): ${partialState.targetBucket?.exists ? 'EXISTS' : 'ABSENT'}${partialState.targetBucket?.creationDate ? ` (created ${partialState.targetBucket.creationDate})` : ''}`,
+          `Bucket (${executionPlan.bucket}): ${bucketStatusText}`,
           `Writer Token: ${partialState.existingWriterToken ? `${partialState.existingWriterToken.name} (${partialState.existingWriterToken.id})` : 'not detected'}`,
           `GitHub Environment (${environment}): ${partialState.githubEnvironmentExists === true ? 'EXISTS' : partialState.githubEnvironmentExists === false ? 'ABSENT' : 'UNKNOWN'}`,
           `Unrelated Buckets: ${partialState.unrelatedBucketCount} untouched`,
         ]
+        if (unresolvedOps.length > 0) {
+          recLines.push(`Unresolved Unknown Outcomes: ${unresolvedOps.join(', ')} — verify these targets directly before re-running apply.`)
+        }
         ui.note(recLines.join('\n'), 'Reconciled Remote State')
         if (environment === 'production' && partialState.targetBucket?.exists && !bucketAdoptionAuthorized) {
           const adopt = await ui.confirm({
@@ -1773,18 +1802,6 @@ async function installFlow({
             initialValue: partialState.ownershipMatch,
           })
           if (adopt) bucketAdoptionAuthorized = true
-        }
-        if (recovery.hasUnknown && !recovery.hasUnverifiedCleanup) {
-          const retryAfterReconcile = await ui.confirm({
-            message: 'Remote state reconciled. Re-authorize and retry installation now?',
-            initialValue: false,
-          })
-          if (retryAfterReconcile) {
-            built = buildApplyContext()
-            applyEnv = built.applyEnvironment
-            executionPlan = built.plan
-            await executeApply()
-          }
         }
         continue
       }

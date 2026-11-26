@@ -261,10 +261,11 @@ export function createControlledProviderSimulator({
 
       if (method === 'GET' && path === '/user/tokens/permissions') {
         const mode = state.faults.permissionsMode ?? 'allowed'
+        if (mode === 'not-found') return jsonResponse(404, { success: false, errors: [{ code: 7000, message: 'No route' }] })
         if (mode === 'network-error') throw new TypeError('fetch failed: connection reset')
         if (mode === 'server-error') return jsonResponse(500, { success: false, errors: [{ code: 500, message: 'Internal Error' }] })
         if (mode === 'forbidden') return jsonResponse(403, { success: false, errors: [{ code: 10000, message: 'Forbidden' }] })
-        if (mode === 'denied') return jsonResponse(200, { success: true, result: { permissions: ['Workers R2 Storage:Read'] } })
+        if (mode === 'denied') return jsonResponse(200, { success: true, result: { permissions: ['User API Tokens:Read'] } })
         if (mode === 'empty') return jsonResponse(200, { success: true, result: { permissions: [] } })
         if (mode === 'unrecognized') return jsonResponse(200, { success: true, result: { permissions: ['DNS:Read'] } })
         return jsonResponse(200, { success: true, result: { permissions: ['User API Tokens:Edit'] } })
@@ -337,6 +338,18 @@ export function createControlledProviderSimulator({
           const err = new Error('network timeout waiting for POST /user/tokens response')
           err.code = 'ETIMEDOUT'
           throw err
+        }
+        if (state.faults.tokenCreateMissingIdAndValue) {
+          return jsonResponse(200, {
+            success: true,
+            result: { name: payload.name, policies: storedPolicies },
+          })
+        }
+        if (state.faults.tokenCreateMissingValue) {
+          return jsonResponse(200, {
+            success: true,
+            result: { id, name: payload.name, policies: storedPolicies },
+          })
         }
         return jsonResponse(200, {
           success: true,

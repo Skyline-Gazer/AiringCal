@@ -1417,6 +1417,8 @@ function buildLedgerMeta(completed, ledger, ctx = {}) {
     mutationsExecuted: mutationsExecutedFrom(completed, mutations),
     writerCredentialState: ctx.writerCredentialState ?? 'not-provisioned',
     observedBucket: ctx.observedBucket ?? null,
+    bucketEmptyVerified: Boolean(ctx.bucketEmptyVerified),
+    r2DevDisabled: Boolean(ctx.r2DevDisabled),
   }
 }
 
@@ -1742,6 +1744,9 @@ export async function runProductionApply({
       if (ctx.writerCredentialDeferred === true || deriveResult?.deferred === true) {
         ctx.writerCredentialDeferred = true
         ctx.writerCredentialState = 'deferred-until-bucket'
+      } else if (deriveResult?.pendingBucketAccessProof === true || ctx.s3BucketNotReady === true) {
+        ctx.writerCredentialState = 'override-pending-bucket'
+        completed.push('derive-s3')
       } else {
         ctx.writerCredentialState = 'override-verified'
         completed.push('derive-s3')
@@ -1809,8 +1814,30 @@ export async function runProductionApply({
     }
 
     // Object-level emptiness verification ALWAYS runs after credential provisioning/verification.
-    await requireIoMethod(io, 'verifyBucketEmpty')(ctx)
-    completed.push('verify-bucket-empty')
+    try {
+      await requireIoMethod(io, 'verifyBucketEmpty')(ctx)
+      ctx.bucketEmptyVerified = true
+      if (ctx.writerCredentialState === 'override-pending-bucket') {
+        ctx.writerCredentialState = 'override-verified'
+      }
+      completed.push('verify-bucket-empty')
+    } catch (error) {
+      if (typeof io?.cleanupFreshWriterToken === 'function') {
+        const cleanup = await io.cleanupFreshWriterToken(ctx)
+        if (cleanup && !cleanup.skipped) {
+          ctx.writerCredentialState = 'failed'
+          if (error && typeof error === 'object') {
+            error.cleanupFailed = !cleanup.cleaned
+            if (typeof error.message === 'string') {
+              error.message = cleanup.cleaned
+                ? `${error.message}; the newly minted Writer token was removed`
+                : `${error.message}; fresh Writer token cleanup FAILED — manual deletion required`
+            }
+          }
+        }
+      }
+      throw error
+    }
 
     const disableResult = await requireIoMethod(io, 'disableR2Dev')(ctx)
     completed.push('disable-r2-dev')

@@ -91,6 +91,7 @@ test('CLI entrypoint: approved Production installation reaches the apply-mode ex
       { wait: 'Supply an independently scoped R2 credential', answer: '\r', label: 'fallback: accepted' },
       { wait: 'Cloudflare R2 S3 Access Key ID', answer: `${S3_KEY}\r`, label: 'fallback key masked' },
       { wait: 'Cloudflare R2 S3 Secret Access Key', answer: `${S3_SECRET}\r`, label: 'fallback secret masked' },
+      { wait: 'Re-authorize and retry', answer: '\r', label: 'fallback: reauthorized' },
       { wait: 'Run the First Full Sync now', answer: '\r', label: 'first sync: requested' },
       { wait: 'Dispatch the Writer', answer: '\r', label: 'first sync: confirmed' },
     ],

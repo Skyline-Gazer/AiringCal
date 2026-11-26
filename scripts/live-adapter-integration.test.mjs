@@ -218,6 +218,9 @@ test('QA-002 #6: nonempty bucket fails clean-bootstrap check before downstream m
   assert.equal(result.completed.includes('sync-gh-env'), false)
   assert.equal(sim.hasGithubEnv('production'), false)
   assert.deepEqual(sim.listObjects(DEFAULT_ACCOUNT_ID, 'airingcal-production'), ['foreign/data.json'])
+  assert.equal(sim.state.mintedTokens.size, 0, 'freshly minted writer token must be deleted on dirty-bucket abort')
+  assert.equal(sim.state.deletedTokens.length, 1)
+  assert.ok(result.mutationsSummary.compensations.some((e) => e.op === 'writer-token-cleanup'))
 })
 
 test('QA-002 #7: existing bucket ownership unproven without inventory match or explicit adoption -> refuses safely', async () => {
@@ -283,6 +286,7 @@ test('QA-002 #10: partial mutation recovery -> attempt 1 creates bucket and fail
     environment: 'production',
     bucket: 'airingcal-production',
     cloudflare: { accountId: DEFAULT_ACCOUNT_ID },
+    mutationReceipts: [{ status: 'aborted', mutationsExecuted: ['r2-bucket-create'] }],
   }
   const attempt2 = await runProductionApply({ plan, env, io: createSimIo(sim, env, plan), priorInventory })
   assert.equal(attempt2.ok, true, JSON.stringify(attempt2))
@@ -497,4 +501,114 @@ test('Wizard end-to-end partial Production recovery via real setup-wizard.mjs + 
   } finally {
     rmSync(invDir, { recursive: true, force: true })
   }
+})
+
+// ===========================================================================
+// Independent Review Regression Tests (#208 Findings 1-7 + Focus Area 7)
+// ===========================================================================
+
+test('Regression F1: /user/tokens/permissions 404/500/unrecognized stays advisory, while explicit denial aborts', async () => {
+  for (const mode of ['not-found', 'server-error', 'unrecognized']) {
+    const sim = createControlledProviderSimulator({ faults: { permissionsMode: mode } })
+    const res = await runProductionApply({ plan: makeProdPlan(), env: makeProdEnv(), io: createSimIo(sim) })
+    assert.equal(res.ok, true, `mode=${mode} must remain advisory: ${JSON.stringify(res)}`)
+  }
+
+  const simDenied = createControlledProviderSimulator({ faults: { permissionsMode: 'denied' } })
+  const resDenied = await runProductionApply({ plan: makeProdPlan(), env: makeProdEnv(), io: createSimIo(simDenied) })
+  assert.equal(resDenied.ok, false)
+  assert.equal(resDenied.errorCategory, 'permission-denied')
+  assert.ok(Array.isArray(resDenied.missingScopes) && resDenied.missingScopes.length > 0)
+})
+
+test('Regression F2: prior DEPLOY_FAILED inventory with mutationsExecuted: [] does NOT prove bucket ownership', async () => {
+  const sim = createControlledProviderSimulator()
+  sim.seedBucket(DEFAULT_ACCOUNT_ID, 'airingcal-production', { objects: {}, r2DevEnabled: true })
+  const priorInventory = {
+    schema: 'airingcal.inventory.v1',
+    environment: 'production',
+    bucket: 'airingcal-production',
+    cloudflare: { accountId: DEFAULT_ACCOUNT_ID },
+    deployment: { gitSha: 'c6fd64fffee42bbc956f3660c3a6798ac23481ef', verdict: 'DEPLOY_FAILED' },
+    mutationReceipts: [{ status: 'aborted', mutationsExecuted: [] }],
+  }
+  const resRefused = await runProductionApply({ plan: makeProdPlan(), env: makeProdEnv(), io: createSimIo(sim), priorInventory })
+  assert.equal(resRefused.ok, false)
+  assert.equal(resRefused.code, 'BUCKET_OWNERSHIP_UNPROVEN')
+  assert.equal(sim.state.mintedTokens.size, 0)
+
+  const resAdopted = await runProductionApply({
+    plan: makeProdPlan(),
+    env: makeProdEnv(),
+    io: createSimIo(sim),
+    priorInventory,
+    bucketAdoptionAuthorized: true,
+  })
+  assert.equal(resAdopted.ok, true, JSON.stringify(resAdopted))
+})
+
+test('Regression F3: POST /user/tokens missing value confirms & deletes orphan; missing id+value records unknown-outcome', async () => {
+  const simNoVal = createControlledProviderSimulator({ faults: { tokenCreateMissingValue: true } })
+  const resNoVal = await runProductionApply({ plan: makeProdPlan(), env: makeProdEnv(), io: createSimIo(simNoVal) })
+  assert.equal(resNoVal.ok, false)
+  assert.equal(resNoVal.code, 'WRITER_TOKEN_BAD_RESPONSE')
+  assert.equal(simNoVal.state.mintedTokens.size, 0, 'incomplete token without value must be cleaned up')
+  assert.equal(simNoVal.state.deletedTokens.length, 1)
+  assert.ok(resNoVal.mutationsSummary.confirmed.some((e) => e.op === 'writer-token-create'))
+  assert.ok(resNoVal.mutationsSummary.compensations.some((e) => e.op === 'writer-token-cleanup'))
+
+  const simNoBoth = createControlledProviderSimulator({ faults: { tokenCreateMissingIdAndValue: true } })
+  const resNoBoth = await runProductionApply({ plan: makeProdPlan(), env: makeProdEnv(), io: createSimIo(simNoBoth) })
+  assert.equal(resNoBoth.ok, false)
+  assert.equal(resNoBoth.code, 'WRITER_TOKEN_BAD_RESPONSE')
+  assert.ok(resNoBoth.mutationsSummary.unknown.some((e) => e.op === 'writer-token-create'))
+})
+
+test('Regression FA7: S3 override before bucket creation starts override-pending-bucket and reaches override-verified only after empty check', async () => {
+  const sim = createControlledProviderSimulator({ faults: { permissionsMode: 'denied' } })
+  sim.addOperatorS3Override({
+    accessKeyId: 'op-s3-pending',
+    secretAccessKey: 'op-s3-pending-secret',
+    allowedBuckets: ['airingcal-production'],
+  })
+  const env = makeProdEnv({
+    AIRINGCAL_S3_ACCESS_KEY_ID: 'op-s3-pending',
+    AIRINGCAL_S3_SECRET_ACCESS_KEY: 'op-s3-pending-secret',
+  })
+  const plan = makeProdPlan()
+  const io = createSimIo(sim, env, plan)
+  const ctx = {}
+  const initialDerive = await io.deriveAndVerifyS3(ctx)
+  assert.equal(initialDerive.verified, false)
+  assert.equal(initialDerive.pendingBucketAccessProof, true)
+
+  // When bucket does not exist yet and verifyBucketEmpty fails after creation,
+  // state must remain override-pending-bucket (never upgrade prematurely to override-verified).
+  const rawIo = createSimIo(sim, env, plan)
+  const failRes = await runProductionApply({
+    plan,
+    env,
+    io: {
+      ...rawIo,
+      async ensureBucket(applyCtx) {
+        const out = await rawIo.ensureBucket(applyCtx)
+        sim.state.faults.s3ListFail = true
+        return out
+      },
+    },
+  })
+  assert.equal(failRes.ok, false)
+  assert.equal(failRes.writerCredentialState, 'override-pending-bucket')
+  assert.equal(failRes.bucketEmptyVerified, false)
+
+  // Fresh missing bucket succeeds cleanly and reaches override-verified.
+  const simClean = createControlledProviderSimulator({ faults: { permissionsMode: 'denied' } })
+  simClean.addOperatorS3Override({
+    accessKeyId: 'op-s3-pending',
+    secretAccessKey: 'op-s3-pending-secret',
+    allowedBuckets: ['airingcal-production'],
+  })
+  const cleanRes = await runProductionApply({ plan, env, io: createSimIo(simClean, env, plan) })
+  assert.equal(cleanRes.ok, true, JSON.stringify(cleanRes))
+  assert.equal(cleanRes.writerCredentialState, 'override-verified')
 })

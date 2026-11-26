@@ -109,6 +109,46 @@ function classifyCfHttpError(error, defaultCategory = 'provider-incompatibility'
 }
 
 /**
+ * #208 Review Finding 2: A prior local inventory establishes bucket ownership
+ * ONLY when it matches environment/bucket/account AND contains affirmative
+ * evidence that AiringCal created, adopted, or deployed that bucket — never
+ * from a failed attempt that was itself refused for unproven ownership.
+ */
+export function hasAffirmativeBucketOwnership(priorInventory, bucket, accountId = '') {
+  if (!priorInventory || typeof priorInventory !== 'object') return false
+  if (priorInventory.environment !== 'production' || priorInventory.bucket !== bucket) return false
+  const normalizedAcct = String(accountId ?? '').trim().toLowerCase()
+  const priorAcct = String(priorInventory.cloudflare?.accountId ?? '').trim().toLowerCase()
+  if (normalizedAcct && priorAcct && normalizedAcct !== priorAcct) return false
+  if (!normalizedAcct && !priorAcct) return false
+
+  const deployedVerdicts = new Set(['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'SYNC_FAILED', 'VERIFICATION_FAILED'])
+  if (deployedVerdicts.has(priorInventory.deployment?.verdict)) return true
+  if (priorInventory.resources?.bucket?.ownershipConfirmed === true) return true
+
+  const receipts = Array.isArray(priorInventory.mutationReceipts) ? priorInventory.mutationReceipts : []
+  for (const receipt of receipts) {
+    const executed = Array.isArray(receipt?.mutationsExecuted) ? receipt.mutationsExecuted : []
+    if (
+      executed.includes('r2-bucket-create') ||
+      executed.includes('ensure-bucket') ||
+      executed.includes('ensure-bucket-empty')
+    ) {
+      return true
+    }
+    const ledgerEntries = Array.isArray(receipt?.mutations) ? receipt.mutations : []
+    if (
+      ledgerEntries.some(
+        (m) => m?.op === 'r2-bucket-create' && (m.status === 'confirmed-success' || m.status === 'already-exists'),
+      )
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
  * Classify `GET /user/tokens/permissions` for the ability to create tokens.
  * CF has returned both object entries ({name,id,description}) and flat strings;
  * shapes without any API-token entry are inconclusive (the Create Token POST
@@ -924,6 +964,8 @@ export function createLiveDevelopmentApplyIo({
 
   /** @type {{ accessKeyId: string, secretAccessKey: string, endpoint: string, region: string, derived: boolean } | null} */
   let s3Creds = null
+  /** @type {((ctx?: object) => Promise<{ cleaned: boolean, error: Error | null }>) | null} */
+  let pendingFreshWriterCleanup = null
 
   function requireS3() {
     if (!s3Creds?.accessKeyId || !s3Creds?.secretAccessKey) {
@@ -1138,16 +1180,24 @@ export function createLiveDevelopmentApplyIo({
           ctx.s3 = {
             accessKeyId: overrideId,
             derived: false,
-            verified: true,
+            verified: Boolean(verified.bucketReady),
+            pendingBucketAccessProof: !verified.bucketReady,
             source: creds.source,
             scope: creds.scope,
           }
-          process.stderr.write(`[deploy-env] S3 override verified on ${bucket}\n`)
+          if (verified.bucketReady) {
+            process.stderr.write(`[deploy-env] S3 override verified on ${bucket}\n`)
+          } else {
+            process.stderr.write(
+              `[deploy-env] S3 override accepted (bucket ${bucket} does not exist yet; object access will be verified after bucket creation)\n`,
+            )
+          }
           return {
             accessKeyId: overrideId,
             secretAccessKey: overrideSecret,
             derived: false,
-            verified: true,
+            verified: Boolean(verified.bucketReady),
+            pendingBucketAccessProof: !verified.bucketReady,
             source: creds.source,
             scope: creds.scope,
           }
@@ -1463,7 +1513,9 @@ export function createLiveDevelopmentApplyIo({
       const endpoint = s3EndpointFor(accountId)
       const bucketResource = r2BucketResourceKey(accountId, bucket)
 
-      // 1. Official API capability probe — missing catalogue never counts as verified authority.
+      // 1. Advisory permission catalogue probe — undocumented /user/tokens/permissions
+      // may return 404 or inconclusive shapes; only an explicit denial aborts here,
+      // while documented permission_groups + POST /user/tokens remain authoritative.
       let permissionGroupId
       try {
         const permissionsBody = await cfApi(fetchImpl, parentToken, '/user/tokens/permissions')
@@ -1474,16 +1526,7 @@ export function createLiveDevelopmentApplyIo({
         }
       } catch (error) {
         if (error?.missingScopes) throw error
-        const detail = redactSecrets(error instanceof Error ? error.message : String(error), secrets)
-        const category = classifyCfHttpError(error, 'provider-incompatibility')
-        if (category === 'permission-denied') {
-          throw tokenCreateDeniedError(`capability probe: ${detail}`)
-        }
-        throw taggedError(`Cloudflare token permission probe failed (${category}): ${detail}`, {
-          code: category === 'transport-failure' ? 'PERMISSION_PROBE_TRANSPORT_ERROR' : 'PERMISSION_PROBE_FAILED',
-          errorCategory: category,
-          exitCode: 1,
-        })
+        ctx.permissionCatalogueStatus = 'unavailable'
       }
 
       try {
@@ -1603,13 +1646,54 @@ export function createLiveDevelopmentApplyIo({
 
       const tokenId = String(created?.result?.id ?? '').trim()
       const tokenValue = String(created?.result?.value ?? '').trim()
-      if (!tokenId || !tokenValue) {
-        createEntry.fail(new Error('Create Token API response missing id+value'))
-        throw taggedError('Production Writer credential: Create Token API did not return id+value', {
+
+      const cleanupTokenById = async (idToDelete, cleanupCtx = ctx) => {
+        const cleanupEntry = ledgerFor(cleanupCtx).begin({
+          op: 'writer-token-cleanup',
+          stepId: 'provision-writer-credential',
+          resourceType: 'cf-api-token',
+          target: idToDelete,
+          compensation: true,
+        })
+        try {
+          await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(idToDelete)}`, { method: 'DELETE' })
+          cleanupEntry.confirm('deleted unverified writer token')
+          return { cleaned: true, error: null }
+        } catch (cleanupErr) {
+          cleanupEntry.compensationFailed(
+            cleanupErr,
+            `Manually inspect and delete Cloudflare API token ${idToDelete} (${tokenName}) before retrying`,
+          )
+          return { cleaned: false, error: cleanupErr }
+        }
+      }
+
+      if (!tokenId && !tokenValue) {
+        createEntry.unknown(
+          new Error('Create Token API response missing id and value'),
+          `List Cloudflare API tokens for "${tokenName}" to check whether creation succeeded despite incomplete response`,
+        )
+        throw taggedError('Production Writer credential: Create Token API response missing id+value', {
           code: 'WRITER_TOKEN_BAD_RESPONSE',
           errorCategory: 'provider-incompatibility',
           exitCode: 1,
         })
+      }
+      if (!tokenValue) {
+        createEntry.confirm(`tokenId=${tokenId} (missing token value)`)
+        const cleanup = await cleanupTokenById(tokenId)
+        throw taggedError(
+          `Production Writer credential: Create Token API returned id ${tokenId} without secret value; ` +
+          (cleanup.cleaned
+            ? 'the incomplete token was deleted'
+            : `token cleanup FAILED (${redactSecrets(cleanup.error?.message ?? 'unknown', secrets)}) — manual deletion required`),
+          {
+            code: 'WRITER_TOKEN_BAD_RESPONSE',
+            errorCategory: 'provider-incompatibility',
+            exitCode: 1,
+            cleanupFailed: !cleanup.cleaned,
+          },
+        )
       }
       // Record confirmed creation IMMEDIATELY before verification steps.
       createEntry.confirm(`tokenId=${tokenId}`)
@@ -1626,26 +1710,7 @@ export function createLiveDevelopmentApplyIo({
         tokenId,
       }
 
-      const cleanupFresh = async () => {
-        const cleanupEntry = ledger.begin({
-          op: 'writer-token-cleanup',
-          stepId: 'provision-writer-credential',
-          resourceType: 'cf-api-token',
-          target: tokenId,
-          compensation: true,
-        })
-        try {
-          await cfApi(fetchImpl, parentToken, `/user/tokens/${encodeURIComponent(tokenId)}`, { method: 'DELETE' })
-          cleanupEntry.confirm('deleted unverified writer token')
-          return { cleaned: true, error: null }
-        } catch (cleanupErr) {
-          cleanupEntry.compensationFailed(
-            cleanupErr,
-            `Manually inspect and delete Cloudflare API token ${tokenId} (${tokenName}) before retrying`,
-          )
-          return { cleaned: false, error: cleanupErr }
-        }
-      }
+      const cleanupFresh = () => cleanupTokenById(tokenId)
 
       try {
         // 4. Identity proof: the freshly minted token must verify to its own id.
@@ -1734,6 +1799,14 @@ export function createLiveDevelopmentApplyIo({
       }
 
       s3Creds = creds
+      pendingFreshWriterCleanup = async (cleanupCtx = ctx) => {
+        const res = await cleanupTokenById(tokenId, cleanupCtx)
+        if (res.cleaned) {
+          s3Creds = null
+          pendingFreshWriterCleanup = null
+        }
+        return res
+      }
       ctx.s3 = {
         accessKeyId: tokenId,
         derived: true,
@@ -1746,6 +1819,11 @@ export function createLiveDevelopmentApplyIo({
         ...creds,
         verified: true,
       }
+    },
+
+    async cleanupFreshWriterToken(ctx = {}) {
+      if (!pendingFreshWriterCleanup) return { cleaned: false, skipped: true }
+      return pendingFreshWriterCleanup(ctx)
     },
     async freezeWriter(ctx = {}) {
       if (isProduction) {
@@ -1881,13 +1959,7 @@ export function createLiveDevelopmentApplyIo({
           const explicitAdoption =
             Boolean(ctx?.bucketAdoptionAuthorized) ||
             String(env.AIRINGCAL_ADOPT_EXISTING_BUCKET ?? '').trim() === 'yes'
-          const priorAccount = String(ctx?.priorInventory?.cloudflare?.accountId ?? '').trim().toLowerCase()
-          const inventoryMatch = Boolean(
-            ctx?.priorInventory &&
-            ctx.priorInventory.environment === 'production' &&
-            ctx.priorInventory.bucket === bucket &&
-            (!accountId || !priorAccount || priorAccount === String(accountId).toLowerCase()),
-          )
+          const inventoryMatch = hasAffirmativeBucketOwnership(ctx?.priorInventory, bucket, accountId)
           if (!explicitAdoption && !inventoryMatch) {
             throw taggedError(
               `Target Production bucket "${bucket}" already exists in account ${accountId || '<unknown>'}, ` +
