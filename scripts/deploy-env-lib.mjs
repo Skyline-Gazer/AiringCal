@@ -15,7 +15,7 @@ export const DEVELOPMENT_DEFAULTS = Object.freeze({
   repository: ALLOWED_REPOSITORY,
   environment: 'development',
   bucket: 'airingcal-development',
-  workerName: 'airing-cal-v3-read-staging',
+  workerName: 'airingcal-development',
   edgeoneProject: 'airingcal-edgeone-read-overseas',
   edgeoneRegion: 'overseas',
   s3Region: 'auto',
@@ -37,7 +37,7 @@ export const PRODUCTION_DEFAULTS = Object.freeze({
   repository: ALLOWED_REPOSITORY,
   environment: 'production',
   bucket: 'airingcal-production',
-  workerName: 'airing-cal-v3-read-production',
+  workerName: 'airingcal-production',
   edgeoneProject: 'airingcal-edgeone-read-production',
   edgeoneRegion: 'overseas',
   s3Region: 'auto',
@@ -57,6 +57,9 @@ export const PRODUCTION_FORBIDDEN_COLLISION_NAMES = Object.freeze([
   'airing-cal-data',
   // Live v2 Production worker — must never be overwritten by v3 Production readers.
   'airing-cal-frontend',
+  // Legacy non-canonical v3 reader names (#147 era) — never as Production targets.
+  'airing-cal-v3-read-staging',
+  'airing-cal-v3-read-production',
   // Existing EdgeOne reader project kept as rollback (keepOldProject).
   'airingcal-edgeone-read',
   DEVELOPMENT_DEFAULTS.workerName,
@@ -454,6 +457,9 @@ export function buildProductionPlan({
   mode = 'dry-run',
   accountId = '',
   zoneId = '',
+  publicOriginMode = '',
+  workerCustomDomain = '',
+  workersDevSubdomain = 'r7a',
   applyAuthorized = false,
   gitSha = null,
 } = {}) {
@@ -461,11 +467,6 @@ export function buildProductionPlan({
     throw new Error(`target must be cloudflare|edgeone|both (got "${target}")`)
   }
   const base = String(publicBaseUrl ?? '').trim().replace(/\/+$/, '')
-
-  const normalizedZoneId = String(zoneId ?? '').trim()
-  if (!normalizedZoneId) {
-    throw new Error('AIRINGCAL_ZONE_ID is required for production preflight-identity (dry-run and apply)')
-  }
 
   const bucket = PRODUCTION_DEFAULTS.bucket
   assertProductionResourceNames({
@@ -476,14 +477,28 @@ export function buildProductionPlan({
 
   // §6.3 private-R2 target: unset (or Worker-hosted) base = the Worker is the
   // only anonymous surface. A bucket custom domain keeps the legacy edge plan.
-  const publicOriginMode = resolvePublicOriginMode({ publicBaseUrl: base, cloudflareWorkerName })
-  const workerOrigin = `https://${cloudflareWorkerName}.r7a.workers.dev`
+  const resolvedOriginMode = resolvePublicOriginMode({
+    publicBaseUrl: base,
+    cloudflareWorkerName,
+    publicOriginMode,
+    workerCustomDomain,
+  })
+  // #195 P1.4: a zone is only needed to touch DNS/edge surfaces — the legacy
+  // bucket-domain topology. Worker mode (workers.dev or Worker custom domain
+  // route) must not demand a zone for readers that never use one.
+  const normalizedZoneId = String(zoneId ?? '').trim()
+  if (resolvedOriginMode === 'bucket-domain' && !normalizedZoneId) {
+    throw new Error(
+      'AIRINGCAL_ZONE_ID is required for legacy bucket-domain production plans (worker mode does not need a zone)',
+    )
+  }
+  const workerOrigin = `https://${cloudflareWorkerName}.${workersDevSubdomain || 'r7a'}.workers.dev`
   const publicHost = base ? new URL(base).host : new URL(workerOrigin).host
 
   const imageCdn = validateImageCdnConfig({ publicBaseUrl: base, imageBaseUrl })
   const corsOrigins = buildCorsAllowedOrigins({
     cloudflareWorkerHosts: [workerOrigin],
-    edgeoneHosts: base && publicOriginMode === 'bucket-domain' ? [base] : [],
+    edgeoneHosts: base && resolvedOriginMode === 'bucket-domain' ? [base] : [],
   })
 
   const steps = [
@@ -546,7 +561,7 @@ export function buildProductionPlan({
   // Edge/bucket-domain steps exist only in the legacy public-bucket topology;
   // in worker mode the deployed readers themselves are the anonymous surface
   // and the isolation probe runs against them after deploy (#72 §6.3).
-  const edgeSteps = publicOriginMode === 'bucket-domain'
+  const edgeSteps = resolvedOriginMode === 'bucket-domain'
     ? [
       {
         id: 'attach-custom-domain',
@@ -574,18 +589,18 @@ export function buildProductionPlan({
     : []
   const isolationProbeStep = {
     id: 'isolation-probe',
-    title: publicOriginMode === 'worker'
+    title: resolvedOriginMode === 'worker'
       ? 'Write checkpoints/_isolation-probe.txt, prove it exists via S3 HEAD, prove every deployed reader origin denies it anonymously (GET/HEAD + encoded variants), then delete it'
       : 'Write non-sensitive checkpoints/_isolation-probe.txt and prove anonymous GET/HEAD denied before writer publish',
     mutates: true,
     probeKey: PRODUCTION_DEFAULTS.isolationProbeKey,
     abortOnFailure: true,
     dualBucketFallback: false,
-    probeTargets: publicOriginMode === 'worker' ? 'deployed-reader-origins' : 'bucket-domain',
+    probeTargets: resolvedOriginMode === 'worker' ? 'deployed-reader-origins' : 'bucket-domain',
     positiveProof: true,
     cleanupProbe: true,
   }
-  if (publicOriginMode === 'worker') {
+  if (resolvedOriginMode === 'worker') {
     const docIndex = steps.findIndex((step) => step.id === 'bangumi-full-sync-owner-dispatch')
     steps.splice(docIndex, 0, isolationProbeStep)
   } else {
@@ -608,10 +623,10 @@ export function buildProductionPlan({
     applyAuthorized: Boolean(applyAuthorized),
     publicBaseUrl: base || null,
     publicHost,
-    publicOriginMode,
+    publicOriginMode: resolvedOriginMode,
     workerOrigin,
     accountId: accountId || null,
-    zoneId: normalizedZoneId,
+    zoneId: normalizedZoneId || null,
     imageCdn,
     cors: {
       allowedOrigins: corsOrigins,
@@ -672,9 +687,12 @@ export function deriveProductionConfig(rawEnv = {}, opts = {}) {
   // Unset is valid §6.3 worker-origin mode; the plan builder resolves the mode.
 
   const zoneId = String(env.AIRINGCAL_ZONE_ID ?? env.CLOUDFLARE_ZONE_ID ?? '').trim()
-  if (!zoneId) {
-    throw new Error('AIRINGCAL_ZONE_ID is required for production preflight-identity (dry-run and apply)')
-  }
+  // #195 P1.4: the zone is no longer unconditional — worker-mode Production
+  // needs no DNS surface. buildProductionPlan re-validates: bucket-domain
+  // plans still refuse without a zone.
+  const publicOriginModeOverride = String(env.AIRINGCAL_PUBLIC_ORIGIN_MODE ?? '').trim()
+  const workerCustomDomain = String(env.AIRINGCAL_WORKER_CUSTOM_DOMAIN ?? '').trim()
+  const workersDevSubdomain = String(env.AIRINGCAL_WORKERS_DEV_SUBDOMAIN ?? 'r7a').trim() || 'r7a'
 
   const deployTarget =
     String(opts.target ?? env.AIRINGCAL_DEPLOY_TARGET ?? 'both').trim() || 'both'
@@ -703,6 +721,9 @@ export function deriveProductionConfig(rawEnv = {}, opts = {}) {
     mode: opts.mode || 'dry-run',
     accountId,
     zoneId,
+    publicOriginMode: publicOriginModeOverride,
+    workerCustomDomain,
+    workersDevSubdomain,
     applyAuthorized,
     gitSha: opts.gitSha ?? null,
   })
@@ -784,6 +805,9 @@ export function buildDevelopmentDeployPlan({
   imageBaseUrl = '',
   mode = 'dry-run',
   accountId = '',
+  publicOriginMode = '',
+  workerCustomDomain = '',
+  workersDevSubdomain = 'r7a',
 } = {}) {
   if (!ALLOWED_TARGETS.has(target)) {
     throw new Error(`target must be cloudflare|edgeone|both (got "${target}")`)
@@ -793,14 +817,19 @@ export function buildDevelopmentDeployPlan({
   // §6.3 private-R2 target (mirrors buildProductionPlan): unset/Worker base =
   // the Worker is the only anonymous surface; a bucket custom domain keeps
   // the legacy edge plan (custom domain + WAF + bucket CORS + staging copies).
-  const publicOriginMode = resolvePublicOriginMode({ publicBaseUrl: base, cloudflareWorkerName })
-  const workerOrigin = `https://${cloudflareWorkerName}.r7a.workers.dev`
+  const resolvedOriginMode = resolvePublicOriginMode({
+    publicBaseUrl: base,
+    cloudflareWorkerName,
+    publicOriginMode,
+    workerCustomDomain,
+  })
+  const workerOrigin = `https://${cloudflareWorkerName}.${workersDevSubdomain || 'r7a'}.workers.dev`
   const publicHost = base ? new URL(base).host : new URL(workerOrigin).host
 
   const imageCdn = validateImageCdnConfig({ publicBaseUrl: base, imageBaseUrl })
   const corsOrigins = buildCorsAllowedOrigins({
     cloudflareWorkerHosts: [workerOrigin],
-    edgeoneHosts: base && publicOriginMode === 'bucket-domain' ? [base] : [],
+    edgeoneHosts: base && resolvedOriginMode === 'bucket-domain' ? [base] : [],
   })
 
   const steps = [
@@ -835,7 +864,7 @@ export function buildDevelopmentDeployPlan({
     },
   ]
 
-  const edgeSteps = publicOriginMode === 'bucket-domain'
+  const edgeSteps = resolvedOriginMode === 'bucket-domain'
     ? [
       {
         id: 'attach-custom-domain',
@@ -863,21 +892,21 @@ export function buildDevelopmentDeployPlan({
     : []
   const isolationProbeStep = {
     id: 'isolation-probe',
-    title: publicOriginMode === 'worker'
+    title: resolvedOriginMode === 'worker'
       ? 'Write checkpoints/_isolation-probe.txt, prove it exists via S3 HEAD, prove every deployed reader origin denies it anonymously (GET/HEAD + encoded variants), then delete it'
       : 'Write non-sensitive checkpoints/_isolation-probe.txt and prove anonymous GET/HEAD denied',
     mutates: true,
     probeKey: DEVELOPMENT_DEFAULTS.isolationProbeKey,
     abortOnFailure: true,
     dualBucketFallback: false,
-    probeTargets: publicOriginMode === 'worker' ? 'deployed-reader-origins' : 'bucket-domain',
+    probeTargets: resolvedOriginMode === 'worker' ? 'deployed-reader-origins' : 'bucket-domain',
     positiveProof: true,
     cleanupProbe: true,
   }
   // Staging-coupled migration copies belong ONLY to the legacy one-shot
   // bucket-domain cutover (they ran 2026-11-07/08); worker-mode dev applies
   // are pure infrastructure redeployments against the live single bucket.
-  const copySteps = publicOriginMode === 'bucket-domain'
+  const copySteps = resolvedOriginMode === 'bucket-domain'
     ? [
       {
         id: 'copy-public',
@@ -922,7 +951,7 @@ export function buildDevelopmentDeployPlan({
     gated: true,
   })
 
-  if (publicOriginMode === 'worker') {
+  if (resolvedOriginMode === 'worker') {
     // The probe needs the DEPLOYED readers as its anonymous targets, so it
     // runs after both deploy steps and before the gated writer test.
     steps.splice(steps.findIndex((step) => step.id === 'single-writer-test'), 0, isolationProbeStep)
@@ -942,7 +971,7 @@ export function buildDevelopmentDeployPlan({
     abortOnIsolationFailure: true,
     publicBaseUrl: base || null,
     publicHost,
-    publicOriginMode,
+    publicOriginMode: resolvedOriginMode,
     workerOrigin,
     accountId: accountId || null,
     imageCdn,
@@ -1080,7 +1109,19 @@ export function evaluateIsolationProbe({ r2DevDisabled, probes = [] }) {
  *   no anonymous surface, the Worker serves the controlled public object
  *   interface, streams images, and answers CORS from its own allowlist.
  */
-export function resolvePublicOriginMode({ publicBaseUrl = '', cloudflareWorkerName }) {
+export function resolvePublicOriginMode({
+  publicBaseUrl = '',
+  cloudflareWorkerName,
+  publicOriginMode = '',
+  workerCustomDomain = '',
+} = {}) {
+  const explicit = String(publicOriginMode ?? '').trim().toLowerCase()
+  if (explicit) {
+    if (explicit !== 'worker' && explicit !== 'bucket-domain') {
+      throw new Error(`AIRINGCAL_PUBLIC_ORIGIN_MODE must be worker|bucket-domain (got "${explicit}")`)
+    }
+    return explicit
+  }
   const base = String(publicBaseUrl).trim().replace(/\/+$/, '')
   if (!base) return 'worker'
   let host
@@ -1089,7 +1130,21 @@ export function resolvePublicOriginMode({ publicBaseUrl = '', cloudflareWorkerNa
   } catch {
     throw new Error('AIRINGCAL_PUBLIC_BASE_URL must be an absolute URL')
   }
-  return host.endsWith('.workers.dev') ? 'worker' : 'bucket-domain'
+  if (host.endsWith('.workers.dev')) return 'worker'
+  const custom = String(workerCustomDomain ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\*\./, '')
+  if (custom && host.toLowerCase() === custom) return 'worker'
+  // #195 P1.4: a non-workers.dev public host is NOT automatically the legacy
+  // bucket-domain topology — it may be a Worker custom domain. The operator
+  // must state which topology this URL belongs to; never silently expose or
+  // manage an R2 bucket domain because a URL string looked "external".
+  throw new Error(
+    `Ambiguous public origin host "${host}": set AIRINGCAL_PUBLIC_ORIGIN_MODE=worker ` +
+      `(Worker custom domain / explicit worker surface) or =bucket-domain (legacy public bucket + CDN). ` +
+      `Legacy bucket-domain mode is never inferred.`,
+  )
 }
 
 /**
@@ -1197,6 +1252,9 @@ export function deriveDevelopmentConfig(rawEnv = {}, { target, mode = 'dry-run' 
     imageBaseUrl: env.AIRINGCAL_IMAGE_BASE_URL || '',
     mode,
     accountId,
+    publicOriginMode: String(env.AIRINGCAL_PUBLIC_ORIGIN_MODE ?? '').trim(),
+    workerCustomDomain: String(env.AIRINGCAL_WORKER_CUSTOM_DOMAIN ?? '').trim(),
+    workersDevSubdomain: String(env.AIRINGCAL_WORKERS_DEV_SUBDOMAIN ?? 'r7a').trim() || 'r7a',
   })
 
   const s3Endpoint =
