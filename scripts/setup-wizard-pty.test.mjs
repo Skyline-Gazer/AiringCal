@@ -28,6 +28,7 @@ function runSetupPty({ answers, env = {}, timeoutMs = 120_000 }) {
       LINES: '48',
       AIRINGCAL_CLOUDFLARE_API_TOKEN: '',
       AIRINGCAL_BANGUMI_TOKEN: '',
+      AIRINGCAL_INVENTORY_DIR: workDir,
       AIRINGCAL_WIZARD_TEST_HOOKS: 'scripts/fixtures/wizard-acceptance-hooks.mjs',
       AIRINGCAL_WIZARD_TEST_RESULT: resultPath,
       ...env,

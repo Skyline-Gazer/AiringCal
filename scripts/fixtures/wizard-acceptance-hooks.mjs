@@ -1,13 +1,14 @@
 /**
- * #205 QA-001: deterministic provider/command adapters for the committed PTY
- * acceptance harness. Loaded ONLY when AIRINGCAL_WIZARD_TEST_HOOKS points at
- * this file; normal wizard runs never import it.
+ * #205 QA-001: FIXTURE-LEVEL deterministic provider/command adapters for the
+ * committed PTY CLI acceptance harness. Loaded ONLY when
+ * AIRINGCAL_WIZARD_TEST_HOOKS points at this file; normal wizard runs never
+ * import it.
  *
- * It deliberately exercises the real orchestration (main → installFlow →
- * resolveApplyEnvironment → buildPlanForEnvironment → applyPlan →
- * runDevelopmentApply/runProductionApply → verdict) and only replaces the
- * remote provider I/O with recording doubles. Observed facts are written to
- * AIRINGCAL_WIZARD_TEST_RESULT for assertions.
+ * Scope distinction (#208 QA-002): this fixture replaces high-level I/O
+ * adapters (`ensureBucket`, `provisionProductionWriter`, etc.) to test CLI/PTY
+ * prompt & gate plumbing. Real Live I/O Adapter integration coverage lives in
+ * `scripts/live-adapter-integration.test.mjs` with
+ * `scripts/fixtures/controlled-provider-sim.mjs`.
  */
 
 import { writeFileSync } from 'node:fs'
@@ -104,7 +105,8 @@ export default {
         s3 = { accessKeyId: 'scoped-key', secretAccessKey: 'scoped-secret', source: 'scoped-token', scope: 'bucket-scoped', tokenName: 'airingcal-production-writer' }
         return { ...s3, verified: true }
       },
-      async ensureBucket() { return record(observed, 'ensure-bucket', { bucket: plan.bucket }) },
+      async ensureBucket() { return record(observed, 'ensure-bucket', { bucket: plan.bucket, created: true }) },
+      async verifyBucketEmpty() { return record(observed, 'verify-bucket-empty', { bucket: plan.bucket, emptyVerified: true }) },
       async disableR2Dev() { return record(observed, 'disable-r2-dev', { disabled: true }) },
       async writeIsolationProbe() { return record(observed, 'isolation-probe-write', iso) },
       async probeAnonymousAccess() {
