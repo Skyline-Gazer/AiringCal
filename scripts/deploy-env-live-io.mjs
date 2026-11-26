@@ -929,6 +929,19 @@ export function createLiveDevelopmentApplyIo({
   }
 
   return {
+    /**
+     * #195: the setup wizard's verifier needs the SAME S3 credentials the
+     * apply derived. Read-only accessor — never logged, never persisted.
+     */
+    s3Credentials() {
+      return s3Creds
+        ? {
+          accessKeyId: s3Creds.accessKeyId,
+          secretAccessKey: s3Creds.secretAccessKey,
+          endpoint: s3Creds.endpoint,
+        }
+        : null
+    },
     async probeToken(ctx = {}) {
       const token = tokenFromEnv(env)
       if (!token) {

@@ -50,8 +50,9 @@ export function runAiringcalSetup(
         bindings_required: [],
       }
     case 'cloudflare':
-      // The Cloudflare read worker declares its R2 binding in wrangler.toml; the
-      // release is still built by the portable/Compose builder.
+      // The Cloudflare read worker declares its R2 binding in the materialized
+      // wrangler config; releases are built by the GHA Portable Writer only
+      // (#195 — no Compose/QingLong paths exist anymore).
       return {
         platform: 'cloudflare',
         env_lines: formatPortableEnvLines({ AIRINGCAL_PLATFORM: 'cloudflare' }),

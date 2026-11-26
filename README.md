@@ -27,6 +27,27 @@ scheduled job remains disabled until the Owner flips the gates.
 
 **Start here:** [Deployment guide](docs/DEPLOYMENT.md) → [Current v3 state and required sequencing](docs/v3/current-state.md) → [Docs index](docs/README.md). Historical Workers/VPS/QingLong instructions are under [docs/archive](docs/archive/README.md).
 
+## Install (two tokens)
+
+```bash
+pnpm install
+pnpm setup
+```
+
+`pnpm setup` is the canonical installation experience (#195): it asks for a
+Cloudflare API token and a Bangumi personal access token (both masked), then
+discovers the account, workers.dev subdomain and Bangumi identity, derives
+`USERS_JSON`, asks whether to attach a Worker custom domain, shows the complete
+ordered plan for confirmation, provisions through the same engine as the
+headless CLI, offers the first Full Sync (separate confirmation), runs the live
+verifier and writes a sanitized resource inventory to `.airingcal/`.
+
+Production is the default environment, needs no Zone ID in Worker mode, and
+keeps the same Owner gates: nothing is applied before the interactive
+confirmation, and the first sync opens only a temporary, self-closing gate.
+Headless/automation paths (`node scripts/deploy-env.mjs ...`) remain fully
+supported — see the [deployment guide](docs/DEPLOYMENT.md).
+
 ## Dev
 
 ```bash

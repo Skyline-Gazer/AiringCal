@@ -27,9 +27,11 @@ streamed with sniffed `Content-Type` and immutable cache, every other key
 (including `checkpoints/**`, encoded and traversal variants) is 404 before any
 object read, and cross-origin access is governed by the exact-origin allowlist
 `AIRINGCAL_CORS_ORIGINS`. Publishing raw bucket URLs (custom domain + host
-WAF/cache/CORS, `bucket-domain` mode) is a legacy opt-in selected only by
-setting `AIRINGCAL_PUBLIC_BASE_URL` to a non-Worker `https://` origin; the
-live `airingcal.223.im` topology runs in that mode. The Worker never exposes
+WAF/cache/CORS, `bucket-domain` mode) is a **legacy opt-in that must be stated
+explicitly** with `AIRINGCAL_PUBLIC_ORIGIN_MODE=bucket-domain`; #195 never
+infers it from a URL host (a Worker custom domain resolves to `worker` mode via
+`AIRINGCAL_WORKER_CUSTOM_DOMAIN`). The live `airingcal.223.im` topology runs in
+that legacy mode. The Worker never exposes
 checkpoints (no listing, no key passthrough, GET/HEAD only, pointer refs
 prefix-allowlisted).
 EdgeOne Makers mirrors the same static Reader for the overseas domain and
@@ -47,14 +49,57 @@ development-environment `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED`.
 
 - Node 24 + `pnpm`, `wrangler` and `gh` CLI authenticated (`gh auth status`).
 - Production needs an independently scoped Cloudflare management token for
-  R2 and Worker deployment, a verified Cloudflare account ID (32-char hex),
-  and the actual `AIRINGCAL_ZONE_ID` for identity preflight. Worker-mode
-  Production does not need DNS or WAF write access. Legacy bucket-domain
-  deploys additionally need permissions for the selected domain, DNS and rules.
+  R2 and Worker deployment, plus a verified Cloudflare account ID (32-char
+  hex). **Worker mode (the default) needs no Zone ID.** A Zone ID is required
+  only for a Worker custom domain binding or the explicit legacy
+  `AIRINGCAL_PUBLIC_ORIGIN_MODE=bucket-domain` topology, and those paths also
+  need the matching DNS/WAF permissions.
 - EdgeOne API token (only when `target` includes `edgeone`).
 - Bangumi token for the writer.
-- DNS ownership of the public base domain (the cutover step creates/points the
-  `CNAME <sub>` record only when the Owner chose that hostname).
+- DNS ownership of the public base domain (a custom-domain cutover creates the
+  Worker route only when the operator chose that hostname).
+
+## Interactive setup (`pnpm setup`)
+
+The canonical installation path (#195). It requires only the two masked
+tokens and `gh auth login`; everything else is discovered or defaulted:
+
+```bash
+pnpm install
+pnpm setup                 # menu: install/update, doctor, exit
+pnpm setup --doctor        # read-only gates/workflows/recent runs
+pnpm setup --sync          # re-dispatch the first Full Sync (gate-monitored)
+pnpm setup --headless --environment development   # env/dotenv-driven, no prompts
+```
+
+Flow: preflight (Node/gh/wrangler) → environment (Production default) →
+Cloudflare token (masked) → Bangumi PAT (masked) → account discovery (one
+account auto-selects; multiple prompt; an explicit
+`AIRINGCAL_CLOUDFLARE_ACCOUNT_ID` is still verified against the token) →
+workers.dev subdomain discovery → `/v0/me` identity → `USERS_JSON` derivation →
+optional Worker custom domain (zone discovery, DNS occupancy check, explicit
+takeover confirmation — never silent) → ordered plan → confirmation → apply
+through the same engine and gates as the CLI → optional first Full Sync →
+live verifier → sanitized inventory at `.airingcal/inventory.<env>.json`
+(0600, gitignored; names/ids only, never credential values).
+
+Safety properties:
+
+- Secrets are read in raw mode, echoed as `*`, kept in memory, never placed in
+  argv or shell history, and never persisted to dotenv unless the operator
+  writes them there explicitly.
+- Production apply still runs the three existing gates; the interactive
+  confirmation translates into `AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes` +
+  `AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes` for that execution only.
+- First sync verifies the remote ref head, opens only the environment's
+  temporary gate variable, closes it as soon as the run passes its gate step,
+  and closes it again in cleanup on failure/timeout/cancellation; the
+  repo-level schedule gate is never touched. A workflow that was
+  `disabled_manually` is re-disabled after the run.
+- Interruption recovery: re-run `pnpm setup` (resource discovery is
+  idempotent) or `pnpm setup --doctor` to see gate states and active runs.
+  Resource ownership collisions fail closed; nothing foreign is adopted or
+  deleted.
 
 ## Configuration
 
@@ -72,9 +117,11 @@ process values. Keep the two apply-confirmation variables out of dotenv.
 |---|---|---|
 | `AIRINGCAL_ENV` | required selector | `development` \| `production` — the deploy CLI **rejects** `staging` and has no `--env` flag; legacy staging is only the frozen `scripts/setup-staging.sh` rollback source |
 | `AIRINGCAL_DOTENV_PATH` | required for production | path to `.env.production` |
-| `AIRINGCAL_PUBLIC_BASE_URL` | optional | **unset/`*.workers.dev` → `worker` mode** (Worker origin is the public surface, bucket fully private). A non-Worker `https://` origin selects legacy `bucket-domain` mode (custom domain + edge WAF/cache/CORS) and then must be a real R2 custom-domain URL — never a placeholder or `r2.dev`. |
+| `AIRINGCAL_PUBLIC_BASE_URL` | optional | unset → **`worker` mode** (Worker origin is the public surface, bucket fully private). With a Worker custom domain, set `https://<custom-domain>` plus `AIRINGCAL_WORKER_CUSTOM_DOMAIN=<custom-domain>`. The legacy `bucket-domain` mode requires the explicit `AIRINGCAL_PUBLIC_ORIGIN_MODE=bucket-domain` selector and a real R2 custom-domain URL — never a placeholder or `r2.dev`; it is never inferred (#195). |
+| `AIRINGCAL_WORKER_CUSTOM_DOMAIN` | optional | hostname bound as a Worker `custom_domain` route (worker mode); DNS/TLS provisioned by Cloudflare, existing records require explicit takeover confirmation |
 | `AIRINGCAL_CORS_ORIGINS` | optional (worker mode) | comma-separated **exact** origins allowed cross-origin (`null` for file:// embeds); wildcards refused at config time; unset keeps OPTIONS at 405 and CORS an edge concern |
-| `AIRINGCAL_ZONE_ID` | required for production; required in bucket-domain mode | Cloudflare zone (production preflight identity; domain/WAF rules otherwise) |
+| `AIRINGCAL_WORKERS_DEV_SUBDOMAIN` | optional | account's workers.dev subdomain for origin rendering (the wizard discovers it; default `r7a` for the existing account) |
+| `AIRINGCAL_ZONE_ID` | required only for a Worker custom domain or explicit `bucket-domain` mode | Cloudflare zone (domain/DNS/WAF rules); **worker mode without a custom domain needs none** |
 | `AIRINGCAL_CLOUDFLARE_API_TOKEN` | required secret | independently scoped Production management token. Verify permissions and account identity before Apply. |
 | `AIRINGCAL_CLOUDFLARE_ACCOUNT_ID` | required at apply | 32-char hex |
 | `AIRINGCAL_BANGUMI_TOKEN` | required secret | writer token (synced to GitHub, never used by deploy reads) |

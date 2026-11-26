@@ -5,6 +5,7 @@
   "packageManager": "pnpm@9.15.9",
   "description": "render your bangumi.tv progress on a static web page",
   "scripts": {
+    "setup": "node scripts/setup-wizard.mjs",
     "dev": "pnpm -F @airing-cal/web-worker dev",
     "deploy": "pnpm -F @airing-cal/web-worker deploy",
     "typecheck": "pnpm -r typecheck",
