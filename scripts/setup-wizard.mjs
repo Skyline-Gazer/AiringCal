@@ -844,6 +844,8 @@ export async function discoverPartialState({
   let unrelatedBuckets = []
   let bucketProbeError = null
   let existingWriterToken = null
+  let tokenProbeStatus = 'unknown'
+  let tokenProbeError = null
   let githubEnvironmentExists = null
 
   try {
@@ -885,12 +887,21 @@ export async function discoverPartialState({
       signal: AbortSignal.timeout(15_000),
     })
     const tokBody = await tokRes.json().catch(() => ({}))
-    if (tokRes.ok && Array.isArray(tokBody?.result)) {
+    if (tokRes.ok && tokBody?.success !== false && Array.isArray(tokBody?.result)) {
       const match = tokBody.result.find((t) => String(t?.name ?? '') === tokenName && t?.id)
-      if (match) existingWriterToken = { id: String(match.id), name: String(match.name) }
+      if (match) {
+        existingWriterToken = { id: String(match.id), name: String(match.name) }
+        tokenProbeStatus = 'present'
+      } else {
+        tokenProbeStatus = 'absent'
+      }
+    } else {
+      tokenProbeStatus = 'unknown'
+      tokenProbeError = `HTTP ${tokRes.status}`
     }
-  } catch {
-    // Token listing is optional during read-only discovery.
+  } catch (error) {
+    tokenProbeStatus = 'unknown'
+    tokenProbeError = redactSecrets(error instanceof Error ? error.message : String(error), [cloudflareToken])
   }
 
   try {
@@ -913,6 +924,8 @@ export async function discoverPartialState({
     unrelatedBucketCount: unrelatedBuckets.length,
     bucketProbeError,
     existingWriterToken,
+    tokenProbeStatus,
+    tokenProbeError,
     githubEnvironmentExists,
     ownershipMatch,
   }
@@ -1520,6 +1533,7 @@ async function installFlow({
     reason = null,
     verification = null,
     sync = null,
+    syncError = null,
   }) => {
     const applied = result?.ok === true && verdict !== 'DEPLOY_FAILED' && verdict !== 'CANCELLED'
     const lastReceipt = applyReceipts[applyReceipts.length - 1] ?? result
@@ -1547,6 +1561,8 @@ async function installFlow({
       bucketState = 'unknown-outcome'
     } else if (applied && sync) {
       bucketState = lastReceipt?.r2DevDisabled ? 'populated-and-private' : 'populated'
+    } else if (applied && syncError) {
+      bucketState = lastReceipt?.r2DevDisabled ? 'sync-outcome-unknown-and-private' : 'sync-outcome-unknown'
     } else if (applied && lastReceipt?.bucketEmptyVerified && lastReceipt?.r2DevDisabled) {
       bucketState = 'verified-empty-and-private'
     } else if (applied && lastReceipt?.r2DevDisabled) {
@@ -1632,7 +1648,7 @@ async function installFlow({
     verification = null,
     verificationError = null,
   }) => {
-    const inventory = buildCurrentInventory({ verdict, reason, verification, sync })
+    const inventory = buildCurrentInventory({ verdict, reason, verification, sync, syncError })
     const inventoryPath = persistInventory(inventory)
     if (!headless) ui.outro(`${verdict}${reason ? ` — ${reason}` : ''}`)
     const endpointLine = formatTerminalEndpointLine({
@@ -1785,10 +1801,15 @@ async function installFlow({
           : partialState.targetBucket.exists
             ? `EXISTS${partialState.targetBucket.creationDate ? ` (created ${partialState.targetBucket.creationDate})` : ''}`
             : 'ABSENT'
+        const tokenStatusText = partialState.existingWriterToken
+          ? `${partialState.existingWriterToken.name} (${partialState.existingWriterToken.id})`
+          : partialState.tokenProbeStatus === 'absent'
+            ? 'not detected'
+            : `UNKNOWN (${partialState.tokenProbeError ?? 'token listing unavailable'})`
         const unresolvedOps = (recovery.unknownOutcomes ?? []).map((e) => `${e.op}:${e.target}`)
         const recLines = [
           `Bucket (${executionPlan.bucket}): ${bucketStatusText}`,
-          `Writer Token: ${partialState.existingWriterToken ? `${partialState.existingWriterToken.name} (${partialState.existingWriterToken.id})` : 'not detected'}`,
+          `Writer Token: ${tokenStatusText}`,
           `GitHub Environment (${environment}): ${partialState.githubEnvironmentExists === true ? 'EXISTS' : partialState.githubEnvironmentExists === false ? 'ABSENT' : 'UNKNOWN'}`,
           `Unrelated Buckets: ${partialState.unrelatedBucketCount} untouched`,
         ]

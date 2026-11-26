@@ -114,10 +114,12 @@ after partial apply, masked S3 fallback prompts require explicit
 re-authorization before retrying; recoverable apply failures also open the UX-012
 recovery menu (`Supply or Replace Independent R2 S3 Credential`, `Reconcile
 Existing Resources`, `Retry Failed Operation`, `Return to Configuration Review`,
-`View Detailed Failure Report`, `Exit Safely`). Validated credentials remain in
-process memory only and are cleared on exit or replacement; any change to
-account, environment, or custom-domain options triggers revalidation, and
-installation/sync confirmations are never carried over across attempts.
+`View Detailed Failure Report`, `Exit Safely`; unknown outcomes and unverified
+cleanups suppress automatic retry until resolved through reconciliation or
+manual inspection). Validated credentials remain in process memory only and are
+cleared on exit or replacement; any change to account, environment, or
+custom-domain options triggers revalidation, and installation/sync confirmations
+are never carried over across attempts.
 
 Operator UI environment: `AIRINGCAL_THEME=auto|dark|light` (neutral foreground
 palette; terminal background never changed), `NO_COLOR` (disables color and

@@ -537,6 +537,23 @@ test('Regression F2: prior DEPLOY_FAILED inventory with mutationsExecuted: [] do
   assert.equal(resRefused.code, 'BUCKET_OWNERSHIP_UNPROVEN')
   assert.equal(sim.state.mintedTokens.size, 0)
 
+  const missingAcctReady = {
+    schema: 'airingcal.inventory.v1',
+    environment: 'production',
+    bucket: 'airingcal-production',
+    deployment: { gitSha: 'c6fd64fffee42bbc956f3660c3a6798ac23481ef', verdict: 'READY' },
+    mutationReceipts: [{ status: 'applied', mutationsExecuted: ['r2-bucket-create'] }],
+  }
+  const resMissingAcct = await runProductionApply({
+    plan: makeProdPlan(),
+    env: makeProdEnv(),
+    io: createSimIo(sim),
+    priorInventory: missingAcctReady,
+  })
+  assert.equal(resMissingAcct.ok, false)
+  assert.equal(resMissingAcct.code, 'BUCKET_OWNERSHIP_UNPROVEN')
+  assert.equal(sim.state.mintedTokens.size, 0)
+
   const resAdopted = await runProductionApply({
     plan: makeProdPlan(),
     env: makeProdEnv(),
@@ -562,6 +579,15 @@ test('Regression F3: POST /user/tokens missing value confirms & deletes orphan; 
   assert.equal(resNoBoth.ok, false)
   assert.equal(resNoBoth.code, 'WRITER_TOKEN_BAD_RESPONSE')
   assert.ok(resNoBoth.mutationsSummary.unknown.some((e) => e.op === 'writer-token-create'))
+
+  const simNoId = createControlledProviderSimulator({ faults: { tokenCreateMissingId: true } })
+  const resNoId = await runProductionApply({ plan: makeProdPlan(), env: makeProdEnv(), io: createSimIo(simNoId) })
+  assert.equal(resNoId.ok, false)
+  assert.equal(resNoId.code, 'WRITER_TOKEN_BAD_RESPONSE')
+  assert.equal(resNoId.errorCategory, 'provider-incompatibility')
+  assert.ok(resNoId.mutationsSummary.unknown.some((e) => e.op === 'writer-token-create'))
+  assert.equal(simNoId.state.deletedTokens.length, 0)
+  assert.equal(JSON.stringify(resNoId).includes('sim-writer-secret-val-'), false)
 })
 
 test('Regression FA7: S3 override before bucket creation starts override-pending-bucket and reaches override-verified only after empty check', async () => {

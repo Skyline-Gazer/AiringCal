@@ -909,6 +909,7 @@ test('UX-012: interactive failure recovery menu allows Reconcile, Details, and E
       [/\/workers\/scripts$/, () => ({ body: { success: true, result: [] } })],
       [/\/r2\/buckets$/, () => ({ body: { success: true, result: { buckets: [] } } })],
       [/\/user\/tokens\/permissions$/, () => ({ body: { success: true, result: { permissions: ['User API Tokens:Edit'] } } })],
+      [/\/user\/tokens$/, () => ({ status: 403, body: { success: false } })],
       [/api\.bgm\.tv\/v0\/me$/, () => ({ body: { id: 857123, username: 'owner' } })],
       [/users\/owner\/collections/, () => ({ body: { total: 1, data: [{ subject_id: 9 }] } })],
       [/\-\/collections\/9\/episodes/, () => ({ body: { total: 1, data: [] } })],
@@ -956,9 +957,87 @@ test('UX-012: interactive failure recovery menu allows Reconcile, Details, and E
     assert.ok(ui.notes.some((n) => n.title === 'Partial Deployment Failure & Recovery'))
     assert.ok(ui.notes.some((n) => n.title === 'Detailed Failure Report'))
     assert.ok(ui.notes.some((n) => n.title === 'Reconciled Remote State'))
+    const recNote = ui.notes.find((n) => n.title === 'Reconciled Remote State')
+    assert.match(recNote.msg, /Writer Token: UNKNOWN \(HTTP 403\)/)
     assert.equal(res.result.inventory.publicBaseUrl, null)
     assert.equal(res.result.inventory.deployment.deployedAt, null)
     assert.ok(res.result.inventory.deployment.attemptedAt)
+  } finally {
+    rmSync(invDir, { recursive: true, force: true })
+  }
+})
+
+test('Regression F7: failed sync leaves bucket state sync-outcome-unknown-and-private rather than verified-empty-and-private (#208)', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { main: wizardMain } = await import('./setup-wizard.mjs')
+  const invDir = mkdtempSync(join(tmpdir(), 'wizard-f7-sync-'))
+  try {
+    const fetchFake = fakeFetch([
+      [/\/user\/tokens\/verify$/, () => ({ body: { success: true, result: { id: 'tok', status: 'active' } } })],
+      [/\/user\/tokens\/permissions$/, () => ({ body: { success: true, result: { permissions: ['User API Tokens:Edit'] } } })],
+      [/\/user\/tokens$/, () => ({ status: 200, body: { success: true, result: [] } })],
+      [/\/accounts$/, () => ({ body: { success: true, result: [{ id: ACCOUNT, name: 'Test Account' }] } })],
+      [/\/accounts\/[^/]+\/workers\/subdomain$/, () => ({ body: { success: true, result: { subdomain: 'testsub' } } })],
+      [/\/workers\/scripts$/, () => ({ body: { success: true, result: [] } })],
+      [/\/accounts\/[^/]+\/r2\/buckets$/, () => ({ body: { success: true, result: { buckets: [] } } })],
+      [/\/zones/, () => ({ body: { success: true, result: [] } })],
+      [/api\.bgm\.tv\/v0\/me$/, () => ({ body: { id: 123, username: 'tester' } })],
+      [/users\/tester\/collections/, () => ({ body: { total: 1, data: [{ subject_id: 9 }] } })],
+      [/\-\/collections\/9\/episodes/, () => ({ body: { total: 1, data: [] } })],
+    ])
+    const ui = makeScriptedUi([
+      { type: 'select', match: /AiringCal Setup/, value: 'install' },
+      { type: 'select', match: /Environment/, value: 'production' },
+      { type: 'password', match: /Cloudflare API Token/, value: 'cf-tok' },
+      { type: 'password', match: /Bangumi Personal Access Token/, value: 'bgm-tok' },
+      { type: 'confirm', match: /Custom Domain/, value: false },
+      { type: 'select', match: /Review Configuration/, value: 'install' },
+      { type: 'confirm', match: /Install AiringCal in Production now/, value: true },
+      { type: 'confirm', match: /Run the First Full Sync now/, value: true },
+      { type: 'confirm', match: /Dispatch the Writer/, value: true },
+    ])
+    const res = await wizardMain([], {
+      env: { ...process.env, AIRINGCAL_INVENTORY_DIR: invDir },
+      fetchImpl: fetchFake.impl,
+      spawnSyncImpl: () => ({ status: 0, stdout: `${'a'.repeat(40)}\n`, stderr: '' }),
+      ui,
+      log: () => {},
+      hooks: {
+        preflight: async () => {},
+        createApplyIo: () => ({
+          s3Credentials: () => ({ accessKeyId: 'k', secretAccessKey: 's', source: 'scoped-token', scope: 'bucket-scoped' }),
+          probeToken: async () => ({ ok: true }),
+          deriveAndVerifyS3: async (ctx) => { ctx.writerCredentialDeferred = true; return { deferred: true } },
+          ensureBucket: async (ctx) => {
+            ctx.ledger.begin({ op: 'r2-bucket-create', stepId: 'ensure-bucket', resourceType: 'r2-bucket', target: 'airingcal-production' }).confirm('created')
+            return { bucket: 'airingcal-production', created: true }
+          },
+          provisionProductionWriter: async () => ({ verified: true }),
+          verifyBucketEmpty: async () => ({ emptyVerified: true }),
+          disableR2Dev: async () => ({ disabled: true }),
+          syncGithubEnvironment: async () => ({ environment: 'production' }),
+          deployCloudflareReader: async () => ({ deployed: true, workerUrl: 'https://airingcal-production.testsub.workers.dev' }),
+          verifyImageRouting: async () => ({ status: 'skipped-no-release' }),
+          validateImageCdn: async () => ({ enabled: false }),
+          writeIsolationProbe: async () => ({ key: 'checkpoints/_isolation-probe.txt', body: 'isolation-probe', exists: true }),
+          probeAnonymousAccess: async () => ({
+            r2DevDisabled: true,
+            probes: [
+              { url: 'https://airingcal-production.testsub.workers.dev/checkpoints/_isolation-probe.txt', method: 'GET', status: 404 },
+              { url: 'https://airingcal-production.testsub.workers.dev/checkpoints/_isolation-probe.txt', method: 'HEAD', status: 404 },
+            ],
+          }),
+          deleteIsolationProbe: async () => ({ key: 'checkpoints/_isolation-probe.txt', deleted: true }),
+        }),
+        syncRunner: async () => {
+          throw new Error('workflow restoration failed after dispatch')
+        },
+      },
+    })
+    assert.equal(res.verdict, 'SYNC_FAILED')
+    assert.equal(res.result.inventory.resources.bucket.state, 'sync-outcome-unknown-and-private')
   } finally {
     rmSync(invDir, { recursive: true, force: true })
   }

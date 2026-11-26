@@ -351,6 +351,12 @@ export function createControlledProviderSimulator({
             result: { id, name: payload.name, policies: storedPolicies },
           })
         }
+        if (state.faults.tokenCreateMissingId) {
+          return jsonResponse(200, {
+            success: true,
+            result: { name: payload.name, value, policies: storedPolicies },
+          })
+        }
         return jsonResponse(200, {
           success: true,
           result: { id, name: payload.name, value, policies: storedPolicies },

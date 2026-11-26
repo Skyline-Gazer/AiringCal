@@ -119,8 +119,7 @@ export function hasAffirmativeBucketOwnership(priorInventory, bucket, accountId 
   if (priorInventory.environment !== 'production' || priorInventory.bucket !== bucket) return false
   const normalizedAcct = String(accountId ?? '').trim().toLowerCase()
   const priorAcct = String(priorInventory.cloudflare?.accountId ?? '').trim().toLowerCase()
-  if (normalizedAcct && priorAcct && normalizedAcct !== priorAcct) return false
-  if (!normalizedAcct && !priorAcct) return false
+  if (!normalizedAcct || !priorAcct || normalizedAcct !== priorAcct) return false
 
   const deployedVerdicts = new Set(['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'SYNC_FAILED', 'VERIFICATION_FAILED'])
   if (deployedVerdicts.has(priorInventory.deployment?.verdict)) return true
@@ -1668,16 +1667,26 @@ export function createLiveDevelopmentApplyIo({
         }
       }
 
-      if (!tokenId && !tokenValue) {
+      if (tokenValue && !secrets.includes(tokenValue)) secrets.push(tokenValue)
+      if (!tokenId) {
         createEntry.unknown(
-          new Error('Create Token API response missing id and value'),
+          new Error(
+            tokenValue
+              ? 'Create Token API response missing token id'
+              : 'Create Token API response missing id and value',
+          ),
           `List Cloudflare API tokens for "${tokenName}" to check whether creation succeeded despite incomplete response`,
         )
-        throw taggedError('Production Writer credential: Create Token API response missing id+value', {
-          code: 'WRITER_TOKEN_BAD_RESPONSE',
-          errorCategory: 'provider-incompatibility',
-          exitCode: 1,
-        })
+        throw taggedError(
+          tokenValue
+            ? 'Production Writer credential: Create Token API response missing id'
+            : 'Production Writer credential: Create Token API response missing id+value',
+          {
+            code: 'WRITER_TOKEN_BAD_RESPONSE',
+            errorCategory: 'provider-incompatibility',
+            exitCode: 1,
+          },
+        )
       }
       if (!tokenValue) {
         createEntry.confirm(`tokenId=${tokenId} (missing token value)`)
