@@ -351,3 +351,20 @@ test('writeInventory writes 0600 under .airingcal and never a secret (#195)', as
   assert.equal(mode, 0o600)
   assert.equal(readFileSync(path, 'utf8').includes('airingcal-development'), true)
 })
+
+test('runFirstSync refuses when the schedule gate is enabled, before arming anything (#195)', async () => {
+  const sha = 'f'.repeat(40)
+  const { impl, calls } = scriptedSpawn([
+    [/^gh auth status/, () => ({})],
+    [/^gh api repos/, () => ({ stdout: `${sha}\n` })],
+    [/^gh workflow list/, () => ({ stdout: JSON.stringify([{ id: 9, name: 'Portable writer (GHA)', state: 'disabled_manually' }]) })],
+    [/^gh variable get AIRINGCAL_WRITER_ENABLED/, () => ({ status: 0, stdout: 'true\n' })],
+  ])
+  await assert.rejects(
+    () => runFirstSync({ environment: 'production', expectedSha: sha, spawnSyncImpl: impl, log: () => {}, sleep: async () => {} }),
+    /scheduled writer is enabled/,
+  )
+  const keys = calls.map((c) => c.key)
+  assert.equal(keys.some((k) => k.startsWith('gh workflow enable')), false, 'workflow never enabled')
+  assert.equal(keys.some((k) => k.includes('--body true')), false, 'gate never opened')
+})

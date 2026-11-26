@@ -286,7 +286,9 @@ export async function runFirstSync({
     workflowState = String(workflow.state)
     const scheduleGate = gh(['variable', 'get', 'AIRINGCAL_WRITER_ENABLED', '--repo', repo], { allowFailure: true })
     const scheduleEnabled = scheduleGate.status === 0 && /true/i.test(String(scheduleGate.stdout))
-    if (scheduleEnabled && workflowState !== 'disabled_manually') {
+    if (scheduleEnabled) {
+      // Enabling a disabled workflow would arm the cron immediately, so the
+      // schedule gate must be OFF regardless of the workflow state.
       throw new Error('Refusing first sync: the scheduled writer is enabled; disable AIRINGCAL_WRITER_ENABLED before initial acceptance')
     }
     if (workflowState === 'disabled_manually') {
@@ -297,7 +299,9 @@ export async function runFirstSync({
     gh(['variable', 'set', gateVariable, '--env', environment, '--repo', repo, '--body', 'true'])
     state.gateOpened = true
     logFn(`Opened temporary gate ${gateVariable} for the ${environment} environment.`)
-    const dispatchedAt = new Date(now()).toISOString()
+    // gh reports second-precision timestamps; use a numeric 60s window so a
+    // run created in the same second as the dispatch is still matched.
+    const dispatchedAtMs = now() - 60_000
     gh(['workflow', 'run', 'portable-writer.yml', '--ref', branch, '-f', `target=${environment}`, '-f', 'force_mode=full', '--repo', repo])
     let runRow = null
     for (let attempt = 0; attempt < 20 && !runRow; attempt += 1) {
@@ -305,7 +309,7 @@ export async function runFirstSync({
         'run', 'list', '--workflow', 'portable-writer.yml', '--event', 'workflow_dispatch',
         '--limit', '10', '--json', 'databaseId,headSha,createdAt,url', '--repo', repo,
       ]).stdout)
-      runRow = rows.find((row) => row.createdAt >= dispatchedAt && (!runId || String(row.databaseId) === String(runId))) ?? null
+      runRow = rows.find((row) => Date.parse(String(row.createdAt)) >= dispatchedAtMs && (!runId || String(row.databaseId) === String(runId))) ?? null
       if (!runRow) await sleep(pollMs)
     }
     if (!runRow) throw new Error('Dispatch was accepted but no matching run appeared; check the Actions tab')
