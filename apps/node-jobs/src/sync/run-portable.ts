@@ -16,6 +16,7 @@ import { readPublicS3Config } from '../adapters/s3-env.ts'
 import { createRunContext } from '../adapters/run-context.ts'
 import type { JobSummary } from '../contracts.ts'
 import { createUpstreamBgmClient, fetchCompleteInput } from '../upstream/fetch.ts'
+import { withRetry } from '../upstream/retry.ts'
 import { readSyncUserConfig } from './config.ts'
 import { mediaSubjectsFromFetch } from './media-refresh.ts'
 import { createEnrichMediaSubjectsFromFetch } from './media-subject-resolve.ts'
@@ -159,7 +160,11 @@ export async function runPortableBuilderSync(
         let tokenUserId: string | undefined
         if (episodeProgressEnabled && token) {
           try {
-            const me = await client.getMe(token)
+            // GitHub egress to /v0/me is intermittently slow (live
+            // 2026-11-26: two runs timed out at 10s and 30s). Retry under the
+            // same bounded policy as the collections fetch before deciding
+            // the identity is unavailable.
+            const me = await withRetry(() => client.getMe(token), { stage: 'episodes' })
             const known = syncConfig.users.find((user) => user.userId === String(me.id))
             if (known) tokenUserId = known.userId
             else {
