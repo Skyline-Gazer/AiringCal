@@ -356,3 +356,80 @@ test('downloadImage normalizes protocol-relative bgm image urls before fetching'
     globalThis.fetch = originalFetch
   }
 })
+
+// ---------------------------------------------------------------------------
+// #195 P3: episode catalog + episode collection detail fidelity
+// ---------------------------------------------------------------------------
+
+test('getSubjectEpisodeCollections keeps episode type/sort/ep/airdate (specials/OVA distinguishable)', async () => {
+  const client = new BgmClient('tok', { maxGetRetries: 0 })
+  const originalFetch = globalThis.fetch
+  const captured = captureFetch(200, {
+    total: 2,
+    limit: 1000,
+    offset: 0,
+    data: [
+      { episode: { id: 101, type: 0, sort: 1, ep: 1, name: '正', airdate: '2025-01-01' }, type: 2, updated_at: 10 },
+      { episode: { id: 102, type: 1, sort: 2, ep: 0, name: 'SP', airdate: '2025-06-01' }, type: 1, updated_at: 11 },
+    ],
+  })
+  globalThis.fetch = captured.fetch
+  try {
+    const { data, total } = await client.getSubjectEpisodeCollections('tok', 55)
+    assert.equal(total, 2)
+    assert.equal(captured.calls[0].url.includes('/v0/users/-/collections/55/episodes'), true)
+    assert.equal(data[0].episode.type, 0)
+    assert.equal(data[1].episode.type, 1)
+    assert.equal(data[1].episode.airdate, '2025-06-01')
+    assert.equal(data[0].type, 2, 'watched state preserved')
+    assert.equal(data[1].type, 1, 'wish state preserved')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('getSubjectEpisodeCatalog paginates /v0/episodes with completion proofs', async () => {
+  const client = new BgmClient('tok', { maxGetRetries: 0 })
+  const originalFetch = globalThis.fetch
+  const pages = [
+    { total: 3, limit: 2, offset: 0, data: [
+      { id: 1, type: 0, sort: 1, ep: 1 },
+      { id: 2, type: 0, sort: 2, ep: 2 },
+    ] },
+    { total: 3, limit: 2, offset: 2, data: [
+      { id: 3, type: 1, sort: 3, ep: 0 },
+    ] },
+  ]
+  const urls: string[] = []
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    const u = String(url)
+    urls.push(u)
+    const body = u.includes('offset=2') ? pages[1] : pages[0]
+    return new Response(JSON.stringify(body), { status: 200 })
+  }) as typeof globalThis.fetch
+  try {
+    const episodes = await client.getSubjectEpisodeCatalog(77, { limit: 2 })
+    assert.equal(episodes.length, 3)
+    assert.equal(episodes.find((e) => e.id === 3)?.type, 1, 'SP type preserved')
+    assert.ok(urls.some((u) => u.includes('/v0/episodes?') && u.includes('subject_id=77')))
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('getSubjectEpisodeCatalog fails closed on invalid total, duplicate ids and short pages', async () => {
+  const client = new BgmClient('tok', { maxGetRetries: 0 })
+  const originalFetch = globalThis.fetch
+  const cases: Array<[unknown]> = [
+    [{ total: 5, limit: 2, offset: 0, data: [{ id: 1, type: 0 }] }],
+    [{ total: 2, limit: 2, offset: 0, data: [{ id: 1, type: 0 }, { id: 1, type: 0 }] }],
+  ]
+  try {
+    for (const [body] of cases) {
+      globalThis.fetch = (async () => new Response(JSON.stringify(body), { status: 200 })) as typeof globalThis.fetch
+      await assert.rejects(() => client.getSubjectEpisodeCatalog(77, { limit: 2 }))
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

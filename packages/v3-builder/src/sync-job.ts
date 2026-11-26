@@ -1,5 +1,12 @@
 import type { CompleteFullFetch } from '@airing-cal/bgm-api'
-import { buildPublicSnapshot, parsePublicSnapshotV1, type SubjectImageMap } from '@airing-cal/domain'
+import {
+  buildPublicSnapshot,
+  normalizeCollection,
+  parsePublicSnapshotV1,
+  planCollectionDiff,
+  type NormalizedCollection,
+  type SubjectImageMap,
+} from '@airing-cal/domain'
 import { canonicalJson } from '@airing-cal/storage'
 import type { PublicSnapshotV1 } from '@airing-cal/storage'
 import {
@@ -70,18 +77,73 @@ export async function runBuilderSyncJob(deps: BuilderSyncJobDeps): Promise<Build
     const candidateInput = projectPublicSnapshotInput(input, imageMap, new Map(), new Map(), mediaHints)
     const probe = await buildPublicSnapshot(candidateInput, 0)
     const generation = nextSnapshotGeneration(previous, probe.content_hash)
+    // #195: reconcile the internal collection ledger (missing_since /
+    // deleted_at tombstones via planCollectionDiff) and refresh episode
+    // progress in the SAME transaction — the public generation may skip
+    // while internal per-episode state legitimately changes.
+    const currentRows = deps.state.listCollectionRows()
+    const incoming: NormalizedCollection[] = []
+    for (const entry of input.collections) incoming.push(await normalizeCollection(entry.user_id, entry.collection))
+    const diffPlan = await planCollectionDiff({
+      current: currentRows,
+      incoming,
+      complete: input.complete === true,
+      observedAt: nowUnix,
+    })
+    const ledgerRows = [
+      ...diffPlan.inserts,
+      ...diffPlan.updates,
+      ...diffPlan.restored,
+      ...diffPlan.firstMissing,
+      ...diffPlan.confirmedDeleted,
+    ]
+    const episodeProgress = input.episodeProgress ?? []
+    const internalDetail = {
+      episodes: episodeProgress.length,
+      ledger: {
+        inserts: diffPlan.inserts.length,
+        updates: diffPlan.updates.length,
+        restored: diffPlan.restored.length,
+        first_missing: diffPlan.firstMissing.length,
+        deleted: diffPlan.confirmedDeleted.length,
+        unchanged: diffPlan.unchanged,
+      },
+    }
     if (generation === null) {
-      deps.runs.finishRun(deps.runId, 'succeeded', canonicalJson({ stage: 'no_change' }), nowUnix)
+      deps.state.persistCheckpointState({
+        collectionRows: ledgerRows,
+        episodeProgress,
+        prunedSubjects: diffPlan.confirmedDeleted.map((row) => ({ user_id: row.user_id, subject_id: row.subject_id })),
+        snapshotJson: null,
+        observedAt: nowUnix,
+      })
+      deps.runs.finishRun(
+        deps.runId,
+        'succeeded',
+        canonicalJson({ stage: 'no_change', ...internalDetail }),
+        nowUnix,
+      )
       return { status: 'no_change', generation: previous?.generation ?? null, run_id: deps.runId }
     }
 
     const snapshot = await buildPublicSnapshot(candidateInput, generation)
     await parsePublicSnapshotV1(snapshot)
-    await deps.state.setKv(BUILDER_SNAPSHOT_CHECKPOINT_KEY, canonicalJson(snapshot), nowUnix)
+    deps.state.persistCheckpointState({
+      collectionRows: ledgerRows,
+      episodeProgress,
+      prunedSubjects: diffPlan.confirmedDeleted.map((row) => ({ user_id: row.user_id, subject_id: row.subject_id })),
+      snapshotJson: canonicalJson(snapshot),
+      observedAt: nowUnix,
+    })
     deps.runs.finishRun(
       deps.runId,
       'succeeded',
-      canonicalJson({ stage: 'checkpoint', generation: snapshot.generation, content_hash: snapshot.content_hash }),
+      canonicalJson({
+        stage: 'checkpoint',
+        generation: snapshot.generation,
+        content_hash: snapshot.content_hash,
+        ...internalDetail,
+      }),
       nowUnix,
     )
     return { status: 'ok', generation: snapshot.generation, run_id: deps.runId }

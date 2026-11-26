@@ -12,6 +12,8 @@ test('builder schema migration is idempotent and records version', () => {
     'builder_kv',
     'subject_media',
     'sync_runs',
+    'v3_collections',
+    'v3_episode_progress',
     'v3_schema_migrations',
   ])
   const version = db.prepare('SELECT version FROM v3_schema_migrations WHERE version = ?').get(BUILDER_SCHEMA_VERSION) as
