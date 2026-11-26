@@ -21,6 +21,16 @@ Decision: [ADR 0003](../plans/adr-0003-gha-portable-write.md).
 
 Flow (C2/C4): acquire lease → restore SQLite checkpoint from **private** R2 → sync portable builder → **image publish gate** over every referenced hash (upload missing, reuse present, fail closed when a published object's content differs or an original is nowhere available) → upload checkpoint with CAS → renew lease → commit the Release pointer with CAS → expire the lease. Nothing becomes visible before the checkpoint succeeds. The gate verifies/upload originals first, then thumbs, with bounded concurrency (default 8, max 32) and `publish_images_progress` events every 25 objects; the staging job allows 90 minutes because a first publish mirrors ~2.7k objects. Failure → Bark (`BARK_URL`).
 
+Per-episode progress (#195): after the collection/calendar fetch the Writer resolves the PAT
+identity (`/v0/me`, bounded retry) and, when it is the token owner, fetches every subject in
+watching/completed/on-hold/dropped states: `GET /v0/users/-/collections/{id}/episodes` (states,
+non-contiguous gaps as explicit `collection_type=0` rows) merged with `GET /v0/episodes?subject_id=`
+(catalog `type`: 0 本篇 / 1 SP / 2 OP / 3 ED / …) into `v3_episode_progress`. The same run keeps a
+`v3_collections` reconciliation ledger (`planCollectionDiff`: content hash, `missing_since`,
+`deleted_at`, `state_version`). Both are checkpoint-internal and never projected into the public
+snapshot. `AIRINGCAL_EPISODE_PROGRESS=off` disables enrichment (public counts stay complete);
+any per-subject episode failure aborts the run so the last valid Release is preserved.
+
 ## Unified Environment Configuration (`AIRINGCAL_{ENVIRONMENT}_{SERVICE}_{KEY}`)
 
 All GitHub Actions Environment settings follow `AIRINGCAL_{ENVIRONMENT}_{SERVICE}_{KEY}` (`STAGING` legacy, `DEVELOPMENT` target, `PRODUCTION` gated). Checkpoint and Public buckets share a single scoped S3 credential pair per environment; non-sensitive infrastructure values (`CLOUDFLARE_ACCOUNT_ID`, `S3_ENDPOINT`, `S3_REGION`, bucket names, Worker name, `PUBLIC_BASE_URL`) are Variables or automatically derived in the workflow — never Secrets.
