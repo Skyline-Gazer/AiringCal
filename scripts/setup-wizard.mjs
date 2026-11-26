@@ -46,6 +46,7 @@ import {
   WIZARD_REPOSITORY,
   assertInventorySanitized,
   buildInventory,
+  computeVerdict,
   chooseAccount,
   formatPlan,
   gateStepPattern,
@@ -314,6 +315,90 @@ export function resolveApplyEnvironment({ environment, headless, approved, wizar
  * temporary gate, dispatches the existing workflow, waits for the run to pass
  * its in-job gate step then closes the gate, and monitors the run terminal.
  */
+
+/**
+ * #195 correction: classify a `gh api` read as ok/absent/error. A transport,
+ * permission or API failure is NEVER treated as "safely absent".
+ */
+function classifyGhApiRead(result) {
+  const text = `${result?.stdout ?? ''}\n${result?.stderr ?? ''}`
+  if (result?.status === 0) return 'ok'
+  if (result?.status === 404 || /\bNot Found\b/i.test(text)) return 'absent'
+  return 'error'
+}
+
+function readRemoteVariable(path, spawnSyncImpl) {
+  const result = run('gh', ['api', path, '--jq', '.value'], {
+    spawnSyncImpl,
+    allowFailure: true,
+  })
+  const kind = classifyGhApiRead(result)
+  const value = kind === 'ok' ? String(result.stdout).trim() : null
+  return {
+    kind,
+    value,
+    detail: kind === 'error'
+      ? String(result.stderr || result.stdout || '').trim().slice(0, 300)
+      : null,
+  }
+}
+
+function readEnvironmentGate({ repo, environment, gateVariable, spawnSyncImpl }) {
+  return readRemoteVariable(`repos/${repo}/environments/${environment}/variables/${gateVariable}`, spawnSyncImpl)
+}
+
+function readScheduleGate({ repo, spawnSyncImpl }) {
+  return readRemoteVariable(`repos/${repo}/actions/variables/AIRINGCAL_WRITER_ENABLED`, spawnSyncImpl)
+}
+
+/** Set the gate and PROVE the readback; no receipt without evidence. */
+async function setGateWithReadback({ repo, environment, gateVariable, value, spawnSyncImpl, log: logFn }) {
+  const result = run('gh', [
+    'variable', 'set', gateVariable, '--env', environment, '--repo', repo, '--body', value,
+  ], { spawnSyncImpl, allowFailure: true })
+  if (result.status !== 0) {
+    throw new Error(
+      `FAILED to set ${gateVariable}=${value} (${String(result.stderr || result.stdout || '').trim().slice(0, 200)}); ` +
+      `RECOVERY: gh variable set ${gateVariable} --env ${environment} --repo ${repo} --body ${value}`,
+    )
+  }
+  const readback = readEnvironmentGate({ repo, environment, gateVariable, spawnSyncImpl })
+  if (readback.kind !== 'ok' || readback.value !== value) {
+    throw new Error(
+      `UNVERIFIED gate state for ${gateVariable} (readback ${readback.kind}:${readback.value ?? '-'}); ` +
+      `HIGH PRIORITY: manually verify and set ${gateVariable}=${value} in GitHub environment ${environment} ` +
+      `before any Writer dispatch (gh variable set ${gateVariable} --env ${environment} --repo ${repo} --body ${value})`,
+    )
+  }
+  logFn(`Verified ${gateVariable}=${value} by remote readback.`)
+  return readback
+}
+
+/** Restore a workflow we enabled and PROVE the disabled_manually state. */
+async function restoreWorkflowWithReadback({ repo, workflowId, spawnSyncImpl, log: logFn }) {
+  const result = run('gh', ['workflow', 'disable', workflowId, '--repo', repo], {
+    spawnSyncImpl,
+    allowFailure: true,
+  })
+  if (result.status !== 0) {
+    throw new Error(
+      `FAILED to disable workflow ${workflowId} (${String(result.stderr || result.stdout || '').trim().slice(0, 200)}); ` +
+      `HIGH PRIORITY: gh workflow disable ${workflowId} --repo ${repo}`,
+    )
+  }
+  const stateResult = run('gh', [
+    'api', `repos/${repo}/actions/workflows/portable-writer.yml`, '--jq', '.state',
+  ], { spawnSyncImpl, allowFailure: true })
+  const state = stateResult.status === 0 ? String(stateResult.stdout).trim() : null
+  if (state !== 'disabled_manually') {
+    throw new Error(
+      `UNVERIFIED workflow restoration (state ${state ?? 'unreadable'}); ` +
+      `HIGH PRIORITY: gh workflow disable ${workflowId} --repo ${repo} and confirm disabled_manually`,
+    )
+  }
+  logFn('Verified the Writer workflow was restored to disabled_manually.')
+  return state
+}
 export async function runFirstSync({
   environment,
   branch = 'dev',
@@ -328,7 +413,7 @@ export async function runFirstSync({
   repo = WIZARD_REPOSITORY,
   runId = null,
 }) {
-  const gh = (args, options = {}) => run('gh', args, { spawnSyncImpl, ...options })
+  const ghStrict = (args) => run('gh', args, { spawnSyncImpl })
   const gateVariable = gateVariableName(environment)
   const state = {
     runId: null,
@@ -336,89 +421,136 @@ export async function runFirstSync({
     headSha: null,
     conclusion: null,
     gateOpened: false,
+    gateReadback: null,
     gateClosed: false,
     workflowEnabledByUs: false,
     workflowRestored: false,
+    workflowReadback: null,
+    cleanupVerified: false,
+    recoveryAction: null,
   }
-  let workflowState = null
   let workflowId = null
+  const cleanupErrors = []
+  let primaryError = null
   try {
-    gh(['auth', 'status'])
+    ghStrict(['auth', 'status'])
     if (expectedSha) {
-      const head = gh(['api', `repos/${repo}/git/ref/heads/${branch}`, '--jq', '.object.sha']).stdout.trim()
+      const head = ghStrict(['api', `repos/${repo}/git/ref/heads/${branch}`, '--jq', '.object.sha']).stdout.trim()
       if (head !== expectedSha) {
         throw new Error(`Remote ${branch} head is ${head}, expected ${expectedSha}; refusing to dispatch an unverified ref`)
       }
     }
     // Resolve by FILE via the Actions API: `gh workflow list` hides
     // disabled_manually workflows from the default listing.
-    const workflow = JSON.parse(gh([
-      'api', `repos/${repo}/actions/workflows/portable-writer.yml`,
-      '--jq', '{id, state}',
+    const workflow = JSON.parse(ghStrict([
+      'api', `repos/${repo}/actions/workflows/portable-writer.yml`, '--jq', '{id, state}',
     ]).stdout)
     if (!workflow?.id) throw new Error('portable-writer.yml not found in the repository')
     workflowId = String(workflow.id)
-    workflowState = String(workflow.state)
-    const scheduleGate = gh(['variable', 'get', 'AIRINGCAL_WRITER_ENABLED', '--repo', repo], { allowFailure: true })
-    const scheduleEnabled = scheduleGate.status === 0 && /true/i.test(String(scheduleGate.stdout))
-    if (scheduleEnabled) {
-      // Enabling a disabled workflow would arm the cron immediately, so the
-      // schedule gate must be OFF regardless of the workflow state.
+    const workflowState = String(workflow.state)
+
+    // #195 correction: an unreadable schedule gate is NEVER "safely disabled".
+    const schedule = readScheduleGate({ repo, spawnSyncImpl })
+    if (schedule.kind === 'error') {
+      throw new Error(
+        `Refusing first sync: AIRINGCAL_WRITER_ENABLED is unreadable (${schedule.detail ?? 'API error'}); ` +
+        'verify the repository variable manually before any dispatch',
+      )
+    }
+    if (String(schedule.value ?? '').toLowerCase() === 'true') {
       throw new Error('Refusing first sync: the scheduled writer is enabled; disable AIRINGCAL_WRITER_ENABLED before initial acceptance')
     }
+
+    // Single-flight: verify no Writer run is active before opening gates.
+    const listRows = () => JSON.parse(ghStrict([
+      'run', 'list', '--workflow', 'portable-writer.yml', '--limit', '20',
+      '--json', 'databaseId,status,event,headSha,headBranch,url', '--repo', repo,
+    ]).stdout)
+    const before = listRows()
+    const maxRunId = before.reduce((max, row) => Math.max(max, Number(row.databaseId) || 0), 0)
+    const active = before.filter((row) => ['in_progress', 'queued', 'waiting', 'pending'].includes(String(row.status)))
+    if (active.length > 0) {
+      throw new Error(`Refusing first sync: active Writer run(s) ${active.map((r) => r.databaseId).join(', ')} (single-flight)`)
+    }
+
     if (workflowState === 'disabled_manually') {
-      gh(['workflow', 'enable', workflowId, '--repo', repo])
+      ghStrict(['workflow', 'enable', workflowId, '--repo', repo])
       state.workflowEnabledByUs = true
+      const enabled = ghStrict([
+        'api', `repos/${repo}/actions/workflows/portable-writer.yml`, '--jq', '.state',
+      ]).stdout.trim()
+      if (enabled !== 'active') {
+        throw new Error(`Workflow enable could not be confirmed (state ${enabled || 'unreadable'}); HIGH PRIORITY: check Actions permissions`)
+      }
       logFn('Workflow was disabled manually; enabled for the authorized dispatch (schedule gate stays closed).')
     }
-    gh(['variable', 'set', gateVariable, '--env', environment, '--repo', repo, '--body', 'true'])
+
+    await setGateWithReadback({ repo, environment, gateVariable, value: 'true', spawnSyncImpl, log: logFn })
     state.gateOpened = true
-    logFn(`Opened temporary gate ${gateVariable} for the ${environment} environment.`)
-    // gh reports second-precision timestamps; use a numeric 60s window so a
-    // run created in the same second as the dispatch is still matched.
-    const dispatchedAtMs = now() - 60_000
-    gh(['workflow', 'run', 'portable-writer.yml', '--ref', branch, '-f', `target=${environment}`, '-f', 'force_mode=full', '--repo', repo])
+    state.gateReadback = 'true'
+    logFn(`Opened and verified temporary gate ${gateVariable} for the ${environment} environment.`)
+
+    ghStrict(['workflow', 'run', 'portable-writer.yml', '--ref', branch, '-f', `target=${environment}`, '-f', 'force_mode=full', '--repo', repo])
+
+    // #195 correction: correlate by monotonic run id + event + ref/SHA, never
+    // by a timestamp window. More than one new matching run is ambiguous.
     let runRow = null
     for (let attempt = 0; attempt < 20 && !runRow; attempt += 1) {
-      const rows = JSON.parse(gh([
-        'run', 'list', '--workflow', 'portable-writer.yml', '--event', 'workflow_dispatch',
-        '--limit', '10', '--json', 'databaseId,headSha,createdAt,url', '--repo', repo,
-      ]).stdout)
-      runRow = rows.find((row) => Date.parse(String(row.createdAt)) >= dispatchedAtMs && (!runId || String(row.databaseId) === String(runId))) ?? null
-      if (!runRow) await sleep(pollMs)
+      const candidates = listRows().filter((row) => {
+        if (Number(row.databaseId) <= maxRunId) return false
+        if (String(row.event) !== 'workflow_dispatch') return false
+        if (expectedSha && String(row.headSha) !== expectedSha) return false
+        if (String(row.headBranch ?? '') !== branch) return false
+        if (runId && String(row.databaseId) !== String(runId)) return false
+        return true
+      })
+      if (candidates.length > 1) {
+        throw new Error(
+          `Ambiguous dispatch: new runs ${candidates.map((r) => r.databaseId).join(', ')} match; ` +
+          'refusing to select an unrelated run. Inspect the Actions tab and re-run with explicit run id.',
+        )
+      }
+      if (candidates.length === 1) {
+        const verified = JSON.parse(ghStrict([
+          'run', 'view', String(candidates[0].databaseId),
+          '--json', 'databaseId,headSha,headBranch,status,url', '--repo', repo,
+        ]).stdout)
+        if (String(verified.databaseId) !== String(candidates[0].databaseId)
+          || (expectedSha && String(verified.headSha) !== expectedSha)
+          || String(verified.headBranch ?? '') !== branch) {
+          throw new Error('Dispatched run identity disagrees with the run view; refusing to continue')
+        }
+        runRow = { ...candidates[0], ...verified }
+        break
+      }
+      await sleep(pollMs)
     }
-    if (!runRow) throw new Error('Dispatch was accepted but no matching run appeared; check the Actions tab')
+    if (!runRow) throw new Error('Dispatch was accepted but no uniquely identifiable run appeared; check the Actions tab')
     state.runId = String(runRow.databaseId)
-    state.runUrl = runRow.url
+    state.runUrl = runRow.url ?? null
     state.headSha = runRow.headSha ?? null
-    logFn(`Dispatched run ${state.runId}${state.runUrl ? ` (${state.runUrl})` : ''}`)
-    if (expectedSha && state.headSha && state.headSha !== expectedSha) {
-      throw new Error(`Dispatched run head is ${state.headSha}, expected ${expectedSha}`)
-    }
+    logFn(`Correlated dispatch to run ${state.runId}${state.runUrl ? ` (${state.runUrl})` : ''}`)
+
     const pattern = gateStepPattern(environment)
     const gateDeadline = now() + gateTimeoutMs
     let gateVerdict = 'pending'
     while (now() < gateDeadline) {
-      const view = JSON.parse(gh(['run', 'view', state.runId, '--json', 'status,conclusion,jobs', '--repo', repo]).stdout)
+      const view = JSON.parse(ghStrict(['run', 'view', state.runId, '--json', 'status,conclusion,jobs', '--repo', repo]).stdout)
       gateVerdict = gateStepVerdict(view.jobs, pattern)
       if (gateVerdict === 'passed') {
-        gh(['variable', 'set', gateVariable, '--env', environment, '--repo', repo, '--body', 'false'])
+        await setGateWithReadback({ repo, environment, gateVariable, value: 'false', spawnSyncImpl, log: logFn })
         state.gateClosed = true
-        logFn(`Run passed its ${environment} gate step; temporary gate closed.`)
+        state.gateReadback = 'false'
+        logFn(`Run passed its ${environment} gate step; temporary gate closed and verified.`)
         break
       }
       if (gateVerdict === 'failed' || view.status === 'completed') break
       await sleep(pollMs)
     }
-    if (!state.gateClosed) {
-      gh(['variable', 'set', gateVariable, '--env', environment, '--repo', repo, '--body', 'false'])
-      state.gateClosed = true
-      logFn('Closed the temporary gate without a passing gate step (run aborted early).')
-    }
     const runDeadline = now() + runTimeoutMs
     let view = null
     while (now() < runDeadline) {
-      view = JSON.parse(gh(['run', 'view', state.runId, '--json', 'status,conclusion', '--repo', repo]).stdout)
+      view = JSON.parse(ghStrict(['run', 'view', state.runId, '--json', 'status,conclusion', '--repo', repo]).stdout)
       if (view.status === 'completed') break
       await sleep(pollMs)
     }
@@ -429,26 +561,44 @@ export async function runFirstSync({
     if (state.conclusion !== 'success') {
       throw new Error(`First sync run concluded ${state.conclusion}`)
     }
-    return state
-  } finally {
-    // Never leave temporary authorization behind — including on timeouts,
-    // dispatch failure, cancellation and unexpected throws.
-    if (!state.gateClosed) {
-      try {
-        run('gh', ['variable', 'set', gateVariable, '--env', environment, '--repo', repo, '--body', 'false'], {
-          spawnSyncImpl,
-          allowFailure: true,
-        })
-        state.gateClosed = true
-      } catch { /* best effort */ }
-    }
-    if (state.workflowEnabledByUs && workflowId) {
-      try {
-        run('gh', ['workflow', 'disable', workflowId, '--repo', repo], { spawnSyncImpl, allowFailure: true })
-        state.workflowRestored = true
-      } catch { /* best effort */ }
-    }
+  } catch (error) {
+    primaryError = error
   }
+
+  // Cleanup ALWAYS runs with strict status checks and readback. A failed or
+  // unverifiable cleanup is reported loudly — never converted into a receipt.
+  if (!state.gateClosed) {
+    try {
+      await setGateWithReadback({ repo, environment, gateVariable, value: 'false', spawnSyncImpl, log: logFn })
+      state.gateClosed = true
+      state.gateReadback = 'false'
+    } catch (error) { cleanupErrors.push(error) }
+  }
+  if (state.workflowEnabledByUs && !state.workflowRestored) {
+    try {
+      state.workflowReadback = await restoreWorkflowWithReadback({ repo, workflowId, spawnSyncImpl, log: logFn })
+      state.workflowRestored = true
+    } catch (error) { cleanupErrors.push(error) }
+  }
+  if (cleanupErrors.length > 0) {
+    state.cleanupVerified = false
+    state.recoveryAction = [
+      'HIGH PRIORITY — remote cleanup UNVERIFIED:',
+      ...cleanupErrors.map((error) => `  ${error.message}`),
+      `  Inspect GitHub environment ${environment} and Actions workflow ${repo}; do not dispatch again until confirmed.`,
+    ].join('\n')
+    const error = new Error(state.recoveryAction)
+    error.cleanupErrors = cleanupErrors
+    error.state = state
+    if (primaryError) error.cause = primaryError
+    throw error
+  }
+  state.cleanupVerified = true
+  if (primaryError) {
+    primaryError.state = state
+    throw primaryError
+  }
+  return state
 }
 
 /** Read-only diagnostics: no mutations, secrets never printed. */
@@ -466,19 +616,41 @@ export async function runDoctor({ environment, spawnSyncImpl = spawnSync, log: l
     const state = String(JSON.parse(workflow.stdout).state ?? 'missing')
     push('writer workflow', state === 'disabled_manually' ? 'warn' : 'ok', state)
   } else push('writer workflow', 'fail', 'cannot read the workflow state')
-  const gate = gh(['variable', 'get', gateVariableName(environment), '--env', environment, '--repo', WIZARD_REPOSITORY])
-  push(`${environment} gate`, gate.status === 0 && /true/i.test(String(gate.stdout)) ? 'warn' : 'ok',
-    gate.status === 0 ? String(gate.stdout).trim() : 'unset')
-  const schedule = gh(['variable', 'get', 'AIRINGCAL_WRITER_ENABLED', '--repo', WIZARD_REPOSITORY])
-  push('schedule gate', schedule.status === 0 && /true/i.test(String(schedule.stdout)) ? 'warn' : 'ok',
-    schedule.status === 0 ? String(schedule.stdout).trim() : 'unset')
+
+  // #195 correction: distinguish absent/false (closed) from unreadable.
+  const gate = readEnvironmentGate({
+    repo: WIZARD_REPOSITORY,
+    environment,
+    gateVariable: gateVariableName(environment),
+    spawnSyncImpl,
+  })
+  if (gate.kind === 'error') {
+    push(`${environment} gate`, 'fail', `UNREADABLE (${gate.detail ?? 'API error'}); do not assume it is closed`)
+  } else if (gate.kind === 'absent') {
+    push(`${environment} gate`, 'ok', 'confirmed absent (closed by GitHub default)')
+  } else {
+    push(`${environment} gate`, String(gate.value).toLowerCase() === 'true' ? 'warn' : 'ok',
+      `verified value ${gate.value}`)
+  }
+  const schedule = readScheduleGate({ repo: WIZARD_REPOSITORY, spawnSyncImpl })
+  if (schedule.kind === 'error') {
+    push('schedule gate', 'fail', `UNREADABLE (${schedule.detail ?? 'API error'}); never treat as disabled`)
+  } else if (schedule.kind === 'absent') {
+    push('schedule gate', 'ok', 'confirmed absent (cron gated off)')
+  } else {
+    push('schedule gate', String(schedule.value).toLowerCase() === 'true' ? 'warn' : 'ok',
+      `verified value ${schedule.value}`)
+  }
   const runs = gh(['run', 'list', '--workflow', 'portable-writer.yml', '--limit', '3', '--json', 'databaseId,status,conclusion,headSha', '--repo', WIZARD_REPOSITORY])
   if (runs.status === 0) {
-    for (const row of JSON.parse(runs.stdout)) {
+    const rows = JSON.parse(runs.stdout)
+    const active = rows.filter((row) => ['in_progress', 'queued', 'waiting', 'pending'].includes(String(row.status)))
+    if (active.length > 0) push('active writer runs', 'warn', active.map((r) => r.databaseId).join(', '))
+    for (const row of rows) {
       push(`recent run ${row.databaseId}`, row.status === 'completed' && row.conclusion === 'success' ? 'ok' : 'warn',
         `${row.status}/${row.conclusion ?? '-'} @ ${String(row.headSha ?? '').slice(0, 8)}`)
     }
-  }
+  } else push('active writer runs', 'fail', 'cannot list workflow runs')
   if (env.AIRINGCAL_PUBLIC_BASE_URL) {
     try {
       const response = await fetch(`${String(env.AIRINGCAL_PUBLIC_BASE_URL).replace(/\/+$/, '')}/public/current-release.json`, {
@@ -537,6 +709,22 @@ export function loadHeadlessEnvironment({ environment, dotenvPath, processEnv = 
   const path = resolve(resolveDeployDotenvPath({ envName, dotenvPathEnv: dotenvPath ?? processEnv.AIRINGCAL_DOTENV_PATH }))
   if (envName === 'production') return { env: loadProductionDeployEnv(path, processEnv), dotenvPath: path }
   return { env: loadDotEnvFile(path, processEnv), dotenvPath: path }
+}
+
+
+/**
+ * #195 correction: when automatic scoped Writer provisioning is unsupported,
+ * interactive runs accept an independently scoped R2 credential through
+ * genuinely masked prompts — no dotenv editing. Headless keeps its documented
+ * AIRINGCAL_S3_* overrides.
+ */
+export async function askS3CredentialFallback(io) {
+  const accessKeyId = (await askSecret('Cloudflare R2 S3 Access Key ID (operator-supplied)', io)).trim()
+  const secretAccessKey = (await askSecret('Cloudflare R2 S3 Secret Access Key', io)).trim()
+  if (!accessKeyId || !secretAccessKey) {
+    throw new WizardAbort('S3 credential fallback cancelled: both values are required')
+  }
+  return { AIRINGCAL_S3_ACCESS_KEY_ID: accessKeyId, AIRINGCAL_S3_SECRET_ACCESS_KEY: secretAccessKey }
 }
 
 async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment, headless }) {
@@ -611,8 +799,8 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
     ? String(resolvedEnv.AIRINGCAL_WIZARD_CONFIRM ?? '') === 'yes'
     : await askConfirm(`Apply this plan to ${environment}?`, io)
   if (!approved) {
-    logFn('Plan not applied. Re-run `pnpm setup` when ready.')
-    return { applied: false }
+    logFn('Plan not applied; nothing was mutated. Re-run `pnpm run setup` when ready.')
+    return { applied: false, verdict: 'CANCELLED', reason: 'deployment plan was not approved' }
   }
   const applyEnv = resolveApplyEnvironment({
     environment,
@@ -621,63 +809,151 @@ async function installFlow({ io, env = {}, fetchImpl, spawnSyncImpl, log: logFn,
     wizardEnv,
     sourceEnv: resolvedEnv,
   })
-  const { result, io: liveIo } = await applyPlan({
+
+  // #195 correction: one finalizer for ALL outcomes after the apply attempt,
+  // so partial mutations and their receipts survive a later failure.
+  const finalize = ({
+    verdict,
+    reason = null,
+    sync = null,
+    syncError = null,
+    verification = null,
+    verificationError = null,
+  }) => {
+    const inventory = buildInventory({
+      plan: dry.plan,
+      account: discovery.account,
+      identity: discovery.identity,
+      environment,
+      customDomain,
+      buildSha: resolveGitSha(spawnSyncImpl),
+      deployedAt: new Date().toISOString(),
+      writerCredential: s3,
+      verification: verification ? { pass: verification.pass, failed: verification.failed ?? [] } : null,
+      verdict,
+      mutationReceipts: applyReceipts.map((receipt) => ({
+        status: receipt.ok ? 'applied' : 'aborted',
+        completed: receipt.completed ?? [],
+        mutationsExecuted: receipt.mutationsExecuted ?? [],
+        reason: receipt.reason ?? null,
+      })),
+    })
+    let inventoryPath = null
+    try {
+      inventoryPath = writeInventory({
+        environment,
+        inventory,
+        secrets: [cloudflareToken, bangumiToken, s3?.secretAccessKey ?? ''].filter(Boolean),
+      })
+    } catch (error) { logFn(`Inventory could not be persisted: ${error.message}`) }
+    logFn(
+      `\n${verdict}. Public URL: ${dry.plan.publicBaseUrl ?? dry.plan.workerOrigin}` +
+      `${inventoryPath ? `\nInventory: ${inventoryPath}` : ''}${reason ? `\nReason: ${reason}` : ''}`,
+    )
+    return {
+      applied: result.ok === true,
+      verdict,
+      reason,
+      result,
+      applyReceipts,
+      sync,
+      syncError,
+      verification,
+      verificationError,
+      inventory,
+      inventoryPath,
+    }
+  }
+  let { result, io: liveIo } = await applyPlan({
     env: applyEnv,
     plan: applyDerived.plan,
     log: logFn,
     spawnSyncImpl,
   })
-  if (!result.ok) return { applied: false, result }
-  const s3 = liveIo.s3Credentials?.() ?? null
-  const wantSync = headless
+  const applyReceipts = [result]
+  let s3 = liveIo.s3Credentials?.() ?? null
+  if (!result.ok && !headless && Array.isArray(result.missingScopes) && result.missingScopes.length > 0) {
+    // Earlier steps may already have mutated remote state; surface that ledger
+    // instead of hiding a partial apply behind a generic failure.
+    logFn(
+      `Automatic Writer credential provisioning was not available (${result.reason}). ` +
+      `Completed effects: ${(result.completed ?? []).join(' → ') || 'none'}.`,
+    )
+    const confirmed = await askConfirm('Supply an independently scoped R2 credential now (masked input)?', io)
+    if (!confirmed) return finalize({ verdict: 'DEPLOY_FAILED', reason: 'masked credential fallback declined after a partial apply' })
+    const fallback = await askS3CredentialFallback(io)
+    const retried = await applyPlan({
+      env: { ...applyEnv, ...fallback },
+      plan: applyDerived.plan,
+      log: logFn,
+      spawnSyncImpl,
+    })
+    result = retried.result
+    liveIo = retried.io
+    applyReceipts.push(result)
+    s3 = retried.io.s3Credentials?.() ?? null
+  }
+  if (!result.ok) {
+    return finalize({ verdict: 'DEPLOY_FAILED', reason: result.reason ?? 'apply aborted' })
+  }
+  let wantSync = headless
     ? String(resolvedEnv.AIRINGCAL_WIZARD_FIRST_SYNC ?? '') === 'yes'
     : await askConfirm('Run the first Full Sync now (GitHub Actions, separate authorization)?', io)
   let sync = null
+  let syncError = null
   if (wantSync) {
     if (!headless) {
       const confirmed = await askConfirm(
         'This dispatches the Writer for the first full synchronization (opens a temporary gate that closes automatically). Continue?',
         io,
       )
-      if (!confirmed) throw new WizardAbort('First sync not authorized')
+      if (!confirmed) {
+        wantSync = false
+        logFn('First sync not authorized; leaving the deployment intentionally uninitialized.')
+      }
     }
-    sync = await runFirstSync({
-      environment,
-      expectedSha: resolveGitSha(spawnSyncImpl),
-      spawnSyncImpl,
-      log: logFn,
-    })
+    if (wantSync) {
+      try {
+        sync = await runFirstSync({
+          environment,
+          expectedSha: resolveGitSha(spawnSyncImpl),
+          spawnSyncImpl,
+          log: logFn,
+        })
+      } catch (error) {
+        syncError = error
+        logFn(`First sync failed: ${error.message?.slice(0, 400) ?? String(error)}`)
+      }
+    }
   }
   let verification = null
-  // A release exists only after the first Full Sync; verifying an intentionally
-  // unpublished install would persist spurious failures into the inventory.
+  let verificationError = null
+  // A release exists only after a successful first Full Sync.
   if (s3 && sync) {
-    verification = runVerifier({
-      base: dry.plan.workerOrigin,
-      bucket: dry.plan.bucket,
-      accountId: discovery.account.id,
-      s3,
-      spawnSyncImpl,
-      log: logFn,
-    })
+    try {
+      verification = runVerifier({
+        base: dry.plan.workerOrigin,
+        bucket: dry.plan.bucket,
+        accountId: discovery.account.id,
+        s3,
+        spawnSyncImpl,
+        log: logFn,
+      })
+    } catch (error) {
+      verificationError = error
+    }
   }
-  const inventory = buildInventory({
-    plan: dry.plan,
-    account: discovery.account,
-    identity: discovery.identity,
-    environment,
-    customDomain,
-    buildSha: resolveGitSha(spawnSyncImpl),
-    deployedAt: new Date().toISOString(),
-    verification: verification ? { pass: verification.pass, failed: verification.failed ?? [] } : null,
+  const { verdict, reason } = computeVerdict({
+    applied: result.ok === true,
+    wantSync,
+    headless,
+    sync,
+    syncError,
+    verification,
+    verificationError,
+    applyReason: result.reason ?? null,
   })
-  const inventoryPath = writeInventory({
-    environment,
-    inventory,
-    secrets: [cloudflareToken, bangumiToken, s3?.secretAccessKey ?? ''].filter(Boolean),
-  })
-  logFn(`\nReady.\n  Public URL: ${dry.plan.publicBaseUrl ?? dry.plan.workerOrigin}\n  Inventory:  ${inventoryPath}`)
-  return { applied: true, result, sync, verification, inventory, inventoryPath }
+  return finalize({ verdict, reason, sync, syncError, verification, verificationError })
 }
 
 export async function main(argv = process.argv.slice(2), deps = {}) {
@@ -704,6 +980,11 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       if (!args.headless) {
         const confirmed = await askConfirm('Dispatch the first Full Sync now?', io)
         if (!confirmed) throw new WizardAbort('Sync not authorized')
+      } else if (String(env.AIRINGCAL_WIZARD_SYNC_AUTHORIZED ?? '') !== 'yes') {
+        throw new Error(
+          'Non-interactive first sync requires AIRINGCAL_WIZARD_SYNC_AUTHORIZED=yes in the environment; ' +
+          'this is a separate authorization from the apply gates',
+        )
       }
       const environment = args.environment ?? (args.headless ? env.AIRINGCAL_ENV : 'production')
       const syncResult = await runFirstSync({
@@ -716,7 +997,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     }
     if (args.headless) {
       const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, headless: true })
-      return { ok: result.applied === true, result }
+      return { ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'CANCELLED'].includes(result.verdict), verdict: result.verdict, result }
     }
     const choice = await askSelect('AiringCal setup', [
       { title: 'Install or update a deployment', hint: 'two tokens, plan, apply, first sync', value: 'install' },
@@ -729,7 +1010,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       return { ok: report.checks.every((check) => check.status !== 'fail'), report }
     }
     const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, headless: false })
-    return { ok: result.applied === true, result }
+    return { ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'CANCELLED'].includes(result.verdict), verdict: result.verdict, result }
   } catch (error) {
     if (error instanceof WizardAbort || error instanceof IdentityError) {
       logFn(`\nStopped: ${error.message}`)

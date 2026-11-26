@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import test from 'node:test'
-import { applyPlan, discoverIdentity, planCustomDomain, resolveApplyEnvironment, runFirstSync, writeInventory } from './setup-wizard.mjs'
+import { applyPlan, askS3CredentialFallback, discoverIdentity, planCustomDomain, resolveApplyEnvironment, runDoctor, runFirstSync, writeInventory } from './setup-wizard.mjs'
 import {
   assertInventorySanitized,
   buildInventory,
+  computeVerdict,
   chooseAccount,
   formatPlan,
   gateStepVerdict,
@@ -48,6 +49,56 @@ function fakeFetch(routes) {
     return { ok: status >= 200 && status < 300, status, json: async () => body }
   }
   return { impl, calls }
+}
+
+/** Scripted gh responses for the corrected, readback-verified sync flow. */
+function syncFixtures({
+  sha,
+  gate = 'production',
+  workflowState = 'disabled_manually',
+  runId = 555,
+  gateConclusion = 'success',
+  conclusion = 'success',
+  scheduleRead = { status: 404, stdout: '', stderr: 'Not Found' },
+  overrides = [],
+}) {
+  let dispatched = false
+  let state = workflowState
+  let gateValue = 'false'
+  const gateName = gate === 'production' ? 'AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED' : 'AIRINGCAL_DEVELOPMENT_WRITER_ENABLED'
+  const stepName = gate === 'production' ? 'Production bootstrap gate (fails closed)' : 'Development writer gate (fails closed)'
+  const script = [
+    ...overrides,
+    [/^gh auth status/, () => ({})],
+    [/^gh api repos\/Skyline-Gazer\/AiringCal\/git\/ref\/heads\/dev/, () => ({ stdout: `${sha}\n` })],
+    [/^gh api repos\/Skyline-Gazer\/AiringCal\/actions\/variables\/AIRINGCAL_WRITER_ENABLED/, () => scheduleRead],
+    [/^gh api repos\/Skyline-Gazer\/AiringCal\/actions\/workflows\/portable-writer\.yml/, (key) => ({
+      stdout: String(key).includes('.state') ? state : JSON.stringify({ id: 407881922, state }),
+    })],
+    [new RegExp(`^gh api repos/Skyline-Gazer/AiringCal/environments/.*/variables/${gateName}`), () => ({ stdout: `${gateValue}\n` })],
+    [/^gh workflow enable/, () => { state = 'active'; return {} }],
+    [/^gh workflow disable/, () => { state = 'disabled_manually'; return {} }],
+    [/^gh variable set .* --body true/, () => { gateValue = 'true'; return {} }],
+    [/^gh variable set .* --body false/, () => { gateValue = 'false'; return {} }],
+    [/^gh workflow run/, () => { dispatched = true; return {} }],
+    [/^gh run list/, () => ({
+      stdout: JSON.stringify(dispatched
+        ? [{ databaseId: runId, event: 'workflow_dispatch', status: 'completed', headSha: sha, headBranch: 'dev', url: 'https://example/runs/' + runId }]
+        : []),
+    })],
+    [/^gh run view/, () => ({
+      stdout: JSON.stringify({
+        databaseId: runId,
+        headSha: sha,
+        headBranch: 'dev',
+        status: 'completed',
+        conclusion,
+        jobs: [{ steps: [{ name: stepName, conclusion: gateConclusion }] }],
+      }),
+    })],
+  ]
+  const spawned = scriptedSpawn(script)
+  return { impl: spawned.impl, calls: spawned.calls, script }
 }
 
 function scriptedSpawn(script) {
@@ -227,32 +278,7 @@ test('applyPlan refuses production mutations without both existing gates (#195)'
 
 test('runFirstSync opens only the env gate, closes it after the gate step and restores the workflow (#195)', async () => {
   const sha = 'a'.repeat(40)
-  const { impl, calls } = scriptedSpawn([
-    [/^gh auth status/, () => ({})],
-    [/^gh api repos\/Skyline-Gazer\/AiringCal\/git\/ref\/heads\/dev/, () => ({ stdout: `${sha}\n` })],
-    [/^gh api repos\/Skyline-Gazer\/AiringCal\/actions\/workflows\/portable-writer\.yml/, () => ({ stdout: JSON.stringify({ id: 407881922, state: 'disabled_manually' }) })],
-    [/^gh variable get AIRINGCAL_WRITER_ENABLED/, () => ({ status: 1, stdout: '' })],
-    [/^gh workflow enable/, () => ({})],
-    [/^gh variable set AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED --env production --repo .* --body true/, () => ({})],
-    [/^gh workflow run portable-writer.yml/, () => ({})],
-    [/^gh run list/, () => ({ stdout: JSON.stringify([{ databaseId: 555, headSha: sha, createdAt: new Date(Date.now()).toISOString(), url: 'https://example/runs/555' }]) })],
-    [/^gh run view 555/, (() => {
-      let polls = 0
-      return () => {
-        polls += 1
-        const completed = polls > 1
-        return {
-          stdout: JSON.stringify({
-            status: completed ? 'completed' : 'in_progress',
-            conclusion: completed ? 'success' : null,
-            jobs: [{ steps: [{ name: 'Production bootstrap gate (fails closed)', conclusion: 'success' }] }],
-          }),
-        }
-      }
-    })()],
-    [/^gh variable set AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED --env production --repo .* --body false/, () => ({})],
-    [/^gh workflow disable/, () => ({})],
-  ])
+  const { impl, calls } = syncFixtures({ sha, gate: 'production' })
   const result = await runFirstSync({
     environment: 'production',
     expectedSha: sha,
@@ -275,19 +301,14 @@ test('runFirstSync opens only the env gate, closes it after the gate step and re
 
 test('runFirstSync closes the temporary gate even when the gate step fails (#195)', async () => {
   const sha = 'b'.repeat(40)
-  const { impl, calls } = scriptedSpawn([
-    [/^gh auth status/, () => ({})],
-    [/^gh api repos\/Skyline-Gazer\/AiringCal\/actions\/workflows\/portable-writer\.yml/, () => ({ stdout: JSON.stringify({ id: 7, state: 'active' }) })],
-    [/^gh api repos/, () => ({ stdout: `${sha}\n` })],
-    [/^gh variable get AIRINGCAL_WRITER_ENABLED/, () => ({ status: 1 })],
-    [/^gh variable set AIRINGCAL_DEVELOPMENT_WRITER_ENABLED .* --body true/, () => ({})],
-    [/^gh workflow run/, () => ({})],
-    [/^gh run list/, () => ({ stdout: JSON.stringify([{ databaseId: 777, headSha: sha, createdAt: new Date(Date.now()).toISOString(), url: 'u' }]) })],
-    [/^gh run view 777/, () => ({
-      stdout: JSON.stringify({ status: 'completed', conclusion: 'failure', jobs: [{ steps: [{ name: 'Development writer gate (fails closed)', conclusion: 'failure' }] }] }),
-    })],
-    [/^gh variable set AIRINGCAL_DEVELOPMENT_WRITER_ENABLED .* --body false/, () => ({})],
-  ])
+  const { impl, calls } = syncFixtures({
+    sha,
+    gate: 'development',
+    workflowState: 'active',
+    runId: 777,
+    gateConclusion: 'failure',
+    conclusion: 'failure',
+  })
   await assert.rejects(
     () => runFirstSync({ environment: 'development', expectedSha: sha, spawnSyncImpl: impl, log: () => {}, sleep: async () => {} }),
     /gate step/,
@@ -297,10 +318,7 @@ test('runFirstSync closes the temporary gate even when the gate step fails (#195
 })
 
 test('runFirstSync refuses a remote head that does not match the expected SHA (#195)', async () => {
-  const { impl } = scriptedSpawn([
-    [/^gh auth status/, () => ({})],
-    [/^gh api repos/, () => ({ stdout: `${'c'.repeat(40)}\n` })],
-  ])
+  const { impl } = syncFixtures({ sha: 'c'.repeat(40), gate: 'production' })
   await assert.rejects(
     () => runFirstSync({ environment: 'production', expectedSha: 'd'.repeat(40), spawnSyncImpl: impl, log: () => {}, sleep: async () => {} }),
     /expected/,
@@ -355,12 +373,11 @@ test('writeInventory writes 0600 under .airingcal and never a secret (#195)', as
 
 test('runFirstSync refuses when the schedule gate is enabled, before arming anything (#195)', async () => {
   const sha = 'f'.repeat(40)
-  const { impl, calls } = scriptedSpawn([
-    [/^gh auth status/, () => ({})],
-    [/^gh api repos\/Skyline-Gazer\/AiringCal\/actions\/workflows\/portable-writer\.yml/, () => ({ stdout: JSON.stringify({ id: 9, state: 'disabled_manually' }) })],
-    [/^gh api repos/, () => ({ stdout: `${sha}\n` })],
-    [/^gh variable get AIRINGCAL_WRITER_ENABLED/, () => ({ status: 0, stdout: 'true\n' })],
-  ])
+  const { impl, calls } = syncFixtures({
+    sha,
+    gate: 'production',
+    scheduleRead: { status: 0, stdout: 'true\n' },
+  })
   await assert.rejects(
     () => runFirstSync({ environment: 'production', expectedSha: sha, spawnSyncImpl: impl, log: () => {}, sleep: async () => {} }),
     /scheduled writer is enabled/,
@@ -518,4 +535,215 @@ test('inventory sanitizer rejects token-shaped fields outside writerToken (#195 
     () => assertInventorySanitized({ ...base, extra: { token: 'x'.repeat(32) } }),
     /token-shaped/,
   )
+})
+
+// ---------------------------------------------------------------------------
+// #195 acceptance correction: actual credential facts + masked fallback
+// ---------------------------------------------------------------------------
+
+test('inventory records the actual Writer credential source/scope, never a desired token name (#195 correction)', () => {
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', publicBaseUrl: '' })
+  const inventory = buildInventory({
+    plan,
+    account: { id: ACCOUNT, name: 'Main' },
+    identity: { userId: '1', username: 'a' },
+    environment: 'production',
+    writerCredential: {
+      source: 'management-token',
+      scope: 'account-wide-derived',
+      accessKeyId: 'tok-id',
+      secretAccessKey: 'must-not-appear',
+    },
+  })
+  assert.equal(inventory.writerCredential.source, 'management-token')
+  assert.equal(inventory.writerCredential.scope, 'account-wide-derived')
+  assert.equal(JSON.stringify(inventory).includes('airingcal-production-writer'), false,
+    'no canonical token name when no such token was created')
+  assert.equal(JSON.stringify(inventory).includes('must-not-appear'), false, 'secret never persisted')
+  assert.doesNotThrow(() => assertInventorySanitized(inventory, ['must-not-appear']))
+})
+
+test('interactive S3 credential fallback is genuinely masked and skips other prompts (#195 correction)', async () => {
+  const { io, input, output } = fakeIo()
+  const pending = askS3CredentialFallback(io)
+  await new Promise((r) => setTimeout(r, 10))
+  await input.type('AKIA_REAL_KEY_VALUE\r')
+  await new Promise((r) => setTimeout(r, 10))
+  await input.type('real-secret-value\r')
+  const creds = await pending
+  assert.equal(creds.AIRINGCAL_S3_ACCESS_KEY_ID, 'AKIA_REAL_KEY_VALUE')
+  assert.equal(creds.AIRINGCAL_S3_SECRET_ACCESS_KEY, 'real-secret-value')
+  assert.equal(output.text.includes('AKIA_REAL_KEY_VALUE'), false, 'access key not echoed')
+  assert.equal(output.text.includes('real-secret-value'), false, 'secret not echoed')
+  assert.equal((output.text.match(/\*/g) ?? []).length >= 20, true, 'masked characters echoed')
+})
+
+// ---------------------------------------------------------------------------
+// #195 correction: cleanup failure paths must never produce success receipts
+// ---------------------------------------------------------------------------
+
+test('unsuccessful temporary-gate closure is reported with HIGH PRIORITY recovery (#195 correction)', async () => {
+  const sha = 'a'.repeat(40)
+  const { impl } = syncFixtures({
+    sha,
+    gate: 'production',
+    overrides: [[/^gh variable set .* --body false/, () => ({ status: 1, stdout: '', stderr: 'permission denied' })]],
+  })
+  let error
+  try {
+    await runFirstSync({ environment: 'production', expectedSha: sha, spawnSyncImpl: impl, log: () => {}, sleep: async () => {} })
+  } catch (caught) { error = caught }
+  assert.ok(error, 'failed gate closure must throw')
+  assert.match(error.message, /HIGH PRIORITY/)
+  assert.match(error.message, /UNVERIFIED/)
+  assert.equal(error.state.gateClosed, false, 'no false closure receipt')
+  assert.equal(error.state.cleanupVerified, false)
+})
+
+test('unsuccessful workflow restoration is reported with HIGH PRIORITY recovery (#195 correction)', async () => {
+  const sha = 'b'.repeat(40)
+  const { impl } = syncFixtures({
+    sha,
+    gate: 'production',
+    overrides: [[/^gh workflow disable/, () => ({ status: 1, stdout: '', stderr: 'permission denied' })]],
+  })
+  let error
+  try {
+    await runFirstSync({ environment: 'production', expectedSha: sha, spawnSyncImpl: impl, log: () => {}, sleep: async () => {} })
+  } catch (caught) { error = caught }
+  assert.ok(error, 'failed workflow restoration must throw')
+  assert.match(error.message, /HIGH PRIORITY/)
+  assert.match(error.message, /disable workflow|workflow restoration/)
+  assert.equal(error.state.workflowRestored, false)
+  assert.equal(error.state.cleanupVerified, false)
+})
+
+test('unreadable gate state is never treated as safely closed (#195 correction)', async () => {
+  const sha = 'c'.repeat(40)
+  const { impl } = syncFixtures({
+    sha,
+    gate: 'development',
+    overrides: [[
+      new RegExp('^gh api repos/Skyline-Gazer/AiringCal/environments/.*/variables/.*WRITER_ENABLED'),
+      () => ({ status: 500, stdout: '', stderr: 'API unavailable' }),
+    ]],
+  })
+  const error = await runFirstSync({
+    environment: 'development', expectedSha: sha, spawnSyncImpl: impl, log: () => {}, sleep: async () => {},
+  }).then(() => null, (caught) => caught)
+  assert.ok(error, 'unreadable gate must abort')
+  assert.match(error.message, /UNVERIFIED|HIGH PRIORITY/)
+  const doctor = await runDoctor({
+    environment: 'development',
+    spawnSyncImpl: scriptedSpawn([
+      [/^gh auth status/, () => ({})],
+      [/^gh api repos\/Skyline-Gazer\/AiringCal\/actions\/variables\/AIRINGCAL_WRITER_ENABLED/, () => ({ status: 500, stderr: 'API unavailable' })],
+      [/^gh api repos\/Skyline-Gazer\/AiringCal\/actions\/workflows\/portable-writer\.yml/, () => ({ stdout: JSON.stringify({ id: 7, state: 'disabled_manually' }) })],
+      [/^gh api repos\/Skyline-Gazer\/AiringCal\/environments\/development\/variables\/AIRINGCAL_DEVELOPMENT_WRITER_ENABLED/, () => ({ status: 500, stderr: 'API unavailable' })],
+      [/^gh run list/, () => ({ stdout: '[]' })],
+    ]).impl,
+    log: () => {},
+  })
+  assert.equal(doctor.checks.find((check) => /schedule gate/.test(check.name)).status, 'fail',
+    'doctor must fail on an unreadable schedule gate')
+  assert.equal(doctor.checks.find((check) => /development gate/.test(check.name)).status, 'fail',
+    'doctor must fail on an unreadable environment gate')
+})
+
+test('ambiguous new runs are refused instead of selecting an unrelated recent run (#195 correction)', async () => {
+  const sha = 'd'.repeat(40)
+  let listCalls = 0
+  const { impl } = syncFixtures({
+    sha,
+    gate: 'production',
+    overrides: [[/^gh run list/, () => {
+      listCalls += 1
+      if (listCalls === 1) return { stdout: '[]' }
+      return {
+        stdout: JSON.stringify([
+          { databaseId: 900, event: 'workflow_dispatch', status: 'in_progress', headSha: sha, headBranch: 'dev', url: 'a' },
+          { databaseId: 901, event: 'workflow_dispatch', status: 'in_progress', headSha: sha, headBranch: 'dev', url: 'b' },
+        ]),
+      }
+    }]],
+  })
+  const error = await runFirstSync({
+    environment: 'production', expectedSha: sha, spawnSyncImpl: impl, log: () => {}, sleep: async () => {},
+  }).then(() => null, (caught) => caught)
+  assert.ok(error)
+  assert.match(error.message, /Ambiguous dispatch/)
+  assert.equal(error.state.runId, null, 'no run selected from ambiguity')
+})
+
+test('active Writer run blocks dispatch before any gate is opened (#195 correction)', async () => {
+  const sha = 'e'.repeat(40)
+  const { impl, calls } = syncFixtures({
+    sha,
+    gate: 'production',
+    overrides: [[/^gh run list/, () => ({
+      stdout: JSON.stringify([{ databaseId: 800, event: 'workflow_dispatch', status: 'in_progress', headSha: sha, headBranch: 'dev' }]),
+    })]],
+  })
+  await assert.rejects(
+    () => runFirstSync({ environment: 'production', expectedSha: sha, spawnSyncImpl: impl, log: () => {}, sleep: async () => {} }),
+    /single-flight/,
+  )
+  assert.equal(calls.some((call) => call.key.includes('--body true')), false, 'gate never opened')
+})
+
+test('non-interactive first sync needs its own explicit authorization (#195 correction)', async () => {
+  const { main } = await import('./setup-wizard.mjs')
+  const result = await main(['--sync', '--headless', '--environment', 'development'], {
+    env: {},
+    io: { input: { isTTY: false }, output: { write() {} } },
+    spawnSyncImpl: () => ({ status: 0, stdout: '', stderr: '' }),
+    log: () => {},
+  })
+  assert.equal(result.ok, false)
+  assert.match(result.error, /AIRINGCAL_WIZARD_SYNC_AUTHORIZED=yes/)
+})
+
+// ---------------------------------------------------------------------------
+// #195 correction: explicit terminal verdicts, no premature READY
+// ---------------------------------------------------------------------------
+
+test('terminal verdicts distinguish deployment from initialization (#195 correction)', () => {
+  const passing = { pass: true, checks: [], failed: [] }
+  assert.deepEqual(computeVerdict({ applied: false, wantSync: false, applyReason: 'apply aborted' }), {
+    verdict: 'DEPLOY_FAILED', reason: 'apply aborted',
+  })
+  assert.equal(computeVerdict({ applied: true, wantSync: false, headless: false }).verdict, 'AWAITING_FIRST_SYNC')
+  assert.equal(computeVerdict({ applied: true, wantSync: false, headless: true }).verdict, 'DEPLOYED')
+  assert.equal(computeVerdict({
+    applied: true, wantSync: true, sync: { runId: '1' }, syncError: new Error('gate cleanup failed'), verification: passing,
+  }).verdict, 'SYNC_FAILED')
+  assert.equal(computeVerdict({
+    applied: true, wantSync: true, sync: { runId: '1' }, verification: { pass: false, failed: ['private-object-exists'] },
+  }).verdict, 'VERIFICATION_FAILED')
+  assert.equal(computeVerdict({
+    applied: true, wantSync: true, sync: { runId: '1' }, verification: passing,
+  }).verdict, 'READY')
+  assert.equal(computeVerdict({ applied: true, wantSync: true, sync: { runId: '1' } }).verdict, 'VERIFICATION_FAILED',
+    'unverified is never READY')
+})
+
+test('inventory preserves mutation receipts on a partial apply failure (#195 correction)', () => {
+  const plan = buildDevelopmentDeployPlan({ target: 'cloudflare', publicBaseUrl: '' })
+  const inventory = buildInventory({
+    plan,
+    account: { id: ACCOUNT, name: 'Main' },
+    identity: { userId: '1', username: 'a' },
+    environment: 'development',
+    verdict: 'DEPLOY_FAILED',
+    mutationReceipts: [{
+      status: 'aborted',
+      completed: ['token-probe', 'ensure-bucket'],
+      mutationsExecuted: ['ensure-bucket'],
+      reason: 'writer credential unavailable',
+    }],
+  })
+  assert.equal(inventory.deployment.verdict, 'DEPLOY_FAILED')
+  assert.deepEqual(inventory.mutationReceipts[0].completed, ['token-probe', 'ensure-bucket'])
+  assert.deepEqual(inventory.mutationReceipts[0].mutationsExecuted, ['ensure-bucket'])
+  assert.doesNotThrow(() => assertInventorySanitized(inventory))
 })

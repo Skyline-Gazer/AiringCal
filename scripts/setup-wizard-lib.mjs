@@ -112,8 +112,10 @@ export function buildInventory({
   customDomain = '',
   buildSha,
   deployedAt,
-  writerToken = null,
+  writerCredential = null,
   verification = null,
+  verdict = null,
+  mutationReceipts = [],
 }) {
   return {
     schema: 'airingcal.inventory.v1',
@@ -142,13 +144,23 @@ export function buildInventory({
       primaryUserId: identity.userId,
       username: identity.username,
     },
-    writerToken: writerToken
-      ? { name: writerToken.name, accessKeyId: writerToken.accessKeyId, scope: writerToken.scope ?? 'bucket' }
+    // #195 correction: record what the engine ACTUALLY provisioned/verified,
+    // never the desired canonical name when no such token exists.
+    writerCredential: writerCredential
+      ? {
+          source: writerCredential.source ?? 'unknown',
+          scope: writerCredential.scope ?? 'unverified',
+          accessKeyId: writerCredential.accessKeyId ?? null,
+          tokenName: writerCredential.tokenName ?? null,
+          tokenId: writerCredential.tokenId ?? null,
+        }
       : null,
     deployment: {
       gitSha: buildSha ?? null,
       deployedAt: deployedAt ?? null,
+      verdict,
     },
+    mutationReceipts,
     verification: verification ?? null,
   }
 }
@@ -161,12 +173,11 @@ export function assertInventorySanitized(inventory, secrets = []) {
       throw new Error('Refusing to write inventory: a credential value leaked into it')
     }
   }
-  // Exempt only the legitimate writerToken block (name/id/scope); any other
-  // token-shaped string field is a leak. The previous form was unreachable
-  // because buildInventory always emits a writerToken key (#195 review).
-  const { writerToken: _writerToken, ...rest } = inventory
+  // Exempt only the legitimate writerCredential block (ids/scope); any other
+  // token-shaped string field is a leak.
+  const { writerCredential: _writerCredential, ...rest } = inventory
   if (/"token"\s*:\s*"[A-Za-z0-9_-]{20,}"/.test(JSON.stringify(rest))) {
-    throw new Error('Refusing to write inventory: token-shaped value detected outside writerToken')
+    throw new Error('Refusing to write inventory: token-shaped value detected outside writerCredential')
   }
   return inventory
 }
@@ -186,4 +197,42 @@ export function gateStepVerdict(runJobs, pattern) {
     }
   }
   return 'pending'
+}
+
+/**
+ * #195 correction: a single, explicit terminal verdict. READY requires the
+ * intended deployment, a successful first sync AND a passing live verifier;
+ * a deferred sync is a valid infrastructure outcome, not "Ready".
+ */
+export function computeVerdict({
+  applied,
+  wantSync,
+  headless = false,
+  sync = null,
+  syncError = null,
+  verification = null,
+  verificationError = null,
+  applyReason = null,
+}) {
+  if (!applied) {
+    return { verdict: 'DEPLOY_FAILED', reason: applyReason ?? 'apply aborted' }
+  }
+  if (syncError) {
+    return { verdict: 'SYNC_FAILED', reason: String(syncError?.message ?? syncError).slice(0, 400) }
+  }
+  if (!wantSync) {
+    return {
+      verdict: headless ? 'DEPLOYED' : 'AWAITING_FIRST_SYNC',
+      reason: headless
+        ? 'Infrastructure deployed; first Full Sync was not requested'
+        : 'First Full Sync intentionally deferred; the deployment is not initialized yet',
+    }
+  }
+  if (verificationError || !verification || verification.pass !== true) {
+    return {
+      verdict: 'VERIFICATION_FAILED',
+      reason: String(verificationError?.message ?? verificationError ?? 'live verifier did not pass').slice(0, 400),
+    }
+  }
+  return { verdict: 'READY', reason: null }
 }

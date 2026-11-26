@@ -1,10 +1,14 @@
 # AiringCal deployment guide (authoritative)
 
-**One entry point:** `scripts/deploy-env.mjs`. One guide answers "how do I deploy
-AiringCal". Per-environment evidence lives in
-[`v3/development-live-acceptance.md`](v3/development-live-acceptance.md) and
-[`v3/production-acceptance.md`](v3/production-acceptance.md); this file is the
-procedure, those files are the receipts.
+**One normal entry point: `pnpm run setup`.** It needs only two masked tokens
+and discovers/derives the account, workers.dev subdomain, Bangumi identity and
+`USERS_JSON` — no manually edited dotenv file. (`pnpm setup` without `run`
+is pnpm's own shell-setup command, not the AiringCal wizard.) This guide is
+authoritative for the interactive flow and its advanced/headless alternative
+(`scripts/deploy-env.mjs`, `pnpm run setup --headless`). Per-environment evidence
+lives in [`v3/development-live-acceptance.md`](v3/development-live-acceptance.md)
+and [`v3/production-acceptance.md`](v3/production-acceptance.md); this file is
+the procedure, those files are the receipts.
 
 Delivery topology (AGENTS.md): GitHub is the development origin; the GitHub
 Actions one-shot Portable Builder is the approved target writer; Cloudflare and
@@ -59,17 +63,18 @@ development-environment `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED`.
 - DNS ownership of the public base domain (a custom-domain cutover creates the
   Worker route only when the operator chose that hostname).
 
-## Interactive setup (`pnpm setup`)
+## Interactive setup (`pnpm run setup`)
 
 The canonical installation path (#195). It requires only the two masked
 tokens and `gh auth login`; everything else is discovered or defaulted:
 
 ```bash
 pnpm install
-pnpm setup                 # menu: install/update, doctor, exit
-pnpm setup --doctor        # read-only gates/workflows/recent runs
-pnpm setup --sync          # re-dispatch the first Full Sync (gate-monitored)
-pnpm setup --headless --environment development   # env/dotenv-driven, no prompts
+pnpm run setup                 # menu: install/update, doctor, exit
+pnpm run setup --doctor        # read-only gates/workflows/recent runs
+pnpm run setup --sync          # re-dispatch the first Full Sync (gate-monitored)
+pnpm run setup --headless --environment development   # env/dotenv-driven, no prompts
+# headless --sync additionally needs AIRINGCAL_WIZARD_SYNC_AUTHORIZED=yes
 ```
 
 Flow: preflight (Node/gh/wrangler) → environment (Production default) →
@@ -107,22 +112,24 @@ Safety properties:
   and closes it again in cleanup on failure/timeout/cancellation; the
   repo-level schedule gate is never touched. A workflow that was
   `disabled_manually` is re-disabled after the run.
-- Interruption recovery: re-run `pnpm setup` (resource discovery is
-  idempotent) or `pnpm setup --doctor` to see gate states and active runs.
+- Interruption recovery: re-run `pnpm run setup` (resource discovery is
+  idempotent) or `pnpm run setup --doctor` to see gate states and active runs.
   Resource ownership collisions fail closed; nothing foreign is adopted or
   deleted.
 
 ## Configuration
 
-Per-environment dotenv files, never committed: `.env.development`,
-`.env.production` (`deploy-env.mjs` accepts only these two selectors; the
-legacy `.env.staging` belongs solely to the frozen `scripts/setup-staging.sh`
-rollback flow). Production apply requires
-`AIRINGCAL_DOTENV_PATH` to point at the gitignored `.env.production`. Use an
-isolated process with no Development/Staging settings or generic credential
-aliases inherited from the shell. Production loads file values over process
-values and rejects nonempty `AIRINGCAL_STAGING_*`/`AIRINGCAL_DEVELOPMENT_*`
-process values. Keep the two apply-confirmation variables out of dotenv.
+**Advanced/headless only.** The interactive wizard needs no dotenv file. For
+automation or a deliberately explicit configuration, per-environment dotenv
+files are never committed: `.env.development`, `.env.production`
+(`deploy-env.mjs` accepts only these two selectors; the legacy `.env.staging`
+belongs solely to the frozen `scripts/setup-staging.sh` rollback flow).
+Production headless apply requires `AIRINGCAL_DOTENV_PATH` to point at
+`.env.production` plus both apply gates. Use an isolated process with no
+Development/Staging settings or generic credential aliases inherited from the
+shell. Production loads file values over process values and rejects nonempty
+`AIRINGCAL_STAGING_*`/`AIRINGCAL_DEVELOPMENT_*` process values. Keep the two
+apply-confirmation variables out of dotenv.
 
 | Name | Kind | Meaning |
 |---|---|---|

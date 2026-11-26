@@ -129,3 +129,20 @@ test('askText validates and stops after bounded attempts (#195)', async () => {
   input2.type('a\r'); input2.type('b\r'); input2.type('c\r')
   await assert.rejects(failing, /too many invalid/)
 })
+
+test('raw mode is enabled before the prompt is echoed (#195 correction)', async () => {
+  const { io, input } = fakeIo()
+  const writes = []
+  io.output = {
+    write(chunk) {
+      writes.push({ chunk: String(chunk), rawEnabled: input.rawModeChanges.includes(true) })
+    },
+  }
+  const pending = askSecret('Secret', io)
+  await new Promise((r) => setImmediate(r))
+  await input.type('hidden-value\r')
+  await pending
+  assert.ok(writes.length > 0)
+  assert.equal(writes.every((entry) => entry.rawEnabled), true,
+    'no prompt bytes may be emitted before raw mode is active')
+})

@@ -1312,7 +1312,7 @@ test('deriveAndVerifyS3 falls through to management-token self-derivation when t
   assert.equal(result.accessKeyId, VERIFY_TOKEN_ID)
   assert.equal(result.verified, true)
   assert.ok(
-    printed.includes('AIRINGCAL_S3_* override rejected for airingcal-development; falling through to management-token self-derivation'),
+    printed.includes('AIRINGCAL_S3_* override rejected for airingcal-development; continuing with the dedicated credential path'),
     'stderr must carry the fall-through notice',
   )
   assert.ok(triedKeys[0] === 'AKIA_STAGING_SCOPED', 'override creds are tried first (precedence kept)')
@@ -2857,8 +2857,9 @@ test('production S3 derivation never enters the shared credential rotation fallb
       return Response.json({ success: false, errors: [] }, { status: 403 })
     },
   })
-  await assert.rejects(() => io.deriveAndVerifyS3(), /independently scoped Production S3 credentials/i)
-  assert.deepEqual(requests, [['GET', '/client/v4/user/tokens/verify']])
+  const result = await io.deriveAndVerifyS3({})
+  assert.equal(result.deferred, true, 'Production never probes or derives broad management S3 access')
+  assert.deepEqual(requests, [])
 })
 
 test('deriveAndVerifyS3 continues to scoped-token fallback when parent token cannot verify', async () => {
@@ -2914,7 +2915,7 @@ test('deriveAndVerifyS3 continues to scoped-token fallback when parent token can
   })
   const result = await io.deriveAndVerifyS3({})
   assert.equal(result.derived, true)
-  assert.equal(result.source, undefined)
+  assert.equal(result.source, 'scoped-token', 'scoped credential source is reported honestly')
   assert.equal(result.accessKeyId, 'AKIANEW')
 })
 
@@ -5343,4 +5344,186 @@ test('verifyImageRouting keeps single-shot snapshot semantics outside worker mod
     /snapshot fetch.*404/,
   )
   assert.equal(snapshotCalls, 1, 'redirect mode fails closed on the first miss')
+})
+
+// ---------------------------------------------------------------------------
+// #195 acceptance corrections: independent Production Writer credential
+// ---------------------------------------------------------------------------
+
+test('Production derivation defers scoped Writer provisioning until after bucket creation', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const requests = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'cf-token',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+    },
+    plan: buildProductionPlan({ target: 'cloudflare', mode: 'apply', zoneId: 'zone' }),
+    fetchImpl: async (url, init = {}) => {
+      requests.push([String(init.method ?? 'GET'), new URL(url).pathname])
+      return Response.json({ success: false, errors: [] }, { status: 403 })
+    },
+  })
+  const result = await io.deriveAndVerifyS3({})
+  assert.equal(result.deferred, true)
+  assert.match(result.reason, /after bucket creation/i)
+  // No management-token S3 derivation, no broad fallback, no API call at all.
+  assert.deepEqual(requests, [])
+})
+
+test('Production override is explicitly labelled with unverifiable scope', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const account = '0123456789abcdef0123456789abcdef'
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'cf-token',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: account,
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'operator-key',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'operator-secret',
+    },
+    plan: buildProductionPlan({ target: 'cloudflare', mode: 'apply', zoneId: 'zone' }),
+    fetchImpl: async () => Response.json({ success: true, result: {} }),
+    createObjectStore: () => ({ list: async () => [], head: async () => null, close() {} }),
+  })
+  const result = await io.deriveAndVerifyS3({})
+  assert.equal(result.source, 'operator-override')
+  assert.equal(result.scope, 'operator-supplied-scope-unverified')
+  const creds = io.s3Credentials()
+  assert.equal(creds.source, 'operator-override')
+  assert.equal(creds.scope, 'operator-supplied-scope-unverified')
+})
+
+test('Production scoped Writer provisioning verifies token identity and bucket-only policy', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const account = '0123456789abcdef0123456789abcdef'
+  const requests = []
+  const respond = (method, path) => {
+    if (method === 'GET' && path === '/client/v4/user/tokens/permissions') {
+      return { ok: true, status: 200, json: async () => ({ success: true, result: { permissions: ['User API Tokens:Edit'] } }) }
+    }
+    if (method === 'GET' && path === '/client/v4/user/tokens/permission_groups') {
+      return { ok: true, status: 200, json: async () => ({ success: true, result: [{ id: 'pg-r2w', name: 'Workers R2 Storage Write' }] }) }
+    }
+    if (method === 'GET' && path === '/client/v4/user/tokens') {
+      return { ok: true, status: 200, json: async () => ({ success: true, result: [] }) }
+    }
+    if (method === 'POST' && path === '/client/v4/user/tokens') {
+      return { ok: true, status: 200, json: async () => ({ success: true, result: { id: 'scoped-1', value: 'scoped-secret' } }) }
+    }
+    if (method === 'GET' && path === '/client/v4/user/tokens/verify') {
+      return { ok: true, status: 200, json: async () => ({ success: true, result: { id: 'scoped-1', status: 'active' } }) }
+    }
+    if (method === 'GET' && path === '/client/v4/user/tokens/scoped-1') {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          result: {
+            id: 'scoped-1',
+            name: 'airingcal-production-writer',
+            policies: [{
+              effect: 'allow',
+              permission_groups: [{ id: 'pg-r2w' }],
+              resources: { [`com.cloudflare.api.account.${account}`]: { [`com.cloudflare.edge.r2.bucket.${account}.default.airingcal-production`]: '*' } },
+            }],
+          },
+        }),
+      }
+    }
+    return { ok: false, status: 404, json: async () => ({ success: false, errors: [] }) }
+  }
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'cf-token',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: account,
+    },
+    plan: buildProductionPlan({ target: 'cloudflare', mode: 'apply', zoneId: 'zone' }),
+    fetchImpl: async (url, init = {}) => {
+      const u = new URL(url)
+      const method = String(init.method ?? 'GET')
+      requests.push([method, u.pathname, init.body ?? null])
+      return respond(method, u.pathname)
+    },
+    createObjectStore: () => ({ list: async () => [], head: async () => null, close() {} }),
+  })
+  const result = await io.provisionProductionWriter({})
+  assert.equal(result.source, 'scoped-token')
+  assert.equal(result.scope, 'bucket-scoped')
+  assert.equal(result.tokenId, 'scoped-1')
+  assert.equal(result.tokenName, 'airingcal-production-writer')
+  const post = requests.find(([m, p]) => m === 'POST' && p.endsWith('/user/tokens'))
+  assert.ok(post, 'scoped token created via the official API')
+  assert.ok(JSON.parse(post[2]).policies[0].resources[`com.cloudflare.api.account.${account}`]?.[`com.cloudflare.edge.r2.bucket.${account}.default.airingcal-production`],
+    'policy is bucket-scoped')
+  assert.ok(requests.some(([m, p]) => m === 'GET' && p.endsWith('/user/tokens/scoped-1')), 'actual policy read back')
+  assert.ok(requests.some(([m, p]) => m === 'GET' && p.endsWith('/user/tokens/verify')), 'created token identity verified')
+  assert.equal(requests.some(([m]) => m === 'DELETE'), false)
+})
+
+test('Production scoped provisioning fails closed when the created token is broader than one bucket', async () => {
+  const { createLiveDevelopmentApplyIo } = await import('./deploy-env.mjs')
+  const account = '0123456789abcdef0123456789abcdef'
+  const requests = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'cf-token',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: account,
+    },
+    plan: buildProductionPlan({ target: 'cloudflare', mode: 'apply', zoneId: 'zone' }),
+    fetchImpl: async (url, init = {}) => {
+      const u = new URL(url)
+      const method = String(init.method ?? 'GET')
+      const path = u.pathname
+      requests.push([method, path])
+      const body = { success: true, result: {} }
+      if (method === 'GET' && path === '/client/v4/user/tokens/permissions') {
+        body.result = { permissions: ['User API Tokens:Edit'] }
+      } else if (method === 'GET' && path === '/client/v4/user/tokens/permission_groups') {
+        body.result = [{ id: 'pg-r2w', name: 'Workers R2 Storage Write' }]
+      } else if (method === 'GET' && path === '/client/v4/user/tokens') {
+        body.result = []
+      } else if (method === 'POST' && path === '/client/v4/user/tokens') {
+        body.result = { id: 'broad-1', value: 'broad-secret' }
+      } else if (method === 'GET' && path === '/client/v4/user/tokens/verify') {
+        body.result = { id: 'broad-1', status: 'active' }
+      } else if (method === 'GET' && path === '/client/v4/user/tokens/broad-1') {
+        body.result = {
+          id: 'broad-1',
+          name: 'airingcal-production-writer',
+          policies: [{ effect: 'allow', resources: { 'com.cloudflare.edge.r2.bucket.*': '*' }, permission_groups: [{ id: 'pg-r2w' }] }],
+        }
+      }
+      return { ok: true, status: 200, json: async () => body }
+    },
+    createObjectStore: () => ({ list: async () => [], head: async () => null, close() {} }),
+  })
+  await assert.rejects(() => io.provisionProductionWriter({}), /not restricted to the intended bucket|scope/i)
+  assert.ok(requests.some(([m, p]) => m === 'DELETE' && p.endsWith('/user/tokens/broad-1')),
+    'the just-created broad token is removed')
+  assert.equal(io.s3Credentials(), null, 'no broad credential is left in the engine')
+})
+
+test('Production Writer credential provisioning happens after the bucket ownership check (#195 correction)', async () => {
+  const plan = buildProductionPlan({
+    target: 'cloudflare',
+    publicBaseUrl: '',
+    mode: 'apply',
+    applyAuthorized: true,
+    zoneId: 'zone',
+  })
+  const io = createRecordingApplyIo({
+    deriveAndVerifyS3: async (ctx) => {
+      ctx.writerCredentialDeferred = true
+      return { deferred: true }
+    },
+    provisionProductionWriter: async () => ({ source: 'scoped-token', scope: 'bucket-scoped' }),
+  })
+  const result = await runProductionApply({ plan, env: {}, io })
+  assert.equal(result.ok, true, JSON.stringify(result))
+  const bucketIndex = io.calls.indexOf('ensure-bucket')
+  const credentialIndex = io.calls.indexOf('provisionProductionWriter')
+  assert.ok(bucketIndex >= 0 && credentialIndex > bucketIndex,
+    `credential must follow bucket ownership proof; calls: ${io.calls.join(' → ')}`)
+  assert.ok(result.completed.includes('provision-writer-credential'))
 })
