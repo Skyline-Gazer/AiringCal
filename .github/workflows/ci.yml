@@ -59,7 +59,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        task: [typecheck, test, build:check]
+        task: [typecheck, test, build:check, lint:undefined]
     steps:
       - uses: actions/checkout@v5
         with:

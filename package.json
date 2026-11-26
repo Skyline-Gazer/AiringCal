@@ -10,7 +10,8 @@
     "deploy": "pnpm -F @airing-cal/web-worker deploy",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test && node --test scripts/*.test.mjs",
-    "build:check": "pnpm -r --if-present build:check"
+    "build:check": "pnpm -r --if-present build:check",
+    "lint:undefined": "node scripts/check-undefined-identifiers.mjs"
   },
   "repository": {
     "type": "git",
