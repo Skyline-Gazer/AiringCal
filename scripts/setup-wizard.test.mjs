@@ -747,3 +747,219 @@ test('inventory preserves mutation receipts on a partial apply failure (#195 cor
   assert.deepEqual(inventory.mutationReceipts[0].mutationsExecuted, ['ensure-bucket'])
   assert.doesNotThrow(() => assertInventorySanitized(inventory))
 })
+
+// ---------------------------------------------------------------------------
+// #208 BUG-002 / UX-011 / UX-012: interactive session lifecycle & reuse
+// ---------------------------------------------------------------------------
+
+function makeScriptedUi(steps) {
+  const notes = []
+  const passwordPrompts = []
+  const confirmPrompts = []
+  const next = (type, message) => {
+    const idx = steps.findIndex((s) => s.type === type && (!s.match || s.match.test(message)))
+    if (idx === -1) throw new Error(`Unexpected prompt (${type}): ${message}`)
+    const [step] = steps.splice(idx, 1)
+    return step.value
+  }
+  return {
+    notes,
+    passwordPrompts,
+    confirmPrompts,
+    interactive: true,
+    color: false,
+    theme: 'auto',
+    prompts: {
+      select: async ({ message }) => next('select', message),
+      confirm: async (arg) => {
+        const msg = typeof arg === 'string' ? arg : arg.message
+        confirmPrompts.push(msg)
+        return next('confirm', msg)
+      },
+      text: async ({ message }) => next('text', message),
+      password: async ({ message }) => {
+        passwordPrompts.push(msgOr(message))
+        return next('password', message)
+      },
+    },
+    select: async (arg) => next('select', typeof arg === 'string' ? arg : arg.message),
+    confirm: async (arg) => {
+      const msg = typeof arg === 'string' ? arg : arg.message
+      confirmPrompts.push(msg)
+      return next('confirm', msg)
+    },
+    text: async (arg) => next('text', typeof arg === 'string' ? arg : arg.message),
+    password: async (arg) => {
+      const msg = typeof arg === 'string' ? arg : arg.message
+      passwordPrompts.push(msg)
+      return next('password', msg)
+    },
+    log: { info() {}, step() {}, success() {}, warn() {}, error() {} },
+    spinner: () => ({ start() {}, stop() {}, fail() {} }),
+    intro() {},
+    outro() {},
+    cancel() {},
+    note(msg, title) { notes.push({ title, msg }) },
+    link(l, u) { return `${l}: ${u}` },
+  }
+}
+
+function msgOr(x) { return String(x ?? '') }
+
+test('BUG-002 & UX-011: Validate -> Details -> Main Menu -> Doctor -> Main Menu -> Install reuses in-memory credentials and requires fresh authorization (#208)', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { main: wizardMain } = await import('./setup-wizard.mjs')
+  const invDir = mkdtempSync(join(tmpdir(), 'wizard-lifecycle-'))
+  try {
+    const fetchFake = fakeFetch([
+      [/\/user\/tokens\/verify$/, () => ({ body: { success: true, result: { id: 't1', status: 'active' } } })],
+      [/\/accounts$/, () => ({ body: { success: true, result: [{ id: ACCOUNT, name: 'Main' }] } })],
+      [/workers\/subdomain$/, () => ({ body: { success: true, result: { subdomain: 'acme' } } })],
+      [/\/workers\/scripts$/, () => ({ body: { success: true, result: [] } })],
+      [/\/r2\/buckets$/, () => ({ body: { success: true, result: { buckets: [] } } })],
+      [/\/user\/tokens\/permissions$/, () => ({ body: { success: true, result: { permissions: ['User API Tokens:Edit'] } } })],
+      [/api\.bgm\.tv\/v0\/me$/, () => ({ body: { id: 857123, username: 'owner' } })],
+      [/users\/owner\/collections/, () => ({ body: { total: 1, data: [{ subject_id: 9 }] } })],
+      [/\-\/collections\/9\/episodes/, () => ({ body: { total: 1, data: [] } })],
+    ])
+    const spawnStub = (cmd, args) => {
+      if (cmd === 'git') return { status: 0, stdout: `${'a'.repeat(40)}\n`, stderr: '' }
+      if (cmd === 'gh' && args[0] === 'api' && String(args[1]).includes('portable-writer.yml')) {
+        return { status: 0, stdout: JSON.stringify({ id: 7, state: 'disabled_manually' }), stderr: '' }
+      }
+      if (cmd === 'gh' && args[0] === 'api' && String(args[1]).includes('/environments/')) {
+        return { status: 404, stdout: '', stderr: 'Not Found' }
+      }
+      if (cmd === 'gh' && args[0] === 'run') return { status: 0, stdout: '[]', stderr: '' }
+      return { status: 0, stdout: '', stderr: '' }
+    }
+    const ui = makeScriptedUi([
+      { type: 'select', match: /AiringCal Setup/, value: 'validate' },
+      { type: 'password', match: /Cloudflare API Token/, value: 'cf-mem-token' },
+      { type: 'password', match: /Bangumi Personal Access Token/, value: 'bgm-mem-token' },
+      { type: 'select', match: /Next Action/, value: 'details' },
+      { type: 'select', match: /Next Action/, value: 'menu' },
+      { type: 'select', match: /AiringCal Setup/, value: 'doctor' },
+      { type: 'select', match: /Doctor Next Action/, value: 'menu' },
+      { type: 'select', match: /AiringCal Setup/, value: 'install' },
+      { type: 'select', match: /Environment/, value: 'production' },
+      { type: 'confirm', match: /Custom Domain/, value: false },
+      { type: 'select', match: /Review Configuration/, value: 'install' },
+      { type: 'confirm', match: /Install AiringCal in Production now/, value: true },
+      { type: 'confirm', match: /Run the First Full Sync now/, value: false },
+    ])
+    const appliedCalls = []
+    const res = await wizardMain([], {
+      env: { ...process.env, AIRINGCAL_INVENTORY_DIR: invDir },
+      fetchImpl: fetchFake.impl,
+      spawnSyncImpl: spawnStub,
+      ui,
+      log: () => {},
+      hooks: {
+        preflight: async () => {},
+        createApplyIo: () => ({
+          s3Credentials: () => ({ source: 'scoped-token', scope: 'bucket-scoped', accessKeyId: 'k1', tokenName: 'airingcal-production-writer', tokenId: 'k1' }),
+          probeToken: async () => ({ ok: true }),
+          deriveAndVerifyS3: async (ctx) => { ctx.writerCredentialDeferred = true; return { deferred: true } },
+          ensureBucket: async () => { appliedCalls.push('ensureBucket'); return { bucket: 'airingcal-production', created: true } },
+          provisionProductionWriter: async () => { appliedCalls.push('provision'); return { verified: true } },
+          verifyBucketEmpty: async () => ({ emptyVerified: true }),
+          disableR2Dev: async () => ({ disabled: true }),
+          syncGithubEnvironment: async () => ({ environment: 'production' }),
+          deployCloudflareReader: async () => ({ deployed: true, workerUrl: 'https://airingcal-production.acme.workers.dev' }),
+          verifyImageRouting: async () => ({ status: 'skipped-no-release' }),
+          validateImageCdn: async () => ({ enabled: false }),
+          writeIsolationProbe: async () => ({ key: 'checkpoints/_isolation-probe.txt', body: 'isolation-probe', exists: true }),
+          probeAnonymousAccess: async () => ({
+            r2DevDisabled: true,
+            probes: [
+              { url: 'https://airingcal-production.acme.workers.dev/checkpoints/_isolation-probe.txt', method: 'GET', status: 404 },
+              { url: 'https://airingcal-production.acme.workers.dev/checkpoints/_isolation-probe.txt', method: 'HEAD', status: 404 },
+            ],
+          }),
+          deleteIsolationProbe: async () => ({ key: 'checkpoints/_isolation-probe.txt', deleted: true }),
+        }),
+      },
+    })
+    assert.equal(res.ok, true)
+    assert.equal(res.verdict, 'AWAITING_FIRST_SYNC')
+    assert.equal(ui.passwordPrompts.length, 2, 'tokens entered once during validation and reused in memory')
+    assert.ok(ui.notes.some((n) => n.title === 'Validation Summary'))
+    assert.ok(ui.notes.some((n) => n.title === 'Detailed Validation Results'))
+    assert.ok(ui.confirmPrompts.some((p) => /Install AiringCal in Production now/.test(p)), 'fresh apply authorization required')
+    assert.deepEqual(appliedCalls, ['ensureBucket', 'provision'])
+  } finally {
+    rmSync(invDir, { recursive: true, force: true })
+  }
+})
+
+test('UX-012: interactive failure recovery menu allows Reconcile, Details, and Exit Safely without blind retry (#208)', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { main: wizardMain } = await import('./setup-wizard.mjs')
+  const invDir = mkdtempSync(join(tmpdir(), 'wizard-recovery-menu-'))
+  try {
+    const fetchFake = fakeFetch([
+      [/\/user\/tokens\/verify$/, () => ({ body: { success: true, result: { id: 't1', status: 'active' } } })],
+      [/\/accounts$/, () => ({ body: { success: true, result: [{ id: ACCOUNT, name: 'Main' }] } })],
+      [/workers\/subdomain$/, () => ({ body: { success: true, result: { subdomain: 'acme' } } })],
+      [/\/workers\/scripts$/, () => ({ body: { success: true, result: [] } })],
+      [/\/r2\/buckets$/, () => ({ body: { success: true, result: { buckets: [] } } })],
+      [/\/user\/tokens\/permissions$/, () => ({ body: { success: true, result: { permissions: ['User API Tokens:Edit'] } } })],
+      [/api\.bgm\.tv\/v0\/me$/, () => ({ body: { id: 857123, username: 'owner' } })],
+      [/users\/owner\/collections/, () => ({ body: { total: 1, data: [{ subject_id: 9 }] } })],
+      [/\-\/collections\/9\/episodes/, () => ({ body: { total: 1, data: [] } })],
+    ])
+    const ui = makeScriptedUi([
+      { type: 'select', match: /AiringCal Setup/, value: 'install' },
+      { type: 'select', match: /Environment/, value: 'production' },
+      { type: 'password', match: /Cloudflare API Token/, value: 'cf-mem-token' },
+      { type: 'password', match: /Bangumi Personal Access Token/, value: 'bgm-mem-token' },
+      { type: 'confirm', match: /Custom Domain/, value: false },
+      { type: 'select', match: /Review Configuration/, value: 'install' },
+      { type: 'confirm', match: /Install AiringCal in Production now/, value: true },
+      { type: 'select', match: /Recovery Action/, value: 'details' },
+      { type: 'select', match: /Recovery Action/, value: 'reconcile' },
+      { type: 'select', match: /Recovery Action/, value: 'exit' },
+    ])
+    const res = await wizardMain([], {
+      env: { ...process.env, AIRINGCAL_INVENTORY_DIR: invDir },
+      fetchImpl: fetchFake.impl,
+      spawnSyncImpl: () => ({ status: 0, stdout: `${'a'.repeat(40)}\n`, stderr: '' }),
+      ui,
+      log: () => {},
+      hooks: {
+        preflight: async () => {},
+        createApplyIo: () => ({
+          s3Credentials: () => null,
+          probeToken: async () => ({ ok: true }),
+          deriveAndVerifyS3: async (ctx) => { ctx.writerCredentialDeferred = true; return { deferred: true } },
+          ensureBucket: async (ctx) => {
+            ctx.ledger.begin({ op: 'r2-bucket-create', stepId: 'ensure-bucket', resourceType: 'r2-bucket', target: 'airingcal-production' }).confirm('created')
+            return { bucket: 'airingcal-production', created: true }
+          },
+          provisionProductionWriter: async () => {
+            const err = new Error('provider incompatible group')
+            err.errorCategory = 'provider-incompatibility'
+            err.code = 'PERMISSION_GROUP_MISSING'
+            throw err
+          },
+          verifyBucketEmpty: async () => ({ emptyVerified: true }),
+        }),
+      },
+    })
+    assert.equal(res.ok, false)
+    assert.equal(res.verdict, 'DEPLOY_FAILED')
+    assert.ok(ui.notes.some((n) => n.title === 'Partial Deployment Failure & Recovery'))
+    assert.ok(ui.notes.some((n) => n.title === 'Detailed Failure Report'))
+    assert.ok(ui.notes.some((n) => n.title === 'Reconciled Remote State'))
+    assert.equal(res.result.inventory.publicBaseUrl, null)
+    assert.equal(res.result.inventory.deployment.deployedAt, null)
+    assert.ok(res.result.inventory.deployment.attemptedAt)
+  } finally {
+    rmSync(invDir, { recursive: true, force: true })
+  }
+})

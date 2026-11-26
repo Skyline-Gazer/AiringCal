@@ -20,10 +20,12 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
+  createMutationLedger,
   deriveDevelopmentConfig,
   deriveProductionConfig,
   loadDotEnvFile,
   loadProductionDeployEnv,
+  redactSecrets,
   resolveDeployDotenvPath,
   runDevelopmentApply,
   runProductionApply,
@@ -42,7 +44,7 @@ import {
 import { askConfirm, askSecret, askSelect, askText, WizardAbort } from './setup-prompt.mjs'
 import { credentialLinks, resolveDocumentation } from './setup-docs.mjs'
 import { createUi, credentialSection } from './setup-ui.mjs'
-import { validateCredentials } from './setup-validate.mjs'
+import { formatValidationDetails, formatValidationSummary, validateCredentials } from './setup-validate.mjs'
 import {
   INVENTORY_DIR,
   WIZARD_ENVIRONMENTS,
@@ -50,12 +52,15 @@ import {
   assertInventorySanitized,
   buildInventory,
   assertApplyPlanMatchesReview,
+  classifyFailureRecovery,
   computeVerdict,
   chooseAccount,
   formatPlan,
+  formatTerminalEndpointLine,
   gateStepPattern,
   gateVariableName,
   gateStepVerdict,
+  sanitizeAccountName,
   wizardEnvironment,
 } from './setup-wizard-lib.mjs'
 
@@ -271,7 +276,15 @@ function resolveGitSha(spawnSyncImpl = spawnSync) {
  * only proceeds when the interactive confirmation translated into the two
  * existing gates; the headless mode keeps requiring them from the env.
  */
-export async function applyPlan({ env, plan, log: logFn = log, spawnSyncImpl = spawnSync, createIo = createLiveDevelopmentApplyIo }) {
+export async function applyPlan({
+  env,
+  plan,
+  log: logFn = log,
+  spawnSyncImpl = spawnSync,
+  createIo = createLiveDevelopmentApplyIo,
+  priorInventory = null,
+  bucketAdoptionAuthorized = false,
+}) {
   const isProduction = env.AIRINGCAL_ENV === 'production'
   if (isProduction) {
     if (String(env.AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED ?? '') !== 'yes'
@@ -281,7 +294,7 @@ export async function applyPlan({ env, plan, log: logFn = log, spawnSyncImpl = s
   }
   const io = createIo({ env, plan, spawnSyncImpl })
   const result = isProduction
-    ? await runProductionApply({ plan, env, io })
+    ? await runProductionApply({ plan, env, io, priorInventory, bucketAdoptionAuthorized })
     : await runDevelopmentApply({ plan, env, io })
   logFn(result.ok
     ? `Apply ${isProduction ? 'finished' : 'completed'}: ${(result.completed ?? []).join(' → ')}`
@@ -301,6 +314,7 @@ const ENGINE_INPUT_KEYS = Object.freeze([
   'AIRINGCAL_S3_ENDPOINT',
   'AIRINGCAL_S3_REGION',
   'AIRINGCAL_WRITER_TOKEN_ROTATION_ID',
+  'AIRINGCAL_ADOPT_EXISTING_BUCKET',
 ])
 
 /**
@@ -309,7 +323,14 @@ const ENGINE_INPUT_KEYS = Object.freeze([
  * carry both documented gates themselves (never manufactured from the
  * wizard confirmation flag).
  */
-export function resolveApplyEnvironment({ environment, headless, approved, wizardEnv, sourceEnv = {} }) {
+export function resolveApplyEnvironment({
+  environment,
+  headless,
+  approved,
+  wizardEnv,
+  sourceEnv = {},
+  bucketAdoptionAuthorized = false,
+}) {
   if (!approved) throw new Error('Apply is not authorized')
   const applyEnv = { ...wizardEnv }
   for (const key of ENGINE_INPUT_KEYS) {
@@ -328,6 +349,9 @@ export function resolveApplyEnvironment({ environment, headless, approved, wizar
     }
     applyEnv.AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED = 'yes'
     applyEnv.AIRINGCAL_DEPLOY_LIVE_CONFIRM = 'yes'
+    if (bucketAdoptionAuthorized) {
+      applyEnv.AIRINGCAL_ADOPT_EXISTING_BUCKET = 'yes'
+    }
   }
   return applyEnv
 }
@@ -438,6 +462,7 @@ export async function runFirstSync({
 }) {
   const ghStrict = (args) => run('gh', args, { spawnSyncImpl })
   const gateVariable = gateVariableName(environment)
+  const ledger = createMutationLedger()
   const state = {
     runId: null,
     runUrl: null,
@@ -451,6 +476,7 @@ export async function runFirstSync({
     workflowReadback: null,
     cleanupVerified: false,
     recoveryAction: null,
+    mutations: [],
   }
   let workflowId = null
   const cleanupErrors = []
@@ -497,18 +523,42 @@ export async function runFirstSync({
     }
 
     if (workflowState === 'disabled_manually') {
-      ghStrict(['workflow', 'enable', workflowId, '--repo', repo])
-      state.workflowEnabledByUs = true
-      const enabled = ghStrict([
-        'api', `repos/${repo}/actions/workflows/portable-writer.yml`, '--jq', '.state',
-      ]).stdout.trim()
-      if (enabled !== 'active') {
-        throw new Error(`Workflow enable could not be confirmed (state ${enabled || 'unreadable'}); HIGH PRIORITY: check Actions permissions`)
+      const enableEntry = ledger.begin({
+        op: 'workflow-state-change',
+        stepId: 'first-sync',
+        resourceType: 'github-workflow',
+        target: 'portable-writer.yml:enabled',
+      })
+      try {
+        ghStrict(['workflow', 'enable', workflowId, '--repo', repo])
+        state.workflowEnabledByUs = true
+        const enabled = ghStrict([
+          'api', `repos/${repo}/actions/workflows/portable-writer.yml`, '--jq', '.state',
+        ]).stdout.trim()
+        if (enabled !== 'active') {
+          throw new Error(`Workflow enable could not be confirmed (state ${enabled || 'unreadable'}); HIGH PRIORITY: check Actions permissions`)
+        }
+        enableEntry.confirm('enabled workflow for authorized first sync')
+        logFn('Workflow was disabled manually; enabled for the authorized dispatch (schedule gate stays closed).')
+      } catch (error) {
+        enableEntry.fail(error)
+        throw error
       }
-      logFn('Workflow was disabled manually; enabled for the authorized dispatch (schedule gate stays closed).')
     }
 
-    await setGateWithReadback({ repo, environment, gateVariable, value: 'true', spawnSyncImpl, log: logFn })
+    const openEntry = ledger.begin({
+      op: 'authorization-gate-change',
+      stepId: 'first-sync',
+      resourceType: 'github-variable',
+      target: `${environment}:${gateVariable}=true`,
+    })
+    try {
+      await setGateWithReadback({ repo, environment, gateVariable, value: 'true', spawnSyncImpl, log: logFn })
+      openEntry.confirm(`verified ${gateVariable}=true`)
+    } catch (error) {
+      openEntry.fail(error)
+      throw error
+    }
     state.gateOpened = true
     state.gateReadback = 'true'
     logFn(`Opened and verified temporary gate ${gateVariable} for the ${environment} environment.`)
@@ -561,7 +611,20 @@ export async function runFirstSync({
       const view = JSON.parse(ghStrict(['run', 'view', state.runId, '--json', 'status,conclusion,jobs', '--repo', repo]).stdout)
       gateVerdict = gateStepVerdict(view.jobs, pattern)
       if (gateVerdict === 'passed') {
-        await setGateWithReadback({ repo, environment, gateVariable, value: 'false', spawnSyncImpl, log: logFn })
+        const closeEntry = ledger.begin({
+          op: 'authorization-gate-change',
+          stepId: 'first-sync',
+          resourceType: 'github-variable',
+          target: `${environment}:${gateVariable}=false`,
+          compensation: true,
+        })
+        try {
+          await setGateWithReadback({ repo, environment, gateVariable, value: 'false', spawnSyncImpl, log: logFn })
+          closeEntry.confirm(`verified ${gateVariable}=false`)
+        } catch (error) {
+          closeEntry.compensationFailed(error, `Manually verify ${gateVariable}=false`)
+          throw error
+        }
         state.gateClosed = true
         state.gateReadback = 'false'
         logFn(`Run passed its ${environment} gate step; temporary gate closed and verified.`)
@@ -591,18 +654,41 @@ export async function runFirstSync({
   // Cleanup ALWAYS runs with strict status checks and readback. A failed or
   // unverifiable cleanup is reported loudly — never converted into a receipt.
   if (!state.gateClosed) {
+    const closeCleanup = ledger.begin({
+      op: 'authorization-gate-change',
+      stepId: 'first-sync',
+      resourceType: 'github-variable',
+      target: `${environment}:${gateVariable}=false`,
+      compensation: true,
+    })
     try {
       await setGateWithReadback({ repo, environment, gateVariable, value: 'false', spawnSyncImpl, log: logFn })
+      closeCleanup.confirm(`verified ${gateVariable}=false`)
       state.gateClosed = true
       state.gateReadback = 'false'
-    } catch (error) { cleanupErrors.push(error) }
+    } catch (error) {
+      closeCleanup.compensationFailed(error, `Manually set ${gateVariable}=false in ${environment}`)
+      cleanupErrors.push(error)
+    }
   }
   if (state.workflowEnabledByUs && !state.workflowRestored) {
+    const wfCleanup = ledger.begin({
+      op: 'workflow-state-change',
+      stepId: 'first-sync',
+      resourceType: 'github-workflow',
+      target: 'portable-writer.yml:disabled',
+      compensation: true,
+    })
     try {
       state.workflowReadback = await restoreWorkflowWithReadback({ repo, workflowId, spawnSyncImpl, log: logFn })
+      wfCleanup.confirm('verified portable-writer.yml disabled_manually')
       state.workflowRestored = true
-    } catch (error) { cleanupErrors.push(error) }
+    } catch (error) {
+      wfCleanup.compensationFailed(error, 'Manually disable portable-writer.yml')
+      cleanupErrors.push(error)
+    }
   }
+  state.mutations = ledger.entries()
   if (cleanupErrors.length > 0) {
     state.cleanupVerified = false
     state.recoveryAction = [
@@ -712,15 +798,129 @@ export function runVerifier({ base, bucket, accountId, s3, spawnSyncImpl = spawn
   return parsed
 }
 
-export function writeInventory({ environment, inventory, secrets = [], baseDir = ROOT }) {
+export function resolveInventoryDir({ env = process.env, baseDir = ROOT } = {}) {
+  const override = String(env?.AIRINGCAL_INVENTORY_DIR ?? '').trim()
+  return override ? resolve(override) : join(baseDir, INVENTORY_DIR)
+}
+
+export function readInventory({ environment, env = process.env, baseDir = ROOT }) {
+  const path = join(resolveInventoryDir({ env, baseDir }), `inventory.${environment}.json`)
+  if (!existsSync(path)) return null
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+export function writeInventory({ environment, inventory, secrets = [], env = process.env, baseDir = ROOT }) {
   // Value-level leak check with the run's actual credentials plus the
   // structural token-shaped check inside assertInventorySanitized.
   assertInventorySanitized(inventory, secrets)
-  const dir = join(baseDir, INVENTORY_DIR)
+  const dir = resolveInventoryDir({ env, baseDir })
   mkdirSync(dir, { recursive: true })
   const path = join(dir, `inventory.${environment}.json`)
   writeFileSync(path, `${JSON.stringify(inventory, null, 2)}\n`, { mode: 0o600 })
   return path
+}
+
+/**
+ * #208: Read-only discovery & reconciliation of partial provisioning state.
+ * Never mutates remote state and never infers ownership solely from a bucket name.
+ */
+export async function discoverPartialState({
+  fetchImpl = globalThis.fetch,
+  spawnSyncImpl = spawnSync,
+  cloudflareToken,
+  accountId,
+  environment,
+  bucket,
+  env = {},
+  repo = WIZARD_REPOSITORY,
+}) {
+  const priorInventory = readInventory({ environment, env })
+  let targetBucket = null
+  let unrelatedBuckets = []
+  let bucketProbeError = null
+  let existingWriterToken = null
+  let githubEnvironmentExists = null
+
+  try {
+    const response = await fetchImpl(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(accountId)}/r2/buckets`,
+      {
+        headers: { Authorization: `Bearer ${cloudflareToken}`, 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(15_000),
+      },
+    )
+    const body = await response.json().catch(() => ({}))
+    const list = Array.isArray(body?.result?.buckets)
+      ? body.result.buckets
+      : (Array.isArray(body?.result) ? body.result : null)
+    if (response.ok && body?.success !== false && Array.isArray(list)) {
+      const found = list.find((entry) => String(entry?.name ?? '') === bucket)
+      targetBucket = found
+        ? {
+            name: bucket,
+            exists: true,
+            creationDate: found.creation_date ?? found.creationDate ?? null,
+            location: found.location ?? null,
+          }
+        : { name: bucket, exists: false, creationDate: null, location: null }
+      unrelatedBuckets = list
+        .filter((entry) => String(entry?.name ?? '') && String(entry?.name ?? '') !== bucket)
+        .map((entry) => String(entry.name))
+    } else {
+      bucketProbeError = `HTTP ${response.status}`
+    }
+  } catch (error) {
+    bucketProbeError = redactSecrets(error instanceof Error ? error.message : String(error), [cloudflareToken])
+  }
+
+  try {
+    const tokenName = environment === 'production' ? 'airingcal-production-writer' : 'airingcal-development-writer'
+    const tokRes = await fetchImpl('https://api.cloudflare.com/client/v4/user/tokens', {
+      headers: { Authorization: `Bearer ${cloudflareToken}`, 'Content-Type': 'application/json' },
+      signal: AbortSignal.timeout(15_000),
+    })
+    const tokBody = await tokRes.json().catch(() => ({}))
+    if (tokRes.ok && Array.isArray(tokBody?.result)) {
+      const match = tokBody.result.find((t) => String(t?.name ?? '') === tokenName && t?.id)
+      if (match) existingWriterToken = { id: String(match.id), name: String(match.name) }
+    }
+  } catch {
+    // Token listing is optional during read-only discovery.
+  }
+
+  try {
+    const ghRes = run('gh', ['api', `repos/${repo}/environments/${environment}`], {
+      spawnSyncImpl,
+      allowFailure: true,
+    })
+    if (ghRes.status === 0) githubEnvironmentExists = true
+    else if (classifyGhApiRead(ghRes) === 'absent') githubEnvironmentExists = false
+  } catch {
+    githubEnvironmentExists = null
+  }
+
+  const priorAccountId = String(priorInventory?.cloudflare?.accountId ?? '').trim().toLowerCase()
+  const ownershipMatch = Boolean(
+    priorInventory &&
+    priorInventory.environment === environment &&
+    priorInventory.bucket === bucket &&
+    (!priorAccountId || priorAccountId === String(accountId).toLowerCase()),
+  )
+
+  return {
+    priorInventory,
+    targetBucket,
+    unrelatedBuckets,
+    unrelatedBucketCount: unrelatedBuckets.length,
+    bucketProbeError,
+    existingWriterToken,
+    githubEnvironmentExists,
+    ownershipMatch,
+  }
 }
 
 /** Headless resolution: the same environment object from env/dotenv. */
@@ -750,10 +950,11 @@ export async function askS3CredentialFallback(io) {
   return { AIRINGCAL_S3_ACCESS_KEY_ID: accessKeyId, AIRINGCAL_S3_SECRET_ACCESS_KEY: secretAccessKey }
 }
 
-async function collectCredentials({ ui, docs, fetchImpl, env, initial = {} }) {
+async function collectCredentials({ ui, docs, fetchImpl, env, initial = {}, quiet = true }) {
   let cloudflareToken = initial.cloudflareToken ?? ''
   let bangumiToken = initial.bangumiToken ?? ''
   let validation = null
+  const verbose = String(env?.AIRINGCAL_WIZARD_VERBOSE ?? '') === 'yes'
   for (let attempt = 0; attempt < 6; attempt += 1) {
     if (!cloudflareToken) {
       credentialSection(ui, {
@@ -782,8 +983,9 @@ async function collectCredentials({ ui, docs, fetchImpl, env, initial = {} }) {
       fetchImpl,
       cloudflareToken,
       bangumiToken,
-      log: (line) => ui.log.info(line),
+      log: (!quiet || verbose) ? (line) => ui.log.info(line) : () => {},
     })
+    ui.note(formatValidationSummary(validation), 'Validation Summary')
     if (validation.ok) {
       ui.log.success('API credentials validated (read-only capability checks).')
       return { cloudflareToken, bangumiToken, validation }
@@ -794,12 +996,17 @@ async function collectCredentials({ ui, docs, fetchImpl, env, initial = {} }) {
       options: [
         { value: 'cloudflare', label: 'Re-enter Cloudflare API Token' },
         { value: 'bangumi', label: 'Re-enter Bangumi Personal Access Token' },
+        { value: 'details', label: 'View Detailed Results' },
         { value: 'retry', label: 'Retry Validation' },
         { value: 'menu', label: 'Return to Main Menu' },
         { value: 'cancel', label: 'Cancel' },
       ],
       initialValue: 'retry',
     })
+    if (action === 'details') {
+      ui.note(formatValidationDetails(validation), 'Detailed Validation Results')
+      continue
+    }
     if (action === 'cancel') throw new WizardAbort('Installation cancelled during credential validation')
     if (action === 'menu') throw new WizardAbort('Returned to main menu')
     if (action === 'cloudflare') cloudflareToken = ''
@@ -808,10 +1015,167 @@ async function collectCredentials({ ui, docs, fetchImpl, env, initial = {} }) {
   throw new WizardAbort('Credential validation did not succeed after repeated attempts')
 }
 
-function renderReview(ui, { environment, account, identity, workersSubdomain, validation, customDomain, zoneName, plan }) {
+function storeSessionCredentials(session, { cloudflareToken, bangumiToken, validation, customDomain = false }) {
+  if (!session) return
+  session.cloudflareToken = cloudflareToken
+  session.bangumiToken = bangumiToken
+  session.validation = validation
+  session.validatedAccountId = validation?.account?.id ?? null
+  session.customDomainChecked = Boolean(customDomain)
+}
+
+async function validateCredentialsFlow({ ui, docs, fetchImpl, env, session }) {
+  let cloudflareToken = session?.cloudflareToken || String(env.AIRINGCAL_CLOUDFLARE_API_TOKEN ?? '').trim()
+  let bangumiToken = session?.bangumiToken || String(env.AIRINGCAL_BANGUMI_TOKEN ?? '').trim()
+  let validation = null
+
+  for (;;) {
+    if (!cloudflareToken) {
+      credentialSection(ui, {
+        title: 'Cloudflare API Token',
+        purpose: 'Validated read-only; nothing is created or changed.',
+        links: credentialLinks('cloudflare', docs),
+      })
+      cloudflareToken = await ui.password({
+        message: 'Paste your Cloudflare API Token (input is masked)',
+        validate: (value) => (String(value ?? '').trim() ? undefined : 'A Cloudflare API Token is required'),
+      })
+    }
+    if (!bangumiToken) {
+      credentialSection(ui, {
+        title: 'Bangumi Personal Access Token',
+        purpose: 'Validated read-only against your own collections.',
+        links: credentialLinks('bangumi', docs),
+      })
+      bangumiToken = await ui.password({
+        message: 'Paste your Bangumi Personal Access Token (input is masked)',
+        validate: (value) => (String(value ?? '').trim() ? undefined : 'A Bangumi Personal Access Token is required'),
+      })
+    }
+
+    ui.log.step('Validate API Credentials')
+    validation = await validateCredentials({
+      fetchImpl,
+      cloudflareToken,
+      bangumiToken,
+      log: String(env?.AIRINGCAL_WIZARD_VERBOSE ?? '') === 'yes' ? (line) => ui.log.info(line) : () => {},
+    })
+    ui.note(formatValidationSummary(validation), 'Validation Summary')
+    if (validation.ok) {
+      storeSessionCredentials(session, { cloudflareToken, bangumiToken, validation })
+      ui.log.success('Read-only credential validation passed (credentials kept in session memory only).')
+    } else {
+      if (session) {
+        if (validation.blocking.includes('cloudflare.token')) session.cloudflareToken = ''
+        if (validation.blocking.includes('bangumi.token') || validation.blocking.includes('bangumi.collections')) {
+          session.bangumiToken = ''
+        }
+        session.validation = null
+      }
+      ui.log.error(`Credential validation blocked: ${validation.blocking.join(', ')}`)
+    }
+
+    for (;;) {
+      const options = []
+      if (validation.ok) {
+        options.push({
+          value: 'install',
+          label: 'Continue to Installation',
+          hint: 'reuse validated session credentials',
+        })
+      }
+      options.push(
+        { value: 'details', label: 'View Detailed Results', hint: 'per-capability VERIFIED/MISSING/NOT_VERIFIED status' },
+        { value: 'revalidate', label: 'Revalidate Credentials', hint: 'keep or replace tokens' },
+        { value: 'menu', label: 'Return to Main Menu' },
+        { value: 'exit', label: 'Exit' },
+      )
+      const next = await ui.select({
+        message: 'Next Action',
+        options,
+        initialValue: validation.ok ? 'install' : 'revalidate',
+      })
+      if (next === 'details') {
+        ui.note(formatValidationDetails(validation), 'Detailed Validation Results')
+        continue
+      }
+      if (next === 'revalidate') {
+        const replace = await ui.select({
+          message: 'Which credentials do you want to validate?',
+          options: [
+            { value: 'both-keep', label: 'Re-run with current session tokens' },
+            { value: 'cloudflare', label: 'Replace Cloudflare API Token' },
+            { value: 'bangumi', label: 'Replace Bangumi Personal Access Token' },
+            { value: 'both-new', label: 'Replace both tokens' },
+          ],
+          initialValue: validation.ok ? 'both-keep' : 'both-new',
+        })
+        if (replace === 'cloudflare' || replace === 'both-new') {
+          cloudflareToken = ''
+          if (session) { session.cloudflareToken = ''; session.validation = null }
+        }
+        if (replace === 'bangumi' || replace === 'both-new') {
+          bangumiToken = ''
+          if (session) { session.bangumiToken = ''; session.validation = null }
+        }
+        break
+      }
+      if (next === 'install') return { action: 'install', validation }
+      if (next === 'menu') return { action: 'menu', validation }
+      return { action: 'exit', validation }
+    }
+  }
+}
+
+async function doctorFlow({ ui, spawnSyncImpl, logFn, env }) {
+  let targetEnv = 'production'
+  let lastReport = null
+  for (;;) {
+    ui.log.step(`Running Doctor checks (${targetEnv})`)
+    lastReport = await runDoctor({ environment: targetEnv, spawnSyncImpl, log: logFn, env })
+    const ok = lastReport.checks.every((check) => check.status !== 'fail')
+    const next = await ui.select({
+      message: 'Doctor Next Action',
+      options: [
+        { value: 'menu', label: 'Return to Main Menu' },
+        { value: 'retry', label: `Retry Checks (${targetEnv})` },
+        { value: 'switch', label: targetEnv === 'production' ? 'Check Development Instead' : 'Check Production Instead' },
+        { value: 'exit', label: 'Exit' },
+      ],
+      initialValue: 'menu',
+    })
+    if (next === 'retry') continue
+    if (next === 'switch') {
+      targetEnv = targetEnv === 'production' ? 'development' : 'production'
+      continue
+    }
+    return { action: next, ok, report: lastReport }
+  }
+}
+
+function renderReview(ui, {
+  environment,
+  account,
+  identity,
+  workersSubdomain,
+  validation,
+  customDomain,
+  zoneName,
+  plan,
+  partialState = null,
+  bucketAdoptionAuthorized = false,
+}) {
   const v = (id) => validation?.checks.find((entry) => entry.id === id)?.state ?? 'NOT_VERIFIED'
+  const bucketExists = Boolean(partialState?.targetBucket?.exists)
+  const bucketNote = bucketExists
+    ? (bucketAdoptionAuthorized
+        ? 'existing bucket adopted (object-level emptiness will be verified)'
+        : (partialState?.ownershipMatch
+            ? 'existing bucket matched to prior local inventory (emptiness will be verified)'
+            : 'existing bucket detected (requires explicit adoption confirmation)'))
+    : 'new private bucket (empty-bucket verified)'
   const lines = [
-    `Installation: ${plan?.writerEnabled === false ? 'New Installation (owned resources are reused)' : 'Installation'}`,
+    `Installation: ${bucketExists ? 'Resume / Update (existing bucket preserved; emptiness verified)' : 'New Installation (owned resources are reused)'}`,
     `Environment: ${environment === 'production' ? 'Production' : 'Development'}`,
     '',
     'Credentials:',
@@ -821,9 +1185,9 @@ function renderReview(ui, { environment, account, identity, workersSubdomain, va
     `  Writer credential: ${plan?.env === 'production' ? 'bucket-scoped Writer token (created after bucket ownership proof), masked S3 fallback available' : 'scoped Writer token / derived engine credential'}`,
     '',
     'Cloudflare Deployment:',
-    `  Account: ${account ? `${account.name} (${account.id})` : 'not selected'}`,
+    `  Account: ${account ? `${sanitizeAccountName(account.name)} (${account.id})` : 'not selected'}`,
     `  Worker: ${plan?.cloudflareWorkerName ?? '-'}`,
-    `  R2 Bucket: ${plan?.bucket ?? '-'} (private; no anonymous object access)`,
+    `  R2 Bucket: ${plan?.bucket ?? '-'} — ${bucketNote}`,
     `  workers.dev subdomain: ${workersSubdomain ?? 'not detected'}`,
     '',
     'Providers:',
@@ -832,13 +1196,17 @@ function renderReview(ui, { environment, account, identity, workersSubdomain, va
     '',
     'Domain:',
     `  ${customDomain ? `Custom Domain: ${customDomain}${zoneName ? ` (zone ${zoneName})` : ''}` : 'Default workers.dev URL (no DNS changes)'}`,
-    `  Public URL: ${plan?.publicBaseUrl ?? plan?.workerOrigin ?? '-'}`,
+    `  Planned Public URL: ${plan?.publicBaseUrl ?? plan?.workerOrigin ?? '-'}`,
     '',
     'Data Synchronization:',
     '  Full personal anime progress (collections + episode states) via GitHub Actions',
     `  GitHub Environment: ${plan?.env ?? environment}`,
     '  First Full Sync: separate explicit authorization',
   ]
+  if (partialState?.priorInventory?.deployment?.verdict === 'DEPLOY_FAILED') {
+    lines.push('')
+    lines.push(`Prior Incomplete Attempt: ${partialState.priorInventory.deployment.attemptedAt ?? partialState.priorInventory.deployment.deployedAt ?? 'unknown time'} (${partialState.priorInventory.deployment.reason ?? 'DEPLOY_FAILED'})`)
+  }
   ui.note(lines.join('\n'), 'Configuration Review')
 }
 
@@ -852,6 +1220,7 @@ async function installFlow({
   headless,
   hooks = {},
   ui: injectedUi = null,
+  session = null,
 }) {
   // #205 QA-001: test-only adapter injection used by the committed PTY harness.
   spawnSyncImpl = hooks.spawnSyncImpl ?? spawnSyncImpl
@@ -871,6 +1240,8 @@ async function installFlow({
   let customDomain = ''
   let zoneId = ''
   let zoneName = ''
+  let partialState = null
+  let bucketAdoptionAuthorized = String(env.AIRINGCAL_ADOPT_EXISTING_BUCKET ?? '').trim() === 'yes'
 
   if (headless) {
     environment = environment ?? String(env.AIRINGCAL_ENV ?? '').trim().toLowerCase()
@@ -902,149 +1273,343 @@ async function installFlow({
         'Development Environment',
       )
     }
-    const collected = await collectCredentials({ ui, docs, fetchImpl, env })
-    cloudflareToken = collected.cloudflareToken
-    bangumiToken = collected.bangumiToken
-    validation = collected.validation
+    if (session?.cloudflareToken && session?.bangumiToken && session?.validation?.ok) {
+      cloudflareToken = session.cloudflareToken
+      bangumiToken = session.bangumiToken
+      validation = session.validation
+      ui.log.info('Reusing validated API credentials from this session (in-memory only).')
+    } else {
+      const collected = await collectCredentials({ ui, docs, fetchImpl, env })
+      cloudflareToken = collected.cloudflareToken
+      bangumiToken = collected.bangumiToken
+      validation = collected.validation
+      storeSessionCredentials(session, { cloudflareToken, bangumiToken, validation })
+    }
   }
 
   let approved = false
   let applyEnv = null
   let executionPlan = null
   let dry = null
-  for (let round = 0; round < 6 && !approved; round += 1) {
-    discovery = await discoverIdentity({
-      fetchImpl,
-      cloudflareToken,
-      bangumiToken,
-      io,
-      env: resolvedEnv,
-      log: logFn,
-      prompts: ui.prompts,
-    })
-    if (!headless) {
-      const hostnameHint = String(resolvedEnv.AIRINGCAL_WORKER_CUSTOM_DOMAIN ?? customDomain ?? '').trim()
-      const zoneHint = String(resolvedEnv.AIRINGCAL_ZONE_ID ?? zoneId ?? '').trim()
-      const domain = hostnameHint
-        ? await planCustomDomain({
+
+  const reviewAndAuthorize = async () => {
+    approved = false
+    for (let round = 0; round < 8 && !approved; round += 1) {
+      discovery = await discoverIdentity({
+        fetchImpl,
+        cloudflareToken,
+        bangumiToken,
+        io,
+        env: resolvedEnv,
+        log: logFn,
+        prompts: ui.prompts,
+      })
+      if (!headless) {
+        const hostnameHint = String(resolvedEnv.AIRINGCAL_WORKER_CUSTOM_DOMAIN ?? customDomain ?? '').trim()
+        const zoneHint = String(resolvedEnv.AIRINGCAL_ZONE_ID ?? zoneId ?? '').trim()
+        const domain = hostnameHint
+          ? await planCustomDomain({
+              fetchImpl,
+              cloudflareToken,
+              account: discovery.account,
+              io,
+              log: logFn,
+              assume: true,
+              hostnameHint,
+              zoneHint,
+              allowTakeover: String(resolvedEnv.AIRINGCAL_ALLOW_CUSTOM_DOMAIN_TAKEOVER ?? '') === 'yes',
+              prompts: ui.prompts,
+            })
+          : await planCustomDomain({
+              fetchImpl,
+              cloudflareToken,
+              account: discovery.account,
+              io,
+              log: logFn,
+              prompts: ui.prompts,
+              allowTakeover: String(resolvedEnv.AIRINGCAL_ALLOW_CUSTOM_DOMAIN_TAKEOVER ?? '') === 'yes',
+            })
+        customDomain = String(hostnameHint || domain.customDomain || '').trim()
+        zoneId = String(zoneHint || domain.zoneId || '').trim()
+
+        if (
+          session &&
+          (discovery.account.id !== session.validatedAccountId ||
+            Boolean(customDomain) !== Boolean(session.customDomainChecked))
+        ) {
+          validation = await validateCredentials({
             fetchImpl,
             cloudflareToken,
-            account: discovery.account,
-            io,
-            log: logFn,
-            assume: true,
-            hostnameHint,
-            zoneHint,
-            allowTakeover: String(resolvedEnv.AIRINGCAL_ALLOW_CUSTOM_DOMAIN_TAKEOVER ?? '') === 'yes',
-            prompts: ui.prompts,
+            bangumiToken,
+            accountId: discovery.account.id,
+            customDomain: Boolean(customDomain),
+            log: () => {},
           })
-        : await planCustomDomain({
-            fetchImpl,
+          storeSessionCredentials(session, {
             cloudflareToken,
-            account: discovery.account,
-            io,
-            log: logFn,
-            prompts: ui.prompts,
-            allowTakeover: String(resolvedEnv.AIRINGCAL_ALLOW_CUSTOM_DOMAIN_TAKEOVER ?? '') === 'yes',
+            bangumiToken,
+            validation,
+            customDomain: Boolean(customDomain),
           })
-      customDomain = String(hostnameHint || domain.customDomain || '').trim()
-      zoneId = String(zoneHint || domain.zoneId || '').trim()
-    }
-    const wizardEnv = wizardEnvironment({
-      environment,
-      cloudflareToken,
-      accountId: discovery.account.id,
-      workersSubdomain: discovery.workersSubdomain,
-      bangumiToken,
-      identity: discovery.identity,
-      usersJson: discovery.usersJson,
-      customDomain,
-      zoneId,
-      dotenvPath,
-    })
-    dry = buildPlanForEnvironment(wizardEnv, { mode: 'dry-run' })
-    if (!headless) {
-      renderReview(ui, {
+          if (!validation.ok) {
+            ui.note(formatValidationSummary(validation), 'Revalidation Failed After Configuration Change')
+            const collected = await collectCredentials({ ui, docs, fetchImpl, env, initial: { cloudflareToken, bangumiToken } })
+            cloudflareToken = collected.cloudflareToken
+            bangumiToken = collected.bangumiToken
+            validation = collected.validation
+            storeSessionCredentials(session, { cloudflareToken, bangumiToken, validation, customDomain: Boolean(customDomain) })
+            continue
+          }
+        }
+      }
+
+      const wizardEnv = wizardEnvironment({
         environment,
-        account: discovery.account,
-        identity: discovery.identity,
+        cloudflareToken,
+        accountId: discovery.account.id,
         workersSubdomain: discovery.workersSubdomain,
-        validation,
+        bangumiToken,
+        identity: discovery.identity,
+        usersJson: discovery.usersJson,
         customDomain,
-        zoneName,
-        plan: dry.plan,
+        zoneId,
+        dotenvPath,
       })
-      if (String(env.AIRINGCAL_WIZARD_VERBOSE ?? '') === 'yes') ui.note(formatPlan(dry.plan), 'Detailed Execution Plan')
-      const action = await ui.select({
-        message: 'Review Configuration',
-        options: [
-          { value: 'install', label: 'Confirm and Install' },
-          { value: 'credentials', label: 'Re-enter Credentials' },
-          { value: 'domain', label: 'Edit Domain Configuration' },
-          { value: 'environment', label: 'Edit Environment' },
-          { value: 'cancel', label: 'Cancel' },
-        ],
-        initialValue: 'install',
+      dry = buildPlanForEnvironment(wizardEnv, { mode: 'dry-run' })
+
+      partialState = await discoverPartialState({
+        fetchImpl,
+        spawnSyncImpl,
+        cloudflareToken,
+        accountId: discovery.account.id,
+        environment,
+        bucket: dry.plan.bucket,
+        env: resolvedEnv,
       })
-      if (action === 'cancel') {
-        ui.cancel('Installation cancelled; nothing was mutated.')
-        return { applied: false, verdict: 'CANCELLED', reason: 'installation cancelled at configuration review' }
-      }
-      if (action === 'credentials') {
-        const collected = await collectCredentials({ ui, docs, fetchImpl, env, initial: { cloudflareToken, bangumiToken } })
-        cloudflareToken = collected.cloudflareToken
-        bangumiToken = collected.bangumiToken
-        validation = collected.validation
-        continue
-      }
-      if (action === 'domain') { customDomain = ''; zoneId = ''; zoneName = ''; continue }
-      if (action === 'environment') {
-        environment = await ui.select({
-          message: 'Environment',
-          options: ENVIRONMENT_OPTIONS.map((option) => ({ ...option })),
-          initialValue: environment,
+
+      if (!headless) {
+        if (environment === 'production' && partialState?.targetBucket?.exists && !bucketAdoptionAuthorized) {
+          const observedLines = [
+            `Cloudflare Account: ${sanitizeAccountName(discovery.account.name)} (${discovery.account.id})`,
+            `Existing R2 Bucket: ${partialState.targetBucket.name}`,
+            `Creation Time: ${partialState.targetBucket.creationDate ?? 'not reported by list API'}`,
+            partialState.ownershipMatch
+              ? `Local Inventory Match: previous ${partialState.priorInventory.deployment?.verdict ?? 'attempt'} at ${partialState.priorInventory.deployment?.attemptedAt ?? partialState.priorInventory.deployment?.deployedAt ?? 'unknown time'} (SHA ${String(partialState.priorInventory.deployment?.gitSha ?? '').slice(0, 8) || 'unknown'})`
+              : 'Local Inventory Match: none — verify this bucket belongs to your intended AiringCal installation before adopting.',
+            `Other Buckets in Account: ${partialState.unrelatedBucketCount} unrelated bucket(s) will remain untouched.`,
+            'Clean-Bootstrap Guard: object-level emptiness and private access will still be verified (a nonempty bucket will be refused).',
+          ]
+          ui.note(observedLines.join('\n'), 'Existing Production Bucket Observed')
+          const adoptConfirmed = await ui.confirm({
+            message: `Adopt existing bucket "${dry.plan.bucket}" in this account and continue? (Only an empty bucket will be accepted)`,
+            initialValue: partialState.ownershipMatch,
+          })
+          if (!adoptConfirmed) {
+            ui.cancel('Existing bucket adoption declined; nothing was mutated.')
+            return { cancelled: true, reason: 'existing Production bucket adoption declined' }
+          }
+          bucketAdoptionAuthorized = true
+        }
+
+        renderReview(ui, {
+          environment,
+          account: discovery.account,
+          identity: discovery.identity,
+          workersSubdomain: discovery.workersSubdomain,
+          validation,
+          customDomain,
+          zoneName,
+          plan: dry.plan,
+          partialState,
+          bucketAdoptionAuthorized,
         })
-        continue
+        if (String(env.AIRINGCAL_WIZARD_VERBOSE ?? '') === 'yes') ui.note(formatPlan(dry.plan), 'Detailed Execution Plan')
+        const action = await ui.select({
+          message: 'Review Configuration',
+          options: [
+            { value: 'install', label: 'Confirm and Install' },
+            { value: 'credentials', label: 'Re-enter Credentials' },
+            { value: 'domain', label: 'Edit Domain Configuration' },
+            { value: 'environment', label: 'Edit Environment' },
+            { value: 'cancel', label: 'Cancel' },
+          ],
+          initialValue: 'install',
+        })
+        if (action === 'cancel') {
+          ui.cancel('Installation cancelled; nothing was mutated.')
+          return { cancelled: true, reason: 'installation cancelled at configuration review' }
+        }
+        if (action === 'credentials') {
+          if (session) {
+            session.cloudflareToken = ''
+            session.bangumiToken = ''
+            session.validation = null
+          }
+          const collected = await collectCredentials({ ui, docs, fetchImpl, env })
+          cloudflareToken = collected.cloudflareToken
+          bangumiToken = collected.bangumiToken
+          validation = collected.validation
+          storeSessionCredentials(session, { cloudflareToken, bangumiToken, validation, customDomain: Boolean(customDomain) })
+          bucketAdoptionAuthorized = false
+          continue
+        }
+        if (action === 'domain') { customDomain = ''; zoneId = ''; zoneName = ''; continue }
+        if (action === 'environment') {
+          environment = await ui.select({
+            message: 'Environment',
+            options: ENVIRONMENT_OPTIONS.map((option) => ({ ...option })),
+            initialValue: environment,
+          })
+          bucketAdoptionAuthorized = false
+          continue
+        }
+        approved = await ui.confirm({ message: `Install AiringCal in ${environment === 'production' ? 'Production' : 'Development'} now?`, initialValue: true })
+        if (!approved) {
+          ui.cancel('Nothing was applied.')
+          return { cancelled: true, reason: 'installation not confirmed' }
+        }
+      } else {
+        approved = String(resolvedEnv.AIRINGCAL_WIZARD_CONFIRM ?? '') === 'yes'
+        if (!approved) {
+          logFn('Plan not applied; nothing was mutated. Re-run `pnpm run setup` when ready.')
+          return { cancelled: true, reason: 'deployment plan was not approved' }
+        }
       }
-      approved = await ui.confirm({ message: `Install AiringCal in ${environment === 'production' ? 'Production' : 'Development'} now?`, initialValue: true })
-      if (!approved) {
-        ui.cancel('Nothing was applied.')
-        return { applied: false, verdict: 'CANCELLED', reason: 'installation not confirmed' }
-      }
-    } else {
-      approved = String(resolvedEnv.AIRINGCAL_WIZARD_CONFIRM ?? '') === 'yes'
-      if (!approved) {
-        logFn('Plan not applied; nothing was mutated. Re-run `pnpm run setup` when ready.')
-        return { applied: false, verdict: 'CANCELLED', reason: 'deployment plan was not approved' }
-      }
+    }
+    if (!approved) throw new Error('Configuration review did not reach confirmation')
+    return { cancelled: false }
+  }
+
+  const initialReview = await reviewAndAuthorize()
+  if (initialReview.cancelled) {
+    return { applied: false, verdict: 'CANCELLED', reason: initialReview.reason }
+  }
+
+  const buildApplyContext = () => {
+    const applyEnvironment = resolveApplyEnvironment({
+      environment,
+      headless,
+      approved,
+      bucketAdoptionAuthorized,
+      wizardEnv: wizardEnvironment({
+        environment,
+        cloudflareToken,
+        accountId: discovery.account.id,
+        workersSubdomain: discovery.workersSubdomain,
+        bangumiToken,
+        identity: discovery.identity,
+        usersJson: discovery.usersJson,
+        customDomain,
+        zoneId,
+        dotenvPath,
+      }),
+      sourceEnv: resolvedEnv,
+    })
+    const applyDerived = buildPlanForEnvironment(applyEnvironment, { mode: 'apply' })
+    assertApplyPlanMatchesReview(dry.plan, applyDerived.plan)
+    return { applyEnvironment, plan: applyDerived.plan }
+  }
+
+  let built = buildApplyContext()
+  applyEnv = built.applyEnvironment
+  executionPlan = built.plan
+
+  const applyReceipts = []
+  let result = null
+  let liveIo = null
+  let s3 = null
+  const attemptedAt = new Date().toISOString()
+
+  const buildCurrentInventory = ({
+    verdict,
+    reason = null,
+    verification = null,
+  }) => {
+    const applied = result?.ok === true && verdict !== 'DEPLOY_FAILED' && verdict !== 'CANCELLED'
+    const lastReceipt = applyReceipts[applyReceipts.length - 1] ?? result
+    const observedBucket = lastReceipt?.observedBucket ?? partialState?.targetBucket ?? null
+    const bucketExists = Boolean(
+      observedBucket?.exists ||
+      lastReceipt?.mutationsSummary?.confirmed?.some((e) => e.op === 'r2-bucket-create') ||
+      lastReceipt?.mutationsSummary?.alreadyExists?.some((e) => e.op === 'r2-bucket-create'),
+    )
+    const workerDeployed = Boolean(
+      applied ||
+      lastReceipt?.mutationsSummary?.confirmed?.some((e) => e.op === 'worker-deploy'),
+    )
+    const ghEnvCreated = Boolean(
+      applied ||
+      lastReceipt?.mutationsSummary?.confirmed?.some((e) => e.op === 'github-environment-ensure') ||
+      partialState?.githubEnvironmentExists === true,
+    )
+
+    return buildInventory({
+      plan: executionPlan,
+      account: discovery.account,
+      identity: discovery.identity,
+      environment,
+      customDomain,
+      buildSha: resolveGitSha(spawnSyncImpl),
+      attemptedAt,
+      deployedAt: applied ? new Date().toISOString() : null,
+      writerCredential: s3,
+      writerCredentialState: lastReceipt?.writerCredentialState ?? (s3 ? 'verified' : 'not-provisioned'),
+      verification: verification ? { pass: verification.pass, failed: verification.failed ?? [] } : null,
+      verdict,
+      reason,
+      observed: {
+        accountId: discovery.account.id,
+        bucket: observedBucket,
+        unrelatedBucketCount: partialState?.unrelatedBucketCount ?? null,
+        githubEnvironmentExists: partialState?.githubEnvironmentExists ?? null,
+      },
+      resources: {
+        bucket: {
+          name: executionPlan.bucket,
+          state: applied ? 'verified-empty-and-private' : (bucketExists ? 'exists-unverified' : 'absent'),
+        },
+        worker: {
+          name: executionPlan.cloudflareWorkerName,
+          state: workerDeployed ? 'deployed' : 'not-deployed',
+          url: workerDeployed ? executionPlan.workerOrigin : null,
+        },
+        githubEnvironment: {
+          name: environment,
+          state: ghEnvCreated ? (applied ? 'synced' : 'partial') : 'absent',
+        },
+      },
+      mutationReceipts: applyReceipts.map((receipt) => ({
+        status: receipt.ok ? 'applied' : 'aborted',
+        completed: receipt.completed ?? [],
+        mutationsExecuted: receipt.mutationsExecuted ?? [],
+        mutations: receipt.mutations ?? [],
+        unknownOutcomes: receipt.mutationsSummary?.unknown ?? [],
+        unverifiedCleanups: receipt.mutationsSummary?.unverifiedCleanups ?? [],
+        errorCategory: receipt.errorCategory ?? null,
+        code: receipt.code ?? null,
+        reason: receipt.reason ?? null,
+      })),
+    })
+  }
+
+  const persistInventory = (inventory) => {
+    try {
+      return writeInventory({
+        environment,
+        inventory,
+        env: resolvedEnv,
+        secrets: [
+          cloudflareToken,
+          bangumiToken,
+          s3?.secretAccessKey ?? '',
+          applyEnv?.AIRINGCAL_S3_SECRET_ACCESS_KEY ?? '',
+        ].filter(Boolean),
+      })
+    } catch (error) {
+      logFn(`Inventory could not be persisted: ${error.message}`)
+      return null
     }
   }
-  if (!approved) throw new Error('Configuration review did not reach confirmation')
-
-  applyEnv = resolveApplyEnvironment({
-    environment,
-    headless,
-    approved,
-    wizardEnv: wizardEnvironment({
-      environment,
-      cloudflareToken,
-      accountId: discovery.account.id,
-      workersSubdomain: discovery.workersSubdomain,
-      bangumiToken,
-      identity: discovery.identity,
-      usersJson: discovery.usersJson,
-      customDomain,
-      zoneId,
-      dotenvPath,
-    }),
-    sourceEnv: resolvedEnv,
-  })
-
-  // #205 BUG-001: derive the ACTUAL authorized apply-mode plan from the same
-  // approved configuration, and prove it matches what the Owner reviewed.
-  const applyDerived = buildPlanForEnvironment(applyEnv, { mode: 'apply' })
-  assertApplyPlanMatchesReview(dry.plan, applyDerived.plan)
-  executionPlan = applyDerived.plan
 
   const finalize = ({
     verdict,
@@ -1054,39 +1619,21 @@ async function installFlow({
     verification = null,
     verificationError = null,
   }) => {
-    const inventory = buildInventory({
-      plan: executionPlan,
-      account: discovery.account,
-      identity: discovery.identity,
-      environment,
-      customDomain,
-      buildSha: resolveGitSha(spawnSyncImpl),
-      deployedAt: new Date().toISOString(),
-      writerCredential: s3,
-      verification: verification ? { pass: verification.pass, failed: verification.failed ?? [] } : null,
-      verdict,
-      mutationReceipts: applyReceipts.map((receipt) => ({
-        status: receipt.ok ? 'applied' : 'aborted',
-        completed: receipt.completed ?? [],
-        mutationsExecuted: receipt.mutationsExecuted ?? [],
-        reason: receipt.reason ?? null,
-      })),
-    })
-    let inventoryPath = null
-    try {
-      inventoryPath = writeInventory({
-        environment,
-        inventory,
-        secrets: [cloudflareToken, bangumiToken, s3?.secretAccessKey ?? ''].filter(Boolean),
-      })
-    } catch (error) { logFn(`Inventory could not be persisted: ${error.message}`) }
+    const inventory = buildCurrentInventory({ verdict, reason, verification })
+    const inventoryPath = persistInventory(inventory)
     if (!headless) ui.outro(`${verdict}${reason ? ` — ${reason}` : ''}`)
+    const endpointLine = formatTerminalEndpointLine({
+      verdict,
+      applied: result?.ok === true,
+      publicBaseUrl: inventory.publicBaseUrl,
+      plannedPublicBaseUrl: inventory.plannedPublicBaseUrl,
+    })
     logFn(
-      `\n${verdict}. Public URL: ${executionPlan.publicBaseUrl ?? executionPlan.workerOrigin}` +
+      `\n${verdict}. ${endpointLine}` +
       `${inventoryPath ? `\nInventory: ${inventoryPath}` : ''}${reason ? `\nReason: ${reason}` : ''}`,
     )
     return {
-      applied: result.ok === true,
+      applied: result?.ok === true,
       verdict,
       reason,
       result,
@@ -1105,34 +1652,202 @@ async function installFlow({
     spawnSyncImpl,
     ...(hooks.createApplyIo ? { createIo: hooks.createApplyIo } : {}),
   }
-  const spinner = ui.spinner()
-  spinner.start('Applying approved infrastructure plan')
-  let { result, io: liveIo } = await applyPlan({ env: applyEnv, plan: executionPlan, ...applyOptions })
-  spinner.stop(result.ok ? 'Infrastructure applied' : 'Infrastructure apply aborted')
-  const applyReceipts = [result]
-  let s3 = liveIo.s3Credentials?.() ?? null
-  if (!result.ok && !headless && Array.isArray(result.missingScopes) && result.missingScopes.length > 0) {
-    logFn(
-      `Automatic Writer credential provisioning was not available (${result.reason}). ` +
-      `Completed effects: ${(result.completed ?? []).join(' → ') || 'none'}.`,
-    )
-    const confirmed = await ui.confirm({
-      message: 'Supply an independently scoped R2 credential now (masked input)?',
-      initialValue: true,
+
+  const executeApply = async (extraEnv = {}) => {
+    const spinner = ui.spinner()
+    spinner.start('Applying approved infrastructure plan')
+    const runEnv = { ...applyEnv, ...extraEnv }
+    const out = await applyPlan({
+      env: runEnv,
+      plan: executionPlan,
+      priorInventory: partialState?.priorInventory ?? null,
+      bucketAdoptionAuthorized: bucketAdoptionAuthorized || String(runEnv.AIRINGCAL_ADOPT_EXISTING_BUCKET ?? '') === 'yes',
+      ...applyOptions,
     })
-    if (!confirmed) return finalize({ verdict: 'DEPLOY_FAILED', reason: 'masked credential fallback declined after a partial apply' })
-    const accessKeyId = (await ui.password({ message: 'Cloudflare R2 S3 Access Key ID (masked)' })).trim()
-    const secretAccessKey = (await ui.password({ message: 'Cloudflare R2 S3 Secret Access Key (masked)' })).trim()
-    if (!accessKeyId || !secretAccessKey) throw new WizardAbort('S3 credential fallback cancelled: both values are required')
-    const fallback = { AIRINGCAL_S3_ACCESS_KEY_ID: accessKeyId, AIRINGCAL_S3_SECRET_ACCESS_KEY: secretAccessKey }
-    spinner.start('Retrying the approved apply with the supplied credential')
-    const retried = await applyPlan({ env: { ...applyEnv, ...fallback }, plan: executionPlan, ...applyOptions })
-    spinner.stop(retried.result.ok ? 'Infrastructure applied' : 'Infrastructure apply aborted')
-    result = retried.result
-    liveIo = retried.io
+    spinner.stop(out.result.ok ? 'Infrastructure applied' : 'Infrastructure apply aborted')
+    result = out.result
+    liveIo = out.io
     applyReceipts.push(result)
-    s3 = retried.io.s3Credentials?.() ?? null
+    s3 = liveIo.s3Credentials?.() ?? null
+    if (!result.ok) {
+      const partialInventory = buildCurrentInventory({ verdict: 'DEPLOY_FAILED', reason: result.reason ?? 'apply aborted' })
+      persistInventory(partialInventory)
+    }
   }
+
+  await executeApply()
+
+  if (!result.ok && !headless) {
+    const canFastFallback =
+      Array.isArray(result.missingScopes) &&
+      result.missingScopes.length > 0 &&
+      result.errorCategory !== 'internal-error' &&
+      (result.mutationsSummary?.unverifiedCleanups?.length ?? 0) === 0 &&
+      (result.mutationsSummary?.unknown?.length ?? 0) === 0
+
+    if (canFastFallback) {
+      logFn(
+        `Automatic Writer credential provisioning was not available (${result.reason}). ` +
+        `Completed effects: ${(result.completed ?? []).join(' → ') || 'none'}.`,
+      )
+      const confirmed = await ui.confirm({
+        message: 'Supply an independently scoped R2 credential now (masked input)?',
+        initialValue: true,
+      })
+      if (!confirmed) {
+        return finalize({ verdict: 'DEPLOY_FAILED', reason: 'masked credential fallback declined after a partial apply' })
+      }
+      const accessKeyId = (await ui.password({ message: 'Cloudflare R2 S3 Access Key ID (masked)' })).trim()
+      const secretAccessKey = (await ui.password({ message: 'Cloudflare R2 S3 Secret Access Key (masked)' })).trim()
+      if (!accessKeyId || !secretAccessKey) throw new WizardAbort('S3 credential fallback cancelled: both values are required')
+      if (result.mutationsSummary?.confirmed?.some((entry) => entry.op === 'r2-bucket-create')) {
+        bucketAdoptionAuthorized = true
+      }
+      await executeApply({
+        AIRINGCAL_S3_ACCESS_KEY_ID: accessKeyId,
+        AIRINGCAL_S3_SECRET_ACCESS_KEY: secretAccessKey,
+        ...(bucketAdoptionAuthorized ? { AIRINGCAL_ADOPT_EXISTING_BUCKET: 'yes' } : {}),
+      })
+    }
+
+    while (!result.ok) {
+      const recovery = classifyFailureRecovery({ result, environment })
+      const summaryLines = [
+        `Reason: ${result.reason ?? 'apply aborted'}`,
+        `Error Category: ${recovery.errorCategory}${recovery.code ? ` (${recovery.code})` : ''}`,
+        `Confirmed Mutations: ${recovery.confirmedMutations.map((e) => `${e.op}:${e.target}`).join(', ') || 'none'}`,
+        `Existing Resources: ${recovery.existingResources.join('; ') || 'none observed'}`,
+        `Unknown Outcomes: ${recovery.unknownOutcomes.length > 0 ? recovery.unknownOutcomes.map((e) => `${e.op}:${e.target}`).join(', ') : 'none'}`,
+        `Unverified Cleanups: ${recovery.unverifiedCleanups.length > 0 ? recovery.unverifiedCleanups.map((e) => `${e.op}:${e.target}`).join(', ') : 'none'}`,
+      ]
+      ui.note(summaryLines.join('\n'), 'Partial Deployment Failure & Recovery')
+
+      const actionLabels = {
+        'supply-s3': { value: 'supply-s3', label: 'Supply or Replace Independent R2 S3 Credential', hint: 'masked S3 key/secret' },
+        reconcile: { value: 'reconcile', label: 'Reconcile Existing Resources', hint: 'read-only refresh of remote state' },
+        retry: { value: 'retry', label: 'Retry Failed Operation', hint: 'requires fresh authorization' },
+        review: { value: 'review', label: 'Return to Configuration Review', hint: 'edit domain, account, or credentials' },
+        details: { value: 'details', label: 'View Detailed Failure Report', hint: 'sanitized mutation ledger & hints' },
+        exit: { value: 'exit', label: 'Exit Safely', hint: 'preserve sanitized recovery receipt' },
+      }
+      const options = recovery.allowedActions.map((key) => actionLabels[key]).filter(Boolean)
+      const choice = await ui.select({
+        message: 'Recovery Action',
+        options,
+        initialValue: options[0]?.value ?? 'exit',
+      })
+
+      if (choice === 'details') {
+        const ledgerLines = (result.mutations ?? []).map((entry) =>
+          `[${entry.seq}] ${entry.status} ${entry.op} (${entry.target ?? '-'})` +
+          `${entry.error ? ` — ${entry.error}` : ''}` +
+          `${entry.reconciliationHint ? `\n    Hint: ${entry.reconciliationHint}` : ''}`,
+        )
+        ui.note(
+          ledgerLines.length > 0 ? ledgerLines.join('\n') : (result.reason ?? 'No mutation entries recorded.'),
+          'Detailed Failure Report',
+        )
+        continue
+      }
+
+      if (choice === 'reconcile') {
+        partialState = await discoverPartialState({
+          fetchImpl,
+          spawnSyncImpl,
+          cloudflareToken,
+          accountId: discovery.account.id,
+          environment,
+          bucket: executionPlan.bucket,
+          env: resolvedEnv,
+        })
+        const recLines = [
+          `Bucket (${executionPlan.bucket}): ${partialState.targetBucket?.exists ? 'EXISTS' : 'ABSENT'}${partialState.targetBucket?.creationDate ? ` (created ${partialState.targetBucket.creationDate})` : ''}`,
+          `Writer Token: ${partialState.existingWriterToken ? `${partialState.existingWriterToken.name} (${partialState.existingWriterToken.id})` : 'not detected'}`,
+          `GitHub Environment (${environment}): ${partialState.githubEnvironmentExists === true ? 'EXISTS' : partialState.githubEnvironmentExists === false ? 'ABSENT' : 'UNKNOWN'}`,
+          `Unrelated Buckets: ${partialState.unrelatedBucketCount} untouched`,
+        ]
+        ui.note(recLines.join('\n'), 'Reconciled Remote State')
+        if (environment === 'production' && partialState.targetBucket?.exists && !bucketAdoptionAuthorized) {
+          const adopt = await ui.confirm({
+            message: `Adopt existing bucket "${executionPlan.bucket}" for recovery retry?`,
+            initialValue: partialState.ownershipMatch,
+          })
+          if (adopt) bucketAdoptionAuthorized = true
+        }
+        if (recovery.hasUnknown && !recovery.hasUnverifiedCleanup) {
+          const retryAfterReconcile = await ui.confirm({
+            message: 'Remote state reconciled. Re-authorize and retry installation now?',
+            initialValue: false,
+          })
+          if (retryAfterReconcile) {
+            built = buildApplyContext()
+            applyEnv = built.applyEnvironment
+            executionPlan = built.plan
+            await executeApply()
+          }
+        }
+        continue
+      }
+
+      if (choice === 'supply-s3') {
+        const accessKeyId = (await ui.password({ message: 'Cloudflare R2 S3 Access Key ID (masked)' })).trim()
+        const secretAccessKey = (await ui.password({ message: 'Cloudflare R2 S3 Secret Access Key (masked)' })).trim()
+        if (!accessKeyId || !secretAccessKey) {
+          ui.log.warn('S3 credential entry incomplete; returning to recovery menu.')
+          continue
+        }
+        if (result.mutationsSummary?.confirmed?.some((entry) => entry.op === 'r2-bucket-create') || partialState?.targetBucket?.exists) {
+          const adopt = await ui.confirm({
+            message: `Authorize using existing bucket "${executionPlan.bucket}" with these credentials?`,
+            initialValue: true,
+          })
+          if (!adopt) continue
+          bucketAdoptionAuthorized = true
+        }
+        built = buildApplyContext()
+        applyEnv = built.applyEnvironment
+        executionPlan = built.plan
+        await executeApply({
+          AIRINGCAL_S3_ACCESS_KEY_ID: accessKeyId,
+          AIRINGCAL_S3_SECRET_ACCESS_KEY: secretAccessKey,
+          ...(bucketAdoptionAuthorized ? { AIRINGCAL_ADOPT_EXISTING_BUCKET: 'yes' } : {}),
+        })
+        continue
+      }
+
+      if (choice === 'retry') {
+        const reconfirm = await ui.confirm({
+          message: `Re-authorize and retry installing AiringCal in ${environment === 'production' ? 'Production' : 'Development'}?`,
+          initialValue: true,
+        })
+        if (!reconfirm) continue
+        if (result.mutationsSummary?.confirmed?.some((entry) => entry.op === 'r2-bucket-create')) {
+          bucketAdoptionAuthorized = true
+        }
+        built = buildApplyContext()
+        applyEnv = built.applyEnvironment
+        executionPlan = built.plan
+        await executeApply()
+        continue
+      }
+
+      if (choice === 'review') {
+        approved = false
+        const reReviewed = await reviewAndAuthorize()
+        if (reReviewed.cancelled) {
+          return finalize({ verdict: 'DEPLOY_FAILED', reason: reReviewed.reason })
+        }
+        built = buildApplyContext()
+        applyEnv = built.applyEnvironment
+        executionPlan = built.plan
+        await executeApply()
+        continue
+      }
+
+      return finalize({ verdict: 'DEPLOY_FAILED', reason: result.reason ?? 'apply aborted' })
+    }
+  }
+
   if (!result.ok) return finalize({ verdict: 'DEPLOY_FAILED', reason: result.reason ?? 'apply aborted' })
 
   let wantSync
@@ -1205,11 +1920,9 @@ async function installFlow({
 
 export async function main(argv = process.argv.slice(2), deps = {}) {
   const io = deps.io ?? { input: process.stdin, output: process.stderr }
-  const fetchImpl = deps.fetchImpl ?? globalThis.fetch
-  const spawnSyncImpl = deps.spawnSyncImpl ?? spawnSync
-  const logFn = deps.log ?? log
   const env = deps.env ?? process.env
   const ui = deps.ui ?? createUi({ io, env })
+  const logFn = deps.log ?? log
   // #205 QA-001: a committed PTY acceptance harness injects deterministic
   // provider/command adapters through this env-only hook. Normal runs never
   // set it; all gate/verdict logic stays real.
@@ -1218,6 +1931,8 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     const loaded = await import(new URL(env.AIRINGCAL_WIZARD_TEST_HOOKS, `file://${ROOT}/`).href)
     hooks = loaded.default ?? loaded
   }
+  const fetchImpl = deps.fetchImpl ?? hooks.fetchImpl ?? globalThis.fetch
+  const spawnSyncImpl = deps.spawnSyncImpl ?? hooks.spawnSyncImpl ?? spawnSync
   const args = {
     mode: 'menu',
     headless: argv.includes('--headless'),
@@ -1227,6 +1942,23 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   }
   const envIndex = argv.indexOf('--environment')
   if (envIndex !== -1) args.environment = argv[envIndex + 1]
+
+  // #208 UX-011: in-memory session credential cache, cleared on exit or replacement.
+  const session = {
+    cloudflareToken: '',
+    bangumiToken: '',
+    validation: null,
+    validatedAccountId: null,
+    customDomainChecked: false,
+    clear() {
+      this.cloudflareToken = ''
+      this.bangumiToken = ''
+      this.validation = null
+      this.validatedAccountId = null
+      this.customDomainChecked = false
+    },
+  }
+
   try {
     if (args.doctor) {
       const report = await runDoctor({ environment: args.environment ?? 'production', spawnSyncImpl, log: logFn, env })
@@ -1255,38 +1987,54 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, headless: true, hooks, ui })
       return { ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'CANCELLED'].includes(result.verdict), verdict: result.verdict, result }
     }
-    const choice = await ui.select({
-      message: 'AiringCal Setup',
-      options: [
-        { value: 'install', label: 'Install or Update', hint: 'two masked tokens, review, apply, First Full Sync' },
-        { value: 'validate', label: 'Validate API Credentials', hint: 'read-only permission preflight' },
-        { value: 'doctor', label: 'Doctor', hint: 'read-only gates, workflows and recent runs' },
-        { value: 'exit', label: 'Exit' },
-      ],
-      initialValue: 'install',
-    })
-    if (choice === 'exit') return { ok: true, exit: true }
-    if (choice === 'doctor') {
-      const report = await runDoctor({ environment: 'production', spawnSyncImpl, log: logFn, env })
-      return { ok: report.checks.every((check) => check.status !== 'fail'), report }
-    }
-    if (choice === 'validate') {
-      const docs = resolveDocumentation(env)
-      let cloudflareToken = String(env.AIRINGCAL_CLOUDFLARE_API_TOKEN ?? '').trim()
-      let bangumiToken = String(env.AIRINGCAL_BANGUMI_TOKEN ?? '').trim()
-      if (!cloudflareToken) {
-        credentialSection(ui, { title: 'Cloudflare API Token', purpose: 'Validated read-only; nothing is created or changed.', links: credentialLinks('cloudflare', docs) })
-        cloudflareToken = await ui.password({ message: 'Paste your Cloudflare API Token (masked)' })
+
+    const docs = resolveDocumentation(env)
+    for (;;) {
+      const choice = await ui.select({
+        message: 'AiringCal Setup',
+        options: [
+          { value: 'install', label: 'Install or Update', hint: 'two masked tokens, review, apply, First Full Sync' },
+          { value: 'validate', label: 'Validate API Credentials', hint: 'read-only permission preflight' },
+          { value: 'doctor', label: 'Doctor', hint: 'read-only gates, workflows and recent runs' },
+          { value: 'exit', label: 'Exit' },
+        ],
+        initialValue: 'install',
+      })
+      if (choice === 'exit') return { ok: true, exit: true }
+
+      if (choice === 'doctor') {
+        const docFlow = await doctorFlow({ ui, spawnSyncImpl, logFn, env })
+        if (docFlow.action === 'menu') continue
+        return { ok: docFlow.ok, report: docFlow.report, exit: true }
       }
-      if (!bangumiToken) {
-        credentialSection(ui, { title: 'Bangumi Personal Access Token', purpose: 'Validated read-only against your own collections.', links: credentialLinks('bangumi', docs) })
-        bangumiToken = await ui.password({ message: 'Paste your Bangumi Personal Access Token (masked)' })
+
+      if (choice === 'validate') {
+        const valFlow = await validateCredentialsFlow({ ui, docs, fetchImpl, env, session })
+        if (valFlow.action === 'menu') continue
+        if (valFlow.action === 'exit') {
+          return { ok: valFlow.validation?.ok ?? true, validation: valFlow.validation, exit: true }
+        }
       }
-      const validation = await validateCredentials({ fetchImpl, cloudflareToken, bangumiToken, log: (line) => logFn(line) })
-      return { ok: validation.ok, validation }
+
+      const result = await installFlow({
+        io,
+        env,
+        fetchImpl,
+        spawnSyncImpl,
+        log: logFn,
+        requestedEnvironment: args.environment,
+        headless: false,
+        hooks,
+        ui,
+        session,
+      })
+      if (result?.returnToMenu) continue
+      return {
+        ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'CANCELLED'].includes(result.verdict),
+        verdict: result.verdict,
+        result,
+      }
     }
-    const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, headless: false, hooks, ui })
-    return { ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'CANCELLED'].includes(result.verdict), verdict: result.verdict, result }
   } catch (error) {
     if (error instanceof WizardAbort || error instanceof IdentityError) {
       logFn(`\nStopped: ${error.message}`)
@@ -1294,6 +2042,8 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     }
     logFn(`\nSetup failed: ${error instanceof Error ? error.message : String(error)}`)
     return { ok: false, error: String(error?.message ?? error) }
+  } finally {
+    session.clear()
   }
 }
 

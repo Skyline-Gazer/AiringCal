@@ -422,7 +422,7 @@ async function spawnWithNetworkRetry(spawnOnce, label, secrets, opts = {}) {
       return assertSpawnOk(result, label, secrets)
     },
     {
-      attempts: 3,
+      attempts: opts.attempts ?? 3,
       isRetriable: (error) => Boolean(error?.transientNetwork),
       sleep: opts.sleep ?? defaultSleep,
       delaysMs: SPAWN_RETRY_BACKOFF_MS,
@@ -1572,7 +1572,7 @@ export function createLiveDevelopmentApplyIo({
               permission_groups: [{ id: permissionGroupId }],
             }],
           }),
-        })
+        }, { attempts: 1 })
       } catch (error) {
         const detail = redactSecrets(error instanceof Error ? error.message : String(error), secrets)
         if (isAmbiguousTransportError(error)) {
@@ -1939,6 +1939,7 @@ export function createLiveDevelopmentApplyIo({
           spawnSyncImpl,
           ['r2', 'bucket', 'create', bucket],
           { ...env, AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: accountId },
+          { attempts: 1 },
         )
       } catch (error) {
         const detail = redactSecrets(error instanceof Error ? error.message : String(error), secrets)

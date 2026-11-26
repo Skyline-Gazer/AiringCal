@@ -3,10 +3,10 @@ import { EventEmitter } from 'node:events'
 import test from 'node:test'
 import { deploymentGuideLink, credentialLinks, resolveDocumentation } from './setup-docs.mjs'
 import { createUi } from './setup-ui.mjs'
-import { validateCredentials } from './setup-validate.mjs'
+import { formatValidationDetails, formatValidationSummary, summarizeValidation, validateCredentials } from './setup-validate.mjs'
 import { buildDevelopmentDeployPlan, buildProductionPlan } from './deploy-env-lib.mjs'
 import { ENVIRONMENT_OPTIONS } from './setup-wizard.mjs'
-import { formatPlan } from './setup-wizard-lib.mjs'
+import { buildInventory, classifyFailureRecovery, formatPlan, formatTerminalEndpointLine, sanitizeAccountName } from './setup-wizard-lib.mjs'
 
 const ACCOUNT = 'abcdef0123456789abcdef0123456789'
 
@@ -157,4 +157,87 @@ test('UI falls back to plain, ANSI-free output without a TTY or with NO_COLOR (#
   const colored = ttyOut.chunks.join('')
   assert.match(colored, /\u001b\[91m/)
   assert.match(colored, /failure text/, 'status text remains readable without color')
+})
+
+test('UX-010: validation summary translates statuses into clear user-facing guidance without inflating NOT_VERIFIED', async () => {
+  const res = await validateCredentials({
+    fetchImpl: fakeFetch([
+      ...CF_ROUTES.filter(([pattern]) => String(pattern) !== String(/\/user\/tokens\/permissions$/)),
+      [/\/user\/tokens\/permissions$/, () => ({ body: { success: true, result: { permissions: [] } } })],
+    ]),
+    cloudflareToken: 'cf',
+    bangumiToken: 'bgm',
+  })
+  assert.equal(res.ok, true)
+  assert.equal(res.checks.find((c) => c.id === 'writer.provision').state, 'NOT_VERIFIED')
+  assert.equal(res.checks.find((c) => c.id === 'r2.write').state, 'NOT_VERIFIED')
+
+  const summary = summarizeValidation(res)
+  assert.equal(summary.status, 'ready-with-notes')
+  assert.ok(summary.confirmed.some((l) => /Cloudflare API Token is valid/i.test(l)))
+  assert.ok(summary.confirmed.some((l) => /Bangumi PAT and anime collection access verified/i.test(l)))
+  assert.ok(summary.unverified.some((l) => /Automatic Writer credential creation/i.test(l)))
+  assert.match(summary.fallbackNote, /masked R2 S3 fallback/i)
+  const text = formatValidationSummary(res)
+  assert.match(text, /Continue to Installation/)
+  const details = formatValidationDetails(res)
+  assert.match(details, /NOT_VERIFIED\s+R2 object write/)
+})
+
+test('UX-013: DEPLOY_FAILED inventory separates planned vs deployed endpoints, attemptedAt vs deployedAt, and redacts emails', () => {
+  const plan = buildProductionPlan({ target: 'cloudflare', publicBaseUrl: '', mode: 'apply', accountId: ACCOUNT, workersDevSubdomain: 'acme' })
+  assert.equal(sanitizeAccountName("owner@example.com's Account"), "<redacted-email>'s Account")
+  const inv = buildInventory({
+    plan,
+    account: { id: ACCOUNT, name: "owner@example.com's Account" },
+    identity: { userId: '1', username: 'u' },
+    environment: 'production',
+    buildSha: 'a'.repeat(40),
+    attemptedAt: '2026-11-26T10:36:42.311Z',
+    deployedAt: null,
+    writerCredentialState: 'not-provisioned',
+    verdict: 'DEPLOY_FAILED',
+    reason: 'aborted',
+    mutationReceipts: [{ status: 'aborted', completed: ['token-probe'], mutationsExecuted: ['r2-bucket-create'], reason: 'aborted' }],
+  })
+  assert.equal(inv.cloudflare.accountName, "<redacted-email>'s Account")
+  assert.equal(inv.publicBaseUrl, null)
+  assert.equal(inv.plannedPublicBaseUrl, 'https://airingcal-production.acme.workers.dev')
+  assert.equal(inv.worker.deployed, false)
+  assert.equal(inv.worker.origin, null)
+  assert.equal(inv.deployment.attemptedAt, '2026-11-26T10:36:42.311Z')
+  assert.equal(inv.deployment.deployedAt, null)
+  assert.equal(inv.writerCredentialState, 'not-provisioned')
+  assert.match(
+    formatTerminalEndpointLine({ verdict: 'DEPLOY_FAILED', applied: false, publicBaseUrl: inv.publicBaseUrl, plannedPublicBaseUrl: inv.plannedPublicBaseUrl }),
+    /^Planned Public URL — not yet deployed or verified:/,
+  )
+})
+
+test('UX-012: classifyFailureRecovery blocks blind retry on internal errors, unknown outcomes, unverified cleanups, and unproven ownership', () => {
+  const internal = classifyFailureRecovery({ result: { errorCategory: 'internal-error', reason: 'bug' } })
+  assert.deepEqual(internal.allowedActions, ['details', 'exit'])
+
+  const unverifiedCleanup = classifyFailureRecovery({
+    result: { errorCategory: 'scope-violation', cleanupFailed: true, mutationsSummary: { unverifiedCleanups: [{ op: 'writer-token-cleanup', target: 't1' }] } },
+  })
+  assert.equal(unverifiedCleanup.allowedActions.includes('retry'), false)
+  assert.deepEqual(unverifiedCleanup.allowedActions, ['reconcile', 'details', 'exit'])
+
+  const unknownOutcome = classifyFailureRecovery({
+    result: { errorCategory: 'transport-failure', mutationsSummary: { unknown: [{ op: 'r2-bucket-create', target: 'airingcal-production' }] } },
+  })
+  assert.equal(unknownOutcome.allowedActions.includes('retry'), false)
+  assert.deepEqual(unknownOutcome.allowedActions, ['reconcile', 'details', 'exit'])
+
+  const unproven = classifyFailureRecovery({
+    result: { errorCategory: 'resource-conflict', code: 'BUCKET_OWNERSHIP_UNPROVEN' },
+  })
+  assert.equal(unproven.allowedActions.includes('retry'), false)
+  assert.ok(unproven.allowedActions.includes('reconcile'))
+
+  const retryableTransport = classifyFailureRecovery({
+    result: { errorCategory: 'transport-failure', mutationsSummary: { confirmed: [], unknown: [], unverifiedCleanups: [] } },
+  })
+  assert.ok(retryableTransport.allowedActions.includes('retry'))
 })

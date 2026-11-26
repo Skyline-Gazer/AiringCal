@@ -55,3 +55,10 @@ Owner-mandated evidence in this file.
    consumer-side in #186).
 
 Both comments reference this file as the in-repo evidence anchor.
+
+## Incremental Consumer Evidence — 2026-11-26 (#208 Production Clean Init Recovery II)
+
+During the second actual interactive Production Clean Init on `c6fd64ff`, two consumer-side engineering gaps surfaced after `#205` (no ADS pin change; `.ads` remains pinned at `v0.8.0` / `178212c4`):
+
+1. **Test Double Fidelity (confirmed trigger)** — `scripts/fixtures/wizard-acceptance-hooks.mjs` stubbed `ensureBucket()` as an unconditional success while the real Live I/O Adapter (`scripts/deploy-env-live-io.mjs`) required S3 credentials inside `ensureBucket()`. Real PTY acceptance therefore passed on a precondition that failed in live execution. Remedied with a stateful controlled-provider simulator (`scripts/fixtures/controlled-provider-sim.mjs`) exercising the real `runProductionApply`, `createLiveDevelopmentApplyIo`, credential state, and mutation ledger at the lowest transport/CLI boundaries (`scripts/live-adapter-integration.test.mjs`), keeping fixture-level PTY coverage labeled separately from real-adapter integration coverage.
+2. **Partial External Mutation Accounting (confirmed trigger)** — Composite operations that mutate external state before failing (e.g., creating R2 bucket `airingcal-production` before failing S3 credential checks) left `mutationsExecuted: []` when accounting recorded only enclosing step completion. Remedied with a point-of-execution mutation ledger (`scripts/mutation-ledger.mjs`) distinguishing intended, attempted, confirmed-success, confirmed-failed, unknown-outcome, already-exists, compensation-success, and compensation-failed outcomes, with failure-injection tests after each external call.

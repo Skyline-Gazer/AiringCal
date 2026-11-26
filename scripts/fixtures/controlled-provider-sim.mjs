@@ -655,11 +655,11 @@ export function createControlledProviderSimulator({
       },
       async head(key) {
         state.calls.s3.push({ op: 'head', bucket: bucketName, key })
-        if (state.faults.s3HeadFailAfterWrite && key.includes('_isolation-probe')) {
-          throw new Error('simulated S3 HEAD failure after probe write')
-        }
         const b = resolveBucket()
         const entry = b.objects.get(key)
+        if (entry && state.faults.s3HeadFailAfterWrite && key.includes('_isolation-probe')) {
+          throw new Error('simulated S3 HEAD failure after probe write')
+        }
         if (!entry) return null
         return { etag: entry.etag, size: entry.body.length, contentType: entry.contentType }
       },

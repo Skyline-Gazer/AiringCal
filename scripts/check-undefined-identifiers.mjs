@@ -16,6 +16,13 @@ const FILES = [
   'scripts/setup-wizard-lib.mjs',
   'scripts/setup-prompt.mjs',
   'scripts/setup-identities.mjs',
+  'scripts/setup-validate.mjs',
+  'scripts/setup-ui.mjs',
+  'scripts/setup-docs.mjs',
+  'scripts/mutation-ledger.mjs',
+  'scripts/deploy-env-lib.mjs',
+  'scripts/deploy-env-live-io.mjs',
+  'scripts/deploy-env.mjs',
 ]
 const RELEVANT = /error TS(2304|2552|2448|2454):/
 const result = spawnSync(
