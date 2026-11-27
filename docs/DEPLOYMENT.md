@@ -102,12 +102,14 @@ Used when an AiringCal installation already exists in your Cloudflare account an
    - When updating with local S3 credentials (or explicit token rotation) plus a passing 25-check live verifier run, the terminal verdict is `READY`.
 4. **Self-Service Entry (`pnpm run setup` → Update)**:
    - The menu separates **Install**, **Update**, and **Recover**. An explicit choice refuses a target whose detected state differs (`WIZARD_OPERATION_MISMATCH`), so Update never silently creates resources and Install never re-provisions an existing bucket.
-   - Before any credential prompt or remote mutation, Update prints four facts — workspace version, latest published stable release, existing Writer `RELEASE_REF`, and the live Reader `package` from `/api/version` — then acts on the plan:
-     - `upgrade` (clean tree required): moves the workspace to the published tag, verifies the checkout SHA, installs the pinned toolchain with `pnpm install --frozen-lockfile`, and restarts the wizard on that release before running the update;
-     - `redeploy`: workspace is already at the release, so only the existing update contract runs;
-     - `current`: idempotent re-verification;
-     - `blocked`: prints the exact reason (uncommitted changes, local HEAD newer than the latest release, Node.js below `engines.node`) and stops before touching anything.
-   - Rollback: `git switch --detach <previous HEAD>` (printed by the wizard) then `pnpm install && pnpm run setup`.
+   - Before any credential prompt or remote mutation, Update prints the observed facts — workspace `HEAD` and local tag, the latest published stable release and its resolved commit SHA, the existing Writer `RELEASE_REF` and SHA, and the live Reader `package` from `/api/version` — then acts on the plan:
+     - `upgrade` (clean tree required): resolves the release tag to its commit on the release-source repository (a GitHub fork deploys its parent's releases), reads that commit's `package.json`, enforces `engines.node` (blocks with `UPDATE_NODE_TOO_OLD`) and warns on a `packageManager` mismatch (`UPDATE_PNPM_MISMATCH`, printing the exact `corepack prepare` command), fetches the tag only when it does not conflict (`UPDATE_TAG_CONFLICT` is never force-overwritten), switches to the verified commit, installs with `pnpm install --frozen-lockfile`, and restarts the wizard on that release before running the update;
+     - `redeploy`: the workspace is already at the release commit, so only the existing update contract runs. `development` has no published release and redeploys the current workspace commit the same way;
+     - `current`: workspace `HEAD`, Writer `RELEASE_REF` and Reader `package` all match the release commit; nothing is mutated and the verdict is `NO_CHANGE`;
+     - `verify`: the release cannot be confirmed because `RELEASE_REF` is unset, the Writer ref is unreadable, or the Reader is unreachable or reports a different version; the update contract runs but does not claim idempotent success;
+     - `blocked`: prints the exact reason (uncommitted changes, unreadable git status, local `HEAD` ahead of or diverged from the release, Node.js below `engines.node`, unreadable release source) and stops before touching anything.
+   - Equality is commit-based: a local tag whose name matches the release but whose commit differs is `UPDATE_UNTAGGED_DIVERGED`, never `current`.
+   - Rollback: `git switch --detach <previous HEAD>` (printed by the wizard) then `pnpm install --frozen-lockfile && pnpm run setup`.
 
 ### C. Interrupted Attempt Recovery (`recover`)
 
@@ -163,7 +165,8 @@ AIRINGCAL_PRODUCTION_RELEASE_SHA=<40-char-hex-approved-release-commit-sha>
 # Required only when intentionally changing an existing installation's approved release identity during update:
 # AIRINGCAL_ALLOW_RELEASE_CHANGE=yes
 
-# Optional: set to "update" when updating an existing initialized installation
+# Optional: apply-engine operation override. The wizard selects Update via
+# `--operation update` (or the menu) and derives the rest from observed state.
 # AIRINGCAL_OPERATION=update
 
 # Optional: Custom Domain (omit for default workers.dev origin)

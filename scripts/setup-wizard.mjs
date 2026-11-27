@@ -49,9 +49,10 @@ import { credentialLinks, resolveDocumentation } from './setup-docs.mjs'
 import { createUi, credentialSection } from './setup-ui.mjs'
 import {
   discoverUpdateState,
+  fetchReleaseTag,
   formatUpdateState,
+  readPackageAt,
   readPnpmVersion,
-  readTaggedPackage,
   toolchainBlockers,
   upgradeWorkspace,
 } from './update-plan.mjs'
@@ -1171,7 +1172,7 @@ export async function discoverPartialState({
 
   const ownershipMatch = hasAffirmativeBucketOwnership(priorInventory, bucket, accountId)
 
-  let detectedOperation = String(env.AIRINGCAL_OPERATION ?? '').trim().toLowerCase() || null
+  let detectedOperation = null
   let installationState = 'clean-install'
   if (targetBucket?.exists) {
     const readyInventory = ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'UPDATED_PARTIAL_VERIFICATION'].includes(priorInventory?.deployment?.verdict)
@@ -1504,6 +1505,105 @@ function renderReview(ui, {
   ui.note(lines.join('\n'), 'Configuration Review')
 }
 
+/**
+ * Update acts only on observed state: no published release means redeploy,
+ * a matching release means nothing to do, and every preflight runs before any
+ * workspace mutation.
+ */
+async function runUpdatePreflight({ environment, env, fetchImpl, spawnSyncImpl, log, ui, interactive }) {
+  const inventory = readInventory({ environment, env })
+  const state = await discoverUpdateState({
+    environment,
+    env,
+    fetchImpl,
+    spawnSyncImpl,
+    baseUrl: inventory?.publicBaseUrl ?? env.AIRINGCAL_PUBLIC_BASE_URL ?? null,
+  })
+  ui.note(formatUpdateState(state), 'Update Check')
+  const plan = state?.plan ?? { action: 'unknown', reasons: [] }
+  if (plan.action === 'blocked') {
+    throw new WizardAbort(plan.reasons[0] ?? 'The update is blocked.', plan.code)
+  }
+  if (plan.action === 'current' || plan.action === 'verify') {
+    const reason = plan.action === 'current'
+      ? 'the workspace and deployment already match the latest release'
+      : 'the deployment has not been verified against the latest release'
+    ui.note(reason, 'No Change')
+    return { kind: 'stop', verdict: 'NO_CHANGE', reason, state }
+  }
+  if (plan.action === 'unknown') {
+    ui.note('The published release could not be read; continuing to the deployment review.', 'Release Unknown')
+    return { kind: 'continue', state }
+  }
+  if (plan.action === 'redeploy') {
+    if (interactive) {
+      const proceed = await ui.confirm({
+        message: 'No release tag exists for this environment. Deploy the current workspace commit again?',
+        initialValue: true,
+      })
+      if (!proceed) {
+        ui.cancel('Update cancelled; nothing was mutated.')
+        return { kind: 'stop', verdict: 'CANCELLED', reason: 'redeploy declined', state }
+      }
+    }
+    return { kind: 'continue', state }
+  }
+
+  const targetTag = state?.target?.tag
+  const fetched = fetchReleaseTag({ tag: targetTag, sha: state?.target?.sha, spawnSyncImpl })
+  if (!fetched.ok) throw new WizardAbort(fetched.reason, fetched.code)
+  const blockers = toolchainBlockers({
+    pkg: readPackageAt({ sha: fetched.sha, spawnSyncImpl }) ?? {},
+    nodeVersion: process.versions.node,
+    pnpmVersion: readPnpmVersion(spawnSyncImpl),
+  })
+  const fatal = blockers.filter((blocker) => blocker.severity === 'block')
+  if (fatal.length > 0) {
+    ui.note(blockers.map((blocker) => `${blocker.message}\n  fix: ${blocker.fix}`).join('\n\n'), 'Toolchain Upgrade Required')
+    throw new WizardAbort(fatal[0].message, fatal[0].code)
+  }
+  const warnings = blockers.filter((blocker) => blocker.severity !== 'block')
+  if (warnings.length > 0) {
+    ui.note(warnings.map((blocker) => `${blocker.message}\n  if install fails: ${blocker.fix}`).join('\n\n'), 'Toolchain Notice')
+  }
+  if (interactive) {
+    const proceed = await ui.confirm({
+      message: `Upgrade this workspace from ${state.localVersion ?? 'the current commit'} to ${targetTag}? The wizard restarts on the new release, then deploys it.`,
+      initialValue: true,
+    })
+    if (!proceed) {
+      ui.cancel('Update cancelled; nothing was mutated.')
+      return { kind: 'stop', verdict: 'CANCELLED', reason: 'workspace upgrade declined', state }
+    }
+  }
+  const upgraded = upgradeWorkspace({
+    targetTag,
+    targetSha: fetched.sha,
+    spawnSyncImpl,
+    log,
+  })
+  if (!upgraded.ok) throw new WizardAbort(upgraded.reason, upgraded.code)
+  const rollback = `git switch --detach ${String(upgraded.previousHead ?? '').slice(0, 12) || '<previous commit>'}`
+  const installed = spawnSyncImpl('pnpm', ['install', '--frozen-lockfile'], { cwd: ROOT, stdio: 'inherit' })
+  if (installed?.status !== 0) {
+    throw new Error(
+      `Dependencies for ${targetTag} did not install. Fix the toolchain, then rerun pnpm setup. ` +
+      `To return to the previous workspace commit: ${rollback}`,
+    )
+  }
+  const child = spawnSyncImpl(
+    process.execPath,
+    [
+      fileURLToPath(import.meta.url),
+      '--operation', 'update',
+      '--environment', environment,
+      ...(interactive ? [] : ['--headless']),
+    ],
+    { cwd: ROOT, stdio: 'inherit', env: { ...process.env } },
+  )
+  return { kind: 'reexeced', code: typeof child?.status === 'number' ? child.status : 1 }
+}
+
 async function installFlow({
   io,
   env = {},
@@ -1554,6 +1654,19 @@ async function installFlow({
     const tokens = await resolveTokens({ io, env: resolvedEnv, log: logFn })
     cloudflareToken = tokens.cloudflareToken
     bangumiToken = tokens.bangumiToken
+    if (requestedOperation === 'update') {
+      const pre = await runUpdatePreflight({
+        environment,
+        env: resolvedEnv,
+        fetchImpl,
+        spawnSyncImpl,
+        log: logFn,
+        ui,
+        interactive: false,
+      })
+      if (pre.kind === 'reexeced') return { reexeced: true, code: pre.code }
+      if (pre.kind === 'stop') return { verdict: pre.verdict, reason: pre.reason, update: pre.state }
+    }
   } else {
     ui.intro('AiringCal Setup')
     environment = environment ?? await ui.select({
@@ -1569,71 +1682,18 @@ async function installFlow({
       )
     }
     if (requestedOperation === 'update') {
-      const inventory = readInventory({ environment, env: resolvedEnv })
-      const state = await discoverUpdateState({
+      const pre = await runUpdatePreflight({
         environment,
         env: resolvedEnv,
         fetchImpl,
         spawnSyncImpl,
-        baseUrl: inventory?.publicBaseUrl ?? resolvedEnv.AIRINGCAL_PUBLIC_BASE_URL ?? null,
+        log: logFn,
+        ui,
+        interactive: true,
       })
-      ui.note(formatUpdateState(state), 'Update Check')
-      if (state.plan.action === 'blocked') {
-        throw new WizardAbort(state.plan.reasons[0], state.plan.code)
-      }
-      if (state.plan.action === 'upgrade' && state.target?.tag) {
-        const targetTag = state.target.tag
-        const blockers = toolchainBlockers({
-          pkg: readTaggedPackage({ tag: targetTag, spawnSyncImpl }) ?? {},
-          nodeVersion: process.versions.node,
-          pnpmVersion: readPnpmVersion(spawnSyncImpl),
-        })
-        const fatal = blockers.filter((blocker) => blocker.severity === 'block')
-        if (fatal.length > 0) {
-          ui.note(
-            blockers.map((blocker) => `${blocker.message}\n  fix: ${blocker.fix}`).join('\n\n'),
-            'Toolchain Upgrade Required',
-          )
-          throw new WizardAbort(fatal[0].message, fatal[0].code)
-        }
-        const warnings = blockers.filter((blocker) => blocker.severity !== 'block')
-        if (warnings.length > 0) {
-          ui.note(
-            warnings.map((blocker) => `${blocker.message}\n  if install fails: ${blocker.fix}`).join('\n\n'),
-            'Toolchain Notice',
-          )
-        }
-        const proceed = await ui.confirm({
-          message: `Upgrade this workspace from ${state.localVersion} to ${targetTag}? The wizard restarts on the new release, then deploys it.`,
-          initialValue: true,
-        })
-        if (!proceed) {
-          ui.cancel('Update cancelled; nothing was mutated.')
-          return { cancelled: true, reason: 'workspace upgrade declined' }
-        }
-        const upgraded = upgradeWorkspace({
-          targetTag,
-          targetSha: state.target.sha,
-          upstreamRepo: state.upstreamRepo,
-          spawnSyncImpl,
-          log: logFn,
-        })
-        const installed = spawnSyncImpl('pnpm', ['install', '--frozen-lockfile'], { cwd: ROOT, stdio: 'inherit' })
-        if (installed?.status !== 0) {
-          throw new Error(
-            `Dependencies for ${targetTag} did not install. Fix the toolchain, then rerun pnpm setup ` +
-            `(rollback: git switch --detach ${String(upgraded.previousHead ?? '').slice(0, 12)}).`,
-          )
-        }
-        const child = spawnSyncImpl(
-          process.execPath,
-          [fileURLToPath(import.meta.url), '--operation', 'update', '--environment', environment],
-          { cwd: ROOT, stdio: 'inherit', env: { ...process.env, AIRINGCAL_OPERATION: 'update' } },
-        )
-        return { reexeced: true, code: typeof child?.status === 'number' ? child.status : 1 }
-      }
+      if (pre.kind === 'reexeced') return { reexeced: true, code: pre.code }
+      if (pre.kind === 'stop') return { verdict: pre.verdict, reason: pre.reason, update: pre.state }
     }
-
     if (session?.cloudflareToken && session?.bangumiToken && session?.validation?.ok) {
       cloudflareToken = session.cloudflareToken
       bangumiToken = session.bangumiToken
@@ -1757,7 +1817,6 @@ async function installFlow({
       })
 
       if (
-        !headless &&
         requestedOperation &&
         partialState?.detectedOperation &&
         partialState.detectedOperation !== requestedOperation
@@ -2461,7 +2520,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
     if (args.headless) {
       const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, requestedOperation: args.operation, headless: true, hooks, ui })
       if (result?.reexeced) return { ok: result.code === 0, code: result.code, reexeced: true, exit: true }
-      return { ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'UPDATED_PARTIAL_VERIFICATION', 'CANCELLED'].includes(result.verdict), verdict: result.verdict, result }
+      return { ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'UPDATED_PARTIAL_VERIFICATION', 'CANCELLED', 'NO_CHANGE'].includes(result.verdict), verdict: result.verdict, result }
     }
 
     if (args.operation) {
@@ -2480,7 +2539,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       })
       if (result?.reexeced) return { ok: result.code === 0, code: result.code, reexeced: true, exit: true }
       return {
-        ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'UPDATED_PARTIAL_VERIFICATION', 'CANCELLED'].includes(result.verdict),
+        ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'UPDATED_PARTIAL_VERIFICATION', 'CANCELLED', 'NO_CHANGE'].includes(result.verdict),
         verdict: result.verdict,
         result,
         exit: true,
@@ -2533,7 +2592,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       if (result?.reexeced) return { ok: result.code === 0, code: result.code, reexeced: true, exit: true }
       if (result?.returnToMenu) continue
       return {
-        ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'UPDATED_PARTIAL_VERIFICATION', 'CANCELLED'].includes(result.verdict),
+        ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'UPDATED_PARTIAL_VERIFICATION', 'CANCELLED', 'NO_CHANGE'].includes(result.verdict),
         verdict: result.verdict,
         result,
       }

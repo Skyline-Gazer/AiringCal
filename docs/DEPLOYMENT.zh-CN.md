@@ -102,12 +102,14 @@ AiringCal 原生支持在 Fork 仓库或独立仓库中运行，无需修改任�
    - 当提供本地 S3 凭据（或显式轮换 Token）并通过 25 项线上验收检查时，终端结论为 `READY`。
 4. **自助更新入口（`pnpm run setup` → Update）**：
    - 主菜单将 **Install**、**Update**、**Recover** 分开；显式选择与探测到的目标环境状态不一致时会拒绝执行（`WIZARD_OPERATION_MISMATCH`），Update 不会静默创建资源，Install 也不会重新部署已有存储桶。
-   - 在收集任何凭据或改动远端之前，Update 先打印四项事实：本地工作区版本、最新正式发布版本、现有 Writer `RELEASE_REF`、线上 Reader `/api/version` 的 `package`，然后按计划执行：
-     - `upgrade`（要求干净工作区）：把工作区切换到发布 Tag、核对 SHA、执行 `pnpm install --frozen-lockfile` 安装锁定工具链，并在该版本代码上重启向导后再执行更新；
-     - `redeploy`：工作区已在发布版本，仅执行既有更新契约；
-     - `current`：幂等复核；
-     - `blocked`：打印明确原因（未提交改动、本地 HEAD 新于最新发布、Node.js 低于 `engines.node`），不做任何改动。
-   - 回滚：`git switch --detach <旧 HEAD>`（向导会打印），然后 `pnpm install && pnpm run setup`。
+   - 在收集任何凭据或改动远端之前，Update 先打印观测到的事实——工作区 `HEAD` 与本地 Tag、最新正式发布版本及其解析出的提交 SHA、现有 Writer `RELEASE_REF` 及其 SHA、线上 Reader `/api/version` 的 `package`——再按计划执行：
+     - `upgrade`（要求干净工作区）：在发布源仓库把 Tag 解析为提交（GitHub Fork 使用其父仓库的发布），读取该提交的 `package.json`，强制校验 `engines.node`（不满足时以 `UPDATE_NODE_TOO_OLD` 阻止），并在 `packageManager` 不匹配时告警（`UPDATE_PNPM_MISMATCH`，打印确切的 `corepack prepare` 命令）；仅当本地不存在冲突 Tag 时才拉取（`UPDATE_TAG_CONFLICT` 绝不强制覆盖），随后切换到已核对的提交、执行 `pnpm install --frozen-lockfile`，并在该版本代码上重启向导后再执行更新；
+     - `redeploy`：工作区已在发布提交，仅执行既有更新契约。`development` 没有正式发布，同样以当前工作区提交重新部署；
+     - `current`：工作区 `HEAD`、Writer `RELEASE_REF` 与 Reader `package` 均与发布提交一致；不做任何改动，结果为 `NO_CHANGE`；
+     - `verify`：无法确认发布状态（未设置 `RELEASE_REF`、Writer Ref 不可读、Reader 不可达或版本不同），执行更新契约但不宣称幂等成功；
+     - `blocked`：打印明确原因（未提交改动、git 状态不可读、本地 `HEAD` 领先或分叉于发布、Node.js 低于 `engines.node`、发布源不可读），并在改动任何内容前停止。
+   - 一致性的判定基于提交而非版本号：本地 Tag 名称与发布相同但提交不同时判定为 `UPDATE_UNTAGGED_DIVERGED`，绝不会判为 `current`。
+   - 回滚：`git switch --detach <旧 HEAD>`（向导会打印），然后执行 `pnpm install --frozen-lockfile && pnpm run setup`。
 
 ### C. 中断尝试恢复 (`recover`)
 
@@ -165,6 +167,7 @@ AIRINGCAL_PRODUCTION_RELEASE_SHA=<40-char-hex-approved-release-commit-sha>
 
 # 可选：更新现有已初始化部署时设置为 "update"
 # AIRINGCAL_OPERATION=update
+# （向导通过 `--operation update` 或菜单选择 Update，其余状态由观测结果推导）
 
 # 可选：自定义域名（使用默认 workers.dev 时无需配置）
 # AIRINGCAL_PUBLIC_BASE_URL=https://anime.example.com

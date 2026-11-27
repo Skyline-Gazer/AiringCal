@@ -10,10 +10,10 @@
  */
 
 export class WizardAbort extends Error {
-  constructor(message) {
+  constructor(message, code = 'WIZARD_ABORT') {
     super(message)
     this.name = 'WizardAbort'
-    this.code = 'WIZARD_ABORT'
+    this.code = code
   }
 }
 

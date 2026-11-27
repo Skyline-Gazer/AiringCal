@@ -123,7 +123,7 @@ git status --porcelain   # 必须为空；工作区有未提交改动时 Update 
 pnpm run setup           # 选择 Update
 ```
 
-Update 是幂等的，绝不删除桶内对象、快照、Checkpoint、图片或 S3 密钥。它会在收集任何凭据之前报告四项事实（`Workspace`、`Target`、`Deployed`、`Reader`）；工作区落后于发布版本时，先把工作区切换到该 Tag、安装锁定的工具链、在版本代码上重启向导，再执行既有更新契约（已初始化的安装不会被强制触发首次全量同步）。回滚：`git switch --detach <旧 HEAD>`（向导会打印），然后执行 `pnpm install && pnpm run setup`。无头模式：`pnpm run setup -- --operation update --environment production`。
+Update 是幂等的，绝不删除桶内对象、快照、Checkpoint、图片或 S3 密钥。它会在收集任何凭据之前报告观测到的事实（`Workspace`、`Target`、`Deployed`、`Reader`），以提交 SHA 而非版本号判断一致性，然后：把干净工作区升级到发布提交（在发布源仓库解析 Tag、读取该提交的 Node/pnpm 要求、拒绝 Tag 冲突，并以 `pnpm install --frozen-lockfile` 安装）、在新版本代码上重启向导、执行既有更新契约且不对已初始化的安装强制同步。工作区有未提交改动、本地 `HEAD` 领先或分叉于发布、发布源不可读、或 Node 低于 `engines.node` 时，Update 会给出确切原因并停止。`development` 没有正式发布，会以当前提交重新部署。回滚：`git switch --detach <旧 HEAD>`（向导会打印），然后执行 `pnpm install --frozen-lockfile && pnpm run setup`。无头模式：`pnpm run setup -- --operation update --environment production`。
 
 ---
 

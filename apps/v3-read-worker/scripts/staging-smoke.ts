@@ -48,8 +48,12 @@ function log(stage: string, extra: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ status: 'info', stage, ...extra }))
 }
 
+// Spawn the installed binary directly: `pnpm exec` adds nested processes that only
+// complicate teardown of the long-running dev server below.
+const WRANGLER_BIN = join(REPO_ROOT, 'node_modules', '.bin', process.platform === 'win32' ? 'wrangler.cmd' : 'wrangler')
+
 function wrangler(args: string[], stdio: 'inherit' | 'pipe' = 'pipe') {
-  return spawnSync('pnpm', ['exec', 'wrangler', ...args], { cwd: REPO_ROOT, encoding: 'utf8', stdio })
+  return spawnSync(WRANGLER_BIN, args, { cwd: REPO_ROOT, encoding: 'utf8', stdio })
 }
 
 async function publishFixture(): Promise<void> {
@@ -94,7 +98,7 @@ function listFiles(root: string): string[] {
 function killWorker(child: ChildProcess, signal: NodeJS.Signals): void {
   if (process.platform !== 'win32' && child.pid) {
     try {
-      // pnpm 12 runs wrangler through nested pnpm processes; signal the whole group.
+      // wrangler dev supervises workerd; signal the group so neither outlives the smoke run.
       process.kill(-child.pid, signal)
       return
     } catch {
@@ -190,9 +194,9 @@ async function run(): Promise<void> {
   seedBucket()
 
   const child = spawn(
-    'pnpm',
+    WRANGLER_BIN,
     [
-      'exec', 'wrangler', 'dev', '--config', CONFIG, '-l', '--port', String(PORT),
+      'dev', '--config', CONFIG, '-l', '--port', String(PORT),
       '--persist-to', stateDir, '--log-level', 'warn',
       '--var', `PACKAGE_VERSION:${PACKAGE_VERSION}`,
       '--var', `BANGUMI_GIT_COMMIT_SHA:${BUILD_SHA}`,
