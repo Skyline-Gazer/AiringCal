@@ -163,20 +163,34 @@ function etagForCollection(loaded: VerifiedPublicSnapshot, nsfw: NsfwFilter): st
   return nsfw === 'hide' ? `"g${loaded.generation}-${loaded.content_hash}-nsfw-hide"` : releaseEtag(loaded)
 }
 
+function summarize(collections: PublicSnapshotV1['collections']): PublicSnapshotV1['summary'] {
+  const counts = {
+    want: collections.want.length,
+    watched: collections.watched.length,
+    watching: collections.watching.length,
+    on_hold: collections.on_hold.length,
+    dropped: collections.dropped.length,
+  }
+  return { ...counts, _total: Object.values(counts).reduce((total, count) => total + count, 0) }
+}
+
 async function handleCollections(url: URL, snapshot: PublicSnapshotV1, nsfw: NsfwFilter): Promise<Response> {
   const type = parseCollectionType(singleQueryParameter(url.searchParams, 'type'))
   const page = parsePositiveInteger('page', singleQueryParameter(url.searchParams, 'page'), 1)
   const limit = parsePositiveInteger('limit', singleQueryParameter(url.searchParams, 'limit'), 24, 100)
-  const data = nsfw === 'hide'
-    ? snapshot.collections[type].filter((item) => !item.nsfw)
-    : snapshot.collections[type]
+  const collections = nsfw === 'hide'
+    ? Object.fromEntries(
+      COLLECTION_TYPES.map((key) => [key, snapshot.collections[key].filter((item) => !item.nsfw)]),
+    ) as PublicSnapshotV1['collections']
+    : snapshot.collections
+  const data = collections[type]
   const start = (page - 1) * limit
   return json({
     data: data.slice(start, start + limit),
     total: data.length,
     page,
     limit,
-    types: { ...snapshot.summary },
+    types: summarize(collections),
   }, { headers: { 'Cache-Control': V2_CACHE_CONTROL.collections } })
 }
 
