@@ -62,8 +62,16 @@ test('nsfw=hide filters before totals and pagination', async () => {
     env(store),
   )
   assert.equal(response.status, 200)
-  const body = await response.json() as { data: Array<{ subject_id: number; nsfw: boolean }>; total: number; page: number; limit: number }
+  const body = await response.json() as {
+    data: Array<{ subject_id: number; nsfw: boolean }>
+    total: number
+    page: number
+    limit: number
+    types: { _total: number; watching: number }
+  }
   assert.equal(body.total, 3)
+  assert.equal(body.types._total, 3)
+  assert.equal(body.types.watching, 3)
   assert.equal(body.page, 2)
   assert.equal(body.limit, 2)
   assert.deepEqual(body.data.map((entry) => entry.subject_id), [5])

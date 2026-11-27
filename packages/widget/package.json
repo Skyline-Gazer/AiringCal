@@ -10,7 +10,7 @@
   "scripts": {
     "generate": "node ../../scripts/generate-widget-assets.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test"
+    "test": "node ../../scripts/generate-widget-assets.mjs && tsx --test && git diff --exit-code -- src/generated-assets.ts"
   },
   "devDependencies": {
     "@types/node": "^26.4.0",

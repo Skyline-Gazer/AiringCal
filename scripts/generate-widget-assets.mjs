@@ -29,8 +29,9 @@ const contentHash = createHash('sha256').update(js).update('\0').update(css).dig
 let previous = null
 try {
   const existing = await readFile(generatedPath, 'utf8')
-  const match = existing.match(/"contentHash":\s*"([0-9a-f]{64})",\s*"builtAt":\s*"([^"]+)"/)
-  if (match) previous = { contentHash: match[1], builtAt: match[2] }
+  const contentHash = existing.match(/"contentHash":\s*"([0-9a-f]{64})"/)?.[1]
+  const builtAt = existing.match(/"builtAt":\s*"([^"]+)"/)?.[1]
+  if (contentHash && builtAt) previous = { contentHash, builtAt }
 } catch {
   // first generation
 }
