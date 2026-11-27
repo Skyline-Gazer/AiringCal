@@ -28,6 +28,7 @@ import {
   redactSecrets,
   resolveDeployDotenvPath,
   resolveTargetRepository,
+  resolveVerifiedGitCommit,
   runDevelopmentApply,
   runProductionApply,
 } from './deploy-env-lib.mjs'
@@ -354,9 +355,120 @@ const ENGINE_INPUT_KEYS = Object.freeze([
   'AIRINGCAL_REPOSITORY_OVERRIDE_CONFIRM',
   'AIRINGCAL_ALLOW_IDENTITY_CHANGE',
   'AIRINGCAL_ALLOW_DOMAIN_CHANGE',
+  'AIRINGCAL_ALLOW_RELEASE_CHANGE',
   'AIRINGCAL_PRODUCTION_RELEASE_SHA',
   'AIRINGCAL_PRODUCTION_RELEASE_REF',
 ])
+
+/**
+ * Discover an eligible Production release candidate for interactive review.
+ * Discovery NEVER approves a release by itself:
+ * - If explicit `AIRINGCAL_PRODUCTION_RELEASE_SHA` is supplied in `env`, reports that explicit candidate.
+ * - If an existing `AIRINGCAL_PRODUCTION_RELEASE_SHA` is configured in the remote `production` GitHub Environment,
+ *   preserves that existing approved release identity unless an explicit change is requested.
+ * - Otherwise, queries the latest published GitHub Release (`repos/<repo>/releases/latest`) or local `v*` release tag
+ *   and resolves its commit SHA so the operator can inspect and explicitly confirm it during interactive review.
+ */
+export function discoverProductionReleaseCandidate({
+  env = {},
+  partialState = null,
+  repo = null,
+  spawnSyncImpl = spawnSync,
+} = {}) {
+  const explicitSha = String(env.AIRINGCAL_PRODUCTION_RELEASE_SHA ?? '').trim().toLowerCase()
+  const explicitRef = String(env.AIRINGCAL_PRODUCTION_RELEASE_REF ?? '').trim()
+  const existingSha = String(partialState?.githubEnvVariables?.AIRINGCAL_PRODUCTION_RELEASE_SHA ?? '').trim().toLowerCase()
+  const existingRef = String(partialState?.githubEnvVariables?.AIRINGCAL_PRODUCTION_RELEASE_REF ?? '').trim()
+  const allowChange = String(env.AIRINGCAL_ALLOW_RELEASE_CHANGE ?? '').trim().toLowerCase() === 'yes'
+
+  if (explicitSha || explicitRef) {
+    let resolvedSha = explicitSha
+    if (!resolvedSha && explicitRef) {
+      resolvedSha = resolveVerifiedGitCommit({
+        refOrSha: explicitRef,
+        repo,
+        spawnSyncImpl,
+        env,
+      }) || ''
+    }
+    const validSha = /^[0-9a-f]{40}$/.test(resolvedSha)
+    const changesExisting = Boolean(
+      validSha &&
+      existingSha &&
+      (existingSha !== resolvedSha || (explicitRef && existingRef && existingRef !== explicitRef)),
+    )
+    return {
+      releaseSha: validSha ? resolvedSha : null,
+      releaseRef: explicitRef || null,
+      source: validSha ? 'explicit-env' : 'invalid-explicit-env',
+      invalidExplicitSha: !validSha ? (explicitSha || explicitRef) : null,
+      changesExisting,
+      allowChange,
+    }
+  }
+  if (existingSha && /^[0-9a-f]{40}$/.test(existingSha)) {
+    return {
+      releaseSha: existingSha,
+      releaseRef: existingRef || null,
+      source: 'existing-environment',
+      changesExisting: false,
+      allowChange: false,
+    }
+  }
+  const tryResolveTagCandidate = (tag) => {
+    const trimmed = String(tag ?? '').trim()
+    if (!trimmed || trimmed.startsWith('{') || /-dev$/i.test(trimmed)) return null
+    const resolved = resolveVerifiedGitCommit({
+      refOrSha: trimmed,
+      repo,
+      spawnSyncImpl,
+      env,
+    })
+    if (resolved && /^[0-9a-f]{40}$/.test(resolved)) {
+      return {
+        releaseSha: resolved,
+        releaseRef: trimmed,
+        source: 'published-release-tag',
+        changesExisting: false,
+        allowChange: false,
+      }
+    }
+    return null
+  }
+  if (repo) {
+    const latestRes = spawnSyncImpl('gh', ['api', `repos/${repo}/releases/latest`, '--jq', '.tag_name'], {
+      encoding: 'utf8',
+      cwd: ROOT,
+    })
+    const ghTag = latestRes?.status === 0 ? String(latestRes.stdout ?? '').trim() : ''
+    const fromGhRelease = tryResolveTagCandidate(ghTag)
+    if (fromGhRelease) return fromGhRelease
+  }
+  const exactTagRes = spawnSyncImpl('git', ['describe', '--tags', '--exact-match', '--match', 'v[0-9]*'], {
+    encoding: 'utf8',
+    cwd: ROOT,
+  })
+  const exactTag = exactTagRes?.status === 0 ? String(exactTagRes.stdout ?? '').trim() : ''
+  if (exactTag && !/^[0-9a-f]{40}$/i.test(exactTag)) {
+    const fromExact = tryResolveTagCandidate(exactTag)
+    if (fromExact) return fromExact
+  }
+  const tagListRes = spawnSyncImpl('git', ['tag', '-l', 'v[0-9]*', '--sort=-version:refname'], {
+    encoding: 'utf8',
+    cwd: ROOT,
+  })
+  if (tagListRes?.status === 0) {
+    const tags = String(tagListRes.stdout ?? '')
+      .split(/\r?\n/)
+      .map((t) => t.trim())
+      .filter((t) => t && !/^[0-9a-f]{40}$/i.test(t) && !/-dev$/i.test(t))
+    for (const tag of tags) {
+      const fromLocalTag = tryResolveTagCandidate(tag)
+      if (fromLocalTag) return fromLocalTag
+    }
+  }
+  return null
+}
 
 /**
  * Assemble the env handed to the apply runners. Interactive confirmation is
@@ -371,6 +483,7 @@ export function resolveApplyEnvironment({
   wizardEnv,
   sourceEnv = {},
   bucketAdoptionAuthorized = false,
+  approvedReleaseCandidate = null,
 }) {
   if (!approved) throw new Error('Apply is not authorized')
   const applyEnv = { ...wizardEnv }
@@ -386,6 +499,11 @@ export function resolveApplyEnvironment({
           'Headless production apply requires AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED=yes and AIRINGCAL_DEPLOY_LIVE_CONFIRM=yes ' +
           'in the environment (.env.production or shell); the wizard never synthesizes them non-interactively',
         )
+      }
+    } else if (approvedReleaseCandidate?.releaseSha && !applyEnv.AIRINGCAL_PRODUCTION_RELEASE_SHA) {
+      applyEnv.AIRINGCAL_PRODUCTION_RELEASE_SHA = approvedReleaseCandidate.releaseSha
+      if (approvedReleaseCandidate.releaseRef && !applyEnv.AIRINGCAL_PRODUCTION_RELEASE_REF) {
+        applyEnv.AIRINGCAL_PRODUCTION_RELEASE_REF = approvedReleaseCandidate.releaseRef
       }
     }
     applyEnv.AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED = 'yes'
@@ -1013,7 +1131,10 @@ export async function discoverPartialState({
 
   if (githubEnvironmentExists === true) {
     const prefix = environment === 'production' ? 'AIRINGCAL_PRODUCTION_' : 'AIRINGCAL_DEVELOPMENT_'
-    for (const suffix of ['R2_BUCKET', 'CLOUDFLARE_ACCOUNT_ID', 'PRIMARY_USER_ID', 'PUBLIC_BASE_URL']) {
+    const suffixes = environment === 'production'
+      ? ['R2_BUCKET', 'CLOUDFLARE_ACCOUNT_ID', 'PRIMARY_USER_ID', 'PUBLIC_BASE_URL', 'RELEASE_SHA', 'RELEASE_REF']
+      : ['R2_BUCKET', 'CLOUDFLARE_ACCOUNT_ID', 'PRIMARY_USER_ID', 'PUBLIC_BASE_URL']
+    for (const suffix of suffixes) {
       const key = `${prefix}${suffix}`
       const readRes = readRemoteVariable(`repos/${resolvedRepo}/environments/${environment}/variables/${key}`, spawnSyncImpl)
       if (readRes.kind === 'ok' && readRes.value) {
@@ -1320,6 +1441,7 @@ function renderReview(ui, {
   plan,
   partialState = null,
   bucketAdoptionAuthorized = false,
+  releaseCandidate = null,
 }) {
   const v = (id) => validation?.checks.find((entry) => entry.id === id)?.state ?? 'NOT_VERIFIED'
   const bucketExists = Boolean(partialState?.targetBucket?.exists)
@@ -1330,6 +1452,13 @@ function renderReview(ui, {
             ? 'existing bucket matched to prior local inventory (emptiness will be verified)'
             : 'existing bucket detected (requires explicit adoption confirmation)'))
     : 'new private bucket (empty-bucket verified)'
+  const releaseLine = environment === 'production'
+    ? (releaseCandidate?.source === 'invalid-explicit-env'
+        ? `  Production Release: INVALID EXPLICIT CONFIG (${releaseCandidate.invalidExplicitSha ?? 'malformed'} — must be a 40-char hex commit SHA or verifiable release tag)`
+        : releaseCandidate?.releaseSha
+          ? `  Production Release: ${releaseCandidate.releaseRef ? `${releaseCandidate.releaseRef} @ ` : ''}${releaseCandidate.releaseSha} (${releaseCandidate.source === 'existing-environment' ? 'preserved from production environment' : releaseCandidate.source === 'explicit-env' ? 'explicitly configured' : 'discovered published release — confirmed upon install'})`
+          : '  Production Release: NOT CONFIGURED (set AIRINGCAL_PRODUCTION_RELEASE_SHA or publish a release tag)')
+    : null
   const lines = [
     `Installation: ${bucketExists ? 'Resume / Update (existing bucket preserved; emptiness verified)' : 'New Installation (owned resources are reused)'}`,
     `Environment: ${environment === 'production' ? 'Production' : 'Development'}`,
@@ -1357,6 +1486,7 @@ function renderReview(ui, {
     'Data Synchronization:',
     '  Full personal anime progress (collections + episode states) via GitHub Actions',
     `  GitHub Environment: ${plan?.env ?? environment}`,
+    ...(releaseLine ? [releaseLine] : []),
     '  First Full Sync: separate explicit authorization',
   ]
   if (partialState?.priorInventory?.deployment?.verdict === 'DEPLOY_FAILED') {
@@ -1444,6 +1574,7 @@ async function installFlow({
   }
 
   let approved = false
+  let approvedReleaseCandidate = null
   let applyEnv = null
   let executionPlan = null
   let dry = null
@@ -1555,6 +1686,15 @@ async function installFlow({
         })
       }
 
+      const releaseCandidate = environment === 'production'
+        ? discoverProductionReleaseCandidate({
+            env: resolvedEnv,
+            partialState,
+            repo: dry.plan.repository,
+            spawnSyncImpl,
+          })
+        : null
+
       if (!headless) {
         const isUpdateMode = dry.plan.operation === 'update'
         if (environment === 'production' && partialState?.targetBucket?.exists && !bucketAdoptionAuthorized && !isUpdateMode) {
@@ -1593,6 +1733,7 @@ async function installFlow({
           plan: dry.plan,
           partialState,
           bucketAdoptionAuthorized,
+          releaseCandidate,
         })
         if (String(env.AIRINGCAL_WIZARD_VERBOSE ?? '') === 'yes') ui.note(formatPlan(dry.plan), 'Detailed Execution Plan')
         const action = await ui.select({
@@ -1639,6 +1780,7 @@ async function installFlow({
           ui.cancel('Nothing was applied.')
           return { cancelled: true, reason: 'installation not confirmed' }
         }
+        approvedReleaseCandidate = releaseCandidate
       } else {
         approved = String(resolvedEnv.AIRINGCAL_WIZARD_CONFIRM ?? '') === 'yes'
         if (!approved) {
@@ -1662,6 +1804,7 @@ async function installFlow({
       headless,
       approved,
       bucketAdoptionAuthorized,
+      approvedReleaseCandidate,
       wizardEnv: wizardEnvironment({
         environment,
         cloudflareToken,

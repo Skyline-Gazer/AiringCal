@@ -49,14 +49,30 @@ export function createControlledProviderSimulator({
   accessibleAccountIds = null,
   seedUnrelatedBuckets = true,
   gitSha = 'a'.repeat(40),
+  releaseTag = 'v3.0.0',
+  releaseSha = '42f497cab180cd57eb1d2dc773d6b9979d9428bc',
+  gitRefs = {},
   faults = {},
 } = {}) {
+  const defaultRefs = new Map([
+    [releaseTag, releaseSha],
+    [`refs/tags/${releaseTag}`, releaseSha],
+    ['main', releaseSha],
+    ['refs/heads/main', releaseSha],
+    ['HEAD', gitSha],
+    ['dev', gitSha],
+    ['refs/heads/dev', gitSha],
+    ...Object.entries(gitRefs),
+  ])
   const state = {
     accounts: new Map(),
     managementTokens: new Map(),
     mintedTokens: new Map(),
     deletedTokens: [],
     operatorS3Overrides: new Map(),
+    gitRefs: defaultRefs,
+    releaseTag,
+    releaseSha,
     github: {
       environments: new Map(),
       workflows: new Map([['portable-writer.yml', { id: 407881922, state: 'disabled_manually' }]]),
@@ -478,6 +494,16 @@ export function createControlledProviderSimulator({
       if (args.includes('--abbrev-ref')) {
         return { status: 0, stdout: `${state.faults.gitCurrentBranch ?? 'dev'}\n`, stderr: '', error: null }
       }
+      if (args.includes('--verify')) {
+        const rawTarget = String(args[args.indexOf('--verify') + 1] ?? '').replace(/\^\{commit\}$/, '')
+        if (state.gitRefs.has(rawTarget)) {
+          return { status: 0, stdout: `${state.gitRefs.get(rawTarget)}\n`, stderr: '', error: null }
+        }
+        if (/^[0-9a-f]{40}$/i.test(rawTarget)) {
+          return { status: 0, stdout: `${rawTarget.toLowerCase()}\n`, stderr: '', error: null }
+        }
+        return { status: 128, stdout: '', stderr: `fatal: Needed a single revision (${rawTarget})`, error: null }
+      }
       return { status: 0, stdout: `${gitSha}\n`, stderr: '', error: null }
     }
     if (cmd === 'git' && args[0] === 'remote' && args[1] === 'get-url' && args[2] === 'origin') {
@@ -692,6 +718,51 @@ export function createControlledProviderSimulator({
             ? { status: 0, stdout: JSON.stringify(wf), stderr: '', error: null }
             : { status: 1, stdout: '', stderr: 'Not Found', error: null }
         }
+        const releaseLatestMatch = endpoint.match(/\/releases\/latest$/)
+        if (releaseLatestMatch && method === 'GET') {
+          if (state.faults.ghReleaseMissing || !state.releaseTag) {
+            return { status: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)', error: null }
+          }
+          const jqIdx = args.indexOf('--jq')
+          const jq = jqIdx >= 0 ? args[jqIdx + 1] : ''
+          return {
+            status: 0,
+            stdout: jq === '.tag_name'
+              ? `${state.releaseTag}\n`
+              : JSON.stringify({ tag_name: state.releaseTag, target_commitish: 'main' }),
+            stderr: '',
+            error: null,
+          }
+        }
+        const commitMatch = endpoint.match(/\/commits\/(.+)$/)
+        if (commitMatch && method === 'GET') {
+          const ref = decodeURIComponent(commitMatch[1])
+          const resolved = state.gitRefs.get(ref) ?? (/^[0-9a-f]{40}$/i.test(ref) ? ref.toLowerCase() : null)
+          if (!resolved) {
+            return { status: 1, stdout: '', stderr: 'gh: Not Found (HTTP 422)', error: null }
+          }
+          const jqIdx = args.indexOf('--jq')
+          const jq = jqIdx >= 0 ? args[jqIdx + 1] : ''
+          return {
+            status: 0,
+            stdout: jq === '.sha' ? `${resolved}\n` : JSON.stringify({ sha: resolved }),
+            stderr: '',
+            error: null,
+          }
+        }
+      }
+      if (args[0] === 'variable' && args[1] === 'delete') {
+        const varName = args[2]
+        const envIdx = args.indexOf('--env')
+        const envName = envIdx >= 0 ? args[envIdx + 1] : null
+        if (state.faults.ghVarDeleteFailAt && varName === state.faults.ghVarDeleteFailAt) {
+          return { status: 1, stdout: '', stderr: `gh variable delete ${varName} failed (500)`, error: null }
+        }
+        if (envName) {
+          const envObj = state.github.environments.get(envName)
+          envObj?.variables.delete(varName)
+        }
+        return { status: 0, stdout: '', stderr: '', error: null }
       }
       if (args[0] === 'variable' && args[1] === 'set') {
         const varName = args[2]

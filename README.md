@@ -192,9 +192,10 @@ By default, `pnpm run setup` leaves the recurring schedule gate **disabled** so 
 
 Once your First Full Sync is verified:
 
-1. Verify that your `production` GitHub Environment records the approved 40-character release commit SHA in `AIRINGCAL_PRODUCTION_RELEASE_SHA` (synced automatically by `pnpm run setup`; optionally pin an immutable tag/ref in `AIRINGCAL_PRODUCTION_RELEASE_REF`, e.g. `v3.0.0`):
+1. Verify that your `production` GitHub Environment records the explicitly approved 40-character release commit SHA in `AIRINGCAL_PRODUCTION_RELEASE_SHA` (and optional immutable release tag `AIRINGCAL_PRODUCTION_RELEASE_REF`, e.g. `v3.0.0`, which must resolve to that exact commit SHA; never use an arbitrary unreviewed `dev` HEAD):
    ```bash
-   gh variable set AIRINGCAL_PRODUCTION_RELEASE_SHA --env production --repo <owner>/<repo> --body "$(git rev-parse HEAD)"
+   gh variable set AIRINGCAL_PRODUCTION_RELEASE_SHA --env production --repo <owner>/<repo> --body "$(git rev-parse v3.0.0^{commit})"
+   gh variable set AIRINGCAL_PRODUCTION_RELEASE_REF --env production --repo <owner>/<repo> --body "v3.0.0"
    ```
 2. Keep the manual bootstrap gate `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED` set to `false` at rest (it gates manual `workflow_dispatch` runs only and must **never** be left `true` permanently for scheduled runs).
 3. Enable the repository-level schedule gate variable and ensure `portable-writer.yml` is active:
@@ -203,13 +204,17 @@ Once your First Full Sync is verified:
    gh workflow enable portable-writer.yml --repo <owner>/<repo>
    ```
 
-> **Note on GitHub Actions Schedule & Default Branch Governance**: GitHub Actions parses scheduled workflow YAML definitions from your repository's default branch. While the `production` job pins and verifies the checked-out executable source tree against `AIRINGCAL_PRODUCTION_RELEASE_SHA` before installing dependencies, building, or running the Writer, we recommend either setting `main` as your fork's default branch or configuring a GitHub Environment `production` deployment branch/tag policy (`v*` / `main`) before enabling unattended scheduled runs.
+> **Note on GitHub Actions Schedule, Default Branch & Environment Policy Mechanics**:
+> - GitHub Actions `schedule` triggers always parse and execute the workflow YAML definition from the repository's **default branch** (`refs/heads/<default_branch>`).
+> - Within that run, the `production` job pins and verifies the checked-out executable source tree (`pnpm install`, bundle build, `scripts/gha-portable-writer.sh`, and `BANGUMI_GIT_COMMIT_SHA`) against `AIRINGCAL_PRODUCTION_RELEASE_SHA`.
+> - GitHub Environment `production` deployment branch/tag protection rules enforce which branches/tags may access the `production` environment; they do **not** redirect a `schedule` trigger to another branch. Therefore, setting `main` as default branch and configuring a `production` Environment branch/tag policy are **not** interchangeable alternatives: if your repository's default branch remains `dev` while the `production` Environment policy rejects `dev` (allowing only `main` or `v*`), scheduled Production runs will be **blocked** by GitHub Actions rather than redirected to `main`.
+> - Conversely, switching the repository default branch to `main` *before* the hardened `.github/workflows/portable-writer.yml` definition has been formally released to `main` would run the older `main` workflow definition. Required reviewer policies on the `production` Environment also pause unattended scheduled runs awaiting manual approval.
 
 ---
 
 ## Known Limitations & Deferred Scope
 
-- **Cloudflare-Only Reader in `v3.0.0`**: Cloudflare Workers + Private R2 is the sole supported production deployment topology in `v3.0.0`. Additional reader platforms (Tencent EdgeOne Pages/Makers [#210](https://github.com/Skyline-Gazer/AiringCal/issues/210), Vercel [#211](https://github.com/Skyline-Gazer/AiringCal/issues/211), Netlify [#212](https://github.com/Skyline-Gazer/AiringCal/issues/212)) are tracked as post-`v3.0.0` backlog items.
+- **Cloudflare-Only Reader in `v3.0.0`**: Cloudflare Workers + Private R2 is the sole supported production deployment topology in `v3.0.0`. Additional reader platform candidates (Tencent EdgeOne Pages/Makers, Vercel, Netlify) are tracked in [#210](https://github.com/Skyline-Gazer/AiringCal/issues/210); Cloudflare-native and AI-native installation experience research (plus sanitized Public Demo) is tracked in [#211](https://github.com/Skyline-Gazer/AiringCal/issues/211); and installation blog guides are tracked in [#212](https://github.com/Skyline-Gazer/AiringCal/issues/212).
 - **Unreadable GitHub Secrets on Update**: GitHub Actions Environment secrets (`AIRINGCAL_PRODUCTION_S3_*`) are write-only and cannot be read back locally. When updating an existing installation without supplying local `AIRINGCAL_S3_*` credentials, `pnpm run setup` preserves your existing GitHub secrets and verifies your Writer token's active status and bucket-scoped policy via the Cloudflare API, reporting runtime S3 verification as `UPDATED_PARTIAL_VERIFICATION` (`not-verified-github-secret-only`).
 
 ---

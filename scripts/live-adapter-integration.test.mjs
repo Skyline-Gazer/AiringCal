@@ -30,6 +30,7 @@ function makeProdEnv(overrides = {}) {
     AIRINGCAL_PRIMARY_USER_ID: '901234',
     AIRINGCAL_USERS_JSON: '[{"userId":"901234","username":"sim-owner"}]',
     AIRINGCAL_WORKERS_DEV_SUBDOMAIN: 'primary-sim',
+    AIRINGCAL_PRODUCTION_RELEASE_SHA: '42f497cab180cd57eb1d2dc773d6b9979d9428bc',
     AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED: 'yes',
     AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes',
     ...overrides,
@@ -657,6 +658,8 @@ function seedVerifiedExistingInstallation(sim, {
   boundBucket = 'airingcal-production',
   primaryUserId = '901234',
   publicBaseUrl = `https://airingcal-production.primary-sim.workers.dev`,
+  releaseSha = '42f497cab180cd57eb1d2dc773d6b9979d9428bc',
+  releaseRef = 'v3.0.0',
   withRelease = true,
   withS3Secrets = true,
   withScopedToken = true,
@@ -689,6 +692,8 @@ function seedVerifiedExistingInstallation(sim, {
       AIRINGCAL_PRODUCTION_PUBLIC_BASE_URL: publicBaseUrl,
       AIRINGCAL_PRODUCTION_WORKER_NAME: workerName,
       AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED: 'false',
+      ...(releaseSha ? { AIRINGCAL_PRODUCTION_RELEASE_SHA: releaseSha } : {}),
+      ...(releaseRef ? { AIRINGCAL_PRODUCTION_RELEASE_REF: releaseRef } : {}),
     },
     secrets: withS3Secrets
       ? [
@@ -976,4 +981,224 @@ test('Section 5 #16-#20 & Amendment C: Fork-safe repository resolution (all 11 s
     resolveActiveBranch({ repo: 'Fork-User/AiringCal', spawnSyncImpl: simMainBranch.spawnSyncImpl }),
     'main',
   )
+})
+
+// ===========================================================================
+// Fix A1 Mandatory Regression Matrix (12 Scenarios: Explicit Production
+// Release Authorization, Provenance, Update Preservation, Ref/SHA & Pre-Mutation)
+// ===========================================================================
+
+test('Fix A1 #1-#4 & #11: Fresh Production install without explicit AIRINGCAL_PRODUCTION_RELEASE_SHA fails closed before any mutation and never falls back to git HEAD, BANGUMI_GIT_COMMIT_SHA, or plan.gitSha', async () => {
+  const sim = createControlledProviderSimulator({
+    gitSha: '772e9323e28594c9bec43be0cc67eead5f356631', // current dev HEAD
+  })
+  const env = makeProdEnv({
+    AIRINGCAL_PRODUCTION_RELEASE_SHA: '',
+    BANGUMI_GIT_COMMIT_SHA: '772e9323e28594c9bec43be0cc67eead5f356631',
+  })
+  const plan = makeProdPlan({
+    gitSha: '772e9323e28594c9bec43be0cc67eead5f356631',
+  })
+  const io = createSimIo(sim, env, plan)
+
+  const res = await runProductionApply({ plan, env, io })
+  assert.equal(res.ok, false)
+  assert.equal(res.code, 'RELEASE_IDENTITY_REQUIRED')
+  assert.equal(res.errorCategory, 'resource-conflict')
+  assert.deepEqual(res.mutationsExecuted, [], 'zero mutations executed when release authorization is missing')
+  assert.equal(sim.hasBucket(DEFAULT_ACCOUNT_ID, 'airingcal-production'), false, 'R2 bucket must not be created')
+  assert.equal(sim.state.mintedTokens.size, 0, 'Writer token must not be minted')
+  assert.equal(sim.hasGithubEnv('production'), false, 'GitHub Environment must not be created')
+
+  // Direct syncGithubEnvironment call also refuses before PUT repos/<repo>/environments/production
+  await assert.rejects(
+    () => io.syncGithubEnvironment({}),
+    (err) => err.code === 'RELEASE_IDENTITY_REQUIRED',
+  )
+  assert.equal(sim.hasGithubEnv('production'), false, 'syncGithubEnvironment must not PUT environment on invalid release identity')
+})
+
+test('Fix A1 #5 & #6: Valid explicitly authorized release identity (SHA + matching REF) succeeds, while ref/SHA mismatch or mutable dev ref fails closed before mutation', async () => {
+  const releasedSha = '42f497cab180cd57eb1d2dc773d6b9979d9428bc'
+  const otherSha = 'e5b3c98e6b4941a398dd4a0620c2841af2960609'
+
+  // #5: Valid matching SHA + REF
+  const simValid = createControlledProviderSimulator({
+    releaseTag: 'v3.0.0',
+    releaseSha: releasedSha,
+  })
+  const envValid = makeProdEnv({
+    AIRINGCAL_PRODUCTION_RELEASE_SHA: releasedSha,
+    AIRINGCAL_PRODUCTION_RELEASE_REF: 'v3.0.0',
+  })
+  const planValid = makeProdPlan()
+  const resValid = await runProductionApply({
+    plan: planValid,
+    env: envValid,
+    io: createSimIo(simValid, envValid, planValid),
+  })
+  assert.equal(resValid.ok, true, JSON.stringify(resValid))
+  const ghEnv = simValid.getGithubEnv('production')
+  assert.equal(ghEnv.variables.AIRINGCAL_PRODUCTION_RELEASE_SHA, releasedSha)
+  assert.equal(ghEnv.variables.AIRINGCAL_PRODUCTION_RELEASE_REF, 'v3.0.0')
+
+  // #6a: Ref/SHA mismatch (v3.0.0 resolves to releasedSha, but env claims otherSha) -> fails closed before mutation
+  const simMismatch = createControlledProviderSimulator({
+    releaseTag: 'v3.0.0',
+    releaseSha: releasedSha,
+  })
+  const envMismatch = makeProdEnv({
+    AIRINGCAL_PRODUCTION_RELEASE_SHA: otherSha,
+    AIRINGCAL_PRODUCTION_RELEASE_REF: 'v3.0.0',
+  })
+  const resMismatch = await runProductionApply({
+    plan: planValid,
+    env: envMismatch,
+    io: createSimIo(simMismatch, envMismatch, planValid),
+  })
+  assert.equal(resMismatch.ok, false)
+  assert.equal(resMismatch.code, 'RELEASE_REF_SHA_MISMATCH')
+  assert.deepEqual(resMismatch.mutationsExecuted, [])
+  assert.equal(simMismatch.hasBucket(DEFAULT_ACCOUNT_ID, 'airingcal-production'), false)
+  assert.equal(simMismatch.state.mintedTokens.size, 0)
+  assert.equal(simMismatch.hasGithubEnv('production'), false)
+
+  // #6b: Mutable development branch ref ('dev' / 'refs/heads/dev' / 'HEAD') -> fails closed before mutation
+  for (const badRef of ['dev', 'refs/heads/dev', 'HEAD']) {
+    const simBadRef = createControlledProviderSimulator()
+    const envBadRef = makeProdEnv({
+      AIRINGCAL_PRODUCTION_RELEASE_SHA: releasedSha,
+      AIRINGCAL_PRODUCTION_RELEASE_REF: badRef,
+    })
+    const resBadRef = await runProductionApply({
+      plan: planValid,
+      env: envBadRef,
+      io: createSimIo(simBadRef, envBadRef, planValid),
+    })
+    assert.equal(resBadRef.ok, false)
+    assert.equal(resBadRef.code, 'RELEASE_IDENTITY_INVALID')
+    assert.deepEqual(resBadRef.mutationsExecuted, [])
+    assert.equal(simBadRef.hasBucket(DEFAULT_ACCOUNT_ID, 'airingcal-production'), false)
+  }
+})
+
+test('Fix A1 #7-#10: Update preserves existing release identity by default, rejects unapproved release change, and cleans up stale RELEASE_REF on authorized SHA-only upgrade', async () => {
+  const existingSha = '42f497cab180cd57eb1d2dc773d6b9979d9428bc'
+  const newReleaseSha = 'e5b3c98e6b4941a398dd4a0620c2841af2960609'
+  const newerCheckoutHead = '772e9323e28594c9bec43be0cc67eead5f356631'
+
+  // #7: Ordinary update from a newer checkout (where explicit AIRINGCAL_PRODUCTION_RELEASE_SHA is omitted)
+  // preserves existing AIRINGCAL_PRODUCTION_RELEASE_SHA and AIRINGCAL_PRODUCTION_RELEASE_REF from remote environment!
+  const simPreserve = createControlledProviderSimulator({
+    gitSha: newerCheckoutHead,
+  })
+  seedVerifiedExistingInstallation(simPreserve, {
+    releaseSha: existingSha,
+    releaseRef: 'v3.0.0',
+  })
+  const envPreserve = makeProdEnv({
+    AIRINGCAL_OPERATION: 'update',
+    AIRINGCAL_PRODUCTION_RELEASE_SHA: '',
+    BANGUMI_GIT_COMMIT_SHA: newerCheckoutHead,
+  })
+  const planPreserve = makeProdPlan({
+    operation: 'update',
+    gitSha: newerCheckoutHead,
+  })
+  const resPreserve = await runProductionApply({
+    plan: planPreserve,
+    env: envPreserve,
+    io: createSimIo(simPreserve, envPreserve, planPreserve),
+    operation: 'update',
+  })
+  assert.equal(resPreserve.ok, true, JSON.stringify(resPreserve))
+  const ghPreserve = simPreserve.getGithubEnv('production')
+  assert.equal(ghPreserve.variables.AIRINGCAL_PRODUCTION_RELEASE_SHA, existingSha, 'must preserve existing release SHA, not overwrite with checkout HEAD')
+  assert.equal(ghPreserve.variables.AIRINGCAL_PRODUCTION_RELEASE_REF, 'v3.0.0', 'must preserve existing release ref')
+
+  // #8: Unapproved release identity change during update (different SHA without AIRINGCAL_ALLOW_RELEASE_CHANGE=yes) -> fails closed before mutation
+  const simUnauth = createControlledProviderSimulator({
+    gitSha: newerCheckoutHead,
+  })
+  seedVerifiedExistingInstallation(simUnauth, {
+    releaseSha: existingSha,
+    releaseRef: 'v3.0.0',
+  })
+  const envUnauth = makeProdEnv({
+    AIRINGCAL_OPERATION: 'update',
+    AIRINGCAL_PRODUCTION_RELEASE_SHA: newReleaseSha,
+  })
+  const planUnauth = makeProdPlan({ operation: 'update' })
+  const resUnauth = await runProductionApply({
+    plan: planUnauth,
+    env: envUnauth,
+    io: createSimIo(simUnauth, envUnauth, planUnauth),
+    operation: 'update',
+  })
+  assert.equal(resUnauth.ok, false)
+  assert.equal(resUnauth.code, 'RELEASE_CHANGE_UNAUTHORIZED')
+  assert.deepEqual(resUnauth.mutationsExecuted, [], 'zero mutations on unauthorized release identity change')
+  assert.equal(simUnauth.getGithubEnv('production').variables.AIRINGCAL_PRODUCTION_RELEASE_SHA, existingSha)
+  assert.equal(simUnauth.getGithubEnv('production').variables.AIRINGCAL_PRODUCTION_RELEASE_REF, 'v3.0.0')
+
+  // #9 & #10: Explicitly authorized release identity change (AIRINGCAL_ALLOW_RELEASE_CHANGE=yes) with new SHA and NO ref
+  // updates AIRINGCAL_PRODUCTION_RELEASE_SHA and deletes the stale AIRINGCAL_PRODUCTION_RELEASE_REF variable!
+  const simUpgrade = createControlledProviderSimulator({
+    gitSha: newerCheckoutHead,
+  })
+  seedVerifiedExistingInstallation(simUpgrade, {
+    releaseSha: existingSha,
+    releaseRef: 'v3.0.0',
+  })
+  const envUpgrade = makeProdEnv({
+    AIRINGCAL_OPERATION: 'update',
+    AIRINGCAL_PRODUCTION_RELEASE_SHA: newReleaseSha,
+    AIRINGCAL_PRODUCTION_RELEASE_REF: '',
+    AIRINGCAL_ALLOW_RELEASE_CHANGE: 'yes',
+  })
+  const planUpgrade = makeProdPlan({ operation: 'update' })
+  const resUpgrade = await runProductionApply({
+    plan: planUpgrade,
+    env: envUpgrade,
+    io: createSimIo(simUpgrade, envUpgrade, planUpgrade),
+    operation: 'update',
+  })
+  assert.equal(resUpgrade.ok, true, JSON.stringify(resUpgrade))
+  const ghUpgrade = simUpgrade.getGithubEnv('production')
+  assert.equal(ghUpgrade.variables.AIRINGCAL_PRODUCTION_RELEASE_SHA, newReleaseSha)
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(ghUpgrade.variables, 'AIRINGCAL_PRODUCTION_RELEASE_REF'),
+    false,
+    'stale AIRINGCAL_PRODUCTION_RELEASE_REF must be deleted when a new SHA is authorized without a release ref',
+  )
+})
+
+test('Fix A1 #12: Development environment sync does not require or write AIRINGCAL_PRODUCTION_RELEASE_SHA', async () => {
+  const { buildDevelopmentDeployPlan } = await import('./deploy-env-lib.mjs')
+  const calls = []
+  const io = createLiveDevelopmentApplyIo({
+    env: {
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'tok',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: DEFAULT_ACCOUNT_ID,
+      AIRINGCAL_S3_ACCESS_KEY_ID: 'ak',
+      AIRINGCAL_S3_SECRET_ACCESS_KEY: 'sk',
+      AIRINGCAL_BANGUMI_TOKEN: 'bgm',
+      AIRINGCAL_USERS_JSON: '[{"id":1}]',
+      AIRINGCAL_PRIMARY_USER_ID: '1',
+      // Deliberately no AIRINGCAL_PRODUCTION_RELEASE_SHA: Development must not require it.
+    },
+    plan: buildDevelopmentDeployPlan({ target: 'cloudflare', mode: 'apply' }),
+    spawnSyncImpl: (cmd, args) => {
+      calls.push([cmd, ...args].join(' '))
+      return { status: 0, stdout: '{}', stderr: '', error: null }
+    },
+    createObjectStore: () => ({ list: async () => [], head: async () => null, close() {} }),
+  })
+  await io.deriveAndVerifyS3({})
+  const syncRes = await io.syncGithubEnvironment({})
+  assert.equal(syncRes.environment, 'development')
+  const joined = calls.join('\n')
+  assert.match(joined, /variable set AIRINGCAL_DEVELOPMENT_WRITER_ENABLED/)
+  assert.equal(joined.includes('RELEASE_SHA'), false, 'development sync never reads or writes release identity')
+  assert.equal(joined.includes('environments/production'), false)
 })
