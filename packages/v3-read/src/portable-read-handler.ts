@@ -24,6 +24,8 @@ export interface PortableReadEnv {
   publicStore: PublicStore
   nsfwShow?: boolean
   packageVersion?: string
+  /** Built commit (`BANGUMI_GIT_COMMIT_SHA`); `/version` reports it so an updater can prove which source serves. */
+  build?: { commitSha?: string }
   /**
    * Validated public CDN/S3 base URL (C6) used to 302 image requests. Handlers
    * validate `AIRINGCAL_PUBLIC_BASE_URL` once at config time and pass the result
@@ -402,6 +404,7 @@ async function routePortableReadRequest(
         app: 'airingcal',
         read: platform ?? 'portable',
         package: env.packageVersion ?? '0.0.0',
+        ...(env.build?.commitSha ? { build: { commitSha: env.build.commitSha } } : {}),
         ...(platform ? { platform } : {}),
       }, { headers: { 'Cache-Control': V2_CACHE_CONTROL.version } })
     }

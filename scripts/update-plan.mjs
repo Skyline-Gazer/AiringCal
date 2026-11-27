@@ -13,6 +13,7 @@ function git(spawnSyncImpl, args, cwd = ROOT) {
   const res = spawnSyncImpl('git', args, { cwd, encoding: 'utf8' })
   return {
     ok: res?.status === 0,
+    status: typeof res?.status === 'number' ? res.status : null,
     out: String(res?.stdout ?? '').trim(),
     err: String(res?.stderr ?? '').trim(),
   }
@@ -281,16 +282,18 @@ function readEnvironmentVariable({ repository, environment, key, spawnSyncImpl }
 /** Live Reader identity; unreachable is a fact, not "no version". */
 export async function readReaderVersion({ baseUrl, fetchImpl = globalThis.fetch } = {}) {
   const origin = String(baseUrl ?? '').trim().replace(/\/+$/, '')
-  if (!origin) return { reachable: false, version: null, reason: 'No Reader origin is known (PUBLIC_BASE_URL is unset).' }
+  if (!origin) return { reachable: false, version: null, commitSha: null, reason: 'No Reader origin is known (PUBLIC_BASE_URL is unset).' }
   if (typeof fetchImpl !== 'function') return { reachable: false, version: null, reason: 'No fetch implementation is available.' }
   try {
     const res = await fetchImpl(`${origin}/api/version`, { headers: { 'cache-control': 'no-cache' }, redirect: 'manual' })
-    if (Number(res?.status) !== 200) return { reachable: false, version: null, reason: `Reader /api/version returned HTTP ${res?.status}.` }
+    if (Number(res?.status) !== 200) return { reachable: false, version: null, commitSha: null, reason: `Reader /api/version returned HTTP ${res?.status}.` }
     const body = await res.json().catch(() => null)
     const version = typeof body?.package === 'string' && body.package !== '0.0.0' ? body.package : null
-    return { reachable: true, version, reason: version ? null : 'Reader reports no package version.' }
+    const reported = String(body?.build?.commitSha ?? '').trim().toLowerCase()
+    const commitSha = HEX_40_RE.test(reported) ? reported : null
+    return { reachable: true, version, commitSha, reason: version ? null : 'Reader reports no package version.' }
   } catch (error) {
-    return { reachable: false, version: null, reason: `Reader /api/version unreachable: ${error?.message ?? String(error)}` }
+    return { reachable: false, version: null, commitSha: null, reason: `Reader /api/version unreachable: ${error?.message ?? String(error)}` }
   }
 }
 
@@ -354,6 +357,20 @@ export function planUpdate({
 
   if (!headSha) return unknown('UPDATE_WORKSPACE_UNKNOWN', 'Cannot read the workspace HEAD commit.')
 
+  // A recorded identity that cannot be validated never counts as agreement.
+  if (writer?.invalid === true) {
+    return unknown(
+      'UPDATE_DEPLOYMENT_UNVERIFIED',
+      String(writer?.reason ?? 'The Writer release identity is recorded but cannot be validated; deployment state is unknown.'),
+    )
+  }
+  if (writer?.conflict === true) {
+    return blocked(
+      'UPDATE_DEPLOYMENT_CONFLICT',
+      String(writer?.reason ?? `The Writer records two different commits; refusing to assume it deployed ${targetTag}.`),
+    )
+  }
+
   const atTarget = headSha === targetSha
   if (!atTarget) {
     const dirtyMessage = `Workspace ${localLabel} (${headSha.slice(0, 12)}) differs from ${targetTag} (${targetSha.slice(0, 12)}); uncommitted changes would be lost.`
@@ -392,46 +409,47 @@ export function planUpdate({
 
   const writerRef = String(writer?.ref ?? '').trim() || null
   const writerSha = String(writer?.sha ?? '').toLowerCase() || null
+  const writerResolved = writerSha !== null && HEX_40_RE.test(writerSha)
   const readerReachable = reader?.reachable === true
   const readerVersion = reader?.version ? String(reader.version) : null
-  const readerMatches = readerReachable && readerVersion !== null && compareVersions(readerVersion, targetTag) === 0
+  const readerCommit = String(reader?.commitSha ?? '').toLowerCase() || null
+  const readerAtTarget = readerReachable && readerCommit !== null && readerCommit === targetSha
   const readerNote = readerReachable
-    ? (readerVersion ? `Reader reports ${readerVersion}.` : 'Reader reports no package version.')
+    ? [
+        readerVersion ? `Reader reports ${readerVersion}.` : 'Reader reports no package version.',
+        readerCommit ? `Reader build commit ${readerCommit.slice(0, 12)}.` : 'Reader reports no build commit.',
+      ].join(' ')
     : `Reader is unreachable (${reader?.reason ?? 'unknown reason'}).`
 
-  if (writerRef) {
-    const writerCmp = compareVersions(writerRef, targetTag)
-    if (writerCmp === null && writerSha === null) {
-      return unknown('UPDATE_DEPLOYMENT_UNVERIFIED', `Writer RELEASE_REF is "${writerRef}" and cannot be resolved to a commit; deployment state is unknown.`)
+
+  if (writerRef || writerSha) {
+    const writerCmp = writerRef ? compareVersions(writerRef, targetTag) : null
+    if (!writerResolved) {
+      return unknown(
+        'UPDATE_DEPLOYMENT_UNVERIFIED',
+        `The Writer release identity (${writerRef ?? 'no RELEASE_REF'}${writerSha ? ` / ${writerSha}` : ''}) is not a resolvable 40-character commit; deployment state is unknown.`,
+      )
     }
     if (writerCmp !== null && writerCmp > 0) {
-      return blocked('UPDATE_DEPLOYED_AHEAD', `The Writer published ${writerRef}, which is newer than ${targetTag}; refusing to downgrade the deployment.`)
+      return blocked('UPDATE_DEPLOYED_AHEAD', `The Writer recorded ${writerRef}, which is newer than ${targetTag}; refusing to downgrade the deployment.`)
     }
-    if (writerSha && HEX_40_RE.test(writerSha) && writerSha !== targetSha && writerCmp === 0) {
-      return blocked('UPDATE_DEPLOYMENT_CONFLICT', `Writer RELEASE_REF ${writerRef} resolves to ${writerSha.slice(0, 12)}, not the published commit ${targetSha.slice(0, 12)}.`)
+    if (writerCmp === 0 && writerSha !== targetSha) {
+      return blocked(
+        'UPDATE_DEPLOYMENT_CONFLICT',
+        `The Writer recorded ${writerRef} (${writerSha.slice(0, 12)}), not the published commit ${targetSha.slice(0, 12)}.`,
+      )
     }
   }
 
-  const writerAtTarget = Boolean(writerRef) && (writerSha ? writerSha === targetSha : writerRef === targetTag)
+  const writerAtTarget = writerResolved && writerSha === targetSha
   if (!writerAtTarget) {
-    if (!writerRef && readerMatches) {
+    if (!writerRef && !writerSha) {
       return {
         action: 'verify',
         code: 'UPDATE_DEPLOYMENT_UNVERIFIED',
         target: { tag: targetTag, sha: targetSha },
         reasons: [
-          'The workspace is at the published release, but no Writer RELEASE_REF exists to prove which release was deployed.',
-          `Reader ${readerNote} Version agreement alone is not release-commit proof.`,
-        ],
-      }
-    }
-    if (!writerRef) {
-      return {
-        action: 'verify',
-        code: 'UPDATE_DEPLOYMENT_UNVERIFIED',
-        target: { tag: targetTag, sha: targetSha },
-        reasons: [
-          'The workspace is at the published release, but the Writer deployment reference is missing.',
+          'The workspace is at the published release, but no Writer RELEASE_SHA or RELEASE_REF records which commit was deployed.',
           readerNote,
         ],
       }
@@ -441,18 +459,18 @@ export function planUpdate({
       code: 'UPDATE_REDEPLOY',
       target: { tag: targetTag, sha: targetSha },
       reasons: [
-        `Workspace is at ${targetTag} (${targetSha.slice(0, 12)}) but the Writer published ${writerRef}${writerSha ? ` (${writerSha.slice(0, 12)})` : ''}.`,
+        `Workspace is at ${targetTag} (${targetSha.slice(0, 12)}) but the Writer recorded ${writerRef ?? writerSha.slice(0, 12)}${writerRef && writerSha ? ` (${writerSha.slice(0, 12)})` : ''}.`,
         readerNote,
       ],
     }
   }
 
-  if (readerMatches) {
+  if (readerAtTarget) {
     return {
       action: 'current',
       code: 'UPDATE_CURRENT',
       target: { tag: targetTag, sha: targetSha },
-      reasons: [`Workspace, Writer (${writerRef}) and Reader agree on ${targetTag}.`],
+      reasons: [`Workspace, Writer (${writerSha.slice(0, 12)}) and Reader build agree on ${targetTag}.`],
     }
   }
   if (!readerReachable) {
@@ -466,12 +484,23 @@ export function planUpdate({
       ],
     }
   }
+  if (!readerCommit) {
+    return {
+      action: 'verify',
+      code: 'UPDATE_DEPLOYMENT_UNVERIFIED',
+      target: { tag: targetTag, sha: targetSha },
+      reasons: [
+        `Workspace and Writer agree on ${targetTag}, but the Reader reports no build commit.`,
+        `${readerNote} Version agreement alone is not release-commit proof.`,
+      ],
+    }
+  }
   return {
     action: 'redeploy',
     code: 'UPDATE_REDEPLOY',
     target: { tag: targetTag, sha: targetSha },
     reasons: [
-      `Workspace and Writer agree on ${targetTag}, but the Reader disagrees (${readerVersion ?? 'no package version'}).`,
+      `Workspace and Writer agree on ${targetTag}, but the Reader serves build ${readerCommit.slice(0, 12)}.`,
       'Redeploying the published release re-converges the deployment.',
     ],
   }
@@ -500,7 +529,7 @@ function localTagCommit({ tag, cwd, spawnSyncImpl }) {
  * Fetch the release tag before validating the target's toolchain metadata.
  * A local tag at a different commit is a conflict, never force-overwritten.
  */
-export function fetchReleaseTag({ tag, sha, cwd = ROOT, spawnSyncImpl = spawnSync } = {}) {
+export function fetchReleaseTag({ tag, sha, remote = 'origin', cwd = ROOT, spawnSyncImpl = spawnSync } = {}) {
   const targetTag = String(tag ?? '').trim()
   const targetSha = String(sha ?? '').trim().toLowerCase()
   if (!targetTag || !HEX_40_RE.test(targetSha)) {
@@ -515,9 +544,10 @@ export function fetchReleaseTag({ tag, sha, cwd = ROOT, spawnSyncImpl = spawnSyn
       reason: `Local tag ${targetTag} points to ${existing.slice(0, 12)}, but the published release is ${targetSha.slice(0, 12)}.`,
     }
   }
-  const fetched = git(spawnSyncImpl, ['fetch', '--no-tags', 'origin', `refs/tags/${targetTag}:refs/tags/${targetTag}`], cwd)
+  const source = String(remote ?? '').trim() || 'origin'
+  const fetched = git(spawnSyncImpl, ['fetch', '--no-tags', source, `refs/tags/${targetTag}:refs/tags/${targetTag}`], cwd)
   if (!fetched.ok) {
-    return { ok: false, code: 'UPDATE_FETCH_FAILED', reason: `Cannot fetch ${targetTag} from origin: ${fetched.err.slice(0, 300) || 'git fetch failed'}` }
+    return { ok: false, code: 'UPDATE_FETCH_FAILED', reason: `Cannot fetch ${targetTag} from ${source}: ${fetched.err.slice(0, 300) || 'git fetch failed'}` }
   }
   const after = localTagCommit({ tag: targetTag, cwd, spawnSyncImpl })
   if (after !== targetSha) {
@@ -531,7 +561,7 @@ export function fetchReleaseTag({ tag, sha, cwd = ROOT, spawnSyncImpl = spawnSyn
 }
 
 /** Move the workspace to the published commit, verifying every step. */
-export function upgradeWorkspace({ targetTag, targetSha, cwd = ROOT, spawnSyncImpl = spawnSync, log = () => {} } = {}) {
+export function upgradeWorkspace({ targetTag, targetSha, remote = 'origin', cwd = ROOT, spawnSyncImpl = spawnSync, log = () => {} } = {}) {
   const sha = String(targetSha ?? '').trim().toLowerCase()
   if (!HEX_40_RE.test(sha)) {
     return { ok: false, code: 'UPDATE_TARGET_UNKNOWN', reason: 'The published release commit is missing.' }
@@ -541,10 +571,35 @@ export function upgradeWorkspace({ targetTag, targetSha, cwd = ROOT, spawnSyncIm
   if (status.out.length > 0) {
     return { ok: false, code: 'UPDATE_WORKSPACE_DIRTY', reason: 'The workspace has uncommitted changes; commit or stash them first.' }
   }
-  const fetched = fetchReleaseTag({ tag: targetTag, sha, cwd, spawnSyncImpl })
+
+  // Ancestry cannot be proven from a shallow history, and fetching first would not fix it.
+  const shallow = git(spawnSyncImpl, ['rev-parse', '--is-shallow-repository'], cwd)
+  if (shallow.ok && String(shallow.out).toLowerCase() === 'true') {
+    return {
+      ok: false,
+      code: 'UPDATE_SHALLOW_CLONE',
+      reason: 'This is a shallow clone, so an upgrade cannot prove it keeps your history. Run "git fetch --unshallow" and rerun pnpm setup.',
+    }
+  }
+
+  const fetched = fetchReleaseTag({ tag: targetTag, sha, remote, cwd, spawnSyncImpl })
   if (!fetched.ok) return fetched
 
   const previousHead = git(spawnSyncImpl, ['rev-parse', 'HEAD'], cwd).out.toLowerCase()
+  const branch = git(spawnSyncImpl, ['symbolic-ref', '--short', '-q', 'HEAD'], cwd)
+
+  // Only a fast-forward keeps local work reachable; anything else would discard commits.
+  if (previousHead !== sha) {
+    const ancestor = git(spawnSyncImpl, ['merge-base', '--is-ancestor', previousHead, sha], cwd)
+    if (ancestor.status !== 0) {
+      return {
+        ok: false,
+        code: 'UPDATE_UNTAGGED_DIVERGED',
+        reason: `Workspace commit ${previousHead.slice(0, 12)} is not an ancestor of ${targetTag} (${sha.slice(0, 12)}); updating would discard local commits. Keep them first: git branch my-work ${previousHead.slice(0, 12)}`,
+      }
+    }
+  }
+
   log(`Upgrading workspace to ${targetTag} (${sha.slice(0, 12)}).`)
   const switched = git(spawnSyncImpl, ['switch', '--detach', sha], cwd)
   if (!switched.ok) {
@@ -558,7 +613,10 @@ export function upgradeWorkspace({ targetTag, targetSha, cwd = ROOT, spawnSyncIm
       reason: `Workspace is at ${head.slice(0, 12)} after switching, not ${sha.slice(0, 12)}.`,
     }
   }
-  return { ok: true, previousHead, headSha: sha }
+  const rollback = branch.ok && branch.out
+    ? `git switch ${branch.out}`
+    : `git switch --detach ${previousHead.slice(0, 12)}`
+  return { ok: true, previousHead, headSha: sha, branch: branch.ok ? branch.out : null, rollback }
 }
 
 export function formatUpdateState(state = {}) {
@@ -578,8 +636,8 @@ export function formatUpdateState(state = {}) {
         ? `Target:      ${state.target.tag} (${String(state.target.sha).slice(0, 12)}${state.target.annotated ? ', annotated tag' : ''}) from ${state.releaseSource?.repository ?? 'unknown'}`
         : `Target:      unknown${state.releaseError ? ` (${state.releaseError})` : ''}`,
       state.writer
-        ? `Writer:      ${state.writer.ref}${state.writer.sha ? ` -> ${String(state.writer.sha).slice(0, 12)}` : ' (unresolved)'}`
-        : 'Writer:      no RELEASE_REF recorded',
+        ? `Writer:      ${[state.writer.ref, state.writer.sha ? `-> ${String(state.writer.sha).slice(0, 12)}` : '(no commit)'].filter(Boolean).join(' ')}${state.writer.invalid ? ` [unvalidated: ${state.writer.reason}]` : ''}${state.writer.conflict ? ' [conflicting ref/sha]' : ''}`
+        : 'Writer:      no RELEASE_SHA or RELEASE_REF recorded',
     )
   } else {
     lines.push('Target:      current workspace commit (Development has no published-release comparison)')
@@ -587,7 +645,7 @@ export function formatUpdateState(state = {}) {
   const reader = state.reader
   lines.push(
     reader?.reachable
-      ? `Reader:      reachable${reader.version ? `, ${reader.version}` : ', no package version'}`
+      ? `Reader:      reachable${reader.version ? `, ${reader.version}` : ', no package version'}${reader.commitSha ? `, build ${String(reader.commitSha).slice(0, 12)}` : ', no build commit'}`
       : `Reader:      unreachable${reader?.reason ? ` (${reader.reason})` : ''}`,
     `Action:      ${state.plan?.action ?? 'unknown'} (${state.plan?.code ?? 'UPDATE_TARGET_UNKNOWN'})`,
   )
@@ -642,15 +700,38 @@ export async function discoverUpdateState({
   }
 
   const prefix = environmentName.toUpperCase()
-  const writerRef = production
-    ? readEnvironmentVariable({ repository, environment: environmentName, key: `AIRINGCAL_${prefix}_RELEASE_REF`, spawnSyncImpl })
-    : null
+  const variable = (key) => readEnvironmentVariable({ repository, environment: environmentName, key, spawnSyncImpl })
+  const writerRef = production ? variable(`AIRINGCAL_${prefix}_RELEASE_REF`) : null
+  const writerShaVariable = production ? variable(`AIRINGCAL_${prefix}_RELEASE_SHA`) : null
   let writer = null
-  if (writerRef) {
-    const identity = production && releaseSource.ok
-      ? readRemoteReleaseIdentity({ repository: releaseSource.repository, tag: writerRef, spawnSyncImpl })
-      : { ok: false, reason: `Cannot resolve ${writerRef} without a verified release source.` }
-    writer = { ref: writerRef, sha: identity.ok ? identity.sha : null, resolved: identity.ok, reason: identity.ok ? null : identity.reason }
+  if (production && (writerRef || writerShaVariable)) {
+    const configuredSha = writerShaVariable ? writerShaVariable.toLowerCase() : null
+    const shaValid = configuredSha === null || HEX_40_RE.test(configuredSha)
+    const identity = writerRef
+      ? (releaseSource.ok
+        ? readRemoteReleaseIdentity({ repository: releaseSource.repository, tag: writerRef, spawnSyncImpl })
+        : { ok: false, reason: `Cannot resolve ${writerRef} without a verified release source.` })
+      : null
+    const refSha = identity?.ok ? identity.sha : null
+    const conflict = Boolean(shaValid && configuredSha && refSha && configuredSha !== refSha)
+    const unresolvedRef = Boolean(writerRef) && refSha === null
+    const reason = !shaValid
+      ? `AIRINGCAL_${prefix}_RELEASE_SHA "${writerShaVariable}" is not a 40-character commit SHA.`
+      : conflict
+        ? `AIRINGCAL_${prefix}_RELEASE_REF ${writerRef} resolves to ${refSha.slice(0, 12)}, but AIRINGCAL_${prefix}_RELEASE_SHA records ${configuredSha.slice(0, 12)}.`
+        : unresolvedRef
+          ? `AIRINGCAL_${prefix}_RELEASE_REF ${writerRef} cannot be resolved${identity?.reason ? ` (${identity.reason})` : ''}.`
+          : null
+    writer = {
+      ref: writerRef,
+      sha: shaValid ? (configuredSha ?? refSha) : null,
+      configuredSha: shaValid ? configuredSha : null,
+      refSha,
+      resolved: Boolean(shaValid && (configuredSha ?? refSha)),
+      conflict,
+      invalid: Boolean(reason && !conflict),
+      reason,
+    }
   }
 
   const origin = String(
@@ -675,6 +756,7 @@ export async function discoverUpdateState({
     environment: environmentName,
     repository,
     releaseSource,
+    releaseSourceUrl: releaseSource.ok ? `https://github.com/${releaseSource.repository}.git` : null,
     releases,
     releaseError,
     local,

@@ -1538,7 +1538,7 @@ async function runUpdatePreflight({ environment, env, fetchImpl, spawnSyncImpl, 
   if (plan.action === 'redeploy') {
     if (interactive) {
       const proceed = await ui.confirm({
-        message: 'No release tag exists for this environment. Deploy the current workspace commit again?',
+        message: `${plan.reasons[0] ?? 'The deployment does not match this commit.'} Deploy the current workspace commit again?`,
         initialValue: true,
       })
       if (!proceed) {
@@ -1550,7 +1550,9 @@ async function runUpdatePreflight({ environment, env, fetchImpl, spawnSyncImpl, 
   }
 
   const targetTag = state?.target?.tag
-  const fetched = fetchReleaseTag({ tag: targetTag, sha: state?.target?.sha, spawnSyncImpl })
+  // Tags live with the releases: the fork's parent when this install is a fork.
+  const remote = state.releaseSourceUrl ?? 'origin'
+  const fetched = fetchReleaseTag({ tag: targetTag, sha: state?.target?.sha, remote, spawnSyncImpl })
   if (!fetched.ok) throw new WizardAbort(fetched.reason, fetched.code)
   const blockers = toolchainBlockers({
     pkg: readPackageAt({ sha: fetched.sha, spawnSyncImpl }) ?? {},
@@ -1579,11 +1581,13 @@ async function runUpdatePreflight({ environment, env, fetchImpl, spawnSyncImpl, 
   const upgraded = upgradeWorkspace({
     targetTag,
     targetSha: fetched.sha,
+    remote,
     spawnSyncImpl,
     log,
   })
   if (!upgraded.ok) throw new WizardAbort(upgraded.reason, upgraded.code)
-  const rollback = `git switch --detach ${String(upgraded.previousHead ?? '').slice(0, 12) || '<previous commit>'}`
+  const rollback = upgraded.rollback
+    ?? `git switch --detach ${String(upgraded.previousHead ?? '').slice(0, 12) || '<previous commit>'}`
   const installed = spawnSyncImpl('pnpm', ['install', '--frozen-lockfile'], { cwd: ROOT, stdio: 'inherit' })
   if (installed?.status !== 0) {
     throw new Error(

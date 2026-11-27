@@ -21,43 +21,51 @@ function git(cwd, args) {
   return execFileSync('git', args, { cwd, encoding: 'utf8', env }).trim()
 }
 
-test('upgradeWorkspace upgrades a clean clone to the published tag and never destroys local state', () => {
+test('upgradeWorkspace moves a behind clone forward and refuses to discard local commits', () => {
   const root = mkdtempSync(join(tmpdir(), 'airingcal-update-'))
   try {
     git(root, ['init', '--bare', '-q', 'origin.git'])
     const seeder = join(root, 'seeder')
     git(root, ['clone', '-q', 'origin.git', 'seeder'])
+    writeFileSync(join(seeder, 'package.json'), JSON.stringify({ name: 'airingcal', version: '9.9.8' }))
+    git(seeder, ['add', '.'])
+    git(seeder, ['commit', '-q', '-m', 'older release'])
+    git(seeder, ['tag', 'v9.9.8'])
+    const older = git(seeder, ['rev-parse', 'HEAD'])
     writeFileSync(join(seeder, 'package.json'), JSON.stringify({ name: 'airingcal', version: '9.9.9' }))
     git(seeder, ['add', '.'])
     git(seeder, ['commit', '-q', '-m', 'release'])
     git(seeder, ['tag', 'v9.9.9'])
-    git(seeder, ['push', '-q', 'origin', 'HEAD', 'refs/tags/v9.9.9'])
     const released = git(seeder, ['rev-parse', 'HEAD'])
-
-    writeFileSync(join(seeder, 'README.md'), 'after the release\n')
-    git(seeder, ['add', '.'])
-    git(seeder, ['commit', '-q', '-m', 'after release'])
-    git(seeder, ['push', '-q', 'origin', 'HEAD'])
-    const ahead = git(seeder, ['rev-parse', 'HEAD'])
+    git(seeder, ['push', '-q', 'origin', 'HEAD', 'refs/tags/v9.9.8', 'refs/tags/v9.9.9'])
 
     const work = join(root, 'work')
     git(root, ['clone', '-q', 'origin.git', 'work'])
+    git(work, ['reset', '--hard', '-q', older])
     git(work, ['tag', '-d', 'v9.9.9'])
+    const branch = git(work, ['symbolic-ref', '--short', 'HEAD'])
     const result = upgradeWorkspace({ targetTag: 'v9.9.9', targetSha: released, cwd: work, log: () => {} })
     assert.equal(result.ok, true)
-    assert.equal(result.previousHead, ahead)
+    assert.equal(result.previousHead, older)
     assert.equal(result.headSha, released)
+    assert.equal(result.rollback, `git switch ${branch}`, 'rollback returns to the branch, not just the commit')
     assert.equal(git(work, ['rev-parse', 'HEAD']), released)
     assert.equal(readPackageAt({ sha: released, cwd: work }).version, '9.9.9')
+
+    git(work, ['switch', '-q', '-c', 'local-work'])
+    writeFileSync(join(work, 'local.txt'), 'local work\n')
+    git(work, ['add', '.'])
+    git(work, ['commit', '-q', '-m', 'local work'])
+    const local = git(work, ['rev-parse', 'HEAD'])
+    const diverged = upgradeWorkspace({ targetTag: 'v9.9.9', targetSha: released, cwd: work })
+    assert.equal(diverged.ok, false)
+    assert.equal(diverged.code, 'UPDATE_UNTAGGED_DIVERGED')
+    assert.equal(git(work, ['rev-parse', 'HEAD']), local, 'a refused update must not move HEAD')
 
     writeFileSync(join(work, 'uncommitted.txt'), 'local work\n')
     const dirty = upgradeWorkspace({ targetTag: 'v9.9.9', targetSha: released, cwd: work })
     assert.equal(dirty.code, 'UPDATE_WORKSPACE_DIRTY')
-    assert.equal(git(work, ['rev-parse', 'HEAD']), released, 'a refused update must not move HEAD')
-
-    git(work, ['tag', '-f', 'v9.9.9', ahead])
-    const conflict = upgradeWorkspace({ targetTag: 'v9.9.9', targetSha: released, cwd: work })
-    assert.equal(conflict.code, 'UPDATE_WORKSPACE_DIRTY', 'dirty tree is reported before tag conflicts')
+    assert.equal(git(work, ['rev-parse', 'HEAD']), local, 'a refused update must not move HEAD')
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

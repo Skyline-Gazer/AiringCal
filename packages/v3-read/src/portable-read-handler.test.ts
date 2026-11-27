@@ -66,9 +66,15 @@ test('handlePortableReadRequest /version includes platform when env set', async 
     processEnv: { AIRINGCAL_PLATFORM: 'portable' },
   })
   assert.equal(response.status, 200)
-  const body = await response.json() as { platform?: string; read: string }
+  const body = await response.json() as { platform?: string; read: string; build?: { commitSha?: string } }
   assert.equal(body.read, 'portable')
   assert.equal(body.platform, 'portable')
+  assert.equal(body.build, undefined, 'no build commit is invented when none is configured')
+  const identified = await handlePortableReadRequest(new Request('https://local/api/version'), {
+    publicStore,
+    build: { commitSha: 'a'.repeat(40) },
+  })
+  assert.deepEqual((await identified.json() as { build?: unknown }).build, { commitSha: 'a'.repeat(40) })
 })
 
 test('handlePortableReadRequest serves JSON when the runtime lacks Response.json (EdgeOne)', async () => {

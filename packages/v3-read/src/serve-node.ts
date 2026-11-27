@@ -67,6 +67,7 @@ export function startPortableReadServer(options: {
         publicStore,
         nsfwShow: options.nsfwShow ?? resolveNsfwShow(process.env.NSFW_SHOW),
         packageVersion: options.packageVersion ?? process.env.npm_package_version,
+        build: buildSha ? { commitSha: buildSha } : undefined,
         publicBaseUrl,
         imageBaseUrl,
         corsAllowedOrigins,

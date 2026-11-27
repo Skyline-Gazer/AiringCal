@@ -214,7 +214,7 @@ async function run(): Promise<void> {
     await assertResponse('/api/version', {
       status: 200,
       cacheControl: V2_CACHE_CONTROL.version,
-      bodyIncludes: [`"platform":"cloudflare"`, `"package":"${PACKAGE_VERSION}"`],
+      bodyIncludes: [`"platform":"cloudflare"`, `"package":"${PACKAGE_VERSION}"`, `"commitSha":"${BUILD_SHA}"`],
     })
     await assertResponse('/api/health', { status: 200, bodyIncludes: ['"scheduler":"external"'] })
     await assertResponse('/api/collections?type=watching&page=1&limit=24', {

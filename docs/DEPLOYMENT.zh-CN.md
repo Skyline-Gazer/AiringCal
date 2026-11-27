@@ -95,21 +95,21 @@ AiringCal 原生支持在 Fork 仓库或独立仓库中运行，无需修改任�
 2. **非破坏性保留原则**：
    - **绝不要求空桶或清空数据**：完整保留现有 Release 指针、快照、清单、SQLite Checkpoint 及所有封面图片。
    - **绝不静默轮换或重建现有 Writer Token**：由于 GitHub Environment Secrets（`AIRINGCAL_<ENV>_S3_*`）不可回读明文，`update` 默认复用现有 GitHub S3 Secrets，并通过 Cloudflare API 校验现有 Writer Token 的激活状态与单桶权限范围；仅在你显式提供 `AIRINGCAL_WRITER_TOKEN_ROTATION_ID=<token-id>` 或新 `AIRINGCAL_S3_*` 凭据时才更新密钥。
-   - **默认保留现有 Production Writer 发布源码身份**：从新的代码检出更新 Reader Worker 或环境配置时，默认保留 `production` GitHub Environment 中既有的 `AIRINGCAL_PRODUCTION_RELEASE_SHA`（及 `AIRINGCAL_PRODUCTION_RELEASE_REF`），绝不会在仅更新 Reader 时静默把 Production Writer 推进到当前检出的 `HEAD`。如确需在 `update` 期间变更已批准的 Production Writer 发布版本，必须显式设置 `AIRINGCAL_ALLOW_RELEASE_CHANGE=yes`（且若新批准的 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 未指定新的 `RELEASE_REF`，引擎会自动从 `production` GitHub Environment 删除旧的 `AIRINGCAL_PRODUCTION_RELEASE_REF`，防止旧标签与新 SHA 产生不匹配的残留组合）。
+   - **默认保留现有 Production Writer 发布源码身份**：从新的代码检出更新 Reader Worker 或环境配置时，默认保留 `production` GitHub Environment 中既有的 `AIRINGCAL_PRODUCTION_RELEASE_SHA`（及 `AIRINGCAL_PRODUCTION_RELEASE_REF`），绝不会在仅更新 Reader 时静默把 Production Writer 推进到当前检出的 `HEAD`。如确需在 `update` 期间变更已批准的 Production Writer 发布版本，必须显式设置 `AIRINGCAL_ALLOW_RELEASE_CHANGE=yes`（且若新批准的 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 未指定新的 `RELEASE_REF`，引擎会自动从 `production` GitHub Environment 删除旧的 `AIRINGCAL_PRODUCTION_RELEASE_REF`，防止旧标签与新 SHA 产生不匹配的残留组合）。 其中 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 是权威记录：若同时存在 `RELEASE_REF`，引擎会把它解析为提交并要求两者一致；不可解析或彼此冲突时如实报告，绝不臆测。
    - **不自动重跑首次全量同步**：已初始化的部署在更新 Worker 后直接沿用现有 Release 数据。
 3. **诚实的终端结论（Truthful Verdict）**：
    - 当复用现有 GitHub S3 Secrets（未在本地提供 S3 密钥明文）完成更新时，向导会验证更新后 Worker 对 `checkpoints/*` 的匿名拒绝，并输出 `UPDATED_PARTIAL_VERIFICATION`（`credentialVerification.runtimeVerification = "not-verified-github-secret-only"`），明确区分“Cloudflare API Token 策略范围已校验”与“运行时 S3 读写未在本次更新中执行”。
    - 当提供本地 S3 凭据（或显式轮换 Token）并通过 25 项线上验收检查时，终端结论为 `READY`。
 4. **自助更新入口（`pnpm run setup` → Update）**：
    - 主菜单将 **Install**、**Update**、**Recover** 分开；显式选择与探测到的目标环境状态不一致时会拒绝执行（`WIZARD_OPERATION_MISMATCH`），Update 不会静默创建资源，Install 也不会重新部署已有存储桶。
-   - 在收集任何凭据或改动远端之前，Update 先打印观测到的事实——工作区 `HEAD` 与本地 Tag、最新正式发布版本及其解析出的提交 SHA、现有 Writer `RELEASE_REF` 及其 SHA、线上 Reader `/api/version` 的 `package`——再按计划执行：
-     - `upgrade`（要求干净工作区）：在发布源仓库把 Tag 解析为提交（GitHub Fork 使用其父仓库的发布），读取该提交的 `package.json`，强制校验 `engines.node`（不满足时以 `UPDATE_NODE_TOO_OLD` 阻止），并在 `packageManager` 不匹配时告警（`UPDATE_PNPM_MISMATCH`，打印确切的 `corepack prepare` 命令）；仅当本地不存在冲突 Tag 时才拉取（`UPDATE_TAG_CONFLICT` 绝不强制覆盖），随后切换到已核对的提交、执行 `pnpm install --frozen-lockfile`，并在该版本代码上重启向导后再执行更新；
+   - 在收集任何凭据或改动远端之前，Update 先打印观测到的事实——工作区 `HEAD` 与本地 Tag、最新正式发布版本及其解析出的提交 SHA、现有 Writer `RELEASE_REF` 及其 SHA、线上 Reader `/api/version` 的 `package` 与 `build.commitSha`——再按计划执行：
+     - `upgrade`（要求干净工作区）：在发布源仓库把 Tag 解析为提交（GitHub Fork 使用其父仓库的发布），读取该提交的 `package.json`，强制校验 `engines.node`（不满足时以 `UPDATE_NODE_TOO_OLD` 阻止），并在 `packageManager` 不匹配时告警（`UPDATE_PNPM_MISMATCH`，打印确切的 `corepack prepare` 命令）；仅当本地不存在冲突 Tag 时才从发布源拉取（`UPDATE_TAG_CONFLICT` 绝不强制覆盖）；浅克隆（`UPDATE_SHALLOW_CLONE`）或 `HEAD` 不是发布提交祖先（`UPDATE_UNTAGGED_DIVERGED`，会打印保留本地提交的 `git branch` 命令）时直接拒绝；随后切换到已核对的提交、执行 `pnpm install --frozen-lockfile`，并在该版本代码上重启向导后再执行更新；
      - `redeploy`：工作区已在发布提交，仅执行既有更新契约。`development` 没有正式发布，同样以当前工作区提交重新部署；
-     - `current`：工作区 `HEAD`、Writer `RELEASE_REF` 与 Reader `package` 均与发布提交一致；不做任何改动，结果为 `NO_CHANGE`；
-     - `verify`：无法确认发布状态（未设置 `RELEASE_REF`、Writer Ref 不可读、Reader 不可达或版本不同），执行更新契约但不宣称幂等成功；
-     - `blocked`：打印明确原因（未提交改动、git 状态不可读、本地 `HEAD` 领先或分叉于发布、Node.js 低于 `engines.node`、发布源不可读），并在改动任何内容前停止。
-   - 一致性的判定基于提交而非版本号：本地 Tag 名称与发布相同但提交不同时判定为 `UPDATE_UNTAGGED_DIVERGED`，绝不会判为 `current`。
-   - 回滚：`git switch --detach <旧 HEAD>`（向导会打印），然后执行 `pnpm install --frozen-lockfile && pnpm run setup`。
+     - `current`：工作区 `HEAD`、Writer 记录的提交与 Reader 的 `build.commitSha` 均等于发布提交；不做任何改动，结果为 `NO_CHANGE`。仅版本号一致仍判为 `verify`；
+     - `verify`：无法确认发布状态（未记录 Writer 身份、记录的 Ref 不可解析，或 Reader 不可达 / 未报告与发布提交相等的 `build.commitSha`），执行更新契约但不宣称幂等成功；
+     - `blocked`：打印明确原因（未提交改动、git 状态不可读、本地 `HEAD` 领先或分叉于发布、Node.js 低于 `engines.node`、发布源不可读、Writer 发布身份冲突 `UPDATE_DEPLOYMENT_CONFLICT`），并在改动任何内容前停止。
+   - 无法校验的 Writer 身份判为 `UPDATE_DEPLOYMENT_UNVERIFIED`（动作 `unknown`），在任何升级执行前报告，绝不当作一致。
+   - 回滚：向导会打印确切命令——工作区原在分支上时为 `git switch <branch>`，否则为 `git switch --detach <旧 HEAD>`——然后执行 `pnpm install --frozen-lockfile && pnpm run setup`。
 
 ### C. 中断尝试恢复 (`recover`)
 

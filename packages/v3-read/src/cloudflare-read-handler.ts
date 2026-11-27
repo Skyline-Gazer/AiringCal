@@ -13,6 +13,8 @@ export interface CloudflareReadConfig {
   publicR2: CloudflareR2BucketBinding
   nsfwShow?: boolean
   packageVersion?: string
+  /** Built commit (`BANGUMI_GIT_COMMIT_SHA`), reported by `/api/version`. */
+  build?: { commitSha?: string }
   /** R2 object key for mutable release pointer (default `public/current-release.json`). */
   pointerKey?: string
   /**
@@ -52,6 +54,7 @@ export function createCloudflareReadHandler(config: CloudflareReadConfig): Cloud
     publicStore,
     nsfwShow: config.nsfwShow,
     packageVersion: config.packageVersion,
+    build: config.build,
     publicBaseUrl,
     imageBaseUrl,
     corsAllowedOrigins,
