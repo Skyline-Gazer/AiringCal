@@ -213,7 +213,11 @@ export function classifyFailureRecovery({ result, environment = 'production' }) 
     code === 'REPOSITORY_ORIGIN_UNSUPPORTED' ||
     code === 'REPOSITORY_NOT_FOUND' ||
     code === 'REPOSITORY_PERMISSION_DENIED' ||
-    code === 'WORKFLOW_UNAVAILABLE'
+    code === 'WORKFLOW_UNAVAILABLE' ||
+    code === 'RELEASE_IDENTITY_REQUIRED' ||
+    code === 'RELEASE_IDENTITY_INVALID' ||
+    code === 'RELEASE_REF_SHA_MISMATCH' ||
+    code === 'RELEASE_CHANGE_UNAUTHORIZED'
   ) {
     allowedActions = ['review', 'details', 'exit']
   } else if (code === 'BUCKET_OWNERSHIP_UNPROVEN' || code === 'OWNERSHIP_EVIDENCE_INSUFFICIENT') {

@@ -72,7 +72,7 @@ AiringCal is designed to work cleanly in forks and standalone repositories witho
 
 Used when the target R2 bucket and Cloudflare Worker do not yet exist:
 
-1. **Token & Account Preflight**: Verifies Cloudflare account access, `workers.dev` subdomain, and Bangumi user identity.
+1. **Token, Account & Release Identity Preflight**: Verifies Cloudflare account access, `workers.dev` subdomain, Bangumi user identity, and an explicitly authorized Production Writer release identity (`AIRINGCAL_PRODUCTION_RELEASE_SHA` and optional `AIRINGCAL_PRODUCTION_RELEASE_REF`, which must resolve to that exact commit SHA). Fresh installs never implicitly approve current Git `HEAD`, `BANGUMI_GIT_COMMIT_SHA`, or `plan.gitSha`; in interactive mode, `pnpm run setup` discovers the latest published release tag candidate (e.g., `v3.0.0`) for explicit operator confirmation during configuration review, while headless fresh installs require `AIRINGCAL_PRODUCTION_RELEASE_SHA` in `.env.production` / environment before any remote resource is created.
 2. **Create Private R2 Bucket**: Creates `airingcal-production` (or `airingcal-development`).
 3. **Provision Bucket-Scoped Writer Credential**: Mints `airingcal-production-writer` (after bucket creation so the bucket-scoped policy is valid), verifies token identity (`/user/tokens/verify`), reads back its policy (`/user/tokens/:id`) to prove it is restricted to the single target bucket, and verifies S3 list+head access. If any check fails, the newly created token is deleted immediately.
 4. **Clean-Bootstrap Empty-Bucket Guard**: Verifies the bucket contains zero objects (`verify-bucket-empty`). Any foreign object aborts closed (`BUCKET_NOT_EMPTY`) without deleting data.
@@ -95,6 +95,7 @@ Used when an AiringCal installation already exists in your Cloudflare account an
 2. **Non-Destructive Preservation**:
    - **Never wipes or requires an empty bucket**: Existing release pointers, snapshots, manifests, SQLite checkpoints, and cover images are preserved intact.
    - **Never rotates or recreates existing Writer tokens**: Because GitHub Environment secrets (`AIRINGCAL_<ENV>_S3_*`) are write-only, `update` reuses your existing GitHub S3 secrets by default, verifies your Writer token's active status and bucket-scoped policy via the Cloudflare API, and only rotates if you explicitly supply `AIRINGCAL_WRITER_TOKEN_ROTATION_ID=<token-id>` or new `AIRINGCAL_S3_*` credentials.
+   - **Preserves existing Production Writer release identity by default**: Updating the Reader Worker or environment configuration from a newer checkout preserves the existing `AIRINGCAL_PRODUCTION_RELEASE_SHA` (and `AIRINGCAL_PRODUCTION_RELEASE_REF`, if set) in the `production` GitHub Environment instead of silently advancing the Production Writer to current `HEAD`. Changing an existing installation's approved Production Writer release identity during `update` requires explicit `AIRINGCAL_ALLOW_RELEASE_CHANGE=yes` (and if a new `AIRINGCAL_PRODUCTION_RELEASE_SHA` is authorized without a `RELEASE_REF`, any stale `AIRINGCAL_PRODUCTION_RELEASE_REF` is deleted from the `production` GitHub Environment so a stale tag never remains paired with a new commit SHA).
    - **Does not auto-dispatch First Full Sync**: An already-initialized installation keeps its live release generation without triggering an unrequested full sync.
 3. **Truthful Terminal Verdict**:
    - When updating with reused GitHub S3 secrets (without local S3 credentials), the wizard verifies anonymous checkpoint denial on the updated Worker and emits `UPDATED_PARTIAL_VERIFICATION` (`credentialVerification.runtimeVerification = "not-verified-github-secret-only"`), truthfully distinguishing Cloudflare API token scope verification from runtime S3 read/write verification.
@@ -145,6 +146,13 @@ AIRINGCAL_WORKERS_DEV_SUBDOMAIN=<your-workers-dev-subdomain>
 AIRINGCAL_BANGUMI_TOKEN=<your-bangumi-pat>
 AIRINGCAL_PRIMARY_USER_ID=<your-bangumi-numeric-user-id>
 AIRINGCAL_USERS_JSON=[{"userId":"<your-bangumi-numeric-user-id>","username":"<your-bangumi-username>"}]
+
+# Required for headless fresh install (preserved automatically from the remote `production` environment on update):
+AIRINGCAL_PRODUCTION_RELEASE_SHA=<40-char-hex-approved-release-commit-sha>
+# Optional immutable release tag/ref that must resolve to AIRINGCAL_PRODUCTION_RELEASE_SHA:
+# AIRINGCAL_PRODUCTION_RELEASE_REF=v3.0.0
+# Required only when intentionally changing an existing installation's approved release identity during update:
+# AIRINGCAL_ALLOW_RELEASE_CHANGE=yes
 
 # Optional: set to "update" when updating an existing initialized installation
 # AIRINGCAL_OPERATION=update
@@ -209,14 +217,18 @@ The GitHub Actions workflow `.github/workflows/portable-writer.yml` separates **
    - Enable: `gh variable set AIRINGCAL_WRITER_ENABLED --repo <owner>/<repo> --body true`
    - Disable: `gh variable set AIRINGCAL_WRITER_ENABLED --repo <owner>/<repo> --body false`
 2. **Production Release Source Identity** (`production` environment variables `AIRINGCAL_PRODUCTION_RELEASE_SHA` and optional `AIRINGCAL_PRODUCTION_RELEASE_REF`):
-   - `AIRINGCAL_PRODUCTION_RELEASE_SHA` (required, exact 40-character hexadecimal git commit SHA; synced automatically by `pnpm run setup`) pins the approved release commit that the `production` job checks out and verifies via `git rev-parse HEAD` before running `pnpm install`, building the Writer bundle, or publishing to R2.
-   - `AIRINGCAL_PRODUCTION_RELEASE_REF` (optional, e.g. `v3.0.0` or `refs/tags/v3.0.0`) pins an immutable release tag/ref and fails closed if set to a mutable development branch (`dev`, `refs/heads/dev`, `HEAD`) or if the ref does not resolve to `AIRINGCAL_PRODUCTION_RELEASE_SHA`.
+   - `AIRINGCAL_PRODUCTION_RELEASE_SHA` (required, exact 40-character hexadecimal git commit SHA) pins the explicitly approved release commit that the `production` job checks out and verifies via `git rev-parse HEAD` before running `pnpm install`, building the Writer bundle, or publishing to R2. Setup never implicitly falls back to current Git `HEAD`, `BANGUMI_GIT_COMMIT_SHA`, or `plan.gitSha`, and ordinary updates preserve the existing `AIRINGCAL_PRODUCTION_RELEASE_SHA` unless `AIRINGCAL_ALLOW_RELEASE_CHANGE=yes` is explicitly set.
+   - `AIRINGCAL_PRODUCTION_RELEASE_REF` (optional, e.g. `v3.0.0` or `refs/tags/v3.0.0`) pins an immutable release tag/ref and fails closed if set to a mutable development branch (`dev`, `refs/heads/dev`, `HEAD`) or if the ref does not resolve to `AIRINGCAL_PRODUCTION_RELEASE_SHA`. When a new `AIRINGCAL_PRODUCTION_RELEASE_SHA` is explicitly authorized without a `RELEASE_REF`, setup removes any stale `AIRINGCAL_PRODUCTION_RELEASE_REF` from the `production` GitHub Environment.
 3. **Temporary Manual Dispatch Gates** (environment-level variables, closed `false` at rest):
    - `production` environment variable `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED`: gates manual `workflow_dispatch` runs targeting `production` (both First Full Sync and deliberate on-demand manual runs). It is **not** checked on `schedule` runs and must **never** be left `true` permanently.
    - `development` environment variable `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED`: gates manual `workflow_dispatch` runs targeting `development`.
 
 > [!IMPORTANT]
-> **Code-Enforced Source Verification vs. External GitHub Settings**: In GitHub Actions, `schedule` triggers always parse the workflow YAML file from the repository's `default_branch`. Pinning `AIRINGCAL_PRODUCTION_RELEASE_SHA` guarantees that checked-out source code, dependencies, build scripts, and `BANGUMI_GIT_COMMIT_SHA` match the approved release tree, while complete workflow-definition isolation requires repository-level GitHub governance (setting `main` as the default branch or configuring GitHub Environment `production` deployment branch/tag protection rules).
+> **Code-Enforced Source Verification vs. GitHub Actions Default-Branch & Environment Policy Mechanics**:
+> - In GitHub Actions, `schedule` triggers always parse and execute the workflow YAML definition from the repository's **default branch** (`refs/heads/<default_branch>`).
+> - Within that workflow run, pinning `AIRINGCAL_PRODUCTION_RELEASE_SHA` guarantees that the checked-out executable source tree, dependencies, build scripts, and `BANGUMI_GIT_COMMIT_SHA` match the approved release commit.
+> - GitHub Environment `production` deployment branch/tag protection rules enforce which branches/tags are permitted to access the `production` environment; they do **not** redirect a `schedule` trigger to run from another branch. Therefore, setting `main` as default branch and configuring a `production` Environment branch/tag policy are **not** interchangeable alternatives: if the repository's default branch remains `dev` while the `production` Environment policy rejects `dev` (allowing only `main` or `v*`), scheduled Production runs will be **blocked** by GitHub Actions rather than redirected to `main`.
+> - Conversely, switching the repository default branch to `main` *before* the hardened `.github/workflows/portable-writer.yml` workflow definition has been formally released to `main` would run the older `main` workflow definition. Required reviewer policies on the `production` Environment also pause unattended scheduled runs awaiting manual approval.
 
 ### Manual One-Shot Sync Dispatch
 

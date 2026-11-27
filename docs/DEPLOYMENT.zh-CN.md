@@ -72,7 +72,7 @@ AiringCal 原生支持在 Fork 仓库或独立仓库中运行，无需修改任�
 
 适用于目标 R2 存储桶与 Cloudflare Worker 尚不存在的场景：
 
-1. **令牌与账号预检**：校验 Cloudflare 账号访问权限、`workers.dev` 子域名与 Bangumi 用户身份。
+1. **令牌、账号与发布源码身份预检**：校验 Cloudflare 账号访问权限、`workers.dev` 子域名、Bangumi 用户身份，以及经显式批准的 Production Writer 发布源码身份（`AIRINGCAL_PRODUCTION_RELEASE_SHA` 与可选的 `AIRINGCAL_PRODUCTION_RELEASE_REF`，后者必须解析到该 40 位提交 SHA）。全新安装绝不会将当前 Git `HEAD`、`BANGUMI_GIT_COMMIT_SHA` 或 `plan.gitSha` 隐式当作已批准的发布版本；在交互式模式下，`pnpm run setup` 会自动探测已发布的 Release 标签候选（如 `v3.0.0`）并在配置审阅界面由操作者显式确认后才写入，而无头（Headless）全新安装必须在执行任何远端资源创建前于 `.env.production` / 环境变量中显式提供 `AIRINGCAL_PRODUCTION_RELEASE_SHA`。
 2. **创建私有 R2 存储桶**：创建 `airingcal-production`（或 `airingcal-development`）。
 3. **签发单桶受限 Writer 凭据**：在存储桶创建完成后签发 `airingcal-production-writer`，校验 Token 身份（`/user/tokens/verify`），回读策略（`/user/tokens/:id`）证明其仅作用于当前目标存储桶，并通过 S3 `list+head` 验证对象访问。若任一校验失败，立即自动清理刚创建的 Token。
 4. **全新安装空桶门禁 (`verify-bucket-empty`)**：验证存储桶内没有任何既有对象。若发现任何外部对象，立即以 `BUCKET_NOT_EMPTY` 中止且绝不删除已有数据。
@@ -95,6 +95,7 @@ AiringCal 原生支持在 Fork 仓库或独立仓库中运行，无需修改任�
 2. **非破坏性保留原则**：
    - **绝不要求空桶或清空数据**：完整保留现有 Release 指针、快照、清单、SQLite Checkpoint 及所有封面图片。
    - **绝不静默轮换或重建现有 Writer Token**：由于 GitHub Environment Secrets（`AIRINGCAL_<ENV>_S3_*`）不可回读明文，`update` 默认复用现有 GitHub S3 Secrets，并通过 Cloudflare API 校验现有 Writer Token 的激活状态与单桶权限范围；仅在你显式提供 `AIRINGCAL_WRITER_TOKEN_ROTATION_ID=<token-id>` 或新 `AIRINGCAL_S3_*` 凭据时才更新密钥。
+   - **默认保留现有 Production Writer 发布源码身份**：从新的代码检出更新 Reader Worker 或环境配置时，默认保留 `production` GitHub Environment 中既有的 `AIRINGCAL_PRODUCTION_RELEASE_SHA`（及 `AIRINGCAL_PRODUCTION_RELEASE_REF`），绝不会在仅更新 Reader 时静默把 Production Writer 推进到当前检出的 `HEAD`。如确需在 `update` 期间变更已批准的 Production Writer 发布版本，必须显式设置 `AIRINGCAL_ALLOW_RELEASE_CHANGE=yes`（且若新批准的 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 未指定新的 `RELEASE_REF`，引擎会自动从 `production` GitHub Environment 删除旧的 `AIRINGCAL_PRODUCTION_RELEASE_REF`，防止旧标签与新 SHA 产生不匹配的残留组合）。
    - **不自动重跑首次全量同步**：已初始化的部署在更新 Worker 后直接沿用现有 Release 数据。
 3. **诚实的终端结论（Truthful Verdict）**：
    - 当复用现有 GitHub S3 Secrets（未在本地提供 S3 密钥明文）完成更新时，向导会验证更新后 Worker 对 `checkpoints/*` 的匿名拒绝，并输出 `UPDATED_PARTIAL_VERIFICATION`（`credentialVerification.runtimeVerification = "not-verified-github-secret-only"`），明确区分“Cloudflare API Token 策略范围已校验”与“运行时 S3 读写未在本次更新中执行”。
@@ -145,6 +146,13 @@ AIRINGCAL_WORKERS_DEV_SUBDOMAIN=<your-workers-dev-subdomain>
 AIRINGCAL_BANGUMI_TOKEN=<your-bangumi-pat>
 AIRINGCAL_PRIMARY_USER_ID=<your-bangumi-numeric-user-id>
 AIRINGCAL_USERS_JSON=[{"userId":"<your-bangumi-numeric-user-id>","username":"<your-bangumi-username>"}]
+
+# 无头（Headless）全新安装必填（更新既有部署时默认自动保留远端 production 环境中的既有值）：
+AIRINGCAL_PRODUCTION_RELEASE_SHA=<40-char-hex-approved-release-commit-sha>
+# 可选：不可变发布标签/引用（必须解析到 AIRINGCAL_PRODUCTION_RELEASE_SHA）：
+# AIRINGCAL_PRODUCTION_RELEASE_REF=v3.0.0
+# 仅在更新（update）期间确需变更既有已批准发布身份时显式开启：
+# AIRINGCAL_ALLOW_RELEASE_CHANGE=yes
 
 # 可选：更新现有已初始化部署时设置为 "update"
 # AIRINGCAL_OPERATION=update
@@ -209,14 +217,18 @@ GitHub Actions 工作流 `.github/workflows/portable-writer.yml` 将 **Productio
    - 开启：`gh variable set AIRINGCAL_WRITER_ENABLED --repo <owner>/<repo> --body true`
    - 关闭：`gh variable set AIRINGCAL_WRITER_ENABLED --repo <owner>/<repo> --body false`
 2. **Production 发布源码身份契约**（`production` 环境级变量 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 与可选的 `AIRINGCAL_PRODUCTION_RELEASE_REF`）：
-   - `AIRINGCAL_PRODUCTION_RELEASE_SHA`（必填，精确的 40 位十六进制 Git 提交 SHA；由 `pnpm run setup` 自动同步）锁定经批准的发布提交。`production` 作业在检出代码后、执行 `pnpm install` / 构建 / 运行 Writer 之前，会通过 `git rev-parse HEAD` 严格核对实际检出源码的 SHA，不一致则立即失败中止（Fail-Closed）。
-   - `AIRINGCAL_PRODUCTION_RELEASE_REF`（可选，例如 `v3.0.0` 或 `refs/tags/v3.0.0`）锁定不可变的发布标签/引用；若被设置为可变开发分支（`dev`、`refs/heads/dev`、`HEAD`）或解析出的提交与 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 不一致，作业同样立即拒绝执行。
+   - `AIRINGCAL_PRODUCTION_RELEASE_SHA`（必填，精确的 40 位十六进制 Git 提交 SHA）锁定经显式批准的发布提交。`production` 作业在检出代码后、执行 `pnpm install` / 构建 / 运行 Writer 之前，会通过 `git rev-parse HEAD` 严格核对实际检出源码的 SHA，不一致则立即失败中止（Fail-Closed）。部署引擎绝不会隐式回退到当前 Git `HEAD`、`BANGUMI_GIT_COMMIT_SHA` 或 `plan.gitSha`，且常规 `update` 默认保留既有 `AIRINGCAL_PRODUCTION_RELEASE_SHA`（除非显式设置 `AIRINGCAL_ALLOW_RELEASE_CHANGE=yes`）。
+   - `AIRINGCAL_PRODUCTION_RELEASE_REF`（可选，例如 `v3.0.0` 或 `refs/tags/v3.0.0`）锁定不可变的发布标签/引用；若被设置为可变开发分支（`dev`、`refs/heads/dev`、`HEAD`）或解析出的提交与 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 不一致，部署预检与工作流作业均会立即拒绝执行。当通过 `AIRINGCAL_ALLOW_RELEASE_CHANGE=yes` 授权了新的 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 且未携带新 `RELEASE_REF` 时，部署引擎会自动从 `production` 环境删除旧的 `AIRINGCAL_PRODUCTION_RELEASE_REF`。
 3. **环境级临时手动触发门禁**（默认必须保持 `false` 关闭状态）：
    - `production` 环境变量 `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED`：仅控制针对 `production` 的手动 `workflow_dispatch` 触发（包括首次全量同步与日常手动触发）。定时 `schedule` 运行不读取该变量，**切勿**将其长期保留为 `true`。
    - `development` 环境变量 `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED`：仅控制针对 `development` 的手动 `workflow_dispatch` 触发。
 
 > [!IMPORTANT]
-> **代码级源码校验与外部 GitHub 仓库治理的边界**：在 GitHub Actions 中，`schedule` 定时触发始终从仓库的默认分支（`default_branch`）解析工作流 YAML 定义本身。锁定 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 能够在代码层面保证检出的执行源码、依赖安装、打包产物与写入快照的 `BANGUMI_GIT_COMMIT_SHA` 均来自经批准的发布版本；若需连同工作流 YAML 定义本身一并锁定，建议将仓库默认分支设为 `main`，或在 GitHub Environment `production` 中配置受保护的部署分支/标签规则（仅允许 `v*` / `main`）。
+> **代码级源码校验与 GitHub Actions 默认分支及环境策略机制的边界**：
+> - 在 GitHub Actions 中，`schedule` 定时触发始终从仓库的默认分支（`refs/heads/<default_branch>`）解析并执行工作流 YAML 定义本身。
+> - 在工作流运行内部，锁定 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 能够在代码层面保证检出的执行源码、依赖安装、打包产物与写入快照的 `BANGUMI_GIT_COMMIT_SHA` 均来自经批准的发布提交。
+> - GitHub Environment `production` 的受保护部署分支/标签策略（Deployment branch/tag policy）仅负责拦截未被授权访问 `production` 环境的分支，**不会**把默认分支上的 `schedule` 触发重定向到其他分支。因此，“将 `main` 设为默认分支”与“为 `production` 环境配置仅允许 `main`/`v*` 的分支策略”**不是**可以互换的替代方案：如果仓库默认分支仍为 `dev`，同时 `production` 环境策略拒绝 `dev`（仅允许 `main` 或 `v*`），定时 Production 运行将被 GitHub Actions **直接拦截**，而不会自动切换到 `main` 运行。
+> - 反之，在包含 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 校验的加固版 `.github/workflows/portable-writer.yml` 正式发布到 `main` 之前，若提前将默认分支切换为 `main`，定时任务将执行 `main` 上的旧版工作流定义。此外，若在 `production` 环境上启用必需审批人（Required reviewers），无人值守的定时任务也会暂停等待人工审批。
 
 ### 手动按需触发同步
 

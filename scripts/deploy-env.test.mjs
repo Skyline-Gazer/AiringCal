@@ -1042,6 +1042,7 @@ test('production syncGithubEnvironment targets the production environment with p
       AIRINGCAL_BANGUMI_TOKEN: 'bgm',
       AIRINGCAL_USERS_JSON: '[{"id":1}]',
       AIRINGCAL_PRIMARY_USER_ID: '1',
+      AIRINGCAL_PRODUCTION_RELEASE_SHA: '42f497cab180cd57eb1d2dc773d6b9979d9428bc',
     },
     plan,
     spawnSyncImpl,
@@ -4944,6 +4945,7 @@ test('PRODUCTION_SECRET_KEYS admits the BARK_URL secret the workflow reads (Ship
       AIRINGCAL_USERS_JSON: '[{"id":1}]',
       AIRINGCAL_PRIMARY_USER_ID: '1',
       AIRINGCAL_BARK_URL: 'https://bark.example/x',
+      AIRINGCAL_PRODUCTION_RELEASE_SHA: '42f497cab180cd57eb1d2dc773d6b9979d9428bc',
     },
     plan,
     spawnSyncImpl: (cmd, args) => {

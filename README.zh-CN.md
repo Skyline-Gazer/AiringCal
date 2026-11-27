@@ -192,9 +192,10 @@ https://airingcal-production.<your-subdomain>.workers.dev/
 
 首次全量同步验收通过后，可按以下步骤开启每日自动同步：
 
-1. 确认 `production` GitHub Environment 中已记录经批准的 40 位发布提交哈希 `AIRINGCAL_PRODUCTION_RELEASE_SHA`（`pnpm run setup` 会自动同步该变量；也可按需设置不可变标签/引用 `AIRINGCAL_PRODUCTION_RELEASE_REF`，例如 `v3.0.0`）：
+1. 确认 `production` GitHub Environment 中已记录经显式批准的 40 位发布提交哈希 `AIRINGCAL_PRODUCTION_RELEASE_SHA`（以及可选的不可变发布标签 `AIRINGCAL_PRODUCTION_RELEASE_REF`，例如 `v3.0.0`，该标签必须解析到同一提交 SHA；切勿将未经发布的任意 `dev` HEAD 直接隐式当作生产版本）：
    ```bash
-   gh variable set AIRINGCAL_PRODUCTION_RELEASE_SHA --env production --repo <owner>/<repo> --body "$(git rev-parse HEAD)"
+   gh variable set AIRINGCAL_PRODUCTION_RELEASE_SHA --env production --repo <owner>/<repo> --body "$(git rev-parse v3.0.0^{commit})"
+   gh variable set AIRINGCAL_PRODUCTION_RELEASE_REF --env production --repo <owner>/<repo> --body "v3.0.0"
    ```
 2. 保持手动触发门禁变量 `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED` 处于默认的 `false` 关闭状态（该变量仅用于临时授权手动 `workflow_dispatch`，**切勿**为了定时任务而将其长期设为 `true`）。
 3. 开启仓库级定时调度总开关变量并启用 `portable-writer.yml` 工作流：
@@ -203,13 +204,17 @@ https://airingcal-production.<your-subdomain>.workers.dev/
    gh workflow enable portable-writer.yml --repo <owner>/<repo>
    ```
 
-> **关于 GitHub Actions 定时工作流与默认分支治理的说明**：GitHub Actions 的 `schedule` 触发器始终从仓库默认分支解析工作流 YAML 定义。尽管 `production` 作业在安装依赖、构建与运行 Writer 之前会强制检出并校验 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 对应的发布源码树，但在开启无人值守定时同步前，建议将 Fork 仓库的默认分支设为 `main`，或为 GitHub Environment `production` 配置受保护的部署分支/标签策略（仅允许 `v*` / `main`）。
+> **关于 GitHub Actions 定时工作流、默认分支与环境分支策略的执行机制说明**：
+> - GitHub Actions 的 `schedule` 触发器始终从仓库默认分支（`refs/heads/<default_branch>`）解析并执行工作流 YAML 定义本身。
+> - 在作业运行内部，`production` 作业会强制检出并校验 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 对应的发布源码树（包括 `pnpm install`、打包产物、`scripts/gha-portable-writer.sh` 以及写入快照的 `BANGUMI_GIT_COMMIT_SHA`）。
+> - GitHub Environment `production` 的受保护部署分支/标签策略（Deployment branch/tag policy）只负责拦截未被允许访问 `production` 环境的分支，**不会**把默认分支上的 `schedule` 触发自动重定向到其他分支。因此，“将 `main` 设为默认分支”与“为 `production` 环境配置仅允许 `main`/`v*` 的分支策略”**不是**可以互换的二选一方案：如果仓库默认分支仍为 `dev`，同时 `production` 环境策略拒绝 `dev`（仅允许 `main` 或 `v*`），定时 Production 运行将被 GitHub Actions **直接拦截**，而不会自动切换到 `main` 运行。
+> - 反之，在包含 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 校验的加固版 `.github/workflows/portable-writer.yml` 正式发布到 `main` 之前，若提前将默认分支切换为 `main`，定时任务将执行 `main` 上的旧版工作流定义。此外，若在 `production` 环境上启用必需审批人（Required reviewers），无人值守的定时任务也会暂停等待人工审批。
 
 ---
 
 ## 已知限制与后续规划
 
-- **`v3.0.0` 仅内置 Cloudflare 读取面**：`v3.0.0` 正式版收敛为唯一官方支持的 **GitHub Actions Portable Writer → 私有 Cloudflare R2 → Cloudflare Reader Worker** 拓扑。其他读取平台适配器（腾讯云 EdgeOne [#210](https://github.com/Skyline-Gazer/AiringCal/issues/210)、Vercel [#211](https://github.com/Skyline-Gazer/AiringCal/issues/211)、Netlify [#212](https://github.com/Skyline-Gazer/AiringCal/issues/212)）作为 `v3.0.0` 之后的独立演进项追踪。
+- **`v3.0.0` 仅内置 Cloudflare 读取面**：`v3.0.0` 正式版收敛为唯一官方支持的 **GitHub Actions Portable Writer → 私有 Cloudflare R2 → Cloudflare Reader Worker** 拓扑。其他读取平台候选适配器（腾讯云 EdgeOne、Vercel、Netlify）统一在 [#210](https://github.com/Skyline-Gazer/AiringCal/issues/210) 追踪；Cloudflare 原生与 AI 原生安装体验研究（含脱敏公开 Demo）在 [#211](https://github.com/Skyline-Gazer/AiringCal/issues/211) 追踪；安装指南与博客发布链接在 [#212](https://github.com/Skyline-Gazer/AiringCal/issues/212) 追踪。
 - **更新时 GitHub Environment S3 密钥的不可读性**：GitHub Actions Environment Secrets（`AIRINGCAL_PRODUCTION_S3_*`）仅支持写入、不支持读取明文。当你在未提供本地 `AIRINGCAL_S3_*` 凭据的情况下更新现有部署时，`pnpm run setup` 会保留现有 GitHub Secrets，并通过 Cloudflare API 校验 Writer Token 的激活状态与单桶策略范围，同时诚实地将终端结论标记为 `UPDATED_PARTIAL_VERIFICATION`（`not-verified-github-secret-only`）。
 
 ---

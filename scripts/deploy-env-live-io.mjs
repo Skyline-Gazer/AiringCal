@@ -25,6 +25,7 @@ import {
   parseWranglerWhoamiAccounts,
   parseWranglerWhoamiJson,
   redactSecrets,
+  resolveAuthorizedProductionReleaseIdentity,
   validateImageCdnConfig,
   validateProductionReleaseIdentity,
 } from './deploy-env-lib.mjs'
@@ -1084,6 +1085,43 @@ export function createLiveDevelopmentApplyIo({
     }
   }
 
+  function readRemoteEnvVar(envName, varName) {
+    const r = spawnSyncImpl(
+      'gh',
+      ['api', `repos/${repo}/environments/${envName}/variables/${varName}`, '--jq', '.value'],
+      { encoding: 'utf8', cwd: ROOT, env: { ...process.env, ...env } },
+    )
+    if (r?.status === 0) {
+      const raw = String(r.stdout ?? '').trim()
+      if (!raw) return null
+      try {
+        const parsed = JSON.parse(raw)
+        if (parsed && typeof parsed === 'object') {
+          return 'value' in parsed ? String(parsed.value).trim() : null
+        }
+      } catch { /* jq output is already raw value */ }
+      return raw
+    }
+    return null
+  }
+
+  async function verifyReleaseIdentityPreflight(ctx = {}) {
+    if (!isProduction) return null
+    const op = String(ctx?.operation ?? plan?.operation ?? env.AIRINGCAL_OPERATION ?? 'install').trim().toLowerCase() || 'install'
+    const existingSha = op !== 'install' ? readRemoteEnvVar('production', 'AIRINGCAL_PRODUCTION_RELEASE_SHA') : null
+    const existingRef = op !== 'install' ? readRemoteEnvVar('production', 'AIRINGCAL_PRODUCTION_RELEASE_REF') : null
+    const identity = resolveAuthorizedProductionReleaseIdentity({
+      env,
+      operation: op,
+      existingReleaseSha: existingSha,
+      existingReleaseRef: existingRef,
+      spawnSyncImpl,
+      repo,
+    })
+    ctx.approvedReleaseIdentity = identity
+    return identity
+  }
+
   return {
     /**
      * #195: the setup wizard's verifier needs the SAME S3 credentials the
@@ -1105,6 +1143,7 @@ export function createLiveDevelopmentApplyIo({
     },
 
     verifyRepositoryPreflight,
+    verifyReleaseIdentityPreflight,
 
     /**
      * Amendment A, B & C: Pre-mutation verification of an existing installation before `update`.
@@ -1296,26 +1335,12 @@ export function createLiveDevelopmentApplyIo({
         )
       }
 
-      const readEnvVar = (varName) => {
-        const r = spawnSyncImpl(
-          'gh',
-          ['api', `repos/${repo}/environments/${envName}/variables/${varName}`, '--jq', '.value'],
-          { encoding: 'utf8', cwd: ROOT, env: { ...process.env, ...env } },
-        )
-        if (r?.status === 0) {
-          const raw = String(r.stdout ?? '').trim()
-          try {
-            const parsed = JSON.parse(raw)
-            if (parsed && typeof parsed === 'object' && 'value' in parsed) return String(parsed.value).trim()
-          } catch { /* jq output is already raw value */ }
-          return raw
-        }
-        return null
-      }
-      const remoteBucketVar = readEnvVar(`${prefix}R2_BUCKET`)
-      const remoteAcctVar = readEnvVar(`${prefix}CLOUDFLARE_ACCOUNT_ID`)
-      const remoteUserVar = readEnvVar(`${prefix}PRIMARY_USER_ID`)
-      const remotePublicBaseVar = readEnvVar(`${prefix}PUBLIC_BASE_URL`)
+      const remoteBucketVar = readRemoteEnvVar(envName, `${prefix}R2_BUCKET`)
+      const remoteAcctVar = readRemoteEnvVar(envName, `${prefix}CLOUDFLARE_ACCOUNT_ID`)
+      const remoteUserVar = readRemoteEnvVar(envName, `${prefix}PRIMARY_USER_ID`)
+      const remotePublicBaseVar = readRemoteEnvVar(envName, `${prefix}PUBLIC_BASE_URL`)
+      const remoteReleaseShaVar = isProduction ? readRemoteEnvVar(envName, `${prefix}RELEASE_SHA`) : null
+      const remoteReleaseRefVar = isProduction ? readRemoteEnvVar(envName, `${prefix}RELEASE_REF`) : null
 
       if (remoteBucketVar && remoteBucketVar !== bucket) {
         throw taggedError(
@@ -1347,6 +1372,20 @@ export function createLiveDevelopmentApplyIo({
           `GitHub Environment "${envName}" variable ${prefix}PUBLIC_BASE_URL is "${remotePublicBaseVar}", which differs from planned "${plannedBase}". Refusing silent custom domain / origin change during update without AIRINGCAL_ALLOW_DOMAIN_CHANGE=yes.`,
           { code: 'FOREIGN_OR_INCONSISTENT_INSTALLATION', errorCategory: 'resource-conflict', exitCode: 2 },
         )
+      }
+
+      const approvedReleaseIdentity = isProduction
+        ? resolveAuthorizedProductionReleaseIdentity({
+            env,
+            operation: 'update',
+            existingReleaseSha: remoteReleaseShaVar,
+            existingReleaseRef: remoteReleaseRefVar,
+            spawnSyncImpl,
+            repo,
+          })
+        : null
+      if (approvedReleaseIdentity) {
+        ctx.approvedReleaseIdentity = approvedReleaseIdentity
       }
 
       const secretListRes = spawnSyncImpl(
@@ -1557,6 +1596,7 @@ export function createLiveDevelopmentApplyIo({
         observedBucket,
         credentialVerification,
         writerCredentialState,
+        approvedReleaseIdentity,
       }
     },
     async probeToken(ctx = {}) {
@@ -3063,11 +3103,13 @@ export function createLiveDevelopmentApplyIo({
 
     async syncGithubEnvironment(ctx = {}) {
       const envName = isProduction ? 'production' : 'development'
-      // ShipReview #4: the production job's "Validate required production
-      // config" treats AIRINGCAL_PRODUCTION_USERS_JSON and _PRIMARY_USER_ID
-      // as required vars. The empty-value filter in the write loop below
-      // would silently SKIP them, and the FIRST FULL SYNC — the very next
-      // Owner action — would fail hours later. Refuse before ANY gh call.
+      const prefix = isProduction ? 'AIRINGCAL_PRODUCTION_' : 'AIRINGCAL_DEVELOPMENT_'
+      const op = String(ctx?.operation ?? plan?.operation ?? env.AIRINGCAL_OPERATION ?? 'install').trim().toLowerCase() || 'install'
+      // ShipReview #4 + Fix A1: Validate required source variables AND explicit
+      // Production release authorization BEFORE any GitHub Environment PUT or
+      // variable/secret mutation occurs. Never fall back to BANGUMI_GIT_COMMIT_SHA,
+      // plan.gitSha, or current git HEAD!
+      let approvedRelease = ctx?.approvedReleaseIdentity ?? null
       if (isProduction) {
         const requiredMissing = ['AIRINGCAL_USERS_JSON', 'AIRINGCAL_PRIMARY_USER_ID']
           .filter((sourceKey) => !String(env[sourceKey] ?? '').trim())
@@ -3077,6 +3119,19 @@ export function createLiveDevelopmentApplyIo({
               'the production job validates the derived AIRINGCAL_PRODUCTION_* variables as required; ' +
               'set the source keys in .env.production and rerun apply (docs/DEPLOYMENT.md "Production apply")',
           )
+        }
+        if (!approvedRelease) {
+          const existingSha = op !== 'install' ? readRemoteEnvVar('production', `${prefix}RELEASE_SHA`) : null
+          const existingRef = op !== 'install' ? readRemoteEnvVar('production', `${prefix}RELEASE_REF`) : null
+          approvedRelease = resolveAuthorizedProductionReleaseIdentity({
+            env,
+            operation: op,
+            existingReleaseSha: existingSha,
+            existingReleaseRef: existingRef,
+            spawnSyncImpl,
+            repo,
+          })
+          ctx.approvedReleaseIdentity = approvedRelease
         }
       }
       const ledger = ledgerFor(ctx)
@@ -3096,7 +3151,6 @@ export function createLiveDevelopmentApplyIo({
       }
 
       const accountId = accountIdFrom(env, plan) || ctx.accountId || ''
-      const prefix = isProduction ? 'AIRINGCAL_PRODUCTION_' : 'AIRINGCAL_DEVELOPMENT_'
       const variables = {
         [`${prefix}PRIMARY_USER_ID`]: String(env.AIRINGCAL_PRIMARY_USER_ID ?? '').trim(),
         [`${prefix}CLOUDFLARE_ACCOUNT_ID`]: accountId,
@@ -3114,25 +3168,9 @@ export function createLiveDevelopmentApplyIo({
         // the repo-level AIRINGCAL_WRITER_ENABLED (untouched here) and manual
         // dispatches read AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED.
         variables[`${prefix}BOOTSTRAP_WRITER_ENABLED`] = 'false'
-        const explicitReleaseSha = String(env.AIRINGCAL_PRODUCTION_RELEASE_SHA ?? '').trim()
-        const rawReleaseRef = String(env.AIRINGCAL_PRODUCTION_RELEASE_REF ?? '').trim()
-        const fallbackGitSha = String(env.BANGUMI_GIT_COMMIT_SHA ?? plan.gitSha ?? '').trim() || (() => {
-          const r = spawnSyncImpl('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', cwd: ROOT })
-          const candidate = r?.status === 0 ? String(r.stdout ?? '').trim() : ''
-          return /^[0-9a-f]{40}$/i.test(candidate) ? candidate : ''
-        })()
-        const releaseShaCandidate = explicitReleaseSha || fallbackGitSha
-        if (explicitReleaseSha || rawReleaseRef) {
-          const validated = validateProductionReleaseIdentity({
-            releaseSha: releaseShaCandidate,
-            releaseRef: rawReleaseRef,
-          })
-          variables[`${prefix}RELEASE_SHA`] = validated.releaseSha
-          if (validated.releaseRef) {
-            variables[`${prefix}RELEASE_REF`] = validated.releaseRef
-          }
-        } else if (/^[0-9a-f]{40}$/i.test(releaseShaCandidate)) {
-          variables[`${prefix}RELEASE_SHA`] = releaseShaCandidate.toLowerCase()
+        variables[`${prefix}RELEASE_SHA`] = approvedRelease.releaseSha
+        if (approvedRelease.releaseRef) {
+          variables[`${prefix}RELEASE_REF`] = approvedRelease.releaseRef
         }
       } else {
         variables[`${prefix}WRITER_ENABLED`] = 'false'
@@ -3180,6 +3218,26 @@ export function createLiveDevelopmentApplyIo({
         } catch (error) {
           if (isAmbiguousTransportError(error)) varEntry.unknown(error, `Inspect GitHub variable ${name} on ${envName}`)
           else varEntry.fail(error)
+          throw error
+        }
+      }
+      if (isProduction && approvedRelease?.clearStaleReleaseRef) {
+        const delEntry = ledger.begin({
+          op: 'github-variable-delete',
+          stepId: 'sync-gh-env',
+          resourceType: 'github-variable',
+          target: `${envName}:${prefix}RELEASE_REF`,
+        })
+        try {
+          await runGh(
+            spawnSyncImpl,
+            ['variable', 'delete', `${prefix}RELEASE_REF`, '--env', envName, '--repo', repo],
+            env,
+          )
+          delEntry.confirm(`deleted stale variable ${prefix}RELEASE_REF`)
+        } catch (error) {
+          if (isAmbiguousTransportError(error)) delEntry.unknown(error, `Inspect GitHub variable ${prefix}RELEASE_REF on ${envName}`)
+          else delEntry.fail(error)
           throw error
         }
       }

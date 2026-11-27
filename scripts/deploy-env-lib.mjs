@@ -516,6 +516,185 @@ export function validateProductionReleaseIdentity({ releaseSha, releaseRef = '' 
   }
 }
 
+function makeReleaseIdentityError(message, code = 'RELEASE_IDENTITY_INVALID') {
+  const err = new Error(message)
+  err.code = code
+  err.errorCategory = 'resource-conflict'
+  err.exitCode = 2
+  return err
+}
+
+/**
+ * Resolve a git ref/tag or commit SHA to an exact 40-hex commit SHA via git or gh.
+ */
+export function resolveVerifiedGitCommit({ refOrSha, repo = '', spawnSyncImpl = null, env = {} } = {}) {
+  const target = String(refOrSha ?? '').trim()
+  if (!target || typeof spawnSyncImpl !== 'function') return null
+  const gitRes = spawnSyncImpl('git', ['rev-parse', '--verify', `${target}^{commit}`], {
+    encoding: 'utf8',
+  })
+  const gitOut = gitRes?.status === 0 ? String(gitRes.stdout ?? '').trim().toLowerCase() : ''
+  if (HEX_40_RE.test(gitOut)) return gitOut
+
+  if (repo) {
+    const ghRes = spawnSyncImpl('gh', ['api', `repos/${repo}/commits/${encodeURIComponent(target)}`, '--jq', '.sha'], {
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    })
+    const ghOut = ghRes?.status === 0 ? String(ghRes.stdout ?? '').trim().toLowerCase() : ''
+    if (HEX_40_RE.test(ghOut)) return ghOut
+  }
+  return null
+}
+
+/**
+ * Fix A1: Explicit Production Release Authorization & Preservation Contract.
+ *
+ * Never implicitly derives or approves Production release identity from
+ * `BANGUMI_GIT_COMMIT_SHA`, `plan.gitSha`, or current `git rev-parse HEAD`.
+ */
+export function resolveAuthorizedProductionReleaseIdentity({
+  env = {},
+  operation = 'install',
+  existingReleaseSha = null,
+  existingReleaseRef = null,
+  spawnSyncImpl = null,
+  repo = '',
+} = {}) {
+  const isUpdate = operation === 'update' || operation === 'recover'
+  const explicitSha = String(env.AIRINGCAL_PRODUCTION_RELEASE_SHA ?? '').trim()
+  const explicitRef = String(env.AIRINGCAL_PRODUCTION_RELEASE_REF ?? '').trim()
+  const changeAuthorized = String(env.AIRINGCAL_ALLOW_RELEASE_CHANGE ?? '').trim() === 'yes'
+
+  const existingShaTrimmed = String(existingReleaseSha ?? '').trim()
+  const existingRefTrimmed = String(existingReleaseRef ?? '').trim()
+
+  let verifiedExisting = null
+  if (existingShaTrimmed) {
+    try {
+      verifiedExisting = validateProductionReleaseIdentity({
+        releaseSha: existingShaTrimmed,
+        releaseRef: existingRefTrimmed,
+      })
+    } catch (err) {
+      throw makeReleaseIdentityError(
+        `Existing GitHub Environment variable AIRINGCAL_PRODUCTION_RELEASE_SHA/REF is invalid: ${err.message}`,
+        'RELEASE_IDENTITY_INVALID',
+      )
+    }
+    if (verifiedExisting.releaseRef && typeof spawnSyncImpl === 'function') {
+      const resolvedExistingRef = resolveVerifiedGitCommit({
+        refOrSha: verifiedExisting.releaseRef,
+        repo,
+        spawnSyncImpl,
+        env,
+      })
+      if (resolvedExistingRef !== verifiedExisting.releaseSha) {
+        throw makeReleaseIdentityError(
+          `Existing AIRINGCAL_PRODUCTION_RELEASE_REF (${verifiedExisting.releaseRef} -> ${resolvedExistingRef || 'unresolved'}) does not match existing AIRINGCAL_PRODUCTION_RELEASE_SHA (${verifiedExisting.releaseSha})`,
+          'RELEASE_REF_SHA_MISMATCH',
+        )
+      }
+    }
+  }
+
+  let validatedExplicit = null
+  if (explicitSha || explicitRef) {
+    let targetSha = explicitSha
+    if (!targetSha && explicitRef && typeof spawnSyncImpl === 'function') {
+      targetSha = resolveVerifiedGitCommit({ refOrSha: explicitRef, repo, spawnSyncImpl, env }) || ''
+    }
+    try {
+      validatedExplicit = validateProductionReleaseIdentity({
+        releaseSha: targetSha,
+        releaseRef: explicitRef,
+      })
+    } catch (err) {
+      const isMissing = /Missing required production release identity/i.test(err.message)
+      throw makeReleaseIdentityError(
+        err.message,
+        isMissing ? 'RELEASE_IDENTITY_REQUIRED' : 'RELEASE_IDENTITY_INVALID',
+      )
+    }
+    if (validatedExplicit.releaseRef && typeof spawnSyncImpl === 'function') {
+      const resolvedRefSha = resolveVerifiedGitCommit({
+        refOrSha: validatedExplicit.releaseRef,
+        repo,
+        spawnSyncImpl,
+        env,
+      })
+      if (!resolvedRefSha || resolvedRefSha !== validatedExplicit.releaseSha) {
+        throw makeReleaseIdentityError(
+          `AIRINGCAL_PRODUCTION_RELEASE_REF (${validatedExplicit.releaseRef} -> ${resolvedRefSha || 'unresolved'}) does not resolve to approved AIRINGCAL_PRODUCTION_RELEASE_SHA (${validatedExplicit.releaseSha})`,
+          'RELEASE_REF_SHA_MISMATCH',
+        )
+      }
+    }
+  }
+
+  if (isUpdate) {
+    if (verifiedExisting) {
+      if (!validatedExplicit) {
+        return {
+          ...verifiedExisting,
+          provenance: 'preserved-existing',
+          clearStaleReleaseRef: false,
+        }
+      }
+      const shaChanged = validatedExplicit.releaseSha !== verifiedExisting.releaseSha
+      const refChanged =
+        Boolean(validatedExplicit.releaseRef) &&
+        validatedExplicit.releaseRef !== (verifiedExisting.releaseRef ?? null)
+      if ((shaChanged || refChanged) && !changeAuthorized) {
+        throw makeReleaseIdentityError(
+          `Existing Production release identity (${verifiedExisting.releaseSha}${verifiedExisting.releaseRef ? ` / ${verifiedExisting.releaseRef}` : ''}) differs from requested (${validatedExplicit.releaseSha}${validatedExplicit.releaseRef ? ` / ${validatedExplicit.releaseRef}` : ''}); set AIRINGCAL_ALLOW_RELEASE_CHANGE=yes to authorize changing the Production Writer release identity during update.`,
+          'RELEASE_CHANGE_UNAUTHORIZED',
+        )
+      }
+      if (!shaChanged && !validatedExplicit.releaseRef && verifiedExisting.releaseRef) {
+        return {
+          ...verifiedExisting,
+          provenance: 'preserved-existing',
+          clearStaleReleaseRef: false,
+        }
+      }
+      const clearStaleReleaseRef = Boolean(
+        shaChanged && !validatedExplicit.releaseRef && verifiedExisting.releaseRef,
+      )
+      return {
+        ...validatedExplicit,
+        provenance: shaChanged || refChanged ? 'explicit-release-change' : 'preserved-existing',
+        clearStaleReleaseRef,
+      }
+    }
+    if (validatedExplicit) {
+      return {
+        ...validatedExplicit,
+        provenance: 'explicit-initial-on-update',
+        clearStaleReleaseRef: Boolean(!validatedExplicit.releaseRef && existingRefTrimmed),
+      }
+    }
+    throw makeReleaseIdentityError(
+      'Existing Production installation has no configured AIRINGCAL_PRODUCTION_RELEASE_SHA in the production GitHub Environment, and no explicit AIRINGCAL_PRODUCTION_RELEASE_SHA was provided. Refusing to silently derive Production release identity from current HEAD.',
+      'RELEASE_IDENTITY_REQUIRED',
+    )
+  }
+
+  // Fresh install
+  if (validatedExplicit) {
+    const clearStaleReleaseRef = Boolean(!validatedExplicit.releaseRef && existingRefTrimmed)
+    return {
+      ...validatedExplicit,
+      provenance: 'explicit-approved',
+      clearStaleReleaseRef,
+    }
+  }
+  throw makeReleaseIdentityError(
+    'Missing required explicit Production release authorization: set AIRINGCAL_PRODUCTION_RELEASE_SHA (40-character approved release commit SHA, plus optional immutable release tag AIRINGCAL_PRODUCTION_RELEASE_REF such as v3.0.0) or confirm an eligible release candidate in pnpm run setup. Production never silently falls back to current git HEAD, BANGUMI_GIT_COMMIT_SHA, or plan.gitSha.',
+    'RELEASE_IDENTITY_REQUIRED',
+  )
+}
+
 /**
  * Steps whose success implies EXTERNAL state may have changed (bucket,
  * GitHub env/vars/secrets, workers, edge config, dispatches). Read-only or
@@ -2227,9 +2406,11 @@ export async function runProductionApply({
     }
     completed.push('token-probe')
 
-    // Amendment A & C: On update (or when io.verifyExistingInstallation is provided for update),
-    // verify existing installation ownership, Worker R2 binding, GitHub Environment consistency,
-    // repository permissions, and release state BEFORE any mutation occurs.
+    // Amendment A & C + Fix A1: On update, verify existing installation ownership,
+    // Worker R2 binding, GitHub Environment consistency, repository permissions,
+    // and approved Production release identity BEFORE any mutation occurs.
+    // On install/recover, validate repository preflight and explicit Production
+    // release identity authorization BEFORE creating R2 buckets or minting tokens.
     if (isUpdate) {
       const existingCheck = await requireIoMethod(io, 'verifyExistingInstallation')(ctx)
       ctx.installationState = existingCheck?.installationState ?? 'verified-initialized'
@@ -2243,10 +2424,18 @@ export async function runProductionApply({
       if (existingCheck?.writerCredentialState) {
         ctx.writerCredentialState = existingCheck.writerCredentialState
       }
+      if (existingCheck?.approvedReleaseIdentity) {
+        ctx.approvedReleaseIdentity = existingCheck.approvedReleaseIdentity
+      }
       completed.push('verify-existing-installation')
-    } else if (typeof io.verifyRepositoryPreflight === 'function') {
-      await io.verifyRepositoryPreflight(ctx)
-      completed.push('verify-repository-preflight')
+    } else {
+      if (typeof io.verifyRepositoryPreflight === 'function') {
+        await io.verifyRepositoryPreflight(ctx)
+        completed.push('verify-repository-preflight')
+      }
+      if (typeof io.verifyReleaseIdentityPreflight === 'function') {
+        ctx.approvedReleaseIdentity = await io.verifyReleaseIdentityPreflight(ctx)
+      }
     }
 
     if (!isUpdate || Boolean(String(env.AIRINGCAL_S3_ACCESS_KEY_ID ?? '').trim() && String(env.AIRINGCAL_S3_SECRET_ACCESS_KEY ?? '').trim()) || Boolean(String(env.AIRINGCAL_WRITER_TOKEN_ROTATION_ID ?? '').trim())) {

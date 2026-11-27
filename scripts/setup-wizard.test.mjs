@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import test from 'node:test'
-import { applyPlan, askS3CredentialFallback, discoverIdentity, planCustomDomain, resolveApplyEnvironment, runDoctor, runFirstSync, writeInventory } from './setup-wizard.mjs'
+import { applyPlan, askS3CredentialFallback, discoverIdentity, discoverProductionReleaseCandidate, planCustomDomain, resolveApplyEnvironment, runDoctor, runFirstSync, writeInventory } from './setup-wizard.mjs'
 import {
   assertInventorySanitized,
   buildInventory,
@@ -1041,4 +1041,75 @@ test('Regression F7: failed sync leaves bucket state sync-outcome-unknown-and-pr
   } finally {
     rmSync(invDir, { recursive: true, force: true })
   }
+})
+
+test('Fix A1: release candidate discovery never approves by itself; only interactive confirmation synthesizes the release SHA', () => {
+  const tagSha = '42f497cab180cd57eb1d2dc773d6b9979d9428bc'
+  const spawnSyncImpl = (cmd, args) => {
+    if (cmd === 'gh' && args[1].endsWith('/releases/latest')) return { status: 0, stdout: 'v3.0.0\n' }
+    if (cmd === 'git' && args[0] === 'rev-parse' && args[2] === 'v3.0.0^{commit}') return { status: 0, stdout: `${tagSha}\n` }
+    return { status: 1, stdout: '', stderr: 'unexpected' }
+  }
+  const discovered = discoverProductionReleaseCandidate({ env: {}, repo: 'o/r', spawnSyncImpl })
+  assert.deepEqual(
+    { sha: discovered.releaseSha, ref: discovered.releaseRef, source: discovered.source },
+    { sha: tagSha, ref: 'v3.0.0', source: 'published-release-tag' },
+  )
+  const existing = discoverProductionReleaseCandidate({
+    env: {},
+    partialState: { githubEnvVariables: { AIRINGCAL_PRODUCTION_RELEASE_SHA: 'a'.repeat(40), AIRINGCAL_PRODUCTION_RELEASE_REF: 'v2.9.0' } },
+    repo: 'o/r',
+    spawnSyncImpl,
+  })
+  assert.equal(existing.source, 'existing-environment')
+  assert.equal(existing.releaseSha, 'a'.repeat(40))
+
+  const sourceEnv = { AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED: 'yes', AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes' }
+  const headless = resolveApplyEnvironment({
+    environment: 'production', headless: true, approved: true, wizardEnv: {}, sourceEnv, approvedReleaseCandidate: discovered,
+  })
+  assert.equal(headless.AIRINGCAL_PRODUCTION_RELEASE_SHA, undefined, 'headless never synthesizes the release SHA')
+  const interactive = resolveApplyEnvironment({
+    environment: 'production', headless: false, approved: true, wizardEnv: {}, approvedReleaseCandidate: discovered,
+  })
+  assert.equal(interactive.AIRINGCAL_PRODUCTION_RELEASE_SHA, tagSha)
+  assert.equal(interactive.AIRINGCAL_PRODUCTION_RELEASE_REF, 'v3.0.0')
+  const unconfirmed = resolveApplyEnvironment({ environment: 'production', headless: false, approved: true, wizardEnv: {} })
+  assert.equal(unconfirmed.AIRINGCAL_PRODUCTION_RELEASE_SHA, undefined)
+
+  // Fork fallback when gh api repos/<fork>/releases/latest returns 404 Not Found: falls back to local v* release tag
+  const forkSpawn = (cmd, args) => {
+    if (cmd === 'gh' && args[1].endsWith('/releases/latest')) return { status: 1, stdout: '', stderr: 'Not Found (HTTP 404)' }
+    if (cmd === 'git' && args[0] === 'describe') return { status: 128, stdout: '', stderr: 'fatal: no tag exactly matches' }
+    if (cmd === 'git' && args[0] === 'tag') return { status: 0, stdout: 'v3.0.0-dev\nv3.0.0\nv2.9.0\n', stderr: '' }
+    if (cmd === 'git' && args[0] === 'rev-parse' && args[2] === 'v3.0.0^{commit}') return { status: 0, stdout: `${tagSha}\n` }
+    return { status: 1, stdout: '', stderr: 'unexpected' }
+  }
+  const forkDiscovered = discoverProductionReleaseCandidate({ env: {}, repo: 'fork/r', spawnSyncImpl: forkSpawn })
+  assert.deepEqual(
+    { sha: forkDiscovered.releaseSha, ref: forkDiscovered.releaseRef, source: forkDiscovered.source },
+    { sha: tagSha, ref: 'v3.0.0', source: 'published-release-tag' },
+  )
+
+  // Explicit RELEASE_REF-only in env resolves SHA via resolveVerifiedGitCommit instead of falling through to existingSha
+  const refOnly = discoverProductionReleaseCandidate({
+    env: { AIRINGCAL_PRODUCTION_RELEASE_REF: 'v3.0.0' },
+    partialState: { githubEnvVariables: { AIRINGCAL_PRODUCTION_RELEASE_SHA: 'a'.repeat(40), AIRINGCAL_PRODUCTION_RELEASE_REF: 'v2.9.0' } },
+    repo: 'o/r',
+    spawnSyncImpl,
+  })
+  assert.equal(refOnly.source, 'explicit-env')
+  assert.equal(refOnly.releaseSha, tagSha)
+  assert.equal(refOnly.releaseRef, 'v3.0.0')
+  assert.equal(refOnly.changesExisting, true)
+
+  // Invalid explicit RELEASE_SHA surfaces as invalid-explicit-env rather than silently displaying existing-environment
+  const invalidExplicit = discoverProductionReleaseCandidate({
+    env: { AIRINGCAL_PRODUCTION_RELEASE_SHA: 'not-a-sha' },
+    partialState: { githubEnvVariables: { AIRINGCAL_PRODUCTION_RELEASE_SHA: 'a'.repeat(40) } },
+    repo: 'o/r',
+    spawnSyncImpl,
+  })
+  assert.equal(invalidExplicit.source, 'invalid-explicit-env')
+  assert.equal(invalidExplicit.releaseSha, null)
 })
