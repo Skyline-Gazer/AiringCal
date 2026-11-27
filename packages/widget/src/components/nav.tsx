@@ -7,16 +7,16 @@ const VIEWS: { key: ViewKey; label: string }[] = [
   { key: 'calendar', label: '放送日历' },
 ]
 
-export function ViewTabs({ value, onChange }: { value: ViewKey; onChange: (view: ViewKey) => void }) {
+export function ViewTabs({ value, onChange, idBase }: { value: ViewKey; onChange: (view: ViewKey) => void; idBase: string }) {
   return (
     <div class="bgm-view-switch" role="tablist" aria-label="视图">
       {VIEWS.map((view) => (
         <button
           type="button"
           role="tab"
-          id={`bgm-tab-${view.key}`}
+          id={`bgm-tab-${idBase}-${view.key}`}
           aria-selected={value === view.key}
-          aria-controls={`bgm-panel-${view.key}`}
+          aria-controls={`bgm-panel-${idBase}-${view.key}`}
           class={value === view.key ? 'bgm-tab active' : 'bgm-tab'}
           onClick={() => onChange(view.key)}
         >
@@ -44,16 +44,17 @@ export function TypeTabs({ value, onChange }: { value: CollectionType; onChange:
   )
 }
 
-function weekdayButtonId(id: number): string {
-  return `bgm-weekday-tab-${id}`
+function weekdayButtonId(idBase: string, id: number): string {
+  return `${idBase}-weekday-tab-${id}`
 }
 
 export function WeekdayTabs(props: {
   days: Array<{ weekday: { id: number; cn: string; en: string } }>
   value: number
   onChange: (id: number) => void
+  idBase: string
 }) {
-  const { days, value, onChange } = props
+  const { days, value, onChange, idBase } = props
   const move = (event: KeyboardEvent, direction: 1 | -1 | 'home' | 'end') => {
     event.preventDefault()
     const ids = days.map((day) => day.weekday.id)
@@ -65,7 +66,7 @@ export function WeekdayTabs(props: {
         : ids[(index + direction + ids.length) % ids.length]
     if (nextId === undefined) return
     onChange(nextId)
-    requestAnimationFrame(() => document.getElementById(weekdayButtonId(nextId))?.focus())
+    requestAnimationFrame(() => document.getElementById(weekdayButtonId(idBase, nextId))?.focus())
   }
   return (
     <div class="bgm-weekday-nav" role="tablist" aria-label="按星期切换">
@@ -75,9 +76,9 @@ export function WeekdayTabs(props: {
           <button
             type="button"
             role="tab"
-            id={weekdayButtonId(day.weekday.id)}
+            id={weekdayButtonId(idBase, day.weekday.id)}
             aria-selected={selected}
-            aria-controls="bgm-weekday-panel"
+            aria-controls={`${idBase}-weekday-panel`}
             tabIndex={selected ? 0 : -1}
             class={selected ? 'bgm-weekday-tab active' : 'bgm-weekday-tab'}
             onClick={() => onChange(day.weekday.id)}

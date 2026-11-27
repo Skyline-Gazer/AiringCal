@@ -4,7 +4,7 @@ import { buildInfo, renderIndexPage, widgetCss, widgetJs } from './index.ts'
 
 test('standalone shell loads the stable widget assets and build stamp', () => {
   const html = renderIndexPage({ commitSha: 'abc1234def' })
-  assert.match(html, /<div class="bgm-container"><\/div>/)
+  assert.match(html, /<div class="bgm-container" data-bgm-standalone="1"><\/div>/)
   assert.match(html, /<link rel="stylesheet" href="\/src\/bangumi\.css">/)
   assert.match(html, /<script src="\/src\/bangumi\.js"><\/script>/)
   assert.match(html, /body class="bgm-page"/)

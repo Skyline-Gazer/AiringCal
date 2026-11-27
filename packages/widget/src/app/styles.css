@@ -1,5 +1,7 @@
 /* AiringCal — Neo-Brutalism theme (Preact app + Embeddable Widget). */
-:root {
+/* Theme tokens never touch the host document: only the widget and its standalone shell. */
+.bgm-container,
+body.bgm-page {
   --nb-bg: #fde047;
   --nb-surface: #ffffff;
   --nb-ink: #000000;
@@ -358,7 +360,7 @@ body.bgm-page {
 }
 
 .bgm-footer-group {
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .bgm-footer-sep {
@@ -417,9 +419,6 @@ body.bgm-page {
     font-size: 12px;
   }
 
-  .bgm-footer-group {
-    white-space: normal;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

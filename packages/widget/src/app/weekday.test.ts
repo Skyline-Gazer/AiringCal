@@ -3,9 +3,9 @@ import test from 'node:test'
 import { resolveSelectedDay, shortWeekdayLabel, todayWeekdayId, weekdayLabel } from './weekday.ts'
 
 test('today maps Sunday to 7 and Monday to 1', () => {
-  assert.equal(todayWeekdayId(new Date('2026-11-23T12:00:00Z')), 1) // Monday
-  assert.equal(todayWeekdayId(new Date('2026-11-27T12:00:00Z')), 5) // Friday
-  assert.equal(todayWeekdayId(new Date('2026-11-29T12:00:00Z')), 7) // Sunday
+  assert.equal(todayWeekdayId(new Date(2026, 10, 23, 12)), 1) // Monday
+  assert.equal(todayWeekdayId(new Date(2026, 10, 27, 12)), 5) // Friday
+  assert.equal(todayWeekdayId(new Date(2026, 10, 29, 12)), 7) // Sunday
 })
 
 test('selection survives re-render and falls back to today, then to the first day', () => {

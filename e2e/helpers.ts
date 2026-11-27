@@ -2,6 +2,17 @@ import { expect, type Page } from '@playwright/test'
 
 /** The acceptance server runs with NSFW enabled, so every fresh context sees the gate. */
 export async function dismissAgeGate(page: Page): Promise<void> {
+  // The dialog only renders once /api/config settles; wait for that state
+  // (or for an existing consent) before deciding whether to click.
+  await page.waitForFunction(() => {
+    if ((document.querySelector('dialog.bgm-dialog') as HTMLDialogElement | null)?.open) return true
+    if (document.querySelector('.bgm-info')) return true
+    try {
+      return sessionStorage.getItem('bgm-age-confirmed') === '1'
+    } catch {
+      return false
+    }
+  }, undefined, { timeout: 5_000 })
   const dialog = page.locator('dialog.bgm-dialog')
   if (await dialog.isVisible()) {
     await page.getByRole('button', { name: '确认已满 18 岁' }).click()

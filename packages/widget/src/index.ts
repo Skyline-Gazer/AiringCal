@@ -29,7 +29,7 @@ export function renderIndexPage(options: { commitSha?: string } = {}): string {
   <title>AiringCal</title>
 </head>
 <body class="bgm-page">
-  <div class="bgm-container"></div>
+  <div class="bgm-container" data-bgm-standalone="1"></div>
   <script>window.__AIRINGCAL_BUILD__=${stamp}</script>
   <script src="/src/bangumi.js"></script>
 </body>

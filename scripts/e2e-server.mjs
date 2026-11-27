@@ -25,7 +25,11 @@ function gitShortSha() {
   return out.status === 0 ? out.stdout.trim() : 'dev'
 }
 
-const hostHtml = `<!doctype html>
+function hostPage(containers) {
+  const body = containers === 1
+    ? '<div class="bgm-container"></div>'
+    : '<h1 class="host-note">A third-party blog</h1><div class="bgm-container"></div><p class="host-between">Host content between two widget instances.</p><div class="bgm-container"></div>'
+  return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -39,14 +43,12 @@ const hostHtml = `<!doctype html>
   </style>
 </head>
 <body>
-  <h1 class="host-note">A third-party blog</h1>
-  <div class="bgm-container"></div>
-  <p class="host-between">Host content between two widget instances.</p>
-  <div class="bgm-container"></div>
+  ${body}
   <script>window.bgmConfig = { apiUrl: '${APP_ORIGIN}' }</script>
   <script src="${APP_ORIGIN}/src/bangumi.js"></script>
 </body>
 </html>`
+}
 
 const seed = spawnSync(
   'pnpm',
@@ -64,6 +66,8 @@ const app = spawn('pnpm', ['exec', 'tsx', 'packages/v3-read/src/serve-node.ts'],
     ...process.env,
     AIRINGCAL_PUBLIC_READ_DIR: publicDir,
     AIRINGCAL_CORS_ORIGINS: HOST_ORIGIN,
+    AIRINGCAL_PUBLIC_BASE_URL: '',
+    AIRINGCAL_IMAGE_BASE_URL: '',
     BANGUMI_GIT_COMMIT_SHA: gitShortSha(),
     PORT: String(APP_PORT),
     NSFW_SHOW: 'true',
@@ -76,7 +80,7 @@ const host = createServer((request, response) => {
     return
   }
   response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
-  response.end(hostHtml)
+  response.end(hostPage(request.url === '/single' ? 1 : 2))
 })
 host.listen(HOST_PORT, '127.0.0.1')
 

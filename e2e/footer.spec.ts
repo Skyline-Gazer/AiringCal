@@ -10,6 +10,7 @@ test('footer shares the page width, stays on one line and reports real metadata'
     data: { cache: { total_subjects: number }; collections: { updated_at: string } }
   }
 
+  await expect(page.locator('.bgm-footer')).toContainText(`SUBJECTS ${health.data.cache.total_subjects}`)
   const layout = await page.evaluate(() => {
     const footer = document.querySelector('.bgm-footer') as HTMLElement
     const container = document.querySelector('.bgm-container') as HTMLElement
@@ -70,11 +71,11 @@ test('tabs expose roles, selection and a labelled panel', async ({ page }) => {
   await dismissAgeGate(page)
   await expect(page.locator('.bgm-view-switch[role="tablist"] [role="tab"]')).toHaveCount(2)
   await expect(page.getByRole('tab', { name: '番组计划' })).toHaveAttribute('aria-selected', 'true')
-  await expect(page.locator('.bgm-view[role="tabpanel"]').first()).toHaveAttribute('aria-labelledby', /bgm-tab-collection/)
+  await expect(page.locator('.bgm-view[role="tabpanel"]').first()).toHaveAttribute('aria-labelledby', /bgm-tab-.+-collection/)
 
   await page.getByRole('tab', { name: '放送日历' }).click()
   await expect(page.locator('.bgm-weekday-nav[role="tablist"]')).toBeVisible()
-  await expect(page.locator('.bgm-weekday[role="tabpanel"]')).toHaveAttribute('aria-labelledby', /bgm-weekday-tab-/)
+  await expect(page.locator('.bgm-weekday[role="tabpanel"]')).toHaveAttribute('aria-labelledby', /weekday-tab-\d+$/)
 })
 
 test('loading keeps the grid occupied and announces busy state', async ({ page }) => {

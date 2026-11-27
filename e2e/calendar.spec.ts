@@ -18,7 +18,7 @@ async function openCalendar(page: Page): Promise<void> {
 async function selectedDay(page: Page): Promise<string> {
   return page.evaluate(() => {
     const tab = document.querySelector('.bgm-weekday-nav [role="tab"][aria-selected="true"]')
-    return tab?.id.replace('bgm-weekday-tab-', '') ?? ''
+    return tab?.id.split('weekday-tab-')[1] ?? ''
   })
 }
 
@@ -77,6 +77,8 @@ test('selection is kept when switching views and reloading the URL', async ({ pa
   await page.getByRole('tab', { name: '放送日历' }).click()
   await expect(page.locator('.bgm-weekday-title')).toContainText('星期日')
 
+  await expect(page).toHaveURL(/view=calendar/)
+  await expect(page).toHaveURL(/day=7/)
   await page.reload()
   await expect(page.locator('.bgm-weekday-nav [role="tab"]')).toHaveCount(7)
   expect(await selectedDay(page)).toBe('7')

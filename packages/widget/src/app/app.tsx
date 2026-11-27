@@ -45,6 +45,7 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
   const [gridElement, setGridElement] = useState<HTMLDivElement | null>(null)
   const capacity = useGridCapacity(gridElement)
   const previousCapacity = useRef<number | null>(null)
+  const lastKnownTotal = useRef<number | null>(null)
 
   const showNsfw = gate.status === 'ok' && gate.allowed && confirmed
   const capacityValue = capacity ?? 12
@@ -83,10 +84,14 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
 
   useEffect(() => {
     if (capacity === null) return
-    if (previousCapacity.current !== null && previousCapacity.current !== capacity) {
-      setPage((current) => pageAfterResize(current, previousCapacity.current!, capacity))
-    }
+    const previous = previousCapacity.current
     previousCapacity.current = capacity
+    if (previous === null || previous === capacity) return
+    setPage((current) => {
+      const mapped = pageAfterResize(current, previous, capacity)
+      const lastPage = lastKnownTotal.current === null ? 0 : totalPages(lastKnownTotal.current, capacity)
+      return lastPage > 0 ? clampPage(mapped, lastPage) : mapped
+    })
   }, [capacity])
 
   useEffect(() => {
@@ -94,7 +99,12 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
     const controller = new AbortController()
     setCollection({ status: 'loading' })
     fetchCollections({ type, page, limit: capacity, nsfw: showNsfw ? 'show' : 'hide' }, controller.signal)
-      .then((body) => setCollection({ status: 'ok', data: { items: body.data, total: body.total } }))
+      .then((body) => {
+        lastKnownTotal.current = body.total
+        setCollection({ status: 'ok', data: { items: body.data, total: body.total } })
+        const lastPage = totalPages(body.total, capacity)
+        if (lastPage > 0) setPage((current) => clampPage(current, lastPage))
+      })
       .catch((error) => {
         if (isAbort(error)) return
         setCollection({ status: 'error', message: error instanceof Error ? error.message : '未知错误' })
@@ -102,11 +112,6 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
     return () => controller.abort()
   }, [type, page, capacity, showNsfw])
 
-  useEffect(() => {
-    if (collection.status !== 'ok' || capacity === null) return
-    const lastPage = totalPages(collection.data.total, capacity)
-    if (lastPage > 0 && page > lastPage) setPage(lastPage)
-  }, [collection, capacity, page])
 
   useEffect(() => {
     if (view !== 'calendar' || calendar !== null) return
@@ -144,16 +149,16 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
   return (
     <>
       <h1 class="bgm-visually-hidden">AiringCal 番组计划与放送日历</h1>
-      <ViewTabs value={view} onChange={setView} />
+      <ViewTabs value={view} onChange={setView} idBase={idBase} />
 
       {gate.status === 'error'
         ? <StateNotice kind="info">NSFW 配置不可用，已隐藏受限内容</StateNotice>
         : null}
 
       <section
-        id={`bgm-panel-collection-${idBase}`}
+        id={`bgm-panel-${idBase}-collection`}
         role="tabpanel"
-        aria-labelledby={`bgm-tab-collection-${idBase}`}
+        aria-labelledby={`bgm-tab-${idBase}-collection`}
         hidden={view !== 'collection'}
         class="bgm-view"
       >
@@ -187,9 +192,9 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
       </section>
 
       <section
-        id={`bgm-panel-calendar-${idBase}`}
+        id={`bgm-panel-${idBase}-calendar`}
         role="tabpanel"
-        aria-labelledby={`bgm-tab-calendar-${idBase}`}
+        aria-labelledby={`bgm-tab-${idBase}-calendar`}
         hidden={view !== 'calendar'}
         class="bgm-view"
       >
@@ -201,7 +206,7 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
               ? <StateNotice kind="empty">暂无日历数据 — 同步可能尚未执行，数据尚未发布，请稍后再试</StateNotice>
               : (
                 <>
-                  <WeekdayTabs days={calendar?.status === 'ok' ? calendar.data : []} value={selectedDay} onChange={setDay} />
+                  <WeekdayTabs days={calendar?.status === 'ok' ? calendar.data : []} value={selectedDay} onChange={setDay} idBase={idBase} />
                   <DayPanel
                     days={calendar?.status === 'ok' ? calendar.data : []}
                     selected={selectedDay}
@@ -245,7 +250,7 @@ function DayPanel(props: {
       id={`${idBase}-weekday-panel`}
       role="tabpanel"
       aria-label={label}
-      aria-labelledby={`bgm-weekday-tab-${selected}`}
+      aria-labelledby={`${idBase}-weekday-tab-${selected}`}
       class="bgm-weekday"
     >
       <div class="bgm-weekday-head">

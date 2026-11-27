@@ -129,3 +129,15 @@ test('widget renders twice on a third-party origin without polluting the host', 
   await expect(page.locator('.bgm-container').first().locator('.bgm-nsfw').first()).toBeVisible()
   await expect(page.locator('.bgm-container').nth(1).locator('.bgm-nsfw').first()).toBeVisible()
 })
+
+test('a single-container embed never rewrites the host URL', async ({ page }) => {
+  await page.goto('http://127.0.0.1:8791/single')
+  await expect(page.locator('.bgm-container .bgm-card').first()).toBeVisible()
+  await expect(page.locator('.bgm-container')).toHaveCount(1)
+  await dismissAgeGate(page)
+  await expect(page).toHaveURL('http://127.0.0.1:8791/single')
+
+  await page.getByRole('tab', { name: '放送日历' }).click()
+  await expect(page.locator('.bgm-weekday-nav [role="tab"]')).toHaveCount(7)
+  await expect(page).toHaveURL('http://127.0.0.1:8791/single')
+})

@@ -39,8 +39,11 @@ export function writeBrowseState(search: string, state: BrowseState): string {
   return params.toString()
 }
 
-/** Embeds must never rewrite the host page URL or share its document state. */
+/**
+ * Only the shell rendered by `renderIndexPage` marks its container as
+ * standalone. A host page with one container directly under body is still an
+ * embed and must never have its URL rewritten.
+ */
 export function isStandalonePage(): boolean {
-  const containers = document.querySelectorAll('.bgm-container')
-  return containers.length === 1 && containers[0]?.parentElement === document.body
+  return document.querySelectorAll('.bgm-container[data-bgm-standalone="1"]').length === 1
 }
