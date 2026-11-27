@@ -63,27 +63,42 @@ function Cover({ model, priority }: { model: CardModel; priority: boolean }) {
 }
 
 export function AnimeCard({ model, priority = false }: { model: CardModel; priority?: boolean }) {
+  const [revealed, setRevealed] = useState(false)
   return (
-    <a
-      class={`bgm-card${model.nsfw ? ' bgm-nsfw' : ''}`}
-      href={`https://bgm.tv/subject/${model.id}`}
-      target="_blank"
-      rel="noopener noreferrer"
-    >
-      <div class="bgm-card-cover">
-        <Cover model={model} priority={priority} />
-      </div>
-      <div class="bgm-card-info">
-        <h3>{model.name}</h3>
-        {model.progress > 0 ? (
-          <div class="bgm-progress">
-            <span style={{ width: `${model.progress}%` }} />
-          </div>
-        ) : null}
-        {model.score > 0 ? <span class="bgm-score">★ {model.score.toFixed(1)}</span> : null}
-        <span class="bgm-ep">{model.meta}</span>
-      </div>
-    </a>
+    <div class={`bgm-card-shell${model.nsfw && revealed ? ' bgm-nsfw-reveal' : ''}`}>
+      <a
+        class={`bgm-card${model.nsfw ? ' bgm-nsfw' : ''}`}
+        href={`https://bgm.tv/subject/${model.id}`}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        <div class="bgm-card-cover">
+          <Cover model={model} priority={priority} />
+        </div>
+        <div class="bgm-card-info">
+          <h3>{model.name}</h3>
+          {model.progress > 0 ? (
+            <div class="bgm-progress">
+              <span style={{ width: `${model.progress}%` }} />
+            </div>
+          ) : null}
+          {model.score > 0 ? <span class="bgm-score">★ {model.score.toFixed(1)}</span> : null}
+          <span class="bgm-ep">{model.meta}</span>
+        </div>
+      </a>
+      {model.nsfw && !revealed
+        ? (
+          <button
+            type="button"
+            class="bgm-nsfw-overlay"
+            aria-label="显示 R18 封面"
+            onClick={() => setRevealed(true)}
+          >
+            R18
+          </button>
+        )
+        : null}
+    </div>
   )
 }
 
