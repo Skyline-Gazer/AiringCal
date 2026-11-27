@@ -22,4 +22,6 @@ pnpm -F @airing-cal/v3-read-worker dev          # wrangler dev -l
 pnpm -F @airing-cal/v3-read-worker test
 pnpm -F @airing-cal/v3-read-worker smoke        # publish fixture -> seed local R2 -> assert HTTP surface
 pnpm -F @airing-cal/v3-read-worker build:check  # wrangler deploy --dry-run (bundle must stay node-free)
+pnpm -F @airing-cal/widget generate             # rebuild frontend assets after editing packages/widget/src/app
+pnpm e2e                                        # Playwright acceptance (Chromium, Firefox, WebKit)
 ```

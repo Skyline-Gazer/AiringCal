@@ -18,7 +18,6 @@ export const V2_STATIC_ASSET_ROUTES = [
   'GET /',
   'GET /src/bangumi.js',
   'GET /src/bangumi.css',
-  'GET /src/cache.js',
 ] as const
 
 export const V2_RETIRED_ROUTES = [

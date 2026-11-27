@@ -22,7 +22,6 @@ The AiringCal Cloudflare Reader Worker (`apps/v3-read-worker`) exposes a **stric
 | `GET /` | `text/html; charset=utf-8` | `public, max-age=300` | Standalone Web Reader HTML application |
 | `GET /src/bangumi.js` | `application/javascript; charset=utf-8` | `public, max-age=300` | Embeddable Widget script |
 | `GET /src/bangumi.css` | `text/css; charset=utf-8` | `public, max-age=300` | Embeddable Widget stylesheet |
-| `GET /src/cache.js` | `application/javascript; charset=utf-8` | `public, max-age=300` | Browser local cache helper |
 
 ### Embedding the Widget in an External Website or Blog
 
@@ -46,6 +45,8 @@ The AiringCal Cloudflare Reader Worker (`apps/v3-read-worker`) exposes a **stric
    <script src="https://airingcal-production.<your-subdomain>.workers.dev/src/bangumi.js"></script>
    ```
 
+Every `.bgm-container` on the page mounts its own instance (multiple embeds are supported). The script exposes no global helpers: `window.bgmConfig` is read-only input, and the host document's `html`/`body` styles, URL and scroll position are left untouched.
+
 ---
 
 ## 3. JSON Read API Endpoints
@@ -54,7 +55,7 @@ Every JSON endpoint is available both under `/api/<route>` and `<route>` (for ex
 
 ### 3.1 `GET /api/collections`
 
-Returns a paginated, filtered, and sorted list of anime subjects from the active published release snapshot.
+Returns a paginated list of anime subjects from the active published release snapshot.
 
 **Query Parameters**:
 
@@ -63,9 +64,9 @@ Returns a paginated, filtered, and sorted list of anime subjects from the active
 | `type` | `watching` \| `want` \| `watched` \| `on_hold` \| `dropped` \| `1`..`5` | `watching` | Collection category (`1=want`, `2=watched`, `3=watching`, `4=on_hold`, `5=dropped`) |
 | `page` | Positive integer (`>= 1`) | `1` | 1-based page number |
 | `limit` | Integer `1..100` | `24` | Items per page |
-| `q` | String | `""` | Case-insensitive substring search matching original title (`name`) or Chinese title (`name_cn`) |
-| `sort` | `updated_at` \| `rate` \| `date` \| `name` | `updated_at` | Sort field (descending for `updated_at`, `rate`, `date`; ascending for `name`) |
-| `user_id` | String | Primary user | Optional user ID filter for multi-user snapshots |
+| `nsfw` | `hide` \| `show` | `show` (all items) | Presentation filter applied **before** totals and pagination. `hide` removes NSFW subjects so `total`, page size and rows stay consistent. Not an authorization boundary. |
+
+Conditional requests use a release-derived `ETag`; the `hide` variant carries its own validator, so the two representations never share a cache entry.
 
 **Headers**:
 - `Cache-Control: public, max-age=30, s-maxage=60, stale-while-revalidate=30`

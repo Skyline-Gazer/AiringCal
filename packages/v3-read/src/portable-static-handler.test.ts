@@ -31,10 +31,12 @@ test('method refusals are scoped to owned assets; other paths fall through (Ship
     assert.equal(response, null, `${method} ${path} must fall through`)
   }
   // Owned static assets keep the read-only refusal.
-  for (const path of ['/', '/src/bangumi.js', '/src/bangumi.css', '/src/cache.js']) {
+  for (const path of ['/', '/src/bangumi.js', '/src/bangumi.css']) {
     const response = handlePortableStaticRequest(new Request(`https://local${path}`, { method: 'POST' }))
     assert.equal(response?.status, 405, `${path} POST`)
   }
+  // The retired cache helper is not part of the static surface any more.
+  assert.equal(handlePortableStaticRequest(new Request('https://local/src/cache.js')), null)
   // Deprecated sync routes answer 410 for every method, including OPTIONS.
   const gone = handlePortableStaticRequest(new Request('https://local/api/sync/apply', { method: 'OPTIONS' }))
   assert.equal(gone?.status, 410)

@@ -10,9 +10,11 @@
   "scripts": {
     "generate": "node ../../scripts/generate-widget-assets.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test"
+    "test": "node ../../scripts/generate-widget-assets.mjs && tsx --test && git diff --exit-code -- src/generated-assets.ts"
   },
   "devDependencies": {
-    "@types/node": "^26.4.0"
+    "@types/node": "^26.4.0",
+    "preact": "^11.2.0",
+    "vite": "^8.4.0"
   }
 }
