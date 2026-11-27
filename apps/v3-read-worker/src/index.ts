@@ -61,6 +61,7 @@ function readHandlerFor(env: ReadWorkerEnv): CloudflareReadHandler {
     imageBaseUrl: env.AIRINGCAL_IMAGE_BASE_URL,
     corsAllowedOrigins: env.AIRINGCAL_CORS_ORIGINS,
     packageVersion: env.PACKAGE_VERSION,
+    build: env.BANGUMI_GIT_COMMIT_SHA ? { commitSha: env.BANGUMI_GIT_COMMIT_SHA } : undefined,
   })
   cachedReadHandler = { fingerprint, binding, handler }
   return handler

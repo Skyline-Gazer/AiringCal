@@ -160,17 +160,18 @@ Returns public reader configuration flags.
 
 ### 3.5 `GET /api/version`
 
-Returns runtime and package version metadata.
+Returns runtime, package and build-source metadata. `build.commitSha` is the `BANGUMI_GIT_COMMIT_SHA` the Worker was deployed with, omitted when unset; the Update preflight compares it with the release commit.
 
 - **Headers**: `Cache-Control: public, max-age=60`
 - **Response (`200 OK`)**:
 
 ```json
 {
+  "app": "airingcal",
   "read": "cloudflare",
   "platform": "cloudflare",
-  "schema_version": 1,
-  "package": "3.0.0"
+  "package": "3.0.0",
+  "build": { "commitSha": "<40-hex>" }
 }
 ```
 
