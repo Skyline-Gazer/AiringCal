@@ -47,7 +47,6 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
   const previousCapacity = useRef<number | null>(null)
 
   const showNsfw = gate.status === 'ok' && gate.allowed && confirmed
-  const gateReady = gate.status !== 'loading'
   const capacityValue = capacity ?? 12
   const pages = collection.status === 'ok' ? totalPages(collection.data.total, capacity ?? 1) : 0
 
@@ -83,15 +82,15 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
   }, [])
 
   useEffect(() => {
-    if (capacity === null || !gateReady) return
+    if (capacity === null) return
     if (previousCapacity.current !== null && previousCapacity.current !== capacity) {
       setPage((current) => pageAfterResize(current, previousCapacity.current!, capacity))
     }
     previousCapacity.current = capacity
-  }, [capacity, gateReady])
+  }, [capacity])
 
   useEffect(() => {
-    if (capacity === null || !gateReady) return
+    if (capacity === null) return
     const controller = new AbortController()
     setCollection({ status: 'loading' })
     fetchCollections({ type, page, limit: capacity, nsfw: showNsfw ? 'show' : 'hide' }, controller.signal)
@@ -101,7 +100,7 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
         setCollection({ status: 'error', message: error instanceof Error ? error.message : '未知错误' })
       })
     return () => controller.abort()
-  }, [type, page, capacity, showNsfw, gateReady])
+  }, [type, page, capacity, showNsfw])
 
   useEffect(() => {
     if (collection.status !== 'ok' || capacity === null) return
@@ -110,7 +109,7 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
   }, [collection, capacity, page])
 
   useEffect(() => {
-    if (view !== 'calendar' || !gateReady || calendar !== null) return
+    if (view !== 'calendar' || calendar !== null) return
     setCalendar({ status: 'loading' })
     const controller = new AbortController()
     fetchCalendar(controller.signal)
@@ -120,7 +119,7 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
         setCalendar({ status: 'error', message: error instanceof Error ? error.message : '未知错误' })
       })
     // No abort on view change: the response is cached for the next activation.
-  }, [view, gateReady, calendar])
+  }, [view, calendar])
 
   const availableDays = calendar?.status === 'ok' ? calendar.data.map((entry) => entry.weekday.id) : []
   const today = useMemo(() => todayWeekdayId(), [])
