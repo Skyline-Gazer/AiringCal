@@ -4,6 +4,23 @@ All notable changes to **AiringCal** are documented in this file.
 
 ---
 
+## [Unreleased]
+
+### Post-Release Hardening & Engineering Convergence (`dev` Integration Branch)
+
+- **Production Writer Release Execution Integrity (`Fix A`)**:
+  - `.github/workflows/portable-writer.yml` (`production` job) now requires `AIRINGCAL_PRODUCTION_RELEASE_SHA` (exact 40-character hexadecimal git commit SHA; synced automatically by `pnpm run setup`) and optional `AIRINGCAL_PRODUCTION_RELEASE_REF` (e.g. `v3.0.0`), refusing mutable development branch references (`dev`, `refs/heads/dev`, `HEAD`) before checkout.
+  - Checks out the approved release ref/SHA (`fetch-depth: 0`), verifies via `git rev-parse HEAD` that the checked-out executable source tree strictly matches `AIRINGCAL_PRODUCTION_RELEASE_SHA` before running `pnpm install`, building the Writer bundle, or publishing to R2, and passes the verified checked-out source SHA (`steps.verify_source.outputs.verified_source_sha`) as `BANGUMI_GIT_COMMIT_SHA` instead of the mutable workflow trigger `${{ github.sha }}`.
+- **Schedule Contract Reconciliation (`Fix B`)**:
+  - Reconciled `README.md`, `README.zh-CN.md`, `docs/DEPLOYMENT.md`, and `docs/DEPLOYMENT.zh-CN.md` with the authoritative `.github/workflows/portable-writer.yml` cron schedule (`0 20 * * *`, daily at `04:00 Asia/Shanghai` / `20:00 UTC`), with regression tests preventing schedule drift.
+- **Writer Authorization Gate Separation (`Fix C`)**:
+  - Clarified across workflow comments, setup scripts, and bilingual documentation that `AIRINGCAL_WRITER_ENABLED` (repository variable) is the sole gate for scheduled Production runs, `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED` (`production` environment variable) is a temporary manual `workflow_dispatch` gate that must remain `false` at rest, and `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED` (`development` environment variable) gates manual Development `workflow_dispatch` runs.
+- **Repository-Wide Tracked Artifact Convergence**:
+  - Removed residual obsolete agent/workflow directories (`.codex/`, `.opencode/`, `.comet/`, `.playwright-cli/`, `.superpowers/`, `.codegraph/`, and the zero-byte `**WARNING**:` file), unused agent skills not declared in `AGENTS.md`, and historical benchmark/cutover receipts recoverable from `e5b3c98e6b4941a398dd4a0620c2841af2960609`.
+  - Updated `.gitignore` to prevent local agent host directories, browser snapshot artifacts, and code index caches from re-entering the tracked Git tree.
+
+---
+
 ## [3.0.0] — 2026-11-26
 
 ### Architectural Convergence (`v3.0.0`)

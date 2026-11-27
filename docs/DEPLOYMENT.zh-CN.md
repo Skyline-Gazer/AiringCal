@@ -202,30 +202,34 @@ node scripts/v3-ship-verify.mjs \
 
 ## 8. 开启或关闭定时自动同步
 
-GitHub Actions 工作流 `.github/workflows/portable-writer.yml` 受 **双层门禁** 保护：
+GitHub Actions 工作流 `.github/workflows/portable-writer.yml` 将 **Production 定时自动同步**、**Production 手动按需同步** 与 **Development 手动测试同步** 严格分离为三个独立的授权开关，并在 Production 中强制执行 **发布源码身份校验**：
 
 1. **仓库级定时总开关** (`vars.AIRINGCAL_WRITER_ENABLED`)：
-   - 控制每 6 小时定时任务（`17 */6 * * *`）是否生效。
+   - 控制每日 Production 定时任务（`0 20 * * *`，北京时间每日 `04:00` / `20:00 UTC`）是否生效。定时触发器绝不会运行 `development` 作业。
    - 开启：`gh variable set AIRINGCAL_WRITER_ENABLED --repo <owner>/<repo> --body true`
    - 关闭：`gh variable set AIRINGCAL_WRITER_ENABLED --repo <owner>/<repo> --body false`
-2. **环境级作业开关**：
-   - `production` 环境门禁变量：`AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED`（`true` 或 `false`）
-   - `development` 环境门禁变量：`AIRINGCAL_DEVELOPMENT_WRITER_ENABLED`（`true` 或 `false`）
-   - 为 Production 开启：
-     ```bash
-     gh variable set AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED --env production --repo <owner>/<repo> --body true
-     ```
+2. **Production 发布源码身份契约**（`production` 环境级变量 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 与可选的 `AIRINGCAL_PRODUCTION_RELEASE_REF`）：
+   - `AIRINGCAL_PRODUCTION_RELEASE_SHA`（必填，精确的 40 位十六进制 Git 提交 SHA；由 `pnpm run setup` 自动同步）锁定经批准的发布提交。`production` 作业在检出代码后、执行 `pnpm install` / 构建 / 运行 Writer 之前，会通过 `git rev-parse HEAD` 严格核对实际检出源码的 SHA，不一致则立即失败中止（Fail-Closed）。
+   - `AIRINGCAL_PRODUCTION_RELEASE_REF`（可选，例如 `v3.0.0` 或 `refs/tags/v3.0.0`）锁定不可变的发布标签/引用；若被设置为可变开发分支（`dev`、`refs/heads/dev`、`HEAD`）或解析出的提交与 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 不一致，作业同样立即拒绝执行。
+3. **环境级临时手动触发门禁**（默认必须保持 `false` 关闭状态）：
+   - `production` 环境变量 `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED`：仅控制针对 `production` 的手动 `workflow_dispatch` 触发（包括首次全量同步与日常手动触发）。定时 `schedule` 运行不读取该变量，**切勿**将其长期保留为 `true`。
+   - `development` 环境变量 `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED`：仅控制针对 `development` 的手动 `workflow_dispatch` 触发。
+
+> [!IMPORTANT]
+> **代码级源码校验与外部 GitHub 仓库治理的边界**：在 GitHub Actions 中，`schedule` 定时触发始终从仓库的默认分支（`default_branch`）解析工作流 YAML 定义本身。锁定 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 能够在代码层面保证检出的执行源码、依赖安装、打包产物与写入快照的 `BANGUMI_GIT_COMMIT_SHA` 均来自经批准的发布版本；若需连同工作流 YAML 定义本身一并锁定，建议将仓库默认分支设为 `main`，或在 GitHub Environment `production` 中配置受保护的部署分支/标签规则（仅允许 `v*` / `main`）。
 
 ### 手动按需触发同步
 
 你可以随时手动触发一次增量或全量同步：
 
 ```bash
-# 通过设置向导自动开关临时门禁并监控运行完成：
+# 推荐：通过设置向导自动开启临时门禁、触发运行并在通过门禁后自动关闭：
 pnpm run setup -- --sync --environment production
 
-# 或在环境门禁为 true 时通过 GitHub CLI 手动触发：
+# 或通过 GitHub CLI 手动临时开启门禁、触发运行，并在作业通过门禁步骤后立即关闭：
+gh variable set AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED --env production --repo <owner>/<repo> --body true
 gh workflow run portable-writer.yml --repo <owner>/<repo> -f target=production -f force_mode=incremental
+gh variable set AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED --env production --repo <owner>/<repo> --body false
 ```
 
 ---

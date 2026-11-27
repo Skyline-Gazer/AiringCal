@@ -5,9 +5,12 @@
 # dispatch is gated in-job by the ENVIRONMENT-scoped vars.AIRINGCAL_DEVELOPMENT_WRITER_ENABLED
 # (step-level first gate, fails closed; deploy pins it 'false' at every apply).
 # Production writer uses Environment `production` + single bucket `airingcal-production`.
-# First Full Sync (workflow_dispatch) is gated in-job by the ENVIRONMENT-scoped
-# vars.AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED (step-level, fails closed —
-# job-level `if` cannot resolve environment-scoped vars).
+# Manual dispatch (workflow_dispatch) is gated in-job by the ENVIRONMENT-scoped
+# vars.AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED (step-level temporary gate, fails closed —
+# job-level `if` cannot resolve environment-scoped vars; must remain 'false' at rest and never be left 'true' for schedule).
+# Production execution requires an approved release commit identity (vars.AIRINGCAL_PRODUCTION_RELEASE_SHA,
+# plus optional immutable tag/ref vars.AIRINGCAL_PRODUCTION_RELEASE_REF) and verifies the checked-out
+# executable source SHA before installing dependencies, building, or running the Writer.
 # Concurrency group remains global single-flight across development/production.
 name: Portable writer (GHA)
 
@@ -202,6 +205,8 @@ jobs:
           AIRINGCAL_PRODUCTION_S3_REGION: ${{ vars.AIRINGCAL_PRODUCTION_S3_REGION }}
           AIRINGCAL_PRODUCTION_R2_BUCKET: ${{ vars.AIRINGCAL_PRODUCTION_R2_BUCKET }}
           AIRINGCAL_PRODUCTION_PUBLIC_BASE_URL: ${{ vars.AIRINGCAL_PRODUCTION_PUBLIC_BASE_URL }}
+          AIRINGCAL_PRODUCTION_RELEASE_SHA: ${{ vars.AIRINGCAL_PRODUCTION_RELEASE_SHA }}
+          AIRINGCAL_PRODUCTION_RELEASE_REF: ${{ vars.AIRINGCAL_PRODUCTION_RELEASE_REF }}
         run: |
           set -u
           missing=0
@@ -211,7 +216,8 @@ jobs:
             AIRINGCAL_PRODUCTION_PRIMARY_USER_ID \
             AIRINGCAL_PRODUCTION_S3_ACCESS_KEY_ID \
             AIRINGCAL_PRODUCTION_S3_SECRET_ACCESS_KEY \
-            AIRINGCAL_PRODUCTION_PUBLIC_BASE_URL
+            AIRINGCAL_PRODUCTION_PUBLIC_BASE_URL \
+            AIRINGCAL_PRODUCTION_RELEASE_SHA
           do
             if [ -z "${!var:-}" ]; then
               echo "::error::Missing required production config: ${var}"
@@ -231,6 +237,27 @@ jobs:
             fi
           fi
           if [ "$missing" -ne 0 ]; then exit 1; fi
+          release_sha="$(printf '%s' "${AIRINGCAL_PRODUCTION_RELEASE_SHA}" | tr 'A-F' 'a-f')"
+          if ! printf '%s' "$release_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::AIRINGCAL_PRODUCTION_RELEASE_SHA must be an exact 40-character hexadecimal git commit SHA"
+            exit 1
+          fi
+          release_ref="${AIRINGCAL_PRODUCTION_RELEASE_REF:-}"
+          if [ -n "$release_ref" ]; then
+            case "$release_ref" in
+              dev|refs/heads/dev|origin/dev|HEAD|*-dev|refs/pull/*)
+                echo "::error::Production job refuses mutable development ref in AIRINGCAL_PRODUCTION_RELEASE_REF ($release_ref)"
+                exit 1
+                ;;
+            esac
+            if ! printf '%s' "$release_ref" | grep -Eq '^[A-Za-z0-9._/-]+$' || printf '%s' "$release_ref" | grep -Eq '(^|/)\.\.(/|$)'; then
+              echo "::error::AIRINGCAL_PRODUCTION_RELEASE_REF contains invalid git ref characters"
+              exit 1
+            fi
+            checkout_ref="$release_ref"
+          else
+            checkout_ref="$release_sha"
+          fi
           s3_region="${AIRINGCAL_PRODUCTION_S3_REGION:-auto}"
           # Single-bucket layout: checkpoint + public share airingcal-production with key prefixes.
           # Exact-name gate refuses development/v2/historical buckets.
@@ -244,10 +271,43 @@ jobs:
             echo "s3_region=$s3_region"
             echo "checkpoint_bucket=$bucket"
             echo "public_bucket=$bucket"
+            echo "release_sha=$release_sha"
+            echo "release_ref=$release_ref"
+            echo "checkout_ref=$checkout_ref"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Checkout
+      - name: Checkout approved production release source
         uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.config.outputs.checkout_ref }}
+          fetch-depth: 0
+
+      - name: Verify checked-out production release source (fails closed)
+        id: verify_source
+        env:
+          EXPECTED_RELEASE_SHA: ${{ steps.config.outputs.release_sha }}
+          EXPECTED_RELEASE_REF: ${{ steps.config.outputs.release_ref }}
+          WORKFLOW_TRIGGER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD | tr 'A-F' 'a-f')"
+          if ! printf '%s' "$actual_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Checked-out source HEAD is not a valid 40-character git commit SHA"
+            exit 1
+          fi
+          if [ "$actual_sha" != "$EXPECTED_RELEASE_SHA" ]; then
+            echo "::error::Checked-out source SHA ($actual_sha) does not match approved AIRINGCAL_PRODUCTION_RELEASE_SHA ($EXPECTED_RELEASE_SHA); refusing unapproved Production execution"
+            exit 1
+          fi
+          if [ -n "${EXPECTED_RELEASE_REF:-}" ]; then
+            resolved_ref_sha="$(git rev-parse "${EXPECTED_RELEASE_REF}^{commit}" 2>/dev/null | tr 'A-F' 'a-f' || true)"
+            if [ -z "$resolved_ref_sha" ] || [ "$resolved_ref_sha" != "$EXPECTED_RELEASE_SHA" ]; then
+              echo "::error::AIRINGCAL_PRODUCTION_RELEASE_REF ($EXPECTED_RELEASE_REF -> ${resolved_ref_sha:-unresolved}) does not resolve to approved AIRINGCAL_PRODUCTION_RELEASE_SHA ($EXPECTED_RELEASE_SHA)"
+              exit 1
+            fi
+          fi
+          echo "Verified Production executable source SHA=${actual_sha} (workflow trigger SHA=${WORKFLOW_TRIGGER_SHA})"
+          echo "verified_source_sha=${actual_sha}" >> "$GITHUB_OUTPUT"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v5
@@ -278,7 +338,7 @@ jobs:
           BGM_TOKEN: ${{ secrets.AIRINGCAL_PRODUCTION_BANGUMI_TOKEN }}
           AIRINGCAL_USERS_JSON: ${{ vars.AIRINGCAL_PRODUCTION_USERS_JSON }}
           AIRINGCAL_PRIMARY_USER_ID: ${{ vars.AIRINGCAL_PRODUCTION_PRIMARY_USER_ID }}
-          BANGUMI_GIT_COMMIT_SHA: ${{ github.sha }}
+          BANGUMI_GIT_COMMIT_SHA: ${{ steps.verify_source.outputs.verified_source_sha }}
           BARK_URL: ${{ secrets.AIRINGCAL_PRODUCTION_BARK_URL }}
           AIRINGCAL_CHECKPOINT_S3_ENDPOINT: ${{ steps.config.outputs.s3_endpoint }}
           AIRINGCAL_CHECKPOINT_S3_REGION: ${{ steps.config.outputs.s3_region }}

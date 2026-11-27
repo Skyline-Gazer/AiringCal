@@ -26,6 +26,7 @@ import {
   parseWranglerWhoamiJson,
   redactSecrets,
   validateImageCdnConfig,
+  validateProductionReleaseIdentity,
 } from './deploy-env-lib.mjs'
 import { isAmbiguousTransportError } from './mutation-ledger.mjs'
 
@@ -3110,9 +3111,29 @@ export function createLiveDevelopmentApplyIo({
       }
       if (isProduction) {
         // Both production writer gates stay off in apply: the schedule reads
-        // the repo-level AIRINGCAL_WRITER_ENABLED (untouched here) and the
-        // first Full Sync reads AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED.
+        // the repo-level AIRINGCAL_WRITER_ENABLED (untouched here) and manual
+        // dispatches read AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED.
         variables[`${prefix}BOOTSTRAP_WRITER_ENABLED`] = 'false'
+        const explicitReleaseSha = String(env.AIRINGCAL_PRODUCTION_RELEASE_SHA ?? '').trim()
+        const rawReleaseRef = String(env.AIRINGCAL_PRODUCTION_RELEASE_REF ?? '').trim()
+        const fallbackGitSha = String(env.BANGUMI_GIT_COMMIT_SHA ?? plan.gitSha ?? '').trim() || (() => {
+          const r = spawnSyncImpl('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', cwd: ROOT })
+          const candidate = r?.status === 0 ? String(r.stdout ?? '').trim() : ''
+          return /^[0-9a-f]{40}$/i.test(candidate) ? candidate : ''
+        })()
+        const releaseShaCandidate = explicitReleaseSha || fallbackGitSha
+        if (explicitReleaseSha || rawReleaseRef) {
+          const validated = validateProductionReleaseIdentity({
+            releaseSha: releaseShaCandidate,
+            releaseRef: rawReleaseRef,
+          })
+          variables[`${prefix}RELEASE_SHA`] = validated.releaseSha
+          if (validated.releaseRef) {
+            variables[`${prefix}RELEASE_REF`] = validated.releaseRef
+          }
+        } else if (/^[0-9a-f]{40}$/i.test(releaseShaCandidate)) {
+          variables[`${prefix}RELEASE_SHA`] = releaseShaCandidate.toLowerCase()
+        }
       } else {
         variables[`${prefix}WRITER_ENABLED`] = 'false'
       }

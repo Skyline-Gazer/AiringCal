@@ -354,6 +354,8 @@ const ENGINE_INPUT_KEYS = Object.freeze([
   'AIRINGCAL_REPOSITORY_OVERRIDE_CONFIRM',
   'AIRINGCAL_ALLOW_IDENTITY_CHANGE',
   'AIRINGCAL_ALLOW_DOMAIN_CHANGE',
+  'AIRINGCAL_PRODUCTION_RELEASE_SHA',
+  'AIRINGCAL_PRODUCTION_RELEASE_REF',
 ])
 
 /**
@@ -802,6 +804,21 @@ export async function runDoctor({ environment, spawnSyncImpl = spawnSync, log: l
   } else {
     push('schedule gate', String(schedule.value).toLowerCase() === 'true' ? 'warn' : 'ok',
       `verified value ${schedule.value}`)
+  }
+  if (environment === 'production') {
+    const releaseSha = readRemoteVariable(
+      `repos/${resolvedRepo}/environments/production/variables/AIRINGCAL_PRODUCTION_RELEASE_SHA`,
+      spawnSyncImpl,
+    )
+    if (releaseSha.kind === 'ok' && /^[0-9a-f]{40}$/i.test(String(releaseSha.value ?? ''))) {
+      push('production release sha', 'ok', String(releaseSha.value).toLowerCase())
+    } else if (releaseSha.kind === 'absent') {
+      push('production release sha', 'warn', 'AIRINGCAL_PRODUCTION_RELEASE_SHA not set in production environment')
+    } else if (releaseSha.kind === 'ok') {
+      push('production release sha', 'fail', `invalid AIRINGCAL_PRODUCTION_RELEASE_SHA (${releaseSha.value})`)
+    } else {
+      push('production release sha', 'warn', `unreadable (${releaseSha.detail ?? 'API error'})`)
+    }
   }
   const runs = gh(['run', 'list', '--workflow', 'portable-writer.yml', '--limit', '3', '--json', 'databaseId,status,conclusion,headSha', '--repo', resolvedRepo])
   if (runs.status === 0) {

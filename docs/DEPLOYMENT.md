@@ -202,30 +202,34 @@ What `v3-ship-verify.mjs` checks (25 checks total):
 
 ## 8. Enabling or Disabling the Scheduled Portable Writer
 
-The GitHub Actions workflow `.github/workflows/portable-writer.yml` is protected by a **two-level gate**:
+The GitHub Actions workflow `.github/workflows/portable-writer.yml` separates **scheduled Production execution**, **manual Production dispatch**, and **manual Development dispatch** across three independent authorization controls plus **Production release source verification**:
 
 1. **Repository-Level Schedule Gate** (`vars.AIRINGCAL_WRITER_ENABLED`):
-   - Controls whether the 6-hour cron (`17 */6 * * *`) runs at all.
+   - Controls whether the daily Production cron (`0 20 * * *`, `04:00 Asia/Shanghai` / `20:00 UTC`) runs at all. Scheduled triggers never run the `development` job.
    - Enable: `gh variable set AIRINGCAL_WRITER_ENABLED --repo <owner>/<repo> --body true`
    - Disable: `gh variable set AIRINGCAL_WRITER_ENABLED --repo <owner>/<repo> --body false`
-2. **Environment-Level Job Gate**:
-   - `production` environment variable: `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED` (`true` or `false`)
-   - `development` environment variable: `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED` (`true` or `false`)
-   - Set for Production:
-     ```bash
-     gh variable set AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED --env production --repo <owner>/<repo> --body true
-     ```
+2. **Production Release Source Identity** (`production` environment variables `AIRINGCAL_PRODUCTION_RELEASE_SHA` and optional `AIRINGCAL_PRODUCTION_RELEASE_REF`):
+   - `AIRINGCAL_PRODUCTION_RELEASE_SHA` (required, exact 40-character hexadecimal git commit SHA; synced automatically by `pnpm run setup`) pins the approved release commit that the `production` job checks out and verifies via `git rev-parse HEAD` before running `pnpm install`, building the Writer bundle, or publishing to R2.
+   - `AIRINGCAL_PRODUCTION_RELEASE_REF` (optional, e.g. `v3.0.0` or `refs/tags/v3.0.0`) pins an immutable release tag/ref and fails closed if set to a mutable development branch (`dev`, `refs/heads/dev`, `HEAD`) or if the ref does not resolve to `AIRINGCAL_PRODUCTION_RELEASE_SHA`.
+3. **Temporary Manual Dispatch Gates** (environment-level variables, closed `false` at rest):
+   - `production` environment variable `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED`: gates manual `workflow_dispatch` runs targeting `production` (both First Full Sync and deliberate on-demand manual runs). It is **not** checked on `schedule` runs and must **never** be left `true` permanently.
+   - `development` environment variable `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED`: gates manual `workflow_dispatch` runs targeting `development`.
+
+> [!IMPORTANT]
+> **Code-Enforced Source Verification vs. External GitHub Settings**: In GitHub Actions, `schedule` triggers always parse the workflow YAML file from the repository's `default_branch`. Pinning `AIRINGCAL_PRODUCTION_RELEASE_SHA` guarantees that checked-out source code, dependencies, build scripts, and `BANGUMI_GIT_COMMIT_SHA` match the approved release tree, while complete workflow-definition isolation requires repository-level GitHub governance (setting `main` as the default branch or configuring GitHub Environment `production` deployment branch/tag protection rules).
 
 ### Manual One-Shot Sync Dispatch
 
 You can trigger an on-demand incremental or full sync at any time:
 
 ```bash
-# Temporarily open the environment gate, dispatch, and close automatically via the setup wizard:
+# Recommended: temporarily open the environment gate, dispatch, and close automatically via the setup wizard:
 pnpm run setup -- --sync --environment production
 
-# Or dispatch manually via GitHub CLI (when the environment gate is true):
+# Or if dispatching manually via GitHub CLI, open the temporary gate, dispatch, and close it immediately after the gate step passes:
+gh variable set AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED --env production --repo <owner>/<repo> --body true
 gh workflow run portable-writer.yml --repo <owner>/<repo> -f target=production -f force_mode=incremental
+gh variable set AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED --env production --repo <owner>/<repo> --body false
 ```
 
 ---

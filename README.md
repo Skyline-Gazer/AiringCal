@@ -85,11 +85,14 @@ Before installing or developing AiringCal, ensure your environment meets these r
 ### 1. Fork & Clone
 
 1. Fork this repository on GitHub (or use your own repository copy).
-2. Clone your repository locally and install dependencies:
+2. Clone your repository locally, optionally check out the formal release tag `v3.0.0` (or `main`), and install dependencies:
 
 ```bash
 git clone https://github.com/<your-owner>/<your-repo>.git
 cd AiringCal
+# Optional: check out the immutable formal release tag v3.0.0 (or main).
+# Note: `dev` is the integration branch containing post-v3.0.0 unreleased maintenance hardening.
+git checkout v3.0.0
 corepack enable
 pnpm install --frozen-lockfile
 ```
@@ -185,19 +188,22 @@ See **[`docs/API_AND_WIDGET.md`](docs/API_AND_WIDGET.md)** for full query parame
 
 ## Enabling Scheduled Synchronization
 
-By default, `pnpm run setup` leaves the recurring schedule gate **disabled** so you stay in full control of GitHub Actions usage. Once your First Full Sync is verified:
+By default, `pnpm run setup` leaves the recurring schedule gate **disabled** so you stay in full control of GitHub Actions usage. The scheduled Portable Writer runs **once daily at `04:00 Asia/Shanghai` (`20:00 UTC`, cron `0 20 * * *`)** against **`production` only** (`development` is manual `workflow_dispatch` only).
 
-1. Enable the repository-level schedule gate variable on your repository:
+Once your First Full Sync is verified:
+
+1. Verify that your `production` GitHub Environment records the approved 40-character release commit SHA in `AIRINGCAL_PRODUCTION_RELEASE_SHA` (synced automatically by `pnpm run setup`; optionally pin an immutable tag/ref in `AIRINGCAL_PRODUCTION_RELEASE_REF`, e.g. `v3.0.0`):
+   ```bash
+   gh variable set AIRINGCAL_PRODUCTION_RELEASE_SHA --env production --repo <owner>/<repo> --body "$(git rev-parse HEAD)"
+   ```
+2. Keep the manual bootstrap gate `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED` set to `false` at rest (it gates manual `workflow_dispatch` runs only and must **never** be left `true` permanently for scheduled runs).
+3. Enable the repository-level schedule gate variable and ensure `portable-writer.yml` is active:
    ```bash
    gh variable set AIRINGCAL_WRITER_ENABLED --repo <owner>/<repo> --body true
-   ```
-2. Enable the environment-level Writer gate for the environment(s) you want the 6-hour cron (`17 */6 * * *`) to update:
-   - For Production scheduled runs: create/set `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED=true` in the `production` GitHub Environment (or dispatch manual runs via `gh workflow run portable-writer.yml -f target=production`).
-   - For Development scheduled runs: set `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED=true` in the `development` GitHub Environment.
-3. Ensure the `portable-writer.yml` workflow is active:
-   ```bash
    gh workflow enable portable-writer.yml --repo <owner>/<repo>
    ```
+
+> **Note on GitHub Actions Schedule & Default Branch Governance**: GitHub Actions parses scheduled workflow YAML definitions from your repository's default branch. While the `production` job pins and verifies the checked-out executable source tree against `AIRINGCAL_PRODUCTION_RELEASE_SHA` before installing dependencies, building, or running the Writer, we recommend either setting `main` as your fork's default branch or configuring a GitHub Environment `production` deployment branch/tag policy (`v*` / `main`) before enabling unattended scheduled runs.
 
 ---
 

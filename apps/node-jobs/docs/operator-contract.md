@@ -72,7 +72,9 @@ If `releaseCheckpointLease` fails in the cleanup phase after a sync run:
 | `AIRINGCAL_USERS_JSON` | Yes | — | JSON array of tracked Bangumi users (`[{"userId":"...","username":"..."}]`) |
 | `AIRINGCAL_PRIMARY_USER_ID` | Yes | — | Primary Bangumi user ID |
 | `BGM_TOKEN` | Yes | — | Bangumi Personal Access Token |
-| `BANGUMI_GIT_COMMIT_SHA` | Yes | — | Git commit SHA recorded in published release manifest metadata |
+| `BANGUMI_GIT_COMMIT_SHA` | Yes | — | Verified executable Git commit SHA recorded in published release manifest metadata (`steps.verify_source.outputs.verified_source_sha` in the Production job, verified against `AIRINGCAL_PRODUCTION_RELEASE_SHA`) |
+| `AIRINGCAL_PRODUCTION_RELEASE_SHA` | Yes (GHA `production`) | — | Exact 40-char approved release commit SHA checked out and verified via `git rev-parse HEAD` before installing dependencies, building, or running the Production Writer |
+| `AIRINGCAL_PRODUCTION_RELEASE_REF` | No (GHA `production`) | `AIRINGCAL_PRODUCTION_RELEASE_SHA` | Optional immutable release tag/ref (e.g. `v3.0.0`); fails closed if set to a mutable development branch (`dev`, `refs/heads/dev`, `HEAD`) or if it does not resolve to `AIRINGCAL_PRODUCTION_RELEASE_SHA` |
 | `AIRINGCAL_PUBLIC_BASE_URL` | Yes | — | Reader Worker public origin URL |
 | `AIRINGCAL_CHECKPOINT_S3_BUCKET` | Yes (GHA) | — | Private R2 bucket name (`airingcal-production` or `airingcal-development`) |
 | `AIRINGCAL_CHECKPOINT_S3_ENDPOINT` | Yes (GHA) | — | Cloudflare R2 S3 endpoint (`https://<accountId>.r2.cloudflarestorage.com`) |
