@@ -172,8 +172,17 @@ body.bgm-page {
   transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
 
-.bgm-card:hover {
+.bgm-card-shell {
+  position: relative;
+  min-width: 0;
+  transition: transform 0.1s ease;
+}
+
+.bgm-card-shell:hover {
   transform: translate(-3px, -3px);
+}
+
+.bgm-card-shell:hover .bgm-card {
   box-shadow: 8px 8px 0 0 var(--nb-ink);
 }
 
@@ -269,6 +278,37 @@ body.bgm-page {
 
 .bgm-nsfw .bgm-card-cover img {
   filter: blur(20px);
+  transition: filter 0.3s ease;
+}
+
+.bgm-nsfw-reveal .bgm-card-cover img {
+  filter: none;
+}
+
+.bgm-nsfw-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  aspect-ratio: 3 / 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: var(--nb-border);
+  background: var(--nb-accent-2);
+  color: var(--nb-ink);
+  font-family: inherit;
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.bgm-nsfw-overlay:focus-visible {
+  outline: 3px solid var(--nb-focus);
+  outline-offset: 2px;
 }
 
 /* ---------- Calendar ---------- */

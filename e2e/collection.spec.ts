@@ -141,3 +141,16 @@ test('a single-container embed never rewrites the host URL', async ({ page }) =>
   await expect(page.locator('.bgm-weekday-nav [role="tab"]')).toHaveCount(7)
   await expect(page).toHaveURL('http://127.0.0.1:8791/single')
 })
+
+test('an NSFW card reveals its cover on demand without navigating', async ({ page }) => {
+  await openCollection(page, 1440, 900)
+  const card = page.locator('.bgm-view:not([hidden]) .bgm-card-shell:has(.bgm-nsfw)').first()
+  await expect(card).toHaveCount(1)
+  const overlay = card.locator('.bgm-nsfw-overlay')
+  await expect(overlay).toBeVisible()
+  await overlay.click()
+  await expect(overlay).toHaveCount(0)
+  await expect.poll(() => card.locator('.bgm-nsfw img').evaluate((element) => getComputedStyle(element).filter))
+    .toBe('none')
+  expect(page.url()).not.toContain('bgm.tv')
+})
