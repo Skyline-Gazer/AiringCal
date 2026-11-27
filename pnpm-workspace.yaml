@@ -7,3 +7,10 @@ allowBuilds:
   esbuild: true
   sharp: true
   workerd: true
+
+# pnpm 12 verifies lockfile ages even with --frozen-lockfile and fails with
+# ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION whenever any entry (e.g. rolldown's
+# platform bindings) is younger than the 1440-minute default. A release installed
+# minutes after a dependency publish must still install, so the gate is disabled.
+# Trade-off: new dependency versions install immediately; upgrades are reviewed in PRs.
+minimumReleaseAge: 0

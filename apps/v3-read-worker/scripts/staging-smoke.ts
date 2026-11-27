@@ -48,8 +48,12 @@ function log(stage: string, extra: Record<string, unknown> = {}): void {
   console.log(JSON.stringify({ status: 'info', stage, ...extra }))
 }
 
+// Spawn the installed binary directly: `pnpm exec` adds nested processes that only
+// complicate teardown of the long-running dev server below.
+const WRANGLER_BIN = join(REPO_ROOT, 'node_modules', '.bin', process.platform === 'win32' ? 'wrangler.cmd' : 'wrangler')
+
 function wrangler(args: string[], stdio: 'inherit' | 'pipe' = 'pipe') {
-  return spawnSync('pnpm', ['exec', 'wrangler', ...args], { cwd: REPO_ROOT, encoding: 'utf8', stdio })
+  return spawnSync(WRANGLER_BIN, args, { cwd: REPO_ROOT, encoding: 'utf8', stdio })
 }
 
 async function publishFixture(): Promise<void> {
@@ -91,16 +95,33 @@ function listFiles(root: string): string[] {
   })
 }
 
+function killWorker(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (process.platform !== 'win32' && child.pid) {
+    try {
+      // wrangler dev supervises workerd; signal the group so neither outlives the smoke run.
+      process.kill(-child.pid, signal)
+      return
+    } catch {
+      // group already gone: fall back to the direct child
+    }
+  }
+  child.kill(signal)
+}
+
 async function stopWorker(child: ChildProcess): Promise<void> {
   const exited = Promise.withResolvers<void>()
   child.once('exit', () => exited.resolve())
-  child.kill('SIGTERM')
+  killWorker(child, 'SIGTERM')
   const stopped = await Promise.race([exited.promise.then(() => true), delay(5_000).then(() => false)])
-  if (stopped) return
-  child.kill('SIGKILL')
-  // Bounded second wait: an exited promise that never settles must not hang CI.
-  const killed = await Promise.race([exited.promise.then(() => true), delay(5_000).then(() => false)])
-  if (!killed) log('worker_shutdown_timeout', { pid: child.pid })
+  if (!stopped) {
+    killWorker(child, 'SIGKILL')
+    // Bounded second wait: an exited promise that never settles must not hang CI.
+    const killed = await Promise.race([exited.promise.then(() => true), delay(5_000).then(() => false)])
+    if (!killed) log('worker_shutdown_timeout', { pid: child.pid })
+  }
+  // A surviving grandchild can hold the inherited pipes open and keep Node alive forever.
+  child.stdout?.destroy()
+  child.stderr?.destroy()
 }
 
 function seedBucket(): void {
@@ -173,14 +194,14 @@ async function run(): Promise<void> {
   seedBucket()
 
   const child = spawn(
-    'pnpm',
+    WRANGLER_BIN,
     [
-      'exec', 'wrangler', 'dev', '--config', CONFIG, '-l', '--port', String(PORT),
+      'dev', '--config', CONFIG, '-l', '--port', String(PORT),
       '--persist-to', stateDir, '--log-level', 'warn',
       '--var', `PACKAGE_VERSION:${PACKAGE_VERSION}`,
       '--var', `BANGUMI_GIT_COMMIT_SHA:${BUILD_SHA}`,
     ],
-    { cwd: REPO_ROOT, stdio: 'pipe' },
+    { cwd: REPO_ROOT, stdio: 'pipe', detached: process.platform !== 'win32' },
   )
   const devLog: string[] = []
   child.stdout?.on('data', (chunk: Buffer) => devLog.push(chunk.toString()))

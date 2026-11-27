@@ -72,7 +72,7 @@
 | 依赖项 | 版本 / 权限范围 | 说明 |
 | :--- | :--- | :--- |
 | **Node.js** | `>= 24` (`v24.x`) | 工作区硬性要求（`engines.node: ">=24"`），用于原生 `node:sqlite` 构建器 |
-| **pnpm** | `9.15.9` (`packageManager`) | 可通过 `corepack enable` 启用 |
+| **pnpm** | `12.23.0`（`packageManager`） | 可通过 `corepack enable` 启用 |
 | **GitHub CLI (`gh`)** | 已登录 (`gh auth status`) | 需对你的目标仓库 / Fork 拥有写入或管理员权限 |
 | **Cloudflare 账号** | 已开通 **Workers** 与 **R2** | 请确保已在 Cloudflare 控制台首次注册过 `workers.dev` 子域名 |
 | **Cloudflare API Token** | 账号权限：`Workers R2 Storage:Edit`、`Workers Scripts:Edit`<br>用户权限：`User Details:Read`、`API Tokens:Edit` *(或手动提供独立的单桶 R2 S3 凭据)*<br>区域权限 *(可选，仅自定义域名需要)*：`Zone:Read`、`DNS:Edit` | 在 [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens) 创建 |
@@ -105,16 +105,25 @@ pnpm run setup
 
 设置向导将引导你完成以下步骤：
 
-1. **选择操作**：支持 **Install or Update（安装或更新）**、**Validate API Credentials（只读凭据权限预检）** 或 **Doctor（只读状态诊断）**。
+1. **选择操作**：**Install（全新安装）**、**Update（更新现有部署 → 最新正式发布版本）**、**Recover（恢复中断安装）**、**Validate API Credentials（只读凭据权限预检）** 或 **Doctor（只读状态诊断）**。Install / Update / Recover 会先核对目标环境状态，不匹配时明确拒绝，绝不再悄悄重新部署。
 2. **选择环境**：选择 **Production**（个人使用推荐）或 **Development**。
 3. **验证凭据**：粘贴 Cloudflare API Token 与 Bangumi Personal Access Token（全程掩码输入，仅保存在当前会话内存中，绝不回显或写入仓库）。
-4. **自动发现与状态识别**：自动发现 Cloudflare Account ID、`workers.dev` 子域名、Bangumi 用户身份，并自动识别当前属于 `install`、`update` 还是 `recover`。
+4. **自动发现与状态识别**：自动发现 Cloudflare Account ID、`workers.dev` 子域名与 Bangumi 用户身份。选择 **Update** 时，先展示本地工作区版本、最新正式发布版本、现有 Writer Ref 与线上 Reader `/api/version`，再把工作区升级到该发布版本（要求干净工作区），然后才收集凭据。
 5. **域名配置**：默认使用 `https://airingcal-production.<subdomain>.workers.dev`（无需修改任何 DNS），也可选择同账号下 Cloudflare Zone 中的自定义域名。
 6. **配置确认与执行**：
    - **全新安装 (`install`)**：创建私有 R2 存储桶 `airingcal-production`，自动签发限定单桶权限的 Writer Token `airingcal-production-writer`，校验空桶，禁用 `r2.dev`，同步 GitHub Environment `production`，部署 Cloudflare Worker 并验证 `checkpoints/*` 匿名隔离。
    - **更新现有部署 (`update`)**：在执行任何变更前，先校验存储桶归属、Worker 的 `AIRINGCAL_R2` 绑定、GitHub Environment 一致性及现有 Release 指针。保留所有现有桶内数据、快照、Checkpoint、图片及 GitHub Environment 中的 S3 密钥，仅安全更新环境变量与 Cloudflare Reader Worker。
    - **恢复中断部署 (`recover`)**：只读核对已有远端资源并在你确认后安全继续。
 7. **首次全量同步 (First Full Sync)**：全新安装完成后，可单独授权触发 GitHub Actions 首次 `portable-writer.yml` 全量同步（向导会自动开启并在通过门禁后关闭临时变量），随后运行 25 项线上验收检查（`scripts/v3-ship-verify.mjs`）。
+
+### 更新现有部署
+
+```bash
+git status --porcelain   # 必须为空；工作区有未提交改动时 Update 会拒绝
+pnpm run setup           # 选择 Update
+```
+
+Update 是幂等的，绝不删除桶内对象、快照、Checkpoint、图片或 S3 密钥。它会在收集任何凭据之前报告观测到的事实（`Workspace`、`Target`、`Deployed`、`Reader`），以提交 SHA 而非版本号判断一致性，然后：把干净工作区升级到发布提交（在发布源仓库解析 Tag、读取该提交的 Node/pnpm 要求、拒绝 Tag 冲突，并以 `pnpm install --frozen-lockfile` 安装）、在新版本代码上重启向导、执行既有更新契约且不对已初始化的安装强制同步。工作区有未提交改动、本地 `HEAD` 领先或分叉于发布、发布源不可读、或 Node 低于 `engines.node` 时，Update 会给出确切原因并停止。`development` 没有正式发布，会以当前提交重新部署。回滚：`git switch --detach <旧 HEAD>`（向导会打印），然后执行 `pnpm install --frozen-lockfile && pnpm run setup`。无头模式：`pnpm run setup -- --operation update --environment production`。
 
 ---
 
