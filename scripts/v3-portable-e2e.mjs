@@ -110,11 +110,14 @@ async function run() {
     }))
     process.exitCode = 1
   } finally {
+    child.stdout?.destroy()
+    child.stderr?.destroy()
     child.kill('SIGTERM')
     await new Promise((r) => setTimeout(r, 300))
     if (child.exitCode === null) child.kill('SIGKILL')
     rmSync(publicDir, { recursive: true, force: true })
   }
+  process.exit(process.exitCode ?? 0)
 }
 
 await run().catch((error) => fail(error instanceof Error ? error.message : 'unknown'))

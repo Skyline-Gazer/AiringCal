@@ -476,7 +476,45 @@ export const PRODUCTION_VARIABLE_KEYS = Object.freeze([
   'AIRINGCAL_PRODUCTION_S3_REGION',
   'AIRINGCAL_PRODUCTION_WORKER_NAME',
   'AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED',
+  'AIRINGCAL_PRODUCTION_RELEASE_SHA',
+  'AIRINGCAL_PRODUCTION_RELEASE_REF',
 ])
+
+const HEX_40_RE = /^[0-9a-f]{40}$/i
+const SAFE_GIT_REF_RE = /^[A-Za-z0-9._/-]+$/
+const FORBIDDEN_PRODUCTION_REFS = new Set(['dev', 'refs/heads/dev', 'origin/dev', 'HEAD'])
+
+/**
+ * Validate and normalize the approved Production release execution identity.
+ * Fails closed on missing/invalid release SHA or mutable development refs.
+ */
+export function validateProductionReleaseIdentity({ releaseSha, releaseRef = '' } = {}) {
+  const normalizedSha = String(releaseSha ?? '').trim().toLowerCase()
+  if (!normalizedSha) {
+    throw new Error('Missing required production release identity: AIRINGCAL_PRODUCTION_RELEASE_SHA')
+  }
+  if (!HEX_40_RE.test(normalizedSha)) {
+    throw new Error('AIRINGCAL_PRODUCTION_RELEASE_SHA must be an exact 40-character hexadecimal git commit SHA')
+  }
+  const trimmedRef = String(releaseRef ?? '').trim()
+  if (trimmedRef) {
+    if (
+      FORBIDDEN_PRODUCTION_REFS.has(trimmedRef) ||
+      trimmedRef.endsWith('-dev') ||
+      trimmedRef.startsWith('refs/pull/')
+    ) {
+      throw new Error(`Production refuses mutable development ref in AIRINGCAL_PRODUCTION_RELEASE_REF (${trimmedRef})`)
+    }
+    if (!SAFE_GIT_REF_RE.test(trimmedRef) || /(^|\/)\.\.(\/|$)/.test(trimmedRef)) {
+      throw new Error('AIRINGCAL_PRODUCTION_RELEASE_REF contains invalid git ref characters')
+    }
+  }
+  return {
+    releaseSha: normalizedSha,
+    releaseRef: trimmedRef || null,
+    checkoutRef: trimmedRef || normalizedSha,
+  }
+}
 
 /**
  * Steps whose success implies EXTERNAL state may have changed (bucket,
@@ -1044,6 +1082,7 @@ export function buildProductionPlan({
     workerOrigin,
     accountId: accountId || null,
     zoneId: normalizedZoneId || null,
+    gitSha: gitSha || null,
     imageCdn,
     cors: {
       allowedOrigins: corsOrigins,

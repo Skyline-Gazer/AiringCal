@@ -1026,6 +1026,7 @@ test('production syncGithubEnvironment targets the production environment with p
     accountId: 'acct',
     zoneId: 'zone',
     applyAuthorized: true,
+    gitSha: '42f497cab180cd57eb1d2dc773d6b9979d9428bc',
   })
   const calls = []
   const spawnSyncImpl = (cmd, args) => {
@@ -1053,10 +1054,32 @@ test('production syncGithubEnvironment targets the production environment with p
   assert.match(joined, /variable set AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED/)
   assert.match(joined, /variable set AIRINGCAL_PRODUCTION_R2_BUCKET/)
   assert.match(joined, /variable set AIRINGCAL_PRODUCTION_USERS_JSON/)
+  assert.match(joined, /variable set AIRINGCAL_PRODUCTION_RELEASE_SHA/)
   assert.match(joined, /secret set AIRINGCAL_PRODUCTION_BANGUMI_TOKEN/)
   assert.equal(joined.includes('environments/staging'), false, 'production sync must never read staging')
   assert.equal(joined.includes('AIRINGCAL_DEVELOPMENT_'), false, 'production sync must never write development names')
   assert.equal(res.writerEnabled, false)
+})
+
+test('validateProductionReleaseIdentity enforces 40-hex SHA and rejects mutable development refs (Fix A)', async () => {
+  const { validateProductionReleaseIdentity } = await import('./deploy-env-lib.mjs')
+  const sha = '42f497cab180cd57eb1d2dc773d6b9979d9428bc'
+  assert.deepEqual(validateProductionReleaseIdentity({ releaseSha: sha.toUpperCase() }), {
+    releaseSha: sha,
+    releaseRef: null,
+    checkoutRef: sha,
+  })
+  assert.deepEqual(validateProductionReleaseIdentity({ releaseSha: sha, releaseRef: 'v3.0.0' }), {
+    releaseSha: sha,
+    releaseRef: 'v3.0.0',
+    checkoutRef: 'v3.0.0',
+  })
+  assert.throws(() => validateProductionReleaseIdentity({ releaseSha: '' }), /Missing required production release identity/)
+  assert.throws(() => validateProductionReleaseIdentity({ releaseSha: 'abc' }), /exact 40-character hexadecimal/)
+  assert.throws(() => validateProductionReleaseIdentity({ releaseSha: sha, releaseRef: 'dev' }), /refuses mutable development ref/)
+  assert.throws(() => validateProductionReleaseIdentity({ releaseSha: sha, releaseRef: 'refs/heads/dev' }), /refuses mutable development ref/)
+  assert.throws(() => validateProductionReleaseIdentity({ releaseSha: sha, releaseRef: 'HEAD' }), /refuses mutable development ref/)
+  assert.throws(() => validateProductionReleaseIdentity({ releaseSha: sha, releaseRef: '../bad' }), /invalid git ref characters/)
 })
 
 test('runDevelopmentApply aborts before copy when isolation fails', async () => {

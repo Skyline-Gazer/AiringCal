@@ -85,11 +85,14 @@
 ### 1. Fork 并克隆仓库
 
 1. 在 GitHub 上 Fork 本仓库（或使用你自己的仓库副本）。
-2. 克隆到本地并安装依赖：
+2. 克隆到本地，可按需检出正式发布标签 `v3.0.0`（或 `main` 分支），并安装依赖：
 
 ```bash
 git clone https://github.com/<your-owner>/<your-repo>.git
 cd AiringCal
+# 可选：检出不可变的正式版标签 v3.0.0（或 main 分支）。
+# 说明：dev 为开发集成分支，包含 v3.0.0 发布后的未发版维护加固。
+git checkout v3.0.0
 corepack enable
 pnpm install --frozen-lockfile
 ```
@@ -185,19 +188,22 @@ https://airingcal-production.<your-subdomain>.workers.dev/
 
 ## 开启定时自动同步
 
-默认情况下，`pnpm run setup` 会保持定时同步总开关关闭，以便你完全掌控 GitHub Actions 的运行。首次全量同步验收通过后，可按需开启每 6 小时自动同步（`17 */6 * * *`）：
+默认情况下，`pnpm run setup` 会保持定时同步总开关关闭，以便你完全掌控 GitHub Actions 的运行。定时 Portable Writer 按 **每日 `04:00 Asia/Shanghai`（`20:00 UTC`，cron `0 20 * * *`）** 运行，且 **仅针对 `production` 环境**（`development` 环境仅支持手动 `workflow_dispatch` 触发）。
 
-1. 开启仓库级定时调度总开关变量：
+首次全量同步验收通过后，可按以下步骤开启每日自动同步：
+
+1. 确认 `production` GitHub Environment 中已记录经批准的 40 位发布提交哈希 `AIRINGCAL_PRODUCTION_RELEASE_SHA`（`pnpm run setup` 会自动同步该变量；也可按需设置不可变标签/引用 `AIRINGCAL_PRODUCTION_RELEASE_REF`，例如 `v3.0.0`）：
+   ```bash
+   gh variable set AIRINGCAL_PRODUCTION_RELEASE_SHA --env production --repo <owner>/<repo> --body "$(git rev-parse HEAD)"
+   ```
+2. 保持手动触发门禁变量 `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED` 处于默认的 `false` 关闭状态（该变量仅用于临时授权手动 `workflow_dispatch`，**切勿**为了定时任务而将其长期设为 `true`）。
+3. 开启仓库级定时调度总开关变量并启用 `portable-writer.yml` 工作流：
    ```bash
    gh variable set AIRINGCAL_WRITER_ENABLED --repo <owner>/<repo> --body true
-   ```
-2. 开启对应 GitHub Environment 的环境门禁变量：
-   - 开启 Production 定时同步：在 `production` GitHub Environment 中设置 `AIRINGCAL_PRODUCTION_BOOTSTRAP_WRITER_ENABLED=true`（或随时通过 `gh workflow run portable-writer.yml -f target=production` 手动触发）。
-   - 开启 Development 定时同步：在 `development` GitHub Environment 中设置 `AIRINGCAL_DEVELOPMENT_WRITER_ENABLED=true`。
-3. 确保 `portable-writer.yml` 工作流处于启用状态：
-   ```bash
    gh workflow enable portable-writer.yml --repo <owner>/<repo>
    ```
+
+> **关于 GitHub Actions 定时工作流与默认分支治理的说明**：GitHub Actions 的 `schedule` 触发器始终从仓库默认分支解析工作流 YAML 定义。尽管 `production` 作业在安装依赖、构建与运行 Writer 之前会强制检出并校验 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 对应的发布源码树，但在开启无人值守定时同步前，建议将 Fork 仓库的默认分支设为 `main`，或为 GitHub Environment `production` 配置受保护的部署分支/标签策略（仅允许 `v*` / `main`）。
 
 ---
 

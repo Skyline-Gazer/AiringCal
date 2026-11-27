@@ -122,12 +122,19 @@ apps/*/wrangler.deploy.toml
 # Local isolated development worktrees
 .worktrees/
 
-# Reasonix agent internal state
+# Setup wizard resource inventory (sanitized, machine-local)
+.airingcal/
+
+# Local AI agent, browser automation, and code index tool caches (never commit)
+.claude/
+.codex/
+.opencode/
+.comet/
+.superpowers/
 .reasonix/
 reasonix.toml
-
-packages/worker/dist-check/
-deploy/v3/.env
-
-# setup wizard resource inventory (sanitized, machine-local)
-.airingcal/
+.codegraph/
+.playwright-cli/
+playwright-report/
+test-results/
+**WARNING**:
