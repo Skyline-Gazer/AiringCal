@@ -35,6 +35,13 @@
       "commit": "ff191de7d903788eceaf516a514ae7d3b56b924a",
       "skillPath": "skills/workers-best-practices/SKILL.md",
       "computedHash": "01c452fd0b6b3caeb4c3b06f87893e52d8e95e32f691911c1644060e00dafa0e"
+    },
+    "web-design-guidelines": {
+      "source": "vercel-labs/agent-skills",
+      "sourceType": "github",
+      "commit": "5a37a6329fbad3666c3207392a6a7c0110e92efb",
+      "skillPath": "skills/web-design-guidelines/SKILL.md",
+      "computedHash": "360b1240acfffa95e76373db9f837a1f28aba8f6d4c361e3d588be0eaefaa070"
     }
   }
 }
