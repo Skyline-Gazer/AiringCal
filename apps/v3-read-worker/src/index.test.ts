@@ -122,7 +122,7 @@ test('worker serves widget assets, 410 sync routes, and R2 images', async () => 
   assert.equal(index.status, 200)
   assert.equal(index.headers.get('Content-Type'), 'text/html; charset=utf-8')
   const html = await index.text()
-  assert.match(html, /<div class="bgm-container"><\/div>/)
+  assert.match(html, /<div class="bgm-container" data-bgm-standalone="1"><\/div>/)
   assert.match(html, /\/src\/bangumi\.js/)
   assert.match(html, /window\.__AIRINGCAL_BUILD__=\{"commitSha":"e{40}","builtAt":"/)
 
