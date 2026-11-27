@@ -12,6 +12,7 @@
 **Project Skills:** Installed under [`.agents/skills/`](.agents/skills) with upstream provenance and SHA-256 content hashes locked in [`skills-lock.json`](skills-lock.json):
 - `cloudflare` & `workers-best-practices` (`cloudflare/skills` @ `ff191de7d903788eceaf516a514ae7d3b56b924a`)
 - `ponytail`, `ponytail-review`, `ponytail-audit` (`DietrichGebert/ponytail` @ `ebd8654c2c627f721eb8f9c0d1bd4090a29f9e10`, Full mode)
+- `web-design-guidelines` (`vercel-labs/agent-skills` @ `5a37a6329fbad3666c3207392a6a7c0110e92efb`, MIT; UI/UX & accessibility audit checklist)
 
 ## ADS (Pinned Submodule)
 
