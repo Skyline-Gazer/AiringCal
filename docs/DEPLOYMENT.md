@@ -30,7 +30,7 @@ GitHub Actions Portable Writer (portable-writer.yml)
 ### Local Tooling
 
 - **Node.js `>= 24`** (`node -v`)
-- **pnpm `9.15.9`** (`corepack enable && pnpm -v`)
+- **pnpm `12.23.0`** (`corepack enable && pnpm -v`)
 - **GitHub CLI (`gh`)** authenticated with write/admin access to your target repository (`gh auth status`)
 - **Wrangler `4.x`** (bundled in devDependencies; invoked via `pnpm exec wrangler`)
 
@@ -100,6 +100,14 @@ Used when an AiringCal installation already exists in your Cloudflare account an
 3. **Truthful Terminal Verdict**:
    - When updating with reused GitHub S3 secrets (without local S3 credentials), the wizard verifies anonymous checkpoint denial on the updated Worker and emits `UPDATED_PARTIAL_VERIFICATION` (`credentialVerification.runtimeVerification = "not-verified-github-secret-only"`), truthfully distinguishing Cloudflare API token scope verification from runtime S3 read/write verification.
    - When updating with local S3 credentials (or explicit token rotation) plus a passing 25-check live verifier run, the terminal verdict is `READY`.
+4. **Self-Service Entry (`pnpm run setup` → Update)**:
+   - The menu separates **Install**, **Update**, and **Recover**. An explicit choice refuses a target whose detected state differs (`WIZARD_OPERATION_MISMATCH`), so Update never silently creates resources and Install never re-provisions an existing bucket.
+   - Before any credential prompt or remote mutation, Update prints four facts — workspace version, latest published stable release, existing Writer `RELEASE_REF`, and the live Reader `package` from `/api/version` — then acts on the plan:
+     - `upgrade` (clean tree required): moves the workspace to the published tag, verifies the checkout SHA, installs the pinned toolchain with `pnpm install --frozen-lockfile`, and restarts the wizard on that release before running the update;
+     - `redeploy`: workspace is already at the release, so only the existing update contract runs;
+     - `current`: idempotent re-verification;
+     - `blocked`: prints the exact reason (uncommitted changes, local HEAD newer than the latest release, Node.js below `engines.node`) and stops before touching anything.
+   - Rollback: `git switch --detach <previous HEAD>` (printed by the wizard) then `pnpm install && pnpm run setup`.
 
 ### C. Interrupted Attempt Recovery (`recover`)
 
@@ -123,7 +131,8 @@ pnpm run setup
 
 | Command | Mode | Description |
 | :--- | :--- | :--- |
-| `pnpm run setup` | Interactive Menu | Full interactive TUI: Install or Update, Validate API Credentials, Doctor |
+| `pnpm run setup` | Interactive Menu | Full interactive TUI: Install, Update, Recover, Validate API Credentials, Doctor |
+| `pnpm run setup -- --operation update --environment production` | Direct Update | Skips the menu; runs the version preflight, workspace upgrade and update contract |
 | `pnpm run setup -- --doctor --environment production` | Read-Only Doctor | Checks `gh auth`, `portable-writer.yml` workflow state, environment gate, schedule gate, and recent runs |
 | `pnpm run setup -- --headless --environment production` | Headless Apply | Non-interactive execution driven by `.env.production` and explicit confirmation gates |
 | `pnpm run setup -- --sync --environment production` | Standalone First Sync | Dispatches a gated First Full Sync (`portable-writer.yml`, `force_mode=full`) with automatic gate cleanup |

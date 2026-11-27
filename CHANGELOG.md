@@ -6,6 +6,14 @@ All notable changes to **AiringCal** are documented in this file.
 
 ## [Unreleased]
 
+### Toolchain & Self-Service Update Flow
+
+- **Toolchain pins**: `packageManager` and every GitHub Actions pnpm pin now `pnpm@12.23.0`; root `engines.node` declares `>=24` (required by `node:sqlite`). `pnpm install` regenerates the lockfile under pnpm 12; build allowlists stay in `pnpm-workspace.yaml` (`allowBuilds`), which pnpm 12 still honors.
+- **Explicit menu actions**: the setup menu splits **Install**, **Update** and **Recover**. An explicit choice is checked against the detected installation state and refused with `WIZARD_OPERATION_MISMATCH` (plus a fix-it suggestion) instead of silently re-provisioning; `--operation install|update|recover` runs one action directly.
+- **Version-aware Update** (`scripts/update-plan.mjs`): before credentials or any remote mutation, Update prints the workspace version, latest published stable release, existing Writer `RELEASE_REF` and live Reader `/api/version`, then upgrades the workspace to that tag (clean tree, verified SHA, `pnpm install --frozen-lockfile`, wizard re-exec), redeploys, or stops as `blocked`/`current`. A Node.js below `engines.node` blocks; a pnpm mismatch only warns with the activation command.
+- **Docs**: bilingual README/DEPLOYMENT now document the split menu, the four preflight facts, the upgrade/rollback path and `--operation update`.
+- **Smoke teardown under pnpm 12**: `apps/v3-read-worker/scripts/staging-smoke.ts` now runs `wrangler dev` in its own process group and kills the group, and destroys the inherited pipes, because pnpm 12 executes `pnpm exec wrangler` through nested pnpm processes whose surviving grandchildren held CI open after the checks passed.
+
 ### Frontend Modernization (`#221`, `#218`, `#219`, `#220`)
 
 - **Framework frontend**: replaced the hand-written DOM/HTML widget (`packages/widget/assets/theme/*`) with a Preact + TypeScript app built by Vite. Assets stay at `/src/bangumi.js` and `/src/bangumi.css`, are bundled into the Reader Worker (single deploy unit), and preserve the Embeddable Widget contract (`.bgm-container`, `window.bgmConfig`, `public, max-age=300`).

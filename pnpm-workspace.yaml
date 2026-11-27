@@ -7,3 +7,8 @@ allowBuilds:
   esbuild: true
   sharp: true
   workerd: true
+
+# Published tags must install immediately: pnpm 12 otherwise rejects lockfile
+# entries younger than 24h (ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION), which would
+# break `pnpm install --frozen-lockfile` for anyone updating right after a release.
+minimumReleaseAge: 0

@@ -30,7 +30,7 @@ GitHub Actions Portable Writer (portable-writer.yml)
 ### 本地工具链要求
 
 - **Node.js `>= 24`** (`node -v`)
-- **pnpm `9.15.9`** (`corepack enable && pnpm -v`)
+- **pnpm `12.23.0`** (`corepack enable && pnpm -v`)
 - **GitHub CLI (`gh`)**：已登录且对目标仓库拥有写入/管理员权限 (`gh auth status`)
 - **Wrangler `4.x`**（已内置于项目开发依赖，通过 `pnpm exec wrangler` 调用）
 
@@ -100,6 +100,14 @@ AiringCal 原生支持在 Fork 仓库或独立仓库中运行，无需修改任�
 3. **诚实的终端结论（Truthful Verdict）**：
    - 当复用现有 GitHub S3 Secrets（未在本地提供 S3 密钥明文）完成更新时，向导会验证更新后 Worker 对 `checkpoints/*` 的匿名拒绝，并输出 `UPDATED_PARTIAL_VERIFICATION`（`credentialVerification.runtimeVerification = "not-verified-github-secret-only"`），明确区分“Cloudflare API Token 策略范围已校验”与“运行时 S3 读写未在本次更新中执行”。
    - 当提供本地 S3 凭据（或显式轮换 Token）并通过 25 项线上验收检查时，终端结论为 `READY`。
+4. **自助更新入口（`pnpm run setup` → Update）**：
+   - 主菜单将 **Install**、**Update**、**Recover** 分开；显式选择与探测到的目标环境状态不一致时会拒绝执行（`WIZARD_OPERATION_MISMATCH`），Update 不会静默创建资源，Install 也不会重新部署已有存储桶。
+   - 在收集任何凭据或改动远端之前，Update 先打印四项事实：本地工作区版本、最新正式发布版本、现有 Writer `RELEASE_REF`、线上 Reader `/api/version` 的 `package`，然后按计划执行：
+     - `upgrade`（要求干净工作区）：把工作区切换到发布 Tag、核对 SHA、执行 `pnpm install --frozen-lockfile` 安装锁定工具链，并在该版本代码上重启向导后再执行更新；
+     - `redeploy`：工作区已在发布版本，仅执行既有更新契约；
+     - `current`：幂等复核；
+     - `blocked`：打印明确原因（未提交改动、本地 HEAD 新于最新发布、Node.js 低于 `engines.node`），不做任何改动。
+   - 回滚：`git switch --detach <旧 HEAD>`（向导会打印），然后 `pnpm install && pnpm run setup`。
 
 ### C. 中断尝试恢复 (`recover`)
 
@@ -123,7 +131,8 @@ pnpm run setup
 
 | 命令 | 模式 | 说明 |
 | :--- | :--- | :--- |
-| `pnpm run setup` | 交互式主菜单 | 完整交互式界面：安装或更新、验证 API 凭据、Doctor 诊断 |
+| `pnpm run setup` | 交互式主菜单 | 完整交互式界面：Install、Update、Recover、验证 API 凭据、Doctor 诊断 |
+| `pnpm run setup -- --operation update --environment production` | 直接更新 | 跳过主菜单，执行版本预检、工作区升级与更新契约 |
 | `pnpm run setup -- --doctor --environment production` | 只读 Doctor 诊断 | 检查 `gh auth`、`portable-writer.yml` 状态、环境门禁、定时开关及最近运行记录 |
 | `pnpm run setup -- --headless --environment production` | 无头（Headless）执行 | 由 `.env.production` 及显式确认开关驱动的非交互式部署/更新 |
 | `pnpm run setup -- --sync --environment production` | 独立触发首次全量同步 | 触发带门禁保护的首次全量同步（`force_mode=full`）并在完成后自动关闭临时门禁 |

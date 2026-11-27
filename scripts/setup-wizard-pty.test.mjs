@@ -75,7 +75,7 @@ const S3_KEY = 'AKIA_'+'SYNTHETIC'
 const S3_SECRET = ['synthetic','secret'].join('-')
 
 const BASE_ANSWERS = (environmentChoice) => [
-  { wait: 'Install or Update', answer: '\r', label: 'menu: install' },
+  { wait: 'fresh deployment; two masked tokens', answer: '\r', label: 'menu: install' },
   { wait: '◆  Environment', answer: environmentChoice === '1' ? '\r' : '\u001b[B\r', label: `environment: ${environmentChoice}` },
   { wait: 'Paste your Cloudflare API Token', answer: 'cf-synthetic-token\r', label: 'cf token masked' },
   { wait: 'Paste your Bangumi Personal Access Token', answer: 'bgm-synthetic-token\r', label: 'bgm token masked' },
@@ -164,12 +164,12 @@ test('CLI entrypoint: declined credential fallback reports DEPLOY_FAILED with pa
 test('CLI entrypoint: Validate API Credentials returns to interactive menu instead of exiting (#208 BUG-002 / UX-010)', SKIP ? { skip: SKIP } : {}, async () => {
   const run = runSetupPty({
     answers: [
-      { wait: 'Validate API Credentials', answer: '\u001b[B\r', label: 'menu: validate' },
+      { wait: 'Validate API Credentials', answer: '\u001b[B\u001b[B\u001b[B\r', label: 'menu: validate' },
       { wait: 'Paste your Cloudflare API Token', answer: 'cf-synthetic-token\r', label: 'cf token masked' },
       { wait: 'Paste your Bangumi Personal Access Token', answer: 'bgm-synthetic-token\r', label: 'bgm token masked' },
       { wait: 'Next Action', answer: '\u001b[B\r', label: 'post-validate: view details' },
       { wait: 'Next Action', answer: '\u001b[B\u001b[B\u001b[B\r', label: 'post-validate: return to main menu' },
-      { wait: 'AiringCal Setup', answer: '\u001b[B\u001b[B\u001b[B\r', label: 'menu: exit' },
+      { wait: 'AiringCal Setup', answer: '\u001b[B\u001b[B\u001b[B\u001b[B\u001b[B\r', label: 'menu: exit' },
     ],
   })
   try {

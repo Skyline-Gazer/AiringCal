@@ -91,16 +91,33 @@ function listFiles(root: string): string[] {
   })
 }
 
+function killWorker(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (process.platform !== 'win32' && child.pid) {
+    try {
+      // pnpm 12 runs wrangler through nested pnpm processes; signal the whole group.
+      process.kill(-child.pid, signal)
+      return
+    } catch {
+      // group already gone: fall back to the direct child
+    }
+  }
+  child.kill(signal)
+}
+
 async function stopWorker(child: ChildProcess): Promise<void> {
   const exited = Promise.withResolvers<void>()
   child.once('exit', () => exited.resolve())
-  child.kill('SIGTERM')
+  killWorker(child, 'SIGTERM')
   const stopped = await Promise.race([exited.promise.then(() => true), delay(5_000).then(() => false)])
-  if (stopped) return
-  child.kill('SIGKILL')
-  // Bounded second wait: an exited promise that never settles must not hang CI.
-  const killed = await Promise.race([exited.promise.then(() => true), delay(5_000).then(() => false)])
-  if (!killed) log('worker_shutdown_timeout', { pid: child.pid })
+  if (!stopped) {
+    killWorker(child, 'SIGKILL')
+    // Bounded second wait: an exited promise that never settles must not hang CI.
+    const killed = await Promise.race([exited.promise.then(() => true), delay(5_000).then(() => false)])
+    if (!killed) log('worker_shutdown_timeout', { pid: child.pid })
+  }
+  // A surviving grandchild can hold the inherited pipes open and keep Node alive forever.
+  child.stdout?.destroy()
+  child.stderr?.destroy()
 }
 
 function seedBucket(): void {
@@ -180,7 +197,7 @@ async function run(): Promise<void> {
       '--var', `PACKAGE_VERSION:${PACKAGE_VERSION}`,
       '--var', `BANGUMI_GIT_COMMIT_SHA:${BUILD_SHA}`,
     ],
-    { cwd: REPO_ROOT, stdio: 'pipe' },
+    { cwd: REPO_ROOT, stdio: 'pipe', detached: process.platform !== 'win32' },
   )
   const devLog: string[] = []
   child.stdout?.on('data', (chunk: Buffer) => devLog.push(chunk.toString()))

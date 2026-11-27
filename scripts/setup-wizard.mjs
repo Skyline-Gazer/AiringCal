@@ -47,6 +47,14 @@ import {
 import { askConfirm, askSecret, askSelect, askText, WizardAbort } from './setup-prompt.mjs'
 import { credentialLinks, resolveDocumentation } from './setup-docs.mjs'
 import { createUi, credentialSection } from './setup-ui.mjs'
+import {
+  discoverUpdateState,
+  formatUpdateState,
+  readPnpmVersion,
+  readTaggedPackage,
+  toolchainBlockers,
+  upgradeWorkspace,
+} from './update-plan.mjs'
 import { formatValidationDetails, formatValidationSummary, validateCredentials } from './setup-validate.mjs'
 import {
   INVENTORY_DIR,
@@ -1503,6 +1511,7 @@ async function installFlow({
   spawnSyncImpl,
   log: logFn,
   requestedEnvironment,
+  requestedOperation = null,
   headless,
   hooks = {},
   ui: injectedUi = null,
@@ -1559,6 +1568,72 @@ async function installFlow({
         'Development Environment',
       )
     }
+    if (requestedOperation === 'update') {
+      const inventory = readInventory({ environment, env: resolvedEnv })
+      const state = await discoverUpdateState({
+        environment,
+        env: resolvedEnv,
+        fetchImpl,
+        spawnSyncImpl,
+        baseUrl: inventory?.publicBaseUrl ?? resolvedEnv.AIRINGCAL_PUBLIC_BASE_URL ?? null,
+      })
+      ui.note(formatUpdateState(state), 'Update Check')
+      if (state.plan.action === 'blocked') {
+        throw new WizardAbort(state.plan.reasons[0], state.plan.code)
+      }
+      if (state.plan.action === 'upgrade' && state.target?.tag) {
+        const targetTag = state.target.tag
+        const blockers = toolchainBlockers({
+          pkg: readTaggedPackage({ tag: targetTag, spawnSyncImpl }) ?? {},
+          nodeVersion: process.versions.node,
+          pnpmVersion: readPnpmVersion(spawnSyncImpl),
+        })
+        const fatal = blockers.filter((blocker) => blocker.severity === 'block')
+        if (fatal.length > 0) {
+          ui.note(
+            blockers.map((blocker) => `${blocker.message}\n  fix: ${blocker.fix}`).join('\n\n'),
+            'Toolchain Upgrade Required',
+          )
+          throw new WizardAbort(fatal[0].message, fatal[0].code)
+        }
+        const warnings = blockers.filter((blocker) => blocker.severity !== 'block')
+        if (warnings.length > 0) {
+          ui.note(
+            warnings.map((blocker) => `${blocker.message}\n  if install fails: ${blocker.fix}`).join('\n\n'),
+            'Toolchain Notice',
+          )
+        }
+        const proceed = await ui.confirm({
+          message: `Upgrade this workspace from ${state.localVersion} to ${targetTag}? The wizard restarts on the new release, then deploys it.`,
+          initialValue: true,
+        })
+        if (!proceed) {
+          ui.cancel('Update cancelled; nothing was mutated.')
+          return { cancelled: true, reason: 'workspace upgrade declined' }
+        }
+        const upgraded = upgradeWorkspace({
+          targetTag,
+          targetSha: state.target.sha,
+          upstreamRepo: state.upstreamRepo,
+          spawnSyncImpl,
+          log: logFn,
+        })
+        const installed = spawnSyncImpl('pnpm', ['install', '--frozen-lockfile'], { cwd: ROOT, stdio: 'inherit' })
+        if (installed?.status !== 0) {
+          throw new Error(
+            `Dependencies for ${targetTag} did not install. Fix the toolchain, then rerun pnpm setup ` +
+            `(rollback: git switch --detach ${String(upgraded.previousHead ?? '').slice(0, 12)}).`,
+          )
+        }
+        const child = spawnSyncImpl(
+          process.execPath,
+          [fileURLToPath(import.meta.url), '--operation', 'update', '--environment', environment],
+          { cwd: ROOT, stdio: 'inherit', env: { ...process.env, AIRINGCAL_OPERATION: 'update' } },
+        )
+        return { reexeced: true, code: typeof child?.status === 'number' ? child.status : 1 }
+      }
+    }
+
     if (session?.cloudflareToken && session?.bangumiToken && session?.validation?.ok) {
       cloudflareToken = session.cloudflareToken
       bangumiToken = session.bangumiToken
@@ -1662,7 +1737,11 @@ async function installFlow({
         zoneId,
         dotenvPath,
       })
-      dry = buildPlanForEnvironment(wizardEnv, { mode: 'dry-run', spawnSyncImpl })
+      dry = buildPlanForEnvironment(wizardEnv, {
+        mode: 'dry-run',
+        operation: requestedOperation,
+        spawnSyncImpl,
+      })
 
       partialState = await discoverPartialState({
         fetchImpl,
@@ -1676,6 +1755,27 @@ async function installFlow({
         env: resolvedEnv,
         repo: dry.plan.repository,
       })
+
+      if (
+        !headless &&
+        requestedOperation &&
+        partialState?.detectedOperation &&
+        partialState.detectedOperation !== requestedOperation
+      ) {
+        const suggestion = partialState.detectedOperation === 'install'
+          ? 'No existing installation was found in this account; choose Install.'
+          : partialState.detectedOperation === 'update'
+            ? 'An existing installation was found; choose Update.'
+            : 'The installation is incomplete; choose Recover.'
+        ui.note(
+          `Requested: ${requestedOperation}\nDetected:  ${partialState.detectedOperation} (${partialState.installationState})\n${suggestion}`,
+          'Action Not Applicable',
+        )
+        throw new WizardAbort(
+          `The ${environment} environment is in "${partialState.detectedOperation}" state, not "${requestedOperation}". ${suggestion}`,
+          'WIZARD_OPERATION_MISMATCH',
+        )
+      }
 
       if (partialState?.detectedOperation && partialState.detectedOperation !== dry.plan.operation) {
         dry = buildPlanForEnvironment(wizardEnv, {
@@ -2308,6 +2408,15 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   }
   const envIndex = argv.indexOf('--environment')
   if (envIndex !== -1) args.environment = argv[envIndex + 1]
+  const operationIndex = argv.indexOf('--operation')
+  if (operationIndex !== -1) {
+    const value = String(argv[operationIndex + 1] ?? '').trim().toLowerCase()
+    if (!['install', 'update', 'recover'].includes(value)) {
+      logFn(`Invalid --operation "${value}"; expected install, update or recover.`)
+      return { ok: false, code: 'WIZARD_OPERATION_INVALID' }
+    }
+    args.operation = value
+  }
 
   // #208 UX-011: in-memory session credential cache, cleared on exit or replacement.
   const session = {
@@ -2350,8 +2459,32 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       return { ok: true, sync: syncResult }
     }
     if (args.headless) {
-      const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, headless: true, hooks, ui })
+      const result = await installFlow({ io, env, fetchImpl, spawnSyncImpl, log: logFn, requestedEnvironment: args.environment, requestedOperation: args.operation, headless: true, hooks, ui })
+      if (result?.reexeced) return { ok: result.code === 0, code: result.code, reexeced: true, exit: true }
       return { ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'UPDATED_PARTIAL_VERIFICATION', 'CANCELLED'].includes(result.verdict), verdict: result.verdict, result }
+    }
+
+    if (args.operation) {
+      const result = await installFlow({
+        io,
+        env,
+        fetchImpl,
+        spawnSyncImpl,
+        log: logFn,
+        requestedEnvironment: args.environment,
+        requestedOperation: args.operation,
+        headless: false,
+        hooks,
+        ui,
+        session,
+      })
+      if (result?.reexeced) return { ok: result.code === 0, code: result.code, reexeced: true, exit: true }
+      return {
+        ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'UPDATED_PARTIAL_VERIFICATION', 'CANCELLED'].includes(result.verdict),
+        verdict: result.verdict,
+        result,
+        exit: true,
+      }
     }
 
     const docs = resolveDocumentation(env)
@@ -2359,7 +2492,9 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       const choice = await ui.select({
         message: 'AiringCal Setup',
         options: [
-          { value: 'install', label: 'Install or Update', hint: 'two masked tokens, review, apply, First Full Sync' },
+          { value: 'install', label: 'Install', hint: 'fresh deployment; two masked tokens, review, apply, First Full Sync' },
+          { value: 'update', label: 'Update', hint: 'existing installation -> latest release, then update the deployment' },
+          { value: 'recover', label: 'Recover', hint: 'resume an interrupted installation' },
           { value: 'validate', label: 'Validate API Credentials', hint: 'read-only permission preflight' },
           { value: 'doctor', label: 'Doctor', hint: 'read-only gates, workflows and recent runs' },
           { value: 'exit', label: 'Exit' },
@@ -2389,11 +2524,13 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
         spawnSyncImpl,
         log: logFn,
         requestedEnvironment: args.environment,
+        requestedOperation: ['install', 'update', 'recover'].includes(choice) ? choice : null,
         headless: false,
         hooks,
         ui,
         session,
       })
+      if (result?.reexeced) return { ok: result.code === 0, code: result.code, reexeced: true, exit: true }
       if (result?.returnToMenu) continue
       return {
         ok: ['READY', 'DEPLOYED', 'AWAITING_FIRST_SYNC', 'UPDATED_PARTIAL_VERIFICATION', 'CANCELLED'].includes(result.verdict),

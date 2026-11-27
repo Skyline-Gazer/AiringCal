@@ -72,7 +72,7 @@ Before installing or developing AiringCal, ensure your environment meets these r
 | Requirement | Version / Scope | Notes |
 | :--- | :--- | :--- |
 | **Node.js** | `>= 24` (`v24.x`) | Required by the workspace (`engines.node: ">=24"`) and native SQLite builder (`node:sqlite`) |
-| **pnpm** | `9.15.9` (`packageManager`) | Enable via `corepack enable` |
+| **pnpm** | `12.23.0` (`packageManager`) | Enable via `corepack enable` |
 | **GitHub CLI (`gh`)** | Authenticated (`gh auth status`) | Must have write/admin access to your target repository/fork |
 | **Cloudflare Account** | Free or Paid plan with **Workers** & **R2** enabled | Ensure your `workers.dev` subdomain is registered once in the Cloudflare dashboard |
 | **Cloudflare API Token** | Account: `Workers R2 Storage:Edit`, `Workers Scripts:Edit`<br>User: `User Details:Read`, `API Tokens:Edit` *(or supply an independent bucket-scoped R2 S3 key)*<br>Zone *(optional, Custom Domain only)*: `Zone:Read`, `DNS:Edit` | Create at [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens) |
@@ -105,16 +105,25 @@ pnpm run setup
 
 The wizard guides you through:
 
-1. **Menu Action**: Choose **Install or Update**, **Validate API Credentials** (read-only preflight), or **Doctor** (read-only health check).
+1. **Menu Action**: Choose **Install** (fresh deployment), **Update** (existing installation → latest published release), **Recover** (interrupted attempt), **Validate API Credentials** (read-only preflight), or **Doctor** (read-only health check). Install/Update/Recover refuse a target whose detected state does not match, instead of silently re-provisioning it.
 2. **Environment Selection**: Choose **Production** (recommended for personal use) or **Development**.
 3. **Credential Validation**: Paste your Cloudflare API Token and Bangumi Personal Access Token (masked input; kept in session memory only, never echoed or committed).
-4. **Automatic Discovery**: Discovers your Cloudflare Account ID, `workers.dev` subdomain, Bangumi user ID/username, and existing installation state (`install`, `update`, or `recover`).
+4. **Automatic Discovery**: Discovers your Cloudflare Account ID, `workers.dev` subdomain, and Bangumi user ID/username. **Update** first prints the workspace version, latest published release, existing Writer ref and live Reader `/api/version`, then upgrades the workspace to that release (clean tree required) before collecting credentials.
 5. **Domain Choice**: Use your default `https://airingcal-production.<subdomain>.workers.dev` URL (no DNS changes required) or attach a Custom Domain from a Cloudflare zone in the same account.
 6. **Plan Review & Apply**:
    - **Fresh Install (`install`)**: Creates private R2 bucket `airingcal-production`, provisions bucket-scoped Writer token `airingcal-production-writer`, verifies bucket emptiness, disables `r2.dev`, syncs GitHub Environment `production`, deploys the Cloudflare Worker, and proves checkpoint route isolation.
    - **Existing Installation (`update`)**: Verifies bucket ownership, Worker R2 binding (`AIRINGCAL_R2`), GitHub Environment consistency, and existing release pointer **before** any mutation. Preserves all existing bucket objects, snapshots, checkpoints, images, and GitHub S3 secrets while redeploying the updated Cloudflare Reader Worker.
    - **Interrupted Attempt (`recover`)**: Reconciles partial resources and safely resumes after explicit confirmation.
 7. **First Full Sync**: For a new installation, optionally authorizes and dispatches the initial `portable-writer.yml` Full Sync run in GitHub Actions (opening and closing the temporary bootstrap gate automatically) and runs the 25-check live verifier (`scripts/v3-ship-verify.mjs`).
+
+### Update an Existing Installation
+
+```bash
+git status --porcelain   # must be empty; Update refuses a dirty tree
+pnpm run setup           # choose Update
+```
+
+Update is idempotent and never wipes bucket objects, snapshots, checkpoints, images, or S3 secrets. It reports four facts before any credential prompt (`Workspace`, `Target`, `Deployed`, `Reader`), moves the workspace to the published tag when it is behind, installs the pinned toolchain, restarts the wizard on the new release, then runs the existing update contract (an already-initialized installation is not force-synced). Roll back with `git switch --detach <previous HEAD>` (printed by the wizard) followed by `pnpm install && pnpm run setup`. Headless: `pnpm run setup -- --operation update --environment production`.
 
 ---
 
