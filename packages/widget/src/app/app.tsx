@@ -46,6 +46,7 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
   const capacity = useGridCapacity(gridElement)
   const previousCapacity = useRef<number | null>(null)
   const lastKnownTotal = useRef<number | null>(null)
+  const collectionRequest = useRef(0)
 
   const showNsfw = gate.status === 'ok' && gate.allowed && confirmed
   const capacityValue = capacity ?? 12
@@ -96,17 +97,20 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
 
   useEffect(() => {
     if (capacity === null) return
+    const request = ++collectionRequest.current
     const controller = new AbortController()
     setCollection({ status: 'loading' })
     fetchCollections({ type, page, limit: capacity, nsfw: showNsfw ? 'show' : 'hide' }, controller.signal)
       .then((body) => {
+        // Abort can lose the race with a response that is already parsed.
+        if (request !== collectionRequest.current) return
         lastKnownTotal.current = body.total
         setCollection({ status: 'ok', data: { items: body.data, total: body.total } })
         const lastPage = totalPages(body.total, capacity)
         if (lastPage > 0) setPage((current) => clampPage(current, lastPage))
       })
       .catch((error) => {
-        if (isAbort(error)) return
+        if (isAbort(error) || request !== collectionRequest.current) return
         setCollection({ status: 'error', message: error instanceof Error ? error.message : '未知错误' })
       })
     return () => controller.abort()
