@@ -338,6 +338,6 @@ test('documentation and repository tree stay aligned with schedule, gate separat
   const skillsLock = JSON.parse(readFileSync(join(repoRoot, 'skills-lock.json'), 'utf8'))
   assert.deepEqual(
     Object.keys(skillsLock.skills).sort(),
-    ['cloudflare', 'ponytail', 'ponytail-audit', 'ponytail-review', 'workers-best-practices'],
+    ['cloudflare', 'ponytail', 'ponytail-audit', 'ponytail-review', 'web-design-guidelines', 'workers-best-practices'],
   )
 })
