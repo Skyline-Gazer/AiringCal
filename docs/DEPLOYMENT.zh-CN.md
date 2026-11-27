@@ -103,13 +103,13 @@ AiringCal 原生支持在 Fork 仓库或独立仓库中运行，无需修改任�
 4. **自助更新入口（`pnpm run setup` → Update）**：
    - 主菜单将 **Install**、**Update**、**Recover** 分开；显式选择与探测到的目标环境状态不一致时会拒绝执行（`WIZARD_OPERATION_MISMATCH`），Update 不会静默创建资源，Install 也不会重新部署已有存储桶。
    - 在收集任何凭据或改动远端之前，Update 先打印观测到的事实——工作区 `HEAD` 与本地 Tag、最新正式发布版本及其解析出的提交 SHA、现有 Writer `RELEASE_REF` 及其 SHA、线上 Reader `/api/version` 的 `package` 与 `build.commitSha`——再按计划执行：
-     - `upgrade`（要求干净工作区）：在发布源仓库把 Tag 解析为提交（GitHub Fork 使用其父仓库的发布），读取该提交的 `package.json`，强制校验 `engines.node`（不满足时以 `UPDATE_NODE_TOO_OLD` 阻止），并在 `packageManager` 不匹配时告警（`UPDATE_PNPM_MISMATCH`，打印确切的 `corepack prepare` 命令）；仅当本地不存在冲突 Tag 时才从发布源拉取（`UPDATE_TAG_CONFLICT` 绝不强制覆盖）；浅克隆（`UPDATE_SHALLOW_CLONE`）或 `HEAD` 不是发布提交祖先（`UPDATE_UNTAGGED_DIVERGED`，会打印保留本地提交的 `git branch` 命令）时直接拒绝；随后切换到已核对的提交、执行 `pnpm install --frozen-lockfile`，并在该版本代码上重启向导后再执行更新；
-     - `redeploy`：工作区已在发布提交，仅执行既有更新契约。`development` 没有正式发布，同样以当前工作区提交重新部署；
-     - `current`：工作区 `HEAD`、Writer 记录的提交与 Reader 的 `build.commitSha` 均等于发布提交；不做任何改动，结果为 `NO_CHANGE`。仅版本号一致仍判为 `verify`；
-     - `verify`：无法确认发布状态（未记录 Writer 身份、记录的 Ref 不可解析，或 Reader 不可达 / 未报告与发布提交相等的 `build.commitSha`），执行更新契约但不宣称幂等成功；
-     - `blocked`：打印明确原因（未提交改动、git 状态不可读、本地 `HEAD` 领先或分叉于发布、Node.js 低于 `engines.node`、发布源不可读、Writer 发布身份冲突 `UPDATE_DEPLOYMENT_CONFLICT`），并在改动任何内容前停止。
-   - 无法校验的 Writer 身份判为 `UPDATE_DEPLOYMENT_UNVERIFIED`（动作 `unknown`），在任何升级执行前报告，绝不当作一致。
-   - 回滚：向导会打印确切命令——工作区原在分支上时为 `git switch <branch>`，否则为 `git switch --detach <旧 HEAD>`——然后执行 `pnpm install --frozen-lockfile && pnpm run setup`。
+     - `upgrade`（要求干净工作区）：在提示确认或执行任何 `git fetch` 之前，只读检查本地 Tag 冲突（`UPDATE_TAG_CONFLICT`，绝不强制覆盖）并读取目标提交的 `package.json`；强制校验 `engines.node`（`UPDATE_NODE_TOO_OLD`）与 `packageManager` 中的 pnpm 主版本（`UPDATE_PNPM_MISMATCH`，打印确切的 `corepack prepare` 命令）；拒绝浅克隆（`UPDATE_SHALLOW_CLONE`）或 `HEAD` 不是发布提交祖先的分支（`UPDATE_UNTAGGED_DIVERGED`，会打印保留本地提交的 `git branch` 命令）。仅在用户确认后才从发布源拉取 Tag（GitHub Fork 使用父仓库发布）、切换到已核对的提交、执行 `pnpm install --frozen-lockfile` 并在该版本代码上重启向导；
+     - `redeploy`：工作区已在发布提交，按既有更新契约执行（当旧 Reader 尚未暴露 `build.commitSha` 时判定为 `UPDATE_READER_LEGACY_MIGRATION`，重新部署 Reader 以注入 `BANGUMI_GIT_COMMIT_SHA`，不触碰 R2 数据或 Writer 密钥）。`development` 没有正式发布，同样以当前工作区提交重新部署；
+     - `current`：工作区 `HEAD`、Writer 配置的目标提交与 Reader 的 `build.commitSha` 均等于发布提交；不做任何改动，结果为 `NO_CHANGE`（唯一返回 `NO_CHANGE` 的状态）；
+     - `verify`：`UPDATE_WRITER_IDENTITY_MISSING`（未配置 `AIRINGCAL_PRODUCTION_RELEASE_SHA`）或 `UPDATE_READER_UNREACHABLE`（Reader `/api/version` 不可达）。绝不返回 `NO_CHANGE`：交互模式会说明原因并请求确认是否继续进入部署审阅；无头模式除非为 `UPDATE_WRITER_IDENTITY_MISSING` 显式提供了 `AIRINGCAL_PRODUCTION_RELEASE_SHA`，否则直接中止；
+     - `blocked` 与 `unknown`：均在收集凭据或改动任何内容前停止，并打印明确原因与处理方式（未提交改动、git 状态不可读、本地或 Writer `HEAD` 领先或分叉于发布 `UPDATE_DEPLOYED_AHEAD`、Node/pnpm 版本不满足、发布源不可读、GitHub Environment 变量不可读 `UPDATE_WRITER_UNREADABLE`、无法校验的 Writer 身份 `UPDATE_DEPLOYMENT_UNVERIFIED`、或 Writer 发布身份冲突 `UPDATE_DEPLOYMENT_CONFLICT`）。
+   - **受授权的 Reader/Writer 版本收敛**：交互式 Production `update` 期间，若现有 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 与目标发布不同，向导会提供独立的显式确认以推进 Production Writer 发布目标（默认 No = 仅更新 Reader，保留既有 Writer 目标）。
+   - **本地工作区回滚与远端状态隔离**：若 `pnpm install --frozen-lockfile` 或向导重启失败，系统绝不会自动回滚远端 Cloudflare/GitHub 资源；向导会打印确切的本地工作区回滚命令（原在分支上时为 `git switch <branch>`，否则为 `git switch --detach <旧 HEAD>`，随后执行 `pnpm install --frozen-lockfile`）。
 
 ### C. 中断尝试恢复 (`recover`)
 

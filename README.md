@@ -123,7 +123,7 @@ git status --porcelain   # must be empty; Update refuses a dirty tree
 pnpm run setup           # choose Update
 ```
 
-Update is idempotent and never wipes bucket objects, snapshots, checkpoints, images, or S3 secrets. It reports the observed facts before any credential prompt (`Workspace`, `Target`, `Deployed`, `Reader`), compares commit SHAs rather than version strings, and then: upgrades a clean workspace to the release commit (resolving the tag on the release-source repository, reading that commit's Node/pnpm requirements, refusing tag conflicts, and installing with `pnpm install --frozen-lockfile`), restarts the wizard on the new release, and runs the existing update contract without force-syncing an initialized installation. A dirty tree, a local `HEAD` ahead of or diverged from the release, an unreadable release source, or Node below `engines.node` stops the update with the exact reason. `development` has no published release and redeploys the current commit. Roll back with `git switch --detach <previous HEAD>` (printed by the wizard) followed by `pnpm install --frozen-lockfile && pnpm run setup`. Headless: `pnpm run setup -- --operation update --environment production`.
+Update is idempotent and never wipes bucket objects, snapshots, checkpoints, images, or S3 secrets. It reports the observed facts before any credential prompt (`Workspace`, `Target`, `Writer`, `Reader`), compares commit SHAs rather than version strings, and then: upgrades a clean workspace to the release commit (checking tag conflicts and the target commit's Node/pnpm major requirements read-only before prompting or fetching, switching after confirmation, installing with `pnpm install --frozen-lockfile`, and restarting the wizard on the new release), migrates legacy Readers without `build.commitSha` by redeploying with `BANGUMI_GIT_COMMIT_SHA`, and lets you explicitly authorize advancing the Production Writer release target during interactive updates (or keep it pinned for Reader-only updates). Only confirmed agreement (`current`) returns `NO_CHANGE`; `verify` requires confirmation, while `blocked` and `unknown` stop before touching anything. `development` has no published release and redeploys the current commit. Local workspace rollback: `git switch <branch>` or `git switch --detach <previous HEAD>` (printed by the wizard) followed by `pnpm install --frozen-lockfile && pnpm run setup` (remote resources are never auto-rolled back). Headless: `pnpm run setup -- --headless --operation update --environment production`.
 
 ---
 
@@ -137,7 +137,7 @@ You are operating inside an AiringCal repository checkout. Follow these exact ru
 1. Read `docs/DEPLOYMENT.md` first. Never guess CLI flags or environment variable names.
 2. Verify prerequisites (read-only):
    - `node -v` (must be >= 24)
-   - `pnpm -v` (9.x)
+   - `pnpm -v` (12.x)
    - `gh auth status`
    - `git remote get-url origin` (must point to the user's GitHub repository/fork)
 3. For read-only diagnostics of an existing setup, run:

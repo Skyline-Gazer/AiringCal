@@ -44,7 +44,7 @@ export const V2_CACHE_CONTROL = {
   collections: 'public, max-age=30, s-maxage=60, stale-while-revalidate=30',
   calendar: 'public, max-age=30, s-maxage=60, stale-while-revalidate=30',
   config: 'public, max-age=60',
-  version: 'public, max-age=60',
+  version: 'no-store',
   defaultJson: 'public, max-age=60',
   image: 'public, max-age=31536000, immutable',
   imageCdn: 'max-age=31536000',

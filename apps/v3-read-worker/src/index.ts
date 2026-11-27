@@ -42,6 +42,7 @@ function readHandlerFingerprint(env: ReadWorkerEnv): string {
     env.AIRINGCAL_IMAGE_BASE_URL ?? '',
     env.AIRINGCAL_CORS_ORIGINS ?? '',
     env.PACKAGE_VERSION ?? '',
+    env.BANGUMI_GIT_COMMIT_SHA ?? '',
   ].join('|')
 }
 

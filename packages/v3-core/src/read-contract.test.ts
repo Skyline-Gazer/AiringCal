@@ -19,5 +19,6 @@ test('v2 read route inventory is stable for contract tests', () => {
 test('v2 cache-control literals match unified reader soft/CDN budget', () => {
   assert.equal(V2_CACHE_CONTROL.collections, 'public, max-age=30, s-maxage=60, stale-while-revalidate=30')
   assert.equal(V2_CACHE_CONTROL.calendar, 'public, max-age=30, s-maxage=60, stale-while-revalidate=30')
+  assert.equal(V2_CACHE_CONTROL.version, 'no-store')
   assert.equal(V2_CACHE_CONTROL.image, 'public, max-age=31536000, immutable')
 })
