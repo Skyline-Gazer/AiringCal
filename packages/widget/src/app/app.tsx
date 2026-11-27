@@ -37,7 +37,7 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
   const [day, setDay] = useState<number | null>(initial.day)
   const [gate, setGate] = useState<GateState>({ status: 'loading', allowed: false })
   const [confirmed, setConfirmed] = useState(isAgeConfirmed)
-  const [collection, setCollection] = useState<Loaded<{ items: CollectionItem[]; total: number }>>({ status: 'loading' })
+  const [collection, setCollection] = useState<Loaded<{ items: CollectionItem[]; total: number; page: number; key: string }>>({ status: 'loading' })
   const [calendar, setCalendar] = useState<Loaded<CalendarDay[]> | null>(null)
   const [health, setHealth] = useState<{ subjects: number | null; updated: string | null; status: 'loading' | 'ok' | 'error' }>(
     { subjects: null, updated: null, status: 'loading' },
@@ -50,7 +50,11 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
 
   const showNsfw = gate.status === 'ok' && gate.allowed && confirmed
   const capacityValue = capacity ?? 12
+  const requestKey = `${type}|${page}|${capacityValue}|${showNsfw}`
   const pages = collection.status === 'ok' ? totalPages(collection.data.total, capacity ?? 1) : 0
+  // Derived from the request, so a render between a click and the fetch effect never
+  // shows the new page number next to the previous page's cards.
+  const collectionReady = collection.status === 'ok' && collection.data.key === requestKey
 
   useEffect(() => subscribeAgeConfirmation(() => setConfirmed(isAgeConfirmed())), [])
 
@@ -105,7 +109,7 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
         // Abort can lose the race with a response that is already parsed.
         if (request !== collectionRequest.current) return
         lastKnownTotal.current = body.total
-        setCollection({ status: 'ok', data: { items: body.data, total: body.total } })
+        setCollection({ status: 'ok', data: { items: body.data, total: body.total, page, key: requestKey } })
         const lastPage = totalPages(body.total, capacity)
         if (lastPage > 0) setPage((current) => clampPage(current, lastPage))
       })
@@ -114,7 +118,7 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
         setCollection({ status: 'error', message: error instanceof Error ? error.message : '未知错误' })
       })
     return () => controller.abort()
-  }, [type, page, capacity, showNsfw])
+  }, [type, page, capacity, showNsfw, requestKey])
 
 
   useEffect(() => {
@@ -176,17 +180,17 @@ export function App({ gateHost = true }: { gateHost?: boolean }) {
               <>
                 <AnimeGrid
                   items={collectionItems}
-                  loading={collection.status === 'loading'}
+                  loading={!collectionReady}
                   capacity={capacityValue}
                   gridRef={setGridElement}
                   label={`${panelLabel}列表`}
                 />
-                {collection.status === 'ok'
+                {collectionReady && collection.status === 'ok'
                   ? (
                     <Pagination
-                      page={clampPage(page, pages)}
+                      page={clampPage(collection.data.page, pages)}
                       pages={pages}
-                      windowItems={paginationWindow(page, pages)}
+                      windowItems={paginationWindow(collection.data.page, pages)}
                       onSelect={setPage}
                     />
                   )
