@@ -72,6 +72,6 @@ sequenceDiagram
 | `@airing-cal/v3-builder` | `packages/v3-builder` | Native `node:sqlite` builder state store (`SqliteBuilderStateStore`), sync job runner, and checkpoint publisher |
 | `@airing-cal/v3-read` | `packages/v3-read` | Portable HTTP read handlers, Cloudflare read handler, allowlisted object routes, and Node test server |
 | `@airing-cal/v3-adapters` | `packages/v3-adapters` | Cloudflare R2 `PublicStore` adapter (`R2PublicStore`) and runtime capability registry |
-| `@airing-cal/widget` | `packages/widget` | Standalone HTML reader page renderer and embeddable Widget assets (`bangumi.js`, `bangumi.css`, `cache.js`) |
+| `@airing-cal/widget` | `packages/widget` | Preact + TypeScript frontend built with Vite into the Worker-served `bangumi.js` / `bangumi.css` (standalone shell + Embeddable Widget) |
 | `@airing-cal/v3-read-worker` | `apps/v3-read-worker` | Cloudflare Worker entrypoint, Wrangler configuration, and local `wrangler dev` smoke suite |
 | `@airing-cal/node-jobs` | `apps/node-jobs` | GitHub Actions Portable Writer CLI (`gha-portable-writer`), S3 CAS checkpoint store, media refresh, and Bark failure notifications |

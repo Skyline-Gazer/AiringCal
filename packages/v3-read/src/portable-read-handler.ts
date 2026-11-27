@@ -144,11 +144,32 @@ function etagMatches(header: string | null, etag: string): boolean {
   })
 }
 
-async function handleCollections(url: URL, snapshot: PublicSnapshotV1): Promise<Response> {
+type NsfwFilter = 'all' | 'hide'
+
+/**
+ * Optional presentation filter. Omitting `nsfw` keeps the original contract
+ * (every item); `hide` removes NSFW subjects BEFORE totals and slicing so
+ * `total`, page capacity and returned rows stay consistent. This is a display
+ * filter, not an authorization boundary.
+ */
+function parseNsfwFilter(value: string | null): NsfwFilter {
+  if (value === null) return 'all'
+  if (value === 'hide') return 'hide'
+  if (value === 'show') return 'all'
+  throw new InvalidQueryError('Invalid nsfw')
+}
+
+function etagForCollection(loaded: VerifiedPublicSnapshot, nsfw: NsfwFilter): string {
+  return nsfw === 'hide' ? `"g${loaded.generation}-${loaded.content_hash}-nsfw-hide"` : releaseEtag(loaded)
+}
+
+async function handleCollections(url: URL, snapshot: PublicSnapshotV1, nsfw: NsfwFilter): Promise<Response> {
   const type = parseCollectionType(singleQueryParameter(url.searchParams, 'type'))
   const page = parsePositiveInteger('page', singleQueryParameter(url.searchParams, 'page'), 1)
   const limit = parsePositiveInteger('limit', singleQueryParameter(url.searchParams, 'limit'), 24, 100)
-  const data = snapshot.collections[type]
+  const data = nsfw === 'hide'
+    ? snapshot.collections[type].filter((item) => !item.nsfw)
+    : snapshot.collections[type]
   const start = (page - 1) * limit
   return json({
     data: data.slice(start, start + limit),
@@ -425,7 +446,10 @@ async function routePortableReadRequest(
     }
     const snapshot = loaded!.snapshot
     if (path === '/collections' || path === '/calendar' || path === '/cache') {
-      const etag = releaseEtag(loaded!)
+      const nsfw = path === '/collections'
+        ? parseNsfwFilter(singleQueryParameter(url.searchParams, 'nsfw'))
+        : 'all'
+      const etag = path === '/collections' ? etagForCollection(loaded!, nsfw) : releaseEtag(loaded!)
       const cacheControl = path === '/collections'
         ? V2_CACHE_CONTROL.collections
         : path === '/calendar'
@@ -433,7 +457,7 @@ async function routePortableReadRequest(
           : V2_CACHE_CONTROL.defaultJson
       if (etagMatches(request.headers.get('If-None-Match'), etag)) return notModifiedResponse(etag, cacheControl)
       const response = path === '/collections'
-        ? await handleCollections(url, snapshot)
+        ? await handleCollections(url, snapshot, nsfw)
         : path === '/calendar'
           ? await handleCalendar(snapshot)
           : await handleCache(snapshot, url)

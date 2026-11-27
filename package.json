@@ -7,10 +7,11 @@
   "scripts": {
     "setup": "node scripts/setup-wizard.mjs",
     "dev": "pnpm -F @airing-cal/v3-read-worker dev",
-    "typecheck": "pnpm -r typecheck",
+    "typecheck": "pnpm -r typecheck && tsc --noEmit -p tsconfig.e2e.json",
     "test": "pnpm -r --if-present test && node --test scripts/*.test.mjs",
     "build:check": "pnpm -r --if-present build:check",
-    "lint:undefined": "node scripts/check-undefined-identifiers.mjs"
+    "lint:undefined": "node scripts/check-undefined-identifiers.mjs",
+    "e2e": "playwright test"
   },
   "repository": {
     "type": "git",
@@ -27,6 +28,8 @@
   "license": "MIT",
   "devDependencies": {
     "@clack/prompts": "^1.9.0",
+    "@types/node": "^26.4.0",
+    "@playwright/test": "^1.65.1",
     "tsx": "^4.23.13",
     "typescript": "^6.0.3",
     "wrangler": "^4.x"

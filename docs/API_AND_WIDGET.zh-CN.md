@@ -22,7 +22,6 @@ AiringCal Cloudflare Reader Worker（`apps/v3-read-worker`）基于私有 Cloudf
 | `GET /` | `text/html; charset=utf-8` | `public, max-age=300` | 独立 Web 阅读器 HTML 页面 |
 | `GET /src/bangumi.js` | `application/javascript; charset=utf-8` | `public, max-age=300` | 可嵌入 Widget 核心脚本 |
 | `GET /src/bangumi.css` | `text/css; charset=utf-8` | `public, max-age=300` | 可嵌入 Widget 样式表 |
-| `GET /src/cache.js` | `application/javascript; charset=utf-8` | `public, max-age=300` | 浏览器本地缓存辅助脚本 |
 
 ### 将 Widget 嵌入外部网站或个人博客
 
@@ -46,6 +45,8 @@ AiringCal Cloudflare Reader Worker（`apps/v3-read-worker`）基于私有 Cloudf
    <script src="https://airingcal-production.<your-subdomain>.workers.dev/src/bangumi.js"></script>
    ```
 
+页面上的每个 `.bgm-container` 都会独立挂载一个实例（支持同一页面多次嵌入）。脚本不会暴露全局函数：`window.bgmConfig` 仅作为只读输入，宿主页面的 `html`/`body` 样式、URL 与滚动位置均不会被修改。
+
 ---
 
 ## 3. JSON 只读 API 端点说明
@@ -54,7 +55,7 @@ AiringCal Cloudflare Reader Worker（`apps/v3-read-worker`）基于私有 Cloudf
 
 ### 3.1 `GET /api/collections`
 
-从当前已发布的 Release 快照中分页查询、搜索并排序动画收藏条目。
+从当前已发布的 Release 快照中分页查询动画收藏条目。
 
 **查询参数（Query Parameters）**：
 
@@ -63,9 +64,9 @@ AiringCal Cloudflare Reader Worker（`apps/v3-read-worker`）基于私有 Cloudf
 | `type` | `watching` \| `want` \| `watched` \| `on_hold` \| `dropped` \| `1`..`5` | `watching` | 收藏分类（`1=想看`, `2=看过`, `3=在看`, `4=搁置`, `5=抛弃`） |
 | `page` | 正整数 (`>= 1`) | `1` | 页码（从 1 开始） |
 | `limit` | 整数 `1..100` | `24` | 每页返回条数 |
-| `q` | 字符串 | `""` | 不区分大小写的关键词搜索，匹配原名（`name`）或中文名（`name_cn`） |
-| `sort` | `updated_at` \| `rate` \| `date` \| `name` | `updated_at` | 排序字段（`updated_at`、`rate`、`date` 为降序，`name` 为升序） |
-| `user_id` | 字符串 | 主用户 | 多用户快照下的可选用户 ID 过滤 |
+| `nsfw` | `hide` \| `show` | `show`（全部条目） | 在总数与分页之前生效的展示过滤。`hide` 会先移除 NSFW 条目，保证 `total`、每页容量与实际返回数量一致。该参数不是权限隔离机制。 |
+
+条件请求使用由 Release 派生的 `ETag`；`hide` 变体拥有独立校验值，两种表示不会共用缓存条目。
 
 **响应头**：
 - `Cache-Control: public, max-age=30, s-maxage=60, stale-while-revalidate=30`

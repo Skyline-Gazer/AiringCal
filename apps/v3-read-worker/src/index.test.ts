@@ -47,7 +47,7 @@ async function publishedBucket(): Promise<MemoryR2Bucket> {
 
 test('worker serves v2 read routes from the R2 public store', async () => {
   const bucket = await publishedBucket()
-  const env = { AIRINGCAL_R2: bucket, BANGUMI_GIT_COMMIT_SHA: 'd'.repeat(40) }
+  const env = { AIRINGCAL_R2: bucket }
 
   const health = await handleReadWorkerRequest(new Request('https://worker.example/api/health'), env)
   assert.equal(health.status, 200)
@@ -121,7 +121,10 @@ test('worker serves widget assets, 410 sync routes, and R2 images', async () => 
   const index = await handleReadWorkerRequest(new Request('https://worker.example/'), env)
   assert.equal(index.status, 200)
   assert.equal(index.headers.get('Content-Type'), 'text/html; charset=utf-8')
-  assert.match(await index.text(), /Build e{7}/)
+  const html = await index.text()
+  assert.match(html, /<div class="bgm-container"><\/div>/)
+  assert.match(html, /\/src\/bangumi\.js/)
+  assert.match(html, /window\.__AIRINGCAL_BUILD__=\{"commitSha":"e{40}","builtAt":"/)
 
   const widget = await handleReadWorkerRequest(new Request('https://worker.example/src/bangumi.js'), env)
   assert.equal(widget.status, 200)

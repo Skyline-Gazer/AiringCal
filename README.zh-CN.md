@@ -173,13 +173,13 @@ https://airingcal-production.<your-subdomain>.workers.dev/
 | 路径 | 方法 | 说明 |
 | :--- | :--- | :--- |
 | `/` | `GET`, `HEAD` | 独立 Web 阅读器主页 |
-| `/src/bangumi.js`, `/src/bangumi.css`, `/src/cache.js` | `GET`, `HEAD` | 可嵌入 Widget 脚本、样式表与客户端缓存辅助脚本 |
-| `/api/collections?type=watching&page=1&limit=24` | `GET`, `HEAD` | 分页动画收藏列表（`watching`、`want`、`watched`、`on_hold`、`dropped`），支持搜索（`q`）与排序（`sort`） |
+| `/src/bangumi.js`, `/src/bangumi.css` | `GET`, `HEAD` | 可嵌入 Widget 脚本与样式表 |
+| `/api/collections?type=watching&page=1&limit=24&nsfw=hide` | `GET`, `HEAD` | 分页动画收藏列表（`watching`、`want`、`watched`、`on_hold`、`dropped`）；`nsfw=hide` 在分页前过滤 |
 | `/api/calendar` | `GET`, `HEAD` | 融合个人收藏状态的七日放送日历 |
 | `/api/health` | `GET`, `HEAD` | 当前 Release 代数（generation）、发布时间、条目统计与调度状态 |
 | `/api/config?key=nsfw` | `GET`, `HEAD` | 公开阅读器配置（`nsfw` 显示开关） |
 | `/api/version` | `GET`, `HEAD` | 运行时平台（`cloudflare`）、Schema 版本与软件包版本（`3.0.0`） |
-| `/image/:sha256?variant=thumb` | `GET`, `HEAD` | 内容寻址的 WebP 封面缩略图或原始封面图 |
+| `/image/:sha256`、`/image/:sha256/thumb` | `GET`, `HEAD` | 内容寻址的 WebP 封面缩略图或原始封面图 |
 | `/public/current-release.json` | `GET`, `HEAD` | 当前不可变 Release 指针 |
 
 完整的查询参数、响应结构、缓存策略与 CORS 说明请参阅 **[`docs/API_AND_WIDGET.zh-CN.md`](docs/API_AND_WIDGET.zh-CN.md)**。

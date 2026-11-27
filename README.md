@@ -173,13 +173,13 @@ To embed AiringCal on an external domain (e.g., `https://blog.example.com`), add
 | Endpoint | Method | Description |
 | :--- | :--- | :--- |
 | `/` | `GET`, `HEAD` | Standalone HTML Reader page |
-| `/src/bangumi.js`, `/src/bangumi.css`, `/src/cache.js` | `GET`, `HEAD` | Embeddable Widget script, styles, and client cache helper |
-| `/api/collections?type=watching&page=1&limit=24` | `GET`, `HEAD` | Paginated anime collections (`watching`, `want`, `watched`, `on_hold`, `dropped`) with search (`q`) and sort (`sort`) |
+| `/src/bangumi.js`, `/src/bangumi.css` | `GET`, `HEAD` | Embeddable Widget script and stylesheet |
+| `/api/collections?type=watching&page=1&limit=24&nsfw=hide` | `GET`, `HEAD` | Paginated anime collections (`watching`, `want`, `watched`, `on_hold`, `dropped`); `nsfw=hide` filters before pagination |
 | `/api/calendar` | `GET`, `HEAD` | 7-day airing calendar enriched with personal collection status |
 | `/api/health` | `GET`, `HEAD` | Release generation, publish timestamp, subject counts, and scheduler status |
 | `/api/config?key=nsfw` | `GET`, `HEAD` | Public reader configuration (`nsfw` visibility flag) |
 | `/api/version` | `GET`, `HEAD` | Runtime platform (`cloudflare`), schema version, and package version (`3.0.0`) |
-| `/image/:sha256?variant=thumb` | `GET`, `HEAD` | Content-addressed WebP cover thumbnail or original cover image |
+| `/image/:sha256`, `/image/:sha256/thumb` | `GET`, `HEAD` | Content-addressed WebP cover thumbnail or original cover image |
 | `/public/current-release.json` | `GET`, `HEAD` | Current immutable release pointer |
 
 See **[`docs/API_AND_WIDGET.md`](docs/API_AND_WIDGET.md)** for full query parameters, response schemas, caching semantics, and CORS details.

@@ -14,6 +14,8 @@
 - `ponytail`, `ponytail-review`, `ponytail-audit` (`DietrichGebert/ponytail` @ `ebd8654c2c627f721eb8f9c0d1bd4090a29f9e10`, Full mode)
 - `web-design-guidelines` (`vercel-labs/agent-skills` @ `5a37a6329fbad3666c3207392a6a7c0110e92efb`, MIT; UI/UX & accessibility audit checklist)
 
+**Frontend:** `packages/widget` is Preact + TypeScript built by Vite into the Worker-served `/src/bangumi.js` and `/src/bangumi.css`. Edit `packages/widget/src/app/**`, then run `pnpm -F @airing-cal/widget generate`; browser acceptance is `pnpm e2e` (Playwright against a seeded local read gateway).
+
 ## ADS (Pinned Submodule)
 
 **Pin:** `.ads` @ `178212c41cce8fbf9354d4066e0f77341f6f23c4` — ADS **v0.8.0** (Lite profile; consumer evidence in [`docs/v3/release-acceptance-evidence.md`](docs/v3/release-acceptance-evidence.md)).

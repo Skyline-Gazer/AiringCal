@@ -23,10 +23,10 @@ export interface ReadWorkerEnv {
    * `null` allowed for file:// embeds). Unset: OPTIONS refused with 405.
    */
   AIRINGCAL_CORS_ORIGINS?: string
-  /** Git revision rendered on `/` (short sha) and reported by build metadata. */
-  BANGUMI_GIT_COMMIT_SHA?: string
   /** Reported by `/api/version`; injected as a Worker var at deploy time. */
   PACKAGE_VERSION?: string
+  /** Git revision rendered on `/` (short sha); injected as a Worker var at deploy time. */
+  BANGUMI_GIT_COMMIT_SHA?: string
 }
 
 /** Isolate-lifetime handler: rebuilt only when binding/config fingerprint changes. */

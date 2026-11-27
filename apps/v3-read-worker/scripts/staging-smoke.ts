@@ -177,8 +177,8 @@ async function run(): Promise<void> {
     [
       'exec', 'wrangler', 'dev', '--config', CONFIG, '-l', '--port', String(PORT),
       '--persist-to', stateDir, '--log-level', 'warn',
-      '--var', `BANGUMI_GIT_COMMIT_SHA:${BUILD_SHA}`,
       '--var', `PACKAGE_VERSION:${PACKAGE_VERSION}`,
+      '--var', `BANGUMI_GIT_COMMIT_SHA:${BUILD_SHA}`,
     ],
     { cwd: REPO_ROOT, stdio: 'pipe' },
   )
@@ -207,7 +207,12 @@ async function run(): Promise<void> {
       cacheControl: V2_CACHE_CONTROL.image,
       bodyIncludes: ['smoke-image-bytes'],
     })
-    await assertResponse('/', { status: 200, contentType: 'text/html; charset=utf-8', bodyIncludes: [`Build ${BUILD_SHA.slice(0, 7)}`] })
+    await assertResponse('/', {
+      status: 200,
+      contentType: 'text/html; charset=utf-8',
+      bodyIncludes: ['/src/bangumi.js', `"commitSha":"${BUILD_SHA}"`, '"builtAt":"'],
+    })
+
     await assertResponse('/api/sync/apply', { status: 410, cacheControl: V2_CACHE_CONTROL.error })
 
     console.log(JSON.stringify({

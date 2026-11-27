@@ -6,6 +6,16 @@ All notable changes to **AiringCal** are documented in this file.
 
 ## [Unreleased]
 
+### Frontend Modernization (`#221`, `#218`, `#219`, `#220`)
+
+- **Framework frontend**: replaced the hand-written DOM/HTML widget (`packages/widget/assets/theme/*`) with a Preact + TypeScript app built by Vite. Assets stay at `/src/bangumi.js` and `/src/bangumi.css`, are bundled into the Reader Worker (single deploy unit), and preserve the Embeddable Widget contract (`.bgm-container`, `window.bgmConfig`, `public, max-age=300`).
+- **Responsive pagination**: page capacity is measured from the rendered grid (`columns × 2 rows`), re-paginated on resize while keeping the first visible item, with previous/next controls. All non-final pages fill complete rows.
+- **NSFW filtering before pagination**: `GET /api/collections` gained optional `nsfw=hide|show` (default unchanged); totals, page size and rows now agree, and the filtered representation carries its own `ETag`.
+- **Calendar tab navigation**: one day panel, today selected by default, selection persists across re-renders and in the URL, no anchor scroll or auto-scroll, `tablist`/`tab`/`tabpanel` with arrow/Home/End keys.
+- **Header/footer consolidation**: header status bar removed; footer shares the page width and reports `Build <sha> · <build time> | SUBJECTS <n> | LAST UPDATED <release publish time>` with explicit UTC. `Next Writer`/`Last Writer` and `/src/cache.js` removed.
+- **Accessibility**: active-control contrast fixed (ink on accent), 3:1 focus ring, heading hierarchy, labelled tab panels, `aria-busy`/`aria-live` states, 44 px tap targets.
+- **Tests**: removed source-text regex "behaviour" assertions; added pure-function tests plus Playwright acceptance across Chromium, Firefox and WebKit in a single CI job. API docs corrected (`q`, `sort`, `user_id` were never implemented).
+
 ### Post-Release Hardening & Engineering Convergence (`dev` Integration Branch)
 
 - **Production Writer Release Execution Integrity & Explicit Release Authorization (`Fix A` / `Fix A1` / `Fix A2`)**:

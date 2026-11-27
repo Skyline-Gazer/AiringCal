@@ -1,11 +1,14 @@
-// Audit-only fixture: builds a deterministic public store for local UI review.
-// Not part of the product surface. Output goes to .airingcal/audit/public.
+/**
+ * Deterministic public-store fixture for frontend acceptance tests.
+ * Synthetic data only — never real user data.
+ *
+ * Usage: pnpm exec tsx scripts/seed-frontend-fixture.ts <publicDir>
+ */
 import { createHash } from 'node:crypto'
 import { mkdir, rm, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { deflateSync } from 'node:zlib'
-import { buildPublicSnapshot } from '@airing-cal/domain'
-import { canonicalSnapshotBytes } from '@airing-cal/domain'
+import { buildPublicSnapshot, canonicalSnapshotBytes } from '@airing-cal/domain'
 import {
   canonicalJson,
   type PublicCalendarDayV1,
@@ -14,8 +17,11 @@ import {
   type PublicSubjectImagesV1,
 } from '@airing-cal/storage'
 
-const root = resolve(import.meta.dirname, '../../../.airingcal/audit')
-const publicDir = join(root, 'public')
+const publicDir = process.argv[2]
+if (!publicDir) {
+  console.error(JSON.stringify({ status: 'failed', stage: 'seed_frontend_fixture', message: 'publicDir is required' }))
+  process.exit(1)
+}
 
 const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
   let c = n
@@ -49,12 +55,9 @@ function coverPng(width: number, height: number, seed: number): Buffer {
     const row = Buffer.alloc(1 + width * 3)
     for (let x = 0; x < width; x += 1) {
       const t = (x / width + y / height) / 2
-      const r = Math.round(30 + 180 * t + 40 * Math.sin(seed))
-      const g = Math.round(90 + 120 * t + 40 * Math.cos(seed * 1.7))
-      const b = Math.round(160 - 90 * t + 40 * Math.sin(seed * 2.3))
-      row[1 + x * 3] = Math.max(0, Math.min(255, r))
-      row[2 + x * 3] = Math.max(0, Math.min(255, g))
-      row[3 + x * 3] = Math.max(0, Math.min(255, b))
+      row[1 + x * 3] = Math.max(0, Math.min(255, Math.round(30 + 180 * t + 40 * Math.sin(seed))))
+      row[2 + x * 3] = Math.max(0, Math.min(255, Math.round(90 + 120 * t + 40 * Math.cos(seed * 1.7))))
+      row[3 + x * 3] = Math.max(0, Math.min(255, Math.round(160 - 90 * t + 40 * Math.sin(seed * 2.3))))
     }
     rows.push(row)
   }
@@ -108,11 +111,11 @@ function collectionItem(subjectId: number, collectionType: number, index: number
 }
 
 const TYPES: { type: number; count: number }[] = [
-  { type: 1, count: 26 }, // want
-  { type: 2, count: 71 }, // watched
-  { type: 3, count: 57 }, // watching (default view)
-  { type: 4, count: 9 }, // on_hold
-  { type: 5, count: 4 }, // dropped
+  { type: 1, count: 26 },
+  { type: 2, count: 71 },
+  { type: 3, count: 55 },
+  { type: 4, count: 9 },
+  { type: 5, count: 4 },
 ]
 
 const collections: PublicCollectionItemV1[] = []
@@ -185,6 +188,8 @@ for (const [subjectId, hash] of imageHashes) {
 }
 
 console.log(JSON.stringify({
+  status: 'ok',
+  stage: 'seed_frontend_fixture',
   publicDir,
   total: collections.length,
   calendar: calendar.map((day) => day.items.length),
