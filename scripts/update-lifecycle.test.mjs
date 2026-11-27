@@ -20,6 +20,11 @@ import { createControlledProviderSimulator } from './fixtures/controlled-provide
 import { main as wizardMain } from './setup-wizard.mjs'
 import { discoverUpdateState, upgradeWorkspace } from './update-plan.mjs'
 
+function cleanTestEnv(extra = {}) {
+  const { GITHUB_REPOSITORY: _ghRepo, ...rest } = process.env
+  return { ...rest, ...extra }
+}
+
 function makeScriptedUi(answers = {}) {
   const notes = []
   const logs = []
@@ -316,7 +321,7 @@ test('Lifecycle 1-3: Legacy Reader migration -> BANGUMI_GIT_COMMIT_SHA injection
     const res1 = await wizardMain(
       ['--operation', 'update', '--environment', 'production'],
       {
-        env: { ...process.env, AIRINGCAL_INVENTORY_DIR: invDir },
+        env: cleanTestEnv({ AIRINGCAL_INVENTORY_DIR: invDir }),
         ui: ui1,
         spawnSyncImpl: spawnWrapped,
         fetchImpl: envSim.fetchImpl,
@@ -344,7 +349,7 @@ test('Lifecycle 1-3: Legacy Reader migration -> BANGUMI_GIT_COMMIT_SHA injection
     const res2 = await wizardMain(
       ['--operation', 'update', '--environment', 'production'],
       {
-        env: { ...process.env, AIRINGCAL_INVENTORY_DIR: invDir },
+        env: cleanTestEnv({ AIRINGCAL_INVENTORY_DIR: invDir }),
         ui: ui2,
         spawnSyncImpl: spawnWrapped,
         fetchImpl: envSim.fetchImpl,
@@ -381,6 +386,7 @@ test('Lifecycle 4-6: Writer conflict, Writer API error (unknown), and Writer ahe
     writerSha: sha300, // conflicts with v3.1.0 -> sha310
   })
   const conflictRes = await wizardMain(['--operation', 'update', '--environment', 'production'], {
+    env: cleanTestEnv(),
     ui: makeScriptedUi(),
     spawnSyncImpl: makeLocalBehindSpawn(conflictSim),
     fetchImpl: conflictSim.fetchImpl,
@@ -400,6 +406,7 @@ test('Lifecycle 4-6: Writer conflict, Writer API error (unknown), and Writer ahe
   })
   const apiErrUi = makeScriptedUi()
   const apiErrRes = await wizardMain(['--operation', 'update', '--environment', 'production'], {
+    env: cleanTestEnv(),
     ui: apiErrUi,
     spawnSyncImpl: makeLocalBehindSpawn(apiErrSim),
     fetchImpl: apiErrSim.fetchImpl,
@@ -419,6 +426,7 @@ test('Lifecycle 4-6: Writer conflict, Writer API error (unknown), and Writer ahe
     compareStatus: 'ahead',
   })
   const aheadRes = await wizardMain(['--operation', 'update', '--environment', 'production'], {
+    env: cleanTestEnv(),
     ui: makeScriptedUi(),
     spawnSyncImpl: makeLocalBehindSpawn(aheadSim),
     fetchImpl: aheadSim.fetchImpl,
@@ -444,6 +452,7 @@ test('Lifecycle 7-10: Real temp git repo upgrade, fork release source, shallow/d
     })
     const state = await discoverUpdateState({
       environment: 'production',
+      env: cleanTestEnv(),
       cwd: repo.clone,
       spawnSyncImpl: (cmd, args, opts = {}) => {
         if (cmd === 'git') {
@@ -460,6 +469,7 @@ test('Lifecycle 7-10: Real temp git repo upgrade, fork release source, shallow/d
     // Shallow clone is blocked before any upgrade
     const shallowState = await discoverUpdateState({
       environment: 'production',
+      env: cleanTestEnv(),
       cwd: shallowRepo.clone,
       spawnSyncImpl: (cmd, args, opts = {}) => {
         if (cmd === 'git') {
@@ -514,6 +524,7 @@ test('Lifecycle 11: User cancellation at upgrade prompt performs zero git fetch 
   }
   const ui = makeScriptedUi({ confirms: [false] })
   const res = await wizardMain(['--operation', 'update', '--environment', 'production'], {
+    env: cleanTestEnv(),
     ui,
     spawnSyncImpl: spawnWrapped,
     fetchImpl: envSim.fetchImpl,
@@ -552,6 +563,7 @@ test('Lifecycle 12: Dependency install failure surfaces local workspace rollback
     return envSim.spawnSyncImpl(cmd, args, opts)
   }
   const res = await wizardMain(['--operation', 'update', '--environment', 'production'], {
+    env: cleanTestEnv(),
     ui: makeScriptedUi({ confirms: [true] }),
     spawnSyncImpl: spawnWrapped,
     fetchImpl: envSim.fetchImpl,
@@ -595,7 +607,7 @@ test('Lifecycle 13: Interactive Reader/Writer convergence & Install/Update/Recov
       selects: ['install'],
     })
     const resConv = await wizardMain(['--operation', 'update', '--environment', 'production'], {
-      env: { ...process.env, AIRINGCAL_INVENTORY_DIR: invDir },
+      env: cleanTestEnv({ AIRINGCAL_INVENTORY_DIR: invDir }),
       ui: uiConv,
       spawnSyncImpl: spawnWrapped,
       fetchImpl: envSim.fetchImpl,
@@ -622,7 +634,7 @@ test('Lifecycle 13: Interactive Reader/Writer convergence & Install/Update/Recov
       passwords: ['cf-mgmt-sim-token', 'bgm-pat-sim-token'],
     })
     const resMismatch = await wizardMain(['--operation', 'install', '--environment', 'production'], {
-      env: { ...process.env, AIRINGCAL_INVENTORY_DIR: invDir },
+      env: cleanTestEnv({ AIRINGCAL_INVENTORY_DIR: invDir }),
       ui: uiMismatch,
       spawnSyncImpl: spawnWrapped,
       fetchImpl: envSim.fetchImpl,
@@ -668,6 +680,7 @@ test('Lifecycle 14: Stale /api/version cache-busting and verify states never ret
 
   // Writer identity missing -> interactive decline returns CANCELLED (never NO_CHANGE)
   const resMissing = await wizardMain(['--operation', 'update', '--environment', 'production'], {
+    env: cleanTestEnv(),
     ui: makeScriptedUi({ confirms: [false] }),
     spawnSyncImpl: spawnWrapped,
     fetchImpl: wrappedFetch,
@@ -687,6 +700,7 @@ test('Lifecycle 14: Stale /api/version cache-busting and verify states never ret
     writerSha: sha,
   })
   const resUnreach = await wizardMain(['--operation', 'update', '--environment', 'production'], {
+    env: cleanTestEnv(),
     ui: makeScriptedUi({ confirms: [false] }),
     spawnSyncImpl: (cmd, args, opts = {}) => {
       if (cmd === 'git') return spawnWrapped(cmd, args, opts)
