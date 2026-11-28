@@ -125,6 +125,8 @@ pnpm run setup           # 选择 Update
 
 Update 是幂等的，绝不删除桶内对象、快照、Checkpoint、图片或 S3 密钥。它会在收集任何凭据之前报告观测到的事实（`Workspace`、`Target`、`Writer`、`Reader`），以提交 SHA 而非版本号判断一致性，然后：把干净工作区升级到发布提交（在提示确认或拉取前只读检查 Tag 冲突与目标提交的 Node/pnpm 主版本要求，确认后再切换并以 `pnpm install --frozen-lockfile` 安装、在新版本代码上重启向导）、为缺少 `build.commitSha` 的旧 Reader 重新部署并注入 `BANGUMI_GIT_COMMIT_SHA`，并在交互式更新中允许你显式授权推进 Production Writer 发布目标（或保持原目标仅更新 Reader）。只有已确认一致（`current`）才返回 `NO_CHANGE`；`verify` 会提示确认，而 `blocked` 与 `unknown` 会在改动任何内容前停止。`development` 没有正式发布，会以当前提交重新部署。本地工作区回滚：`git switch <branch>` 或 `git switch --detach <旧 HEAD>`（向导会打印），然后执行 `pnpm install --frozen-lockfile && pnpm run setup`（绝不自动回滚远端资源）。无头模式：`pnpm run setup -- --headless --operation update --environment production`。
 
+> **从官方 `v3.0.0` 升级说明**：官方 `v3.0.0`（`pnpm@9.15.9`）早于自助 Update 功能发布。首次从 `v3.0.0` 升级时，请先执行一次非破坏性切换：`git fetch --tags && git switch --detach <新版本Tag> && corepack prepare pnpm@12.23.0 --activate && pnpm install --frozen-lockfile && pnpm run setup` 并选择 **Update**（保留既有 R2 数据与 S3 密钥）；后续版本即可直接使用 `pnpm run setup` → **Update** 完成自助升级。
+
 ---
 
 ## AI 原生安装与更新指令（可直接复制给 AI Agent）

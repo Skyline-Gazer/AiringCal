@@ -110,6 +110,7 @@ AiringCal 原生支持在 Fork 仓库或独立仓库中运行，无需修改任�
      - `blocked` 与 `unknown`：均在收集凭据或改动任何内容前停止，并打印明确原因与处理方式（未提交改动、git 状态不可读、本地或 Writer `HEAD` 领先或分叉于发布 `UPDATE_DEPLOYED_AHEAD`、Node/pnpm 版本不满足、发布源不可读、GitHub Environment 变量不可读 `UPDATE_WRITER_UNREADABLE`、无法校验的 Writer 身份 `UPDATE_DEPLOYMENT_UNVERIFIED`、或 Writer 发布身份冲突 `UPDATE_DEPLOYMENT_CONFLICT`）。
    - **受授权的 Reader/Writer 版本收敛**：交互式 Production `update` 期间，若现有 `AIRINGCAL_PRODUCTION_RELEASE_SHA` 与目标发布不同，向导会提供独立的显式确认以推进 Production Writer 发布目标（默认 No = 仅更新 Reader，保留既有 Writer 目标）。
    - **本地工作区回滚与远端状态隔离**：若 `pnpm install --frozen-lockfile` 或向导重启失败，系统绝不会自动回滚远端 Cloudflare/GitHub 资源；向导会打印确切的本地工作区回滚命令（原在分支上时为 `git switch <branch>`，否则为 `git switch --detach <旧 HEAD>`，随后执行 `pnpm install --frozen-lockfile`）。
+   - **从官方 `v3.0.0` 的一次性兼容升级引导**：官方 `v3.0.0`（`pnpm@9.15.9`）尚不包含自助 Update（`scripts/update-plan.mjs`）。首次从 `v3.0.0` 升级时，请先执行 `git fetch --tags && git switch --detach <目标Tag> && corepack prepare pnpm@12.23.0 --activate && pnpm install --frozen-lockfile && pnpm run setup` 并选择 **Update**（现有 R2 数据与 S3 密钥完整保留）；此后版本均可直接通过 `pnpm run setup` → **Update** 自动完成。
 
 ### C. 中断尝试恢复 (`recover`)
 

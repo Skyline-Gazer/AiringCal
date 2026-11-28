@@ -10,10 +10,11 @@
 
 import assert from 'node:assert/strict'
 import { spawnSync as realSpawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import { createLiveDevelopmentApplyIo } from './deploy-env.mjs'
 import { createControlledProviderSimulator } from './fixtures/controlled-provider-sim.mjs'
@@ -200,7 +201,7 @@ function setupExistingProductionSim({
     if (cmd === 'pnpm' && args[0] === 'install') {
       return { status: pnpmInstallExit, stdout: '', stderr: pnpmInstallExit === 0 ? '' : 'ERR_PNPM_INSTALL_FAILED' }
     }
-    if (cmd === 'pnpm' && args[0] === 'exec' && args[1] === 'wrangler' && args[2] === 'deploy') {
+    if ((cmd.endsWith('wrangler') || args[1] === 'wrangler') && args.includes('deploy')) {
       const cfgIdx = args.indexOf('--config')
       if (cfgIdx >= 0) {
         const toml = readFileSync(args[cfgIdx + 1], 'utf8')
@@ -710,4 +711,239 @@ test('Lifecycle 14: Stale /api/version cache-busting and verify states never ret
     log: () => {},
   })
   assert.equal(resUnreach.verdict, 'CANCELLED')
+})
+
+test('Lifecycle 15: Real child-process cross-version Wizard re-execution (v3.0.1 -> v3.0.2 -> NO_CHANGE)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'airingcal-reexec-'))
+  const upstream = join(dir, 'upstream.git')
+  const work = join(dir, 'work')
+  const clone = join(dir, 'clone')
+  const stateFile = join(dir, 'sim-state.json')
+  const invDir = join(dir, 'inventory')
+  const hooksFile = join(dir, 'reexec-hooks.mjs')
+  const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)))
+  const runGit = (args, cwd = dir) => {
+    const res = realSpawnSync('git', args, { cwd, encoding: 'utf8' })
+    if (res.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${res.stderr}`)
+    return res.stdout.trim()
+  }
+
+  try {
+    runGit(['init', '--bare', upstream])
+    runGit(['clone', upstream, work])
+    runGit(['config', 'user.email', 'test@example.com'], work)
+    runGit(['config', 'user.name', 'Test'], work)
+
+    cpSync(join(repoRoot, 'scripts'), join(work, 'scripts'), { recursive: true })
+    mkdirSync(join(work, 'apps/v3-read-worker'), { recursive: true })
+    cpSync(join(repoRoot, 'apps/v3-read-worker/wrangler.toml'), join(work, 'apps/v3-read-worker/wrangler.toml'))
+    writeFileSync(join(work, 'package.json'), JSON.stringify({
+      name: 'airing-cal',
+      version: '3.0.1',
+      packageManager: 'pnpm@12.23.0',
+      engines: { node: '>=24' },
+    }, null, 2))
+    writeFileSync(join(work, '.gitignore'), 'node_modules\n')
+    writeFileSync(join(work, 'REEXEC_MARKER.txt'), 'version=3.0.1\n')
+    runGit(['add', '.'], work)
+    runGit(['commit', '-m', 'v3.0.1'], work)
+    runGit(['tag', 'v3.0.1'], work)
+    const sha301 = runGit(['rev-parse', 'HEAD'], work)
+
+    writeFileSync(join(work, 'package.json'), JSON.stringify({
+      name: 'airing-cal',
+      version: '3.0.2',
+      packageManager: 'pnpm@12.23.0',
+      engines: { node: '>=24' },
+    }, null, 2))
+    writeFileSync(join(work, 'REEXEC_MARKER.txt'), 'version=3.0.2\n')
+    runGit(['add', '.'], work)
+    runGit(['commit', '-m', 'v3.0.2'], work)
+    runGit(['tag', 'v3.0.2'], work)
+    const sha302 = runGit(['rev-parse', 'HEAD'], work)
+
+    runGit(['push', 'origin', 'HEAD:refs/heads/main', '--tags'], work)
+    runGit(['clone', `file://${upstream}`, clone])
+    runGit(['checkout', sha301], clone)
+    runGit(['config', 'user.email', 'test@example.com'], clone)
+    runGit(['config', 'user.name', 'Test'], clone)
+    runGit(['config', '--local', `url.file://${upstream}.insteadOf`, 'https://github.com/owner/AiringCal.git'], clone)
+    runGit(['remote', 'set-url', 'origin', 'https://github.com/owner/AiringCal.git'], clone)
+    symlinkSync(join(repoRoot, 'node_modules'), join(clone, 'node_modules'))
+
+    writeFileSync(stateFile, JSON.stringify({
+      sha301,
+      sha302,
+      readerBuildSha: sha301,
+      readerPackage: '3.0.1',
+      writerRef: 'v3.0.1',
+      writerSha: sha301,
+      r2Objects: {
+        'public/current-release.json': JSON.stringify({ release_id: 'rel-1', artifact_ref: 'snapshots/v1/1-abc.json' }),
+        'snapshots/v1/1-abc.json': '{}',
+        'checkpoints/builder.sqlite': 'preserved-sqlite-bytes',
+      },
+      s3SecretRotated: false,
+      reexecMarkerObserved: null,
+    }))
+
+    writeFileSync(hooksFile, `
+import { readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync as realSpawnSync } from 'node:child_process'
+import { join } from 'node:path'
+import { createControlledProviderSimulator } from ${JSON.stringify(join(repoRoot, 'scripts/fixtures/controlled-provider-sim.mjs'))}
+
+const statePath = ${JSON.stringify(stateFile)}
+const loadState = () => JSON.parse(readFileSync(statePath, 'utf8'))
+const saveState = (next) => writeFileSync(statePath, JSON.stringify(next))
+
+const s0 = loadState()
+const accountId = '0123456789abcdef0123456789abcdef'
+const sim = createControlledProviderSimulator({ gitSha: s0.sha301, releaseTag: 'v3.0.1', releaseSha: s0.sha301 })
+sim.seedGithubEnv('production', {
+  variables: {
+    AIRINGCAL_PRODUCTION_R2_BUCKET: 'airingcal-production',
+    AIRINGCAL_PRODUCTION_CLOUDFLARE_ACCOUNT_ID: accountId,
+    AIRINGCAL_PRODUCTION_PRIMARY_USER_ID: '821993',
+    AIRINGCAL_PRODUCTION_PUBLIC_BASE_URL: 'https://airingcal-production.primary-sim.workers.dev',
+    AIRINGCAL_PRODUCTION_RELEASE_REF: s0.writerRef,
+    AIRINGCAL_PRODUCTION_RELEASE_SHA: s0.writerSha,
+  },
+  secrets: [
+    'AIRINGCAL_PRODUCTION_BANGUMI_TOKEN',
+    'AIRINGCAL_PRODUCTION_S3_ACCESS_KEY_ID',
+    'AIRINGCAL_PRODUCTION_S3_SECRET_ACCESS_KEY',
+  ],
+})
+sim.seedBucket(accountId, 'airingcal-production', {
+  r2DevEnabled: false,
+  objects: s0.r2Objects,
+})
+sim.seedWorker(accountId, 'airingcal-production', {
+  r2Bindings: [{ name: 'AIRINGCAL_R2', bucketName: 'airingcal-production' }],
+})
+
+const simFetch = async (url, init = {}) => {
+  const s = loadState()
+  const u = String(url)
+  if (u.includes('/accounts') && !u.includes('/r2/') && !u.includes('/workers/') && !u.includes('/tokens')) {
+    return { ok: true, status: 200, json: async () => ({ success: true, result: [{ id: accountId, name: 'Test Account' }] }) }
+  }
+  if (u.endsWith('/workers/subdomain')) {
+    return { ok: true, status: 200, json: async () => ({ success: true, result: { subdomain: 'primary-sim' } }) }
+  }
+  if (u.includes('api.bgm.tv/v0/me')) {
+    return { ok: true, status: 200, json: async () => ({ id: 821993, username: '821993', nickname: 'tester' }) }
+  }
+  if (u.includes('/api/version')) {
+    return { ok: true, status: 200, json: async () => ({ app: 'airingcal', read: 'cloudflare', package: s.readerPackage, build: { commitSha: s.readerBuildSha } }) }
+  }
+  return sim.fetchImpl(url, init)
+}
+globalThis.fetch = simFetch
+
+export default {
+  async preflight() {},
+  fetchImpl: simFetch,
+  spawnSyncImpl: (cmd, args, opts = {}) => {
+    const s = loadState()
+    if (cmd === process.execPath) {
+      return realSpawnSync(cmd, args, opts)
+    }
+    if (cmd === 'pnpm' && args[0] === '--version') return { status: 0, stdout: '12.23.0\\n', stderr: '' }
+    if (cmd === 'pnpm' && args[0] === 'install') return { status: 0, stdout: 'Lockfile is up to date\\n', stderr: '' }
+    if ((cmd.endsWith('wrangler') || args[1] === 'wrangler') && args.includes('deploy')) {
+      const cfgIdx = args.indexOf('--config')
+      if (cfgIdx >= 0) {
+        const toml = readFileSync(args[cfgIdx + 1], 'utf8')
+        const shaMatch = toml.match(/BANGUMI_GIT_COMMIT_SHA\\s*=\\s*"([0-9a-f]{40})"/i)
+        const pkgMatch = toml.match(/PACKAGE_VERSION\\s*=\\s*"([^"]+)"/)
+        const cur = loadState()
+        if (shaMatch) cur.readerBuildSha = shaMatch[1].toLowerCase()
+        if (pkgMatch) cur.readerPackage = pkgMatch[1]
+        cur.reexecMarkerObserved = readFileSync(join(${JSON.stringify(clone)}, 'REEXEC_MARKER.txt'), 'utf8').trim()
+        saveState(cur)
+      }
+      return sim.spawnSyncImpl(cmd, args, opts)
+    }
+    if (cmd === 'gh' && args[0] === 'api') {
+      const path = String(args[1] ?? '')
+      if (path === 'repos/owner/AiringCal') return { status: 0, stdout: JSON.stringify({ fork: false }), stderr: '' }
+      if (path === 'repos/owner/AiringCal/releases?per_page=100') {
+        return { status: 0, stdout: JSON.stringify([
+          { tag_name: 'v3.0.2', draft: false, prerelease: false },
+          { tag_name: 'v3.0.1', draft: false, prerelease: false },
+        ]), stderr: '' }
+      }
+      if (path === 'repos/owner/AiringCal/git/ref/tags/v3.0.2') return { status: 0, stdout: JSON.stringify({ type: 'commit', sha: s.sha302 }), stderr: '' }
+      if (path === 'repos/owner/AiringCal/git/ref/tags/v3.0.1') return { status: 0, stdout: JSON.stringify({ type: 'commit', sha: s.sha301 }), stderr: '' }
+      if (path.endsWith('/contents/package.json?ref=' + s.sha302)) {
+        const content = Buffer.from(JSON.stringify({ name: 'airing-cal', version: '3.0.2', packageManager: 'pnpm@12.23.0', engines: { node: '>=24' } })).toString('base64')
+        return { status: 0, stdout: content, stderr: '' }
+      }
+      if (path.includes('/environments/production/variables/AIRINGCAL_PRODUCTION_RELEASE_REF')) return { status: 0, stdout: s.writerRef, stderr: '' }
+      if (path.includes('/environments/production/variables/AIRINGCAL_PRODUCTION_RELEASE_SHA')) return { status: 0, stdout: s.writerSha, stderr: '' }
+    }
+    if (cmd === 'gh' && args[0] === 'variable' && args[1] === 'set') {
+      const res = sim.spawnSyncImpl(cmd, args, opts)
+      const cur = loadState()
+      const idx = args.indexOf('--body')
+      if (args[2] === 'AIRINGCAL_PRODUCTION_RELEASE_SHA' && idx >= 0) cur.writerSha = args[idx + 1]
+      if (args[2] === 'AIRINGCAL_PRODUCTION_RELEASE_REF' && idx >= 0) cur.writerRef = args[idx + 1]
+      saveState(cur)
+      return res
+    }
+    if (cmd === 'git') {
+      if (args[0] === 'remote' && args[1] === 'get-url') return { status: 0, stdout: 'https://github.com/owner/AiringCal.git\\n', stderr: '' }
+      return realSpawnSync(cmd, args, { ...opts, cwd: opts.cwd || ${JSON.stringify(clone)} })
+    }
+    return sim.spawnSyncImpl(cmd, args, opts)
+  },
+}
+`)
+
+    const childEnv = cleanTestEnv({
+      AIRINGCAL_WIZARD_TEST_HOOKS: `file://${hooksFile}`,
+      AIRINGCAL_DOTENV_PATH: join(dir, '.env.production'),
+      AIRINGCAL_INVENTORY_DIR: invDir,
+      AIRINGCAL_CLOUDFLARE_API_TOKEN: 'cf-mgmt-sim-token',
+      AIRINGCAL_CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+      AIRINGCAL_BANGUMI_TOKEN: 'bgm-pat-sim-token',
+      AIRINGCAL_REPOSITORY: 'owner/AiringCal',
+      AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED: 'yes',
+      AIRINGCAL_DEPLOY_LIVE_CONFIRM: 'yes',
+      AIRINGCAL_WIZARD_CONFIRM: 'yes',
+      AIRINGCAL_PRODUCTION_RELEASE_SHA: sha302,
+      AIRINGCAL_PRODUCTION_RELEASE_REF: 'v3.0.2',
+      AIRINGCAL_ALLOW_RELEASE_CHANGE: 'yes',
+    })
+
+    // 1) Run headless Update from v3.0.1 clone -> real git upgrade -> real child-process re-exec on v3.0.2 -> deploy
+    const firstRun = realSpawnSync(
+      process.execPath,
+      [join(clone, 'scripts/setup-wizard.mjs'), '--operation', 'update', '--environment', 'production', '--headless'],
+      { cwd: clone, env: childEnv, encoding: 'utf8' },
+    )
+    assert.equal(firstRun.status, 0, `firstRun failed: ${firstRun.stderr}\n${firstRun.stdout}`)
+    assert.equal(runGit(['rev-parse', 'HEAD'], clone), sha302)
+
+    const afterFirst = JSON.parse(readFileSync(stateFile, 'utf8'))
+    assert.equal(afterFirst.reexecMarkerObserved, 'version=3.0.2', `stdout:\n${firstRun.stdout}\nstderr:\n${firstRun.stderr}`)
+    assert.equal(afterFirst.readerBuildSha, sha302)
+    assert.equal(afterFirst.writerSha, sha302)
+    assert.equal(afterFirst.s3SecretRotated, false)
+    assert.deepEqual(JSON.parse(afterFirst.r2Objects['public/current-release.json']), { release_id: 'rel-1', artifact_ref: 'snapshots/v1/1-abc.json' })
+    assert.equal(afterFirst.r2Objects['checkpoints/builder.sqlite'], 'preserved-sqlite-bytes')
+
+    // 2) Re-run Update on converged v3.0.2 clone -> NO_CHANGE
+    const secondRun = realSpawnSync(
+      process.execPath,
+      [join(clone, 'scripts/setup-wizard.mjs'), '--operation', 'update', '--environment', 'production', '--headless'],
+      { cwd: clone, env: childEnv, encoding: 'utf8' },
+    )
+    assert.equal(secondRun.status, 0, `secondRun failed: ${secondRun.stderr}\n${secondRun.stdout}`)
+    assert.match(`${secondRun.stdout}\n${secondRun.stderr}`, /No Change|NO_CHANGE|already match the latest release/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })
