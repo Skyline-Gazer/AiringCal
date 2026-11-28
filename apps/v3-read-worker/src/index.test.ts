@@ -244,3 +244,31 @@ test('entry-level GET on static assets still short-circuits before the read hand
   assert.equal(res.status, 200)
   assert.match(res.headers.get('Content-Type') ?? '', /text\/html/)
 })
+
+test('/api/version returns Cache-Control: no-store and invalidates handler fingerprint when BANGUMI_GIT_COMMIT_SHA changes', async () => {
+  const bucket = await publishedBucket()
+  const sha1 = '1'.repeat(40)
+  const sha2 = '2'.repeat(40)
+
+  const res1 = await handleReadWorkerRequest(new Request('https://worker.example/api/version'), {
+    AIRINGCAL_R2: bucket,
+    PACKAGE_VERSION: '3.0.0',
+    BANGUMI_GIT_COMMIT_SHA: sha1,
+  })
+  assert.equal(res1.status, 200)
+  assert.equal(res1.headers.get('Cache-Control'), 'no-store')
+  const body1 = await res1.json() as { package?: string; build?: { commitSha?: string } }
+  assert.equal(body1.package, '3.0.0')
+  assert.equal(body1.build?.commitSha, sha1)
+
+  const res2 = await handleReadWorkerRequest(new Request('https://worker.example/api/version'), {
+    AIRINGCAL_R2: bucket,
+    PACKAGE_VERSION: '3.0.0',
+    BANGUMI_GIT_COMMIT_SHA: sha2,
+  })
+  assert.equal(res2.status, 200)
+  assert.equal(res2.headers.get('Cache-Control'), 'no-store')
+  const body2 = await res2.json() as { package?: string; build?: { commitSha?: string } }
+  assert.equal(body2.package, '3.0.0')
+  assert.equal(body2.build?.commitSha, sha2)
+})

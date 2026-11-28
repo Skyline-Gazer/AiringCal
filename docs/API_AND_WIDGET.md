@@ -162,7 +162,7 @@ Returns public reader configuration flags.
 
 Returns runtime, package and build-source metadata. `build.commitSha` is the `BANGUMI_GIT_COMMIT_SHA` the Worker was deployed with, omitted when unset; the Update preflight compares it with the release commit.
 
-- **Headers**: `Cache-Control: public, max-age=60`
+- **Headers**: `Cache-Control: no-store`
 - **Response (`200 OK`)**:
 
 ```json

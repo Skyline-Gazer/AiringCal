@@ -3325,7 +3325,7 @@ export function createLiveDevelopmentApplyIo({
       const outDir = mkdtempSync(join(tmpdir(), 'airingcal-wrangler-'))
       const outToml = join(outDir, `wrangler-v3-read-${isProduction ? 'production' : 'development'}.toml`)
       const sourceToml = join(ROOT, 'apps/v3-read-worker/wrangler.toml')
-      const gitSha =
+      const rawGitSha =
         String(env.BANGUMI_GIT_COMMIT_SHA ?? '').trim() ||
         (() => {
           const r = spawnSyncImpl('git', ['rev-parse', 'HEAD'], {
@@ -3333,6 +3333,16 @@ export function createLiveDevelopmentApplyIo({
             cwd: ROOT,
           })
           return (r.stdout || '').trim()
+        })()
+      const gitSha = /^[0-9a-f]{40}$/i.test(rawGitSha) ? rawGitSha.toLowerCase() : rawGitSha
+      const packageVersion =
+        String(env.PACKAGE_VERSION ?? '').trim() ||
+        (() => {
+          try {
+            return String(JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version ?? '').trim()
+          } catch {
+            return ''
+          }
         })()
 
       const ledger = ledgerFor(ctx)
@@ -3352,7 +3362,7 @@ export function createLiveDevelopmentApplyIo({
                 plan.publicOriginMode === 'worker' ? (plan.cors?.allowedOrigins ?? []).join(',') : '',
               AIRINGCAL_IMAGE_BASE_URL: String(env.AIRINGCAL_IMAGE_BASE_URL ?? '').trim(),
               BANGUMI_GIT_COMMIT_SHA: gitSha,
-              PACKAGE_VERSION: String(env.PACKAGE_VERSION ?? '').trim(),
+              PACKAGE_VERSION: packageVersion,
             },
           },
         )

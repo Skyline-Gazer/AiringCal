@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  checkLocalTagConflict,
   compareVersions,
   discoverUpdateState,
   fetchReleaseTag,
@@ -12,6 +13,7 @@ import {
   readGithubReleases,
   readPackageAt,
   readReaderVersion,
+  readRemotePackageAt,
   readRemoteReleaseIdentity,
   satisfiesRange,
   toolchainBlockers,
@@ -62,20 +64,20 @@ test('satisfiesRange understands the engine syntax this repo writes', () => {
   assert.equal(satisfiesRange('24.22.3', '>=twenty'), null, 'unparseable bounds must not invent a verdict')
 })
 
-test('toolchainBlockers blocks Node but only warns on a pnpm mismatch', () => {
+test('toolchainBlockers blocks Node and pnpm major mismatch, but allows same-major pnpm', () => {
   const blocked = toolchainBlockers({
     pkg: { engines: { node: '>=26' }, packageManager: 'pnpm@12.23.0' },
     nodeVersion: '24.22.3',
     pnpmVersion: '9.15.9',
   })
   assert.deepEqual(blocked.map((entry) => entry.code), ['UPDATE_NODE_TOO_OLD', 'UPDATE_PNPM_MISMATCH'])
-  assert.deepEqual(blocked.map((entry) => entry.severity), ['block', 'warn'])
+  assert.deepEqual(blocked.map((entry) => entry.severity), ['block', 'block'])
   assert.match(blocked[1].fix, /corepack prepare pnpm@12\.23\.0 --activate/)
   assert.deepEqual(
     toolchainBlockers({
       pkg: { engines: { node: '>=24' }, packageManager: 'pnpm@12.23.0' },
       nodeVersion: '24.22.3',
-      pnpmVersion: '12.23.0',
+      pnpmVersion: '12.1.0',
     }),
     [],
   )
@@ -147,12 +149,16 @@ test('planUpdate separates current, verify and redeploy at the target commit', (
     planUpdate(atTarget({ reader: { reachable: true, version: '3.1.0', commitSha: SHA_B } })).action,
     'redeploy',
   )
-  // Version agreement is not commit proof: the Reader reporting the same
-  // version without its build commit stays verification pending.
-  assert.equal(
-    planUpdate(atTarget({ reader: { reachable: true, version: '3.1.0', commitSha: null } })).action,
-    'verify',
-  )
+  // Legacy Reader without build.commitSha gets a safe migration redeploy path.
+  const legacy = planUpdate(atTarget({ reader: { reachable: true, version: '3.1.0', commitSha: null } }))
+  assert.equal(legacy.action, 'redeploy')
+  assert.equal(legacy.code, 'UPDATE_READER_LEGACY_MIGRATION')
+
+  // Malformed build.commitSha gets an explicit identity repair redeploy path.
+  const invalidCommit = planUpdate(atTarget({ reader: { reachable: true, version: '3.1.0', commitSha: null, invalidCommitSha: true } }))
+  assert.equal(invalidCommit.action, 'redeploy')
+  assert.equal(invalidCommit.code, 'UPDATE_READER_IDENTITY_INVALID')
+
   // AIRINGCAL_*_RELEASE_SHA alone is a complete identity.
   assert.equal(planUpdate(atTarget({ writer: { sha: SHA_A } })).action, 'current')
   // A conflicting or unvalidated identity never becomes agreement.
@@ -163,6 +169,25 @@ test('planUpdate separates current, verify and redeploy at the target commit', (
   const invalid = planUpdate(atTarget({ writer: { ref: 'v3.1.0', sha: null, invalid: true, reason: 'unresolvable ref' } }))
   assert.equal(invalid.action, 'unknown')
   assert.equal(invalid.code, 'UPDATE_DEPLOYMENT_UNVERIFIED')
+
+  // Writer ahead / conflict / readError / shallow block BEFORE workspace upgrade (!atTarget).
+  const behindLocal = { headSha: SHA_B, tag: 'v3.0.0', version: '3.0.0' }
+  assert.equal(
+    planUpdate({ local: behindLocal, target: { tag: 'v3.1.0', sha: SHA_A }, writer: { ref: 'v3.2.0', sha: SHA_B } }).code,
+    'UPDATE_DEPLOYED_AHEAD',
+  )
+  assert.equal(
+    planUpdate({ local: behindLocal, target: { tag: 'v3.1.0', sha: SHA_A }, writer: { sha: SHA_B, compareStatus: 'ahead' } }).code,
+    'UPDATE_DEPLOYED_AHEAD',
+  )
+  assert.equal(
+    planUpdate({ local: behindLocal, target: { tag: 'v3.1.0', sha: SHA_A }, writer: { readError: true, reason: 'HTTP 403' } }).code,
+    'UPDATE_WRITER_UNREADABLE',
+  )
+  assert.equal(
+    planUpdate({ local: { ...behindLocal, shallow: true }, target: { tag: 'v3.1.0', sha: SHA_A } }).code,
+    'UPDATE_SHALLOW_CLONE',
+  )
 })
 
 test('planUpdate leaves unreadable release identity unknown, never current', () => {
@@ -326,6 +351,7 @@ test('readReaderVersion treats 0.0.0 and unreachable origins honestly', async ()
     reachable: false,
     version: null,
     commitSha: null,
+    invalidCommitSha: false,
     reason: 'No Reader origin is known (PUBLIC_BASE_URL is unset).',
   })
   const identified = await readReaderVersion({
@@ -333,11 +359,13 @@ test('readReaderVersion treats 0.0.0 and unreachable origins honestly', async ()
     fetchImpl: async () => ({ status: 200, json: async () => ({ package: '3.1.0', build: { commitSha: SHA_A.toUpperCase() } }) }),
   })
   assert.equal(identified.commitSha, SHA_A, 'the build commit is read and normalized')
+  assert.equal(identified.invalidCommitSha, false)
   const unverified = await readReaderVersion({
     baseUrl: 'https://cal.example.com',
     fetchImpl: async () => ({ status: 200, json: async () => ({ package: '3.1.0', build: { commitSha: 'not-a-sha' } }) }),
   })
   assert.equal(unverified.commitSha, null, 'a malformed build commit is not an identity')
+  assert.equal(unverified.invalidCommitSha, true)
   const placeholder = await readReaderVersion({
     baseUrl: 'https://cal.example.com/',
     fetchImpl: async () => ({ status: 200, json: async () => ({ package: '0.0.0' }) }),
@@ -351,13 +379,46 @@ test('readReaderVersion treats 0.0.0 and unreachable origins honestly', async ()
   assert.equal(offline.reachable, false)
 })
 
-test('readPackageAt reads the target commit, not the working tree', () => {
+test('readPackageAt and readRemotePackageAt read target commit metadata without local mutation', () => {
   const spawnSyncImpl = fakeSpawn([
     [`git show ${SHA_B}:package.json`, out(JSON.stringify({ version: '3.1.0', engines: { node: '>=24' } }))],
+    [`contents/package.json?ref=${SHA_A}`, out(Buffer.from(JSON.stringify({ version: '3.2.0' }), 'utf8').toString('base64'))],
   ])
   assert.equal(readPackageAt({ sha: SHA_B, spawnSyncImpl }).version, '3.1.0')
   assert.equal(readPackageAt({ sha: 'nope', spawnSyncImpl }), null)
   assert.equal(readPackageAt({ sha: SHA_A, spawnSyncImpl }), null, 'unreadable package metadata stays null')
+  assert.equal(readRemotePackageAt({ repository: 'u/r', sha: SHA_A, spawnSyncImpl }).version, '3.2.0')
+})
+
+test('discoverUpdateState distinguishes GitHub API 403/500 errors from 404 absent variables', async () => {
+  const spawnSyncImpl = fakeSpawn([
+    ['git rev-parse HEAD', out(`${SHA_A}\n`)],
+    ['git status --porcelain=v1', out('')],
+    ['git describe --tags --exact-match', out('v3.1.0\n')],
+    ['git remote get-url origin', out('https://github.com/u/r.git\n')],
+    ['releases?per_page=100', out(JSON.stringify([{ tag_name: 'v3.1.0', draft: false, prerelease: false }]))],
+    ['git/ref/tags/v3.1.0', out(JSON.stringify({ type: 'commit', sha: SHA_A }))],
+    ['variables/AIRINGCAL_PRODUCTION_RELEASE_REF', { status: 1, stderr: 'gh: HTTP 403 Forbidden' }],
+    ['variables/AIRINGCAL_PRODUCTION_RELEASE_SHA', { status: 1, stderr: 'gh: HTTP 404 Not Found' }],
+    ['api repos/u/r', out(JSON.stringify({ fork: false }))],
+  ])
+  const state = await discoverUpdateState({
+    environment: 'production',
+    spawnSyncImpl,
+    fetchImpl: async () => { throw new Error('offline') },
+    cwd: process.cwd(),
+  })
+  assert.equal(state.writer.readError, true)
+  assert.equal(state.plan.action, 'unknown')
+  assert.equal(state.plan.code, 'UPDATE_WRITER_UNREADABLE')
+})
+
+test('checkLocalTagConflict detects conflicting local tags read-only', () => {
+  const spawnSyncImpl = fakeSpawn([
+    ['rev-parse --verify refs/tags/v3.1.0^{commit}', out(`${SHA_A}\n`)],
+  ])
+  assert.equal(checkLocalTagConflict({ tag: 'v3.1.0', sha: SHA_B, spawnSyncImpl }).code, 'UPDATE_TAG_CONFLICT')
+  assert.equal(checkLocalTagConflict({ tag: 'v3.1.0', sha: SHA_A, spawnSyncImpl }).conflict, false)
 })
 
 test('fetchReleaseTag never force-overwrites a conflicting local tag', () => {
@@ -442,4 +503,34 @@ test('upgradeWorkspace refuses to discard local commits and refuses shallow hist
   const shallowResult = upgradeWorkspace({ targetTag: 'v3.1.0', targetSha: SHA_B, spawnSyncImpl: shallow })
   assert.equal(shallowResult.code, 'UPDATE_SHALLOW_CLONE')
   assert.match(shallowResult.reason, /git fetch --unshallow/)
+})
+
+test('planUpdate and discoverUpdateState fail closed when SHA-only Writer compare API fails', async () => {
+  const behindLocal = { headSha: SHA_B, tag: 'v3.0.0', version: '3.0.0' }
+  const unverifiedPlan = planUpdate({
+    local: behindLocal,
+    target: { tag: 'v3.1.0', sha: SHA_A },
+    writer: { sha: SHA_B, compareStatus: 'unverified' },
+  })
+  assert.equal(unverifiedPlan.action, 'unknown')
+  assert.equal(unverifiedPlan.code, 'UPDATE_DEPLOYMENT_UNVERIFIED')
+
+  const spawnSyncImpl = fakeSpawn([
+    ['git rev-parse HEAD', out(`${SHA_A}\n`)],
+    ['git status --porcelain=v1', out('')],
+    ['git describe --tags --exact-match', out('v3.0.0\n')],
+    ['git rev-parse --is-shallow-repository', out('false\n')],
+    ['git remote get-url origin', out('https://github.com/me/AiringCal.git\n')],
+    ['variables/AIRINGCAL_PRODUCTION_RELEASE_REF', { status: 404, stdout: '', stderr: 'HTTP 404 Not Found' }],
+    ['variables/AIRINGCAL_PRODUCTION_RELEASE_SHA', out(SHA_A)],
+    ['variables/AIRINGCAL_PRODUCTION_PUBLIC_BASE_URL', { status: 404, stdout: '', stderr: 'HTTP 404 Not Found' }],
+    ['repos/me/AiringCal/releases?per_page=100', out(JSON.stringify([{ tag_name: 'v3.1.0', draft: false, prerelease: false }]))],
+    ['repos/me/AiringCal/git/ref/tags/v3.1.0', out(JSON.stringify({ type: 'commit', sha: SHA_B }))],
+    ['gh api repos/me/AiringCal/compare/', { status: 1, stdout: '', stderr: 'HTTP 502 Bad Gateway' }],
+    ['gh api repos/me/AiringCal', out(JSON.stringify({ fork: false }))],
+  ])
+  const state = await discoverUpdateState({ environment: 'production', spawnSyncImpl, cwd: process.cwd() })
+  assert.equal(state.writer.compareStatus, 'unverified')
+  assert.equal(state.plan.action, 'unknown')
+  assert.equal(state.plan.code, 'UPDATE_DEPLOYMENT_UNVERIFIED')
 })

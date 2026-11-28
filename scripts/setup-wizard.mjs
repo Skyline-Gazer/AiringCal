@@ -48,11 +48,11 @@ import { askConfirm, askSecret, askSelect, askText, WizardAbort } from './setup-
 import { credentialLinks, resolveDocumentation } from './setup-docs.mjs'
 import { createUi, credentialSection } from './setup-ui.mjs'
 import {
+  checkLocalTagConflict,
   discoverUpdateState,
-  fetchReleaseTag,
   formatUpdateState,
-  readPackageAt,
   readPnpmVersion,
+  readRemotePackageAt,
   toolchainBlockers,
   upgradeWorkspace,
 } from './update-plan.mjs'
@@ -513,6 +513,9 @@ export function resolveApplyEnvironment({
       applyEnv.AIRINGCAL_PRODUCTION_RELEASE_SHA = approvedReleaseCandidate.releaseSha
       if (approvedReleaseCandidate.releaseRef && !applyEnv.AIRINGCAL_PRODUCTION_RELEASE_REF) {
         applyEnv.AIRINGCAL_PRODUCTION_RELEASE_REF = approvedReleaseCandidate.releaseRef
+      }
+      if (approvedReleaseCandidate.source === 'interactive-release-change' && approvedReleaseCandidate.allowChange === true) {
+        applyEnv.AIRINGCAL_ALLOW_RELEASE_CHANGE = 'yes'
       }
     }
     applyEnv.AIRINGCAL_PRODUCTION_APPLY_AUTHORIZED = 'yes'
@@ -1465,7 +1468,15 @@ function renderReview(ui, {
     ? (releaseCandidate?.source === 'invalid-explicit-env'
         ? `  Production Release: INVALID EXPLICIT CONFIG (${releaseCandidate.invalidExplicitSha ?? 'malformed'} — must be a 40-char hex commit SHA or verifiable release tag)`
         : releaseCandidate?.releaseSha
-          ? `  Production Release: ${releaseCandidate.releaseRef ? `${releaseCandidate.releaseRef} @ ` : ''}${releaseCandidate.releaseSha} (${releaseCandidate.source === 'existing-environment' ? 'preserved from production environment' : releaseCandidate.source === 'explicit-env' ? 'explicitly configured' : 'discovered published release — confirmed upon install'})`
+          ? `  Production Release: ${releaseCandidate.releaseRef ? `${releaseCandidate.releaseRef} @ ` : ''}${releaseCandidate.releaseSha} (${
+              releaseCandidate.source === 'existing-environment'
+                ? 'preserved from production environment'
+                : releaseCandidate.source === 'interactive-release-change'
+                  ? `advancing from ${String(releaseCandidate.previousSha ?? '').slice(0, 12)} — confirmed upon update`
+                  : releaseCandidate.source === 'explicit-env'
+                    ? 'explicitly configured'
+                    : 'discovered published release — confirmed upon install'
+            })`
           : '  Production Release: NOT CONFIGURED (set AIRINGCAL_PRODUCTION_RELEASE_SHA or publish a release tag)')
     : null
   const lines = [
@@ -1524,23 +1535,76 @@ async function runUpdatePreflight({ environment, env, fetchImpl, spawnSyncImpl, 
   if (plan.action === 'blocked') {
     throw new WizardAbort(plan.reasons[0] ?? 'The update is blocked.', plan.code)
   }
-  if (plan.action === 'current' || plan.action === 'verify') {
-    const reason = plan.action === 'current'
-      ? 'the workspace and deployment already match the latest release'
-      : 'the deployment has not been verified against the latest release'
+  if (plan.action === 'unknown') {
+    const remediation = plan.code === 'UPDATE_WRITER_UNREADABLE'
+      ? 'Check GitHub CLI auth (`gh auth status`) and repository Environment read permissions before retrying.'
+      : plan.code === 'UPDATE_DEPLOYMENT_UNVERIFIED'
+        ? 'Inspect `AIRINGCAL_PRODUCTION_RELEASE_SHA` / `AIRINGCAL_PRODUCTION_RELEASE_REF` in GitHub Environment `production`.'
+        : 'Verify GitHub API access, release source visibility, and repository remote configuration.'
+    ui.note(`${plan.reasons.join('\n')}\n\nNext step: ${remediation}`, 'Update Blocked — Unverified State')
+    throw new WizardAbort(plan.reasons[0] ?? 'Deployment or release state cannot be verified.', plan.code)
+  }
+  if (plan.action === 'current') {
+    const reason = 'the workspace, Writer target, and Reader build already match the latest release'
     ui.note(reason, 'No Change')
     return { kind: 'stop', verdict: 'NO_CHANGE', reason, state }
   }
-  if (plan.action === 'unknown') {
-    ui.note('The published release could not be read; continuing to the deployment review.', 'Release Unknown')
+  if (plan.action === 'verify') {
+    if (plan.code === 'UPDATE_WRITER_IDENTITY_MISSING') {
+      const hasExplicitSha = Boolean(String(env.AIRINGCAL_PRODUCTION_RELEASE_SHA ?? '').trim())
+      if (!interactive) {
+        if (hasExplicitSha) return { kind: 'continue', state }
+        throw new WizardAbort(
+          `${plan.reasons[0]} Provide AIRINGCAL_PRODUCTION_RELEASE_SHA in .env.production to converge headless update.`,
+          plan.code,
+        )
+      }
+      ui.note(
+        `${plan.reasons.join('\n')}\n\nContinuing lets you review and set the Production Writer release target without wiping R2 data.`,
+        'Writer Identity Missing',
+      )
+      const proceed = await ui.confirm({
+        message: 'No Production Writer release SHA is configured. Continue to deployment review to set/verify it?',
+        initialValue: true,
+      })
+      if (!proceed) {
+        ui.cancel('Update cancelled; nothing was mutated.')
+        return { kind: 'stop', verdict: 'CANCELLED', reason: 'writer identity verification declined', state }
+      }
+      return { kind: 'continue', state }
+    }
+    if (!interactive) {
+      throw new WizardAbort(
+        `${plan.reasons.join(' ')} Ensure the Reader /api/version endpoint is reachable before headless update.`,
+        plan.code,
+      )
+    }
+    ui.note(
+      `${plan.reasons.join('\n')}\n\nContinuing lets you review and redeploy the Reader Worker without wiping R2 data.`,
+      'Reader Unreachable',
+    )
+    const proceed = await ui.confirm({
+      message: 'Live Reader could not be reached to confirm its build. Continue to deployment review to inspect or redeploy?',
+      initialValue: true,
+    })
+    if (!proceed) {
+      ui.cancel('Update cancelled; nothing was mutated.')
+      return { kind: 'stop', verdict: 'CANCELLED', reason: 'reader verification declined', state }
+    }
     return { kind: 'continue', state }
   }
   if (plan.action === 'redeploy') {
+    if (plan.code === 'UPDATE_READER_LEGACY_MIGRATION' || plan.code === 'UPDATE_READER_IDENTITY_INVALID') {
+      ui.note(
+        `${plan.reasons.join('\n')}\n\nSafe migration: redeploying the Reader Worker injects BANGUMI_GIT_COMMIT_SHA without modifying R2 data or Writer secrets.`,
+        'Legacy Reader Migration',
+      )
+    }
     if (interactive) {
-      const proceed = await ui.confirm({
-        message: `${plan.reasons[0] ?? 'The deployment does not match this commit.'} Deploy the current workspace commit again?`,
-        initialValue: true,
-      })
+      const message = plan.code === 'UPDATE_READER_LEGACY_MIGRATION'
+        ? 'Redeploy the Reader Worker to inject build.commitSha (R2 data and Writer secrets are preserved)?'
+        : `${plan.reasons[0] ?? 'The deployment does not match this commit.'} Deploy the current workspace commit again?`
+      const proceed = await ui.confirm({ message, initialValue: true })
       if (!proceed) {
         ui.cancel('Update cancelled; nothing was mutated.')
         return { kind: 'stop', verdict: 'CANCELLED', reason: 'redeploy declined', state }
@@ -1550,12 +1614,18 @@ async function runUpdatePreflight({ environment, env, fetchImpl, spawnSyncImpl, 
   }
 
   const targetTag = state?.target?.tag
-  // Tags live with the releases: the fork's parent when this install is a fork.
-  const remote = state.releaseSourceUrl ?? 'origin'
-  const fetched = fetchReleaseTag({ tag: targetTag, sha: state?.target?.sha, remote, spawnSyncImpl })
-  if (!fetched.ok) throw new WizardAbort(fetched.reason, fetched.code)
+  const targetSha = state?.target?.sha
+  // Check local tag conflicts and target toolchain metadata read-only BEFORE prompting or fetching.
+  const tagConflict = checkLocalTagConflict({ tag: targetTag, sha: targetSha, spawnSyncImpl })
+  if (tagConflict.conflict) throw new WizardAbort(tagConflict.reason, tagConflict.code)
+
+  const targetPkg = readRemotePackageAt({
+    repository: state?.releaseSource?.repository,
+    sha: targetSha,
+    spawnSyncImpl,
+  }) ?? {}
   const blockers = toolchainBlockers({
-    pkg: readPackageAt({ sha: fetched.sha, spawnSyncImpl }) ?? {},
+    pkg: targetPkg,
     nodeVersion: process.versions.node,
     pnpmVersion: readPnpmVersion(spawnSyncImpl),
   })
@@ -1578,9 +1648,11 @@ async function runUpdatePreflight({ environment, env, fetchImpl, spawnSyncImpl, 
       return { kind: 'stop', verdict: 'CANCELLED', reason: 'workspace upgrade declined', state }
     }
   }
+  // Tags live with the releases: the fork's parent when this install is a fork.
+  const remote = state.releaseSourceUrl ?? 'origin'
   const upgraded = upgradeWorkspace({
     targetTag,
-    targetSha: fetched.sha,
+    targetSha,
     remote,
     spawnSyncImpl,
     log,
@@ -1591,8 +1663,8 @@ async function runUpdatePreflight({ environment, env, fetchImpl, spawnSyncImpl, 
   const installed = spawnSyncImpl('pnpm', ['install', '--frozen-lockfile'], { cwd: ROOT, stdio: 'inherit' })
   if (installed?.status !== 0) {
     throw new Error(
-      `Dependencies for ${targetTag} did not install. Fix the toolchain, then rerun pnpm setup. ` +
-      `To return to the previous workspace commit: ${rollback}`,
+      `Dependencies for ${targetTag} did not install (no remote Cloudflare or GitHub changes were made). ` +
+      `Fix the toolchain, then rerun pnpm setup. To roll back only your local workspace: ${rollback} && pnpm install --frozen-lockfile`,
     )
   }
   const child = spawnSyncImpl(
@@ -1605,7 +1677,15 @@ async function runUpdatePreflight({ environment, env, fetchImpl, spawnSyncImpl, 
     ],
     { cwd: ROOT, stdio: 'inherit', env: { ...process.env } },
   )
-  return { kind: 'reexeced', code: typeof child?.status === 'number' ? child.status : 1 }
+  const code = typeof child?.status === 'number' ? child.status : 1
+  if (child?.error || code !== 0) {
+    log(
+      `Re-executed wizard on ${targetTag} exited with code ${code}. ` +
+      `Local workspace rollback (does not alter remote Cloudflare/GitHub state): ${rollback} && pnpm install --frozen-lockfile. ` +
+      `Inspect remote state with: pnpm run setup -- --doctor --environment ${environment}`,
+    )
+  }
+  return { kind: 'reexeced', code }
 }
 
 async function installFlow({
@@ -1640,6 +1720,7 @@ async function installFlow({
   let zoneId = ''
   let zoneName = ''
   let partialState = null
+  let updatePreflightState = null
   let bucketAdoptionAuthorized = String(env.AIRINGCAL_ADOPT_EXISTING_BUCKET ?? '').trim() === 'yes'
 
   if (headless) {
@@ -1670,6 +1751,7 @@ async function installFlow({
       })
       if (pre.kind === 'reexeced') return { reexeced: true, code: pre.code }
       if (pre.kind === 'stop') return { verdict: pre.verdict, reason: pre.reason, update: pre.state }
+      updatePreflightState = pre.state ?? null
     }
   } else {
     ui.intro('AiringCal Setup')
@@ -1697,6 +1779,7 @@ async function installFlow({
       })
       if (pre.kind === 'reexeced') return { reexeced: true, code: pre.code }
       if (pre.kind === 'stop') return { verdict: pre.verdict, reason: pre.reason, update: pre.state }
+      updatePreflightState = pre.state ?? null
     }
     if (session?.cloudflareToken && session?.bangumiToken && session?.validation?.ok) {
       cloudflareToken = session.cloudflareToken
@@ -1849,7 +1932,7 @@ async function installFlow({
         })
       }
 
-      const releaseCandidate = environment === 'production'
+      let releaseCandidate = environment === 'production'
         ? discoverProductionReleaseCandidate({
             env: resolvedEnv,
             partialState,
@@ -1860,6 +1943,44 @@ async function installFlow({
 
       if (!headless) {
         const isUpdateMode = dry.plan.operation === 'update'
+        if (
+          isUpdateMode &&
+          environment === 'production' &&
+          partialState?.githubEnvVariables?.AIRINGCAL_PRODUCTION_RELEASE_SHA &&
+          !String(resolvedEnv.AIRINGCAL_PRODUCTION_RELEASE_SHA ?? '').trim() &&
+          updatePreflightState?.target?.sha &&
+          /^[0-9a-f]{40}$/i.test(updatePreflightState.target.sha)
+        ) {
+          const existingSha = String(partialState.githubEnvVariables.AIRINGCAL_PRODUCTION_RELEASE_SHA).trim().toLowerCase()
+          const existingRef = String(partialState.githubEnvVariables.AIRINGCAL_PRODUCTION_RELEASE_REF ?? '').trim() || null
+          const targetSha = updatePreflightState.target.sha.toLowerCase()
+          const targetTag = updatePreflightState.target.tag
+          if (existingSha !== targetSha) {
+            ui.note(
+              [
+                `Current Production Writer Target: ${existingRef ? `${existingRef} @ ` : ''}${existingSha.slice(0, 12)}`,
+                `Target Release:                   ${targetTag} @ ${targetSha.slice(0, 12)}`,
+                'Updating the Reader preserves the existing Writer target unless you explicitly authorize advancing it.',
+              ].join('\n'),
+              'Production Writer Release Convergence',
+            )
+            const advanceWriter = await ui.confirm({
+              message: `Advance Production Writer release target from ${existingRef ?? existingSha.slice(0, 12)} to ${targetTag} (${targetSha.slice(0, 12)}) as part of this update?`,
+              initialValue: false,
+            })
+            if (advanceWriter) {
+              releaseCandidate = {
+                releaseSha: targetSha,
+                releaseRef: targetTag,
+                source: 'interactive-release-change',
+                changesExisting: true,
+                allowChange: true,
+                previousSha: existingSha,
+                previousRef: existingRef,
+              }
+            }
+          }
+        }
         if (environment === 'production' && partialState?.targetBucket?.exists && !bucketAdoptionAuthorized && !isUpdateMode) {
           const observedLines = [
             `Cloudflare Account: ${sanitizeAccountName(discovery.account.name)} (${discovery.account.id})`,
@@ -1899,10 +2020,11 @@ async function installFlow({
           releaseCandidate,
         })
         if (String(env.AIRINGCAL_WIZARD_VERBOSE ?? '') === 'yes') ui.note(formatPlan(dry.plan), 'Detailed Execution Plan')
+        const opLabel = dry.plan.operation === 'update' ? 'Update' : 'Install'
         const action = await ui.select({
           message: 'Review Configuration',
           options: [
-            { value: 'install', label: 'Confirm and Install' },
+            { value: 'install', label: `Confirm and ${opLabel}` },
             { value: 'credentials', label: 'Re-enter Credentials' },
             { value: 'domain', label: 'Edit Domain Configuration' },
             { value: 'environment', label: 'Edit Environment' },
@@ -1938,7 +2060,7 @@ async function installFlow({
           bucketAdoptionAuthorized = false
           continue
         }
-        approved = await ui.confirm({ message: `Install AiringCal in ${environment === 'production' ? 'Production' : 'Development'} now?`, initialValue: true })
+        approved = await ui.confirm({ message: `${opLabel} AiringCal in ${environment === 'production' ? 'Production' : 'Development'} now?`, initialValue: true })
         if (!approved) {
           ui.cancel('Nothing was applied.')
           return { cancelled: true, reason: 'installation not confirmed' }

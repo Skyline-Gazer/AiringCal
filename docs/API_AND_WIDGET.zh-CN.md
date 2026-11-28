@@ -162,7 +162,7 @@ AiringCal Cloudflare Reader Worker（`apps/v3-read-worker`）基于私有 Cloudf
 
 返回运行时、软件包与构建来源信息。`build.commitSha` 是 Worker 部署时的 `BANGUMI_GIT_COMMIT_SHA`，未配置时省略；Update 预检会用它与发布提交比对。
 
-- **响应头**：`Cache-Control: public, max-age=60`
+- **响应头**：`Cache-Control: no-store`
 - **响应示例 (`200 OK`)**：
 
 ```json
