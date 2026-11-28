@@ -504,3 +504,33 @@ test('upgradeWorkspace refuses to discard local commits and refuses shallow hist
   assert.equal(shallowResult.code, 'UPDATE_SHALLOW_CLONE')
   assert.match(shallowResult.reason, /git fetch --unshallow/)
 })
+
+test('planUpdate and discoverUpdateState fail closed when SHA-only Writer compare API fails', async () => {
+  const behindLocal = { headSha: SHA_B, tag: 'v3.0.0', version: '3.0.0' }
+  const unverifiedPlan = planUpdate({
+    local: behindLocal,
+    target: { tag: 'v3.1.0', sha: SHA_A },
+    writer: { sha: SHA_B, compareStatus: 'unverified' },
+  })
+  assert.equal(unverifiedPlan.action, 'unknown')
+  assert.equal(unverifiedPlan.code, 'UPDATE_DEPLOYMENT_UNVERIFIED')
+
+  const spawnSyncImpl = fakeSpawn([
+    ['git rev-parse HEAD', out(`${SHA_A}\n`)],
+    ['git status --porcelain=v1', out('')],
+    ['git describe --tags --exact-match', out('v3.0.0\n')],
+    ['git rev-parse --is-shallow-repository', out('false\n')],
+    ['git remote get-url origin', out('https://github.com/me/AiringCal.git\n')],
+    ['variables/AIRINGCAL_PRODUCTION_RELEASE_REF', { status: 404, stdout: '', stderr: 'HTTP 404 Not Found' }],
+    ['variables/AIRINGCAL_PRODUCTION_RELEASE_SHA', out(SHA_A)],
+    ['variables/AIRINGCAL_PRODUCTION_PUBLIC_BASE_URL', { status: 404, stdout: '', stderr: 'HTTP 404 Not Found' }],
+    ['repos/me/AiringCal/releases?per_page=100', out(JSON.stringify([{ tag_name: 'v3.1.0', draft: false, prerelease: false }]))],
+    ['repos/me/AiringCal/git/ref/tags/v3.1.0', out(JSON.stringify({ type: 'commit', sha: SHA_B }))],
+    ['gh api repos/me/AiringCal/compare/', { status: 1, stdout: '', stderr: 'HTTP 502 Bad Gateway' }],
+    ['gh api repos/me/AiringCal', out(JSON.stringify({ fork: false }))],
+  ])
+  const state = await discoverUpdateState({ environment: 'production', spawnSyncImpl, cwd: process.cwd() })
+  assert.equal(state.writer.compareStatus, 'unverified')
+  assert.equal(state.plan.action, 'unknown')
+  assert.equal(state.plan.code, 'UPDATE_DEPLOYMENT_UNVERIFIED')
+})

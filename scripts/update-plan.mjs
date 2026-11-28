@@ -429,11 +429,19 @@ export function planUpdate({
         `The Writer configured ${writerRef} (${writerSha.slice(0, 12)}), not the published commit ${targetSha.slice(0, 12)}.`,
       )
     }
-    if (!writerRef && writerSha !== targetSha && (writer?.compareStatus === 'ahead' || writer?.compareStatus === 'diverged')) {
-      return blocked(
-        'UPDATE_DEPLOYED_AHEAD',
-        `The Writer configured commit ${writerSha.slice(0, 12)} is ${writer.compareStatus} relative to ${targetTag} (${targetSha.slice(0, 12)}); refusing unsafe downgrade or divergent update.`,
-      )
+    if (!writerRef && writerSha !== targetSha) {
+      if (writer?.compareStatus === 'ahead' || writer?.compareStatus === 'diverged') {
+        return blocked(
+          'UPDATE_DEPLOYED_AHEAD',
+          `The Writer configured commit ${writerSha.slice(0, 12)} is ${writer.compareStatus} relative to ${targetTag} (${targetSha.slice(0, 12)}); refusing unsafe downgrade or divergent update.`,
+        )
+      }
+      if (writer?.compareStatus === 'unverified') {
+        return unknown(
+          'UPDATE_DEPLOYMENT_UNVERIFIED',
+          `Cannot verify commit ancestry between Writer SHA ${writerSha.slice(0, 12)} and ${targetTag} (${targetSha.slice(0, 12)}) via GitHub compare API; refusing to assume it is behind.`,
+        )
+      }
     }
   }
 
@@ -845,9 +853,7 @@ export async function discoverUpdateState({
     let compareStatus = null
     if (!reason && !writerRef && shaValid && configuredSha && target?.sha && configuredSha !== target.sha && releaseSource.ok) {
       const cmp = ghJson(spawnSyncImpl, `repos/${releaseSource.repository}/compare/${target.sha}...${configuredSha}`)
-      if (cmp && typeof cmp.status === 'string') {
-        compareStatus = cmp.status
-      }
+      compareStatus = cmp && typeof cmp.status === 'string' ? cmp.status : 'unverified'
     }
 
     writer = {
